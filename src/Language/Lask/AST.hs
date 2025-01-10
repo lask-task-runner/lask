@@ -39,19 +39,14 @@ type Statement ann = Cofree (Statement' ann) ann
 
 data Statement' ann a
   = ExprStatement String (Expr ann)
-  | TypeStatement String (Type ann)
   deriving (Show, Eq)
 
 instance (Eq ann) => Eq1 (Statement' ann) where
   liftEq _ (ExprStatement i1 d1) (ExprStatement i2 d2) = i1 == i2 && d1 == d2
-  liftEq _ (TypeStatement i1 d1) (TypeStatement i2 d2) = i1 == i2 && d1 == d2
-  liftEq _ _ _ = False
 
 instance (Show ann) => Show1 (Statement' ann) where
   liftShowsPrec _ _ _ (ExprStatement i d) =
     showString $ unwords ["ExprStatement", show i, showWithBrackets (show d)]
-  liftShowsPrec _ _ _ (TypeStatement i d) =
-    showString $ unwords ["TypeStatement", show i, showWithBrackets (show d)]
 
 type Type ann = Cofree (Type' ann) ann
 
@@ -60,8 +55,6 @@ data Type' ann self
     TypeVar String
   | -- | Assembly Type ex. Array[String]
     AssemblyType self [self]
-  | -- | Function type. ex. String -> Number
-    FuncType self self
   deriving (Show, Eq)
 
 instance Eq1 (Type' ann) where
@@ -70,7 +63,6 @@ instance Eq1 (Type' ann) where
     f a1 a2
       && length b1 == length b2
       && all (uncurry f) (zip b1 b2)
-  liftEq f (FuncType a1 b1) (FuncType a2 b2) = f a1 a2 && f b1 b2
   liftEq _ _ _ = False
 
 instance (Show ann) => Show1 (Type' ann) where
@@ -80,12 +72,6 @@ instance (Show ann) => Show1 (Type' ann) where
       <> f n a
       <> showString ") "
       <> f' b
-  liftShowsPrec f _ n (FuncType a b) =
-    showString "FuncType ("
-      <> f n a
-      <> showString ") ("
-      <> f n b
-      <> showString ")"
 
 type Expr ann = Cofree (Expr' ann) ann
 

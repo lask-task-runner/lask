@@ -16,9 +16,6 @@ spec = do
       shouldBe
         (show (() :< AST.ExprStatement "a" (() :< AST.Null) :: AST.Statement ()))
         "() :< ExprStatement \"a\" (() :< Null)"
-      shouldBe
-        (show (() :< AST.TypeStatement "a" (() :< AST.TypeVar "a") :: AST.Statement ()))
-        "() :< TypeStatement \"a\" (() :< TypeVar \"a\")"
     it "type" $ do
       shouldBe
         (show (() :< AST.TypeVar "a" :: AST.Type ()))
@@ -26,9 +23,6 @@ spec = do
       shouldBe
         (show (() :< AST.AssemblyType (() :< AST.TypeVar "a") [() :< AST.TypeVar "a"] :: AST.Type ()))
         "() :< AssemblyType (() :< TypeVar \"a\") [() :< TypeVar \"a\"]"
-      shouldBe
-        (show (() :< AST.FuncType (() :< AST.TypeVar "a") (() :< AST.TypeVar "b") :: AST.Type ()))
-        "() :< FuncType (() :< TypeVar \"a\") (() :< TypeVar \"b\")"
     it "expr" $ do
       shouldBe
         (show (() :< AST.Null :: AST.Expr ()))
@@ -101,15 +95,6 @@ spec = do
       shouldNotBe
         (() :< AST.ExprStatement "a" (() :< AST.Null) :: AST.Statement ())
         (() :< AST.ExprStatement "a" (() :< AST.Number 1) :: AST.Statement ())
-      shouldBe
-        (() :< AST.TypeStatement "a" (() :< AST.TypeVar "a") :: AST.Statement ())
-        (() :< AST.TypeStatement "a" (() :< AST.TypeVar "a") :: AST.Statement ())
-      shouldNotBe
-        (() :< AST.TypeStatement "a" (() :< AST.TypeVar "a") :: AST.Statement ())
-        (() :< AST.TypeStatement "b" (() :< AST.TypeVar "a") :: AST.Statement ())
-      shouldNotBe
-        (() :< AST.TypeStatement "a" (() :< AST.TypeVar "a") :: AST.Statement ())
-        (() :< AST.TypeStatement "a" (() :< AST.TypeVar "b") :: AST.Statement ())
     it "type" $ do
       shouldBe
         (() :< AST.TypeVar "a" :: AST.Type ())
@@ -126,12 +111,6 @@ spec = do
       shouldNotBe
         (() :< AST.AssemblyType (() :< AST.TypeVar "a") [() :< AST.TypeVar "a"] :: AST.Type ())
         (() :< AST.AssemblyType (() :< AST.TypeVar "a") [() :< AST.TypeVar "b"] :: AST.Type ())
-      shouldBe
-        (() :< AST.FuncType (() :< AST.TypeVar "a") (() :< AST.TypeVar "b") :: AST.Type ())
-        (() :< AST.FuncType (() :< AST.TypeVar "a") (() :< AST.TypeVar "b") :: AST.Type ())
-      shouldNotBe
-        (() :< AST.FuncType (() :< AST.TypeVar "a") (() :< AST.TypeVar "b") :: AST.Type ())
-        (() :< AST.FuncType (() :< AST.TypeVar "b") (() :< AST.TypeVar "b") :: AST.Type ())
     it "expr" $ do
       shouldBe
         (() :< AST.Null :: AST.Expr ())
