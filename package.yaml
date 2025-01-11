@@ -18,6 +18,7 @@ description: Please see the README on GitHub at <https://github.com/lask-task-ru
 
 dependencies:
   - base >= 4.7 && < 5
+  - directory >= 1.0 && < 2
   - free >= 5.0 && < 6
   - megaparsec >= 9.6 && < 10
   - mtl >= 2.0 && < 3

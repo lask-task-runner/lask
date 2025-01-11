@@ -2,7 +2,7 @@
 
 module Language.Lask.Error
   ( LanguageError,
-    LanguageError' (SyntaxError, RuntimeError),
+    LanguageError' (..),
     fromParseErrorBundle,
   )
 where
@@ -29,6 +29,7 @@ type LanguageError ann = Cofree (LanguageError' ann) ann
 
 data LanguageError' ann self
   = SyntaxError String
+  | BundleError String
   | RuntimeError String ExitCode
   deriving (Show, Eq)
 
@@ -38,11 +39,13 @@ instance Eq1 (LanguageError' ann) where
   liftEq _ _ _ = False
 
 instance (Show ann) => Show1 (LanguageError' ann) where
-  liftShowsPrec _ _ _ (SyntaxError s) = showString $ "StaticError " <> show s
+  liftShowsPrec _ _ _ (SyntaxError s) = showString $ "SyntaxError " <> show s
+  liftShowsPrec _ _ _ (BundleError s) = showString $ "BundleError " <> show s
   liftShowsPrec _ _ _ (RuntimeError s e) = showString $ "RuntimeError " <> show s <> " " <> show e
 
 instance (Pretty ann) => Pretty (LanguageError ann) where
   pretty (s :< SyntaxError m) = pretty s <> ": syntax error: " <> m
+  pretty (s :< BundleError m) = pretty s <> ": bundle error: " <> m
   pretty (s :< RuntimeError m _) = pretty s <> ": runtime error: " <> m
 
 fromParseErrorBundle :: (TraversableStream a, VisualStream a) => ParseErrorBundle a Void -> LanguageError Span

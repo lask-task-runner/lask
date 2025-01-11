@@ -5,24 +5,30 @@ module Language.Lask.AST
     Module' (..),
     Statement,
     Statement' (..),
+    isExpr,
     Type,
     Type' (..),
+    PackedArgument,
     Expr,
     Expr' (..),
     Parameter,
     Parameter' (..),
+    isPositionedParameter,
+    isKeywordParameter,
     IsRest,
     IsOptional,
     Argument,
     Argument' (..),
+    isPositionedArgument,
+    isKeywordArgument,
     IsExpanded,
   )
 where
 
 import Control.Comonad.Cofree
 import Data.Functor.Classes (Eq1 (liftEq), Show1 (liftShowsPrec))
-import Data.List (isInfixOf)
 import Data.Scientific (Scientific)
+import Language.Lask.Utils (showWithBrackets)
 import System.Exit (ExitCode)
 
 type Module ann = Cofree (Module' ann) ann
@@ -47,6 +53,9 @@ instance (Eq ann) => Eq1 (Statement' ann) where
 instance (Show ann) => Show1 (Statement' ann) where
   liftShowsPrec _ _ _ (ExprStatement i d) =
     showString $ unwords ["ExprStatement", show i, showWithBrackets (show d)]
+
+isExpr :: Statement a -> Bool
+isExpr (_ :< ExprStatement {}) = True
 
 type Type ann = Cofree (Type' ann) ann
 
@@ -73,6 +82,8 @@ instance (Show ann) => Show1 (Type' ann) where
       <> showString ") "
       <> f' b
 
+type PackedArgument a = (String, (Maybe (Expr a), Maybe (Type a)))
+
 type Expr ann = Cofree (Expr' ann) ann
 
 data Expr' ann self
@@ -88,7 +99,7 @@ data Expr' ann self
   | Call self [Argument ann]
   | Lambda [Parameter ann] self (Maybe (Type ann))
   | Error String ExitCode
-  | FixtureFun [Parameter ann] ([(String, Expr ann)] -> IO self) (Maybe (Type ann))
+  | FixtureFun [Parameter ann] ([PackedArgument ann] -> IO self) (Maybe (Type ann))
   deriving (Show, Eq)
 
 instance (Eq ann) => Eq1 (Expr' ann) where
@@ -151,10 +162,10 @@ instance (Show ann) => Show1 (Expr' ann) where
     showString $ unwords ["Error", show s, showWithBrackets (show c)]
   liftShowsPrec _ _ _ (FixtureFun {}) = showString "FixtureFun"
 
-instance Show ([(String, Expr ann)] -> IO a) where
+instance Show ([PackedArgument ann] -> IO a) where
   show _ = undefined
 
-instance Eq ([(String, Expr ann)] -> IO a) where
+instance Eq ([PackedArgument ann] -> IO a) where
   _ == _ = undefined
 
 type Parameter ann = Cofree (Parameter' ann) ann
@@ -230,6 +241,14 @@ type IsRest = Bool
 
 type IsOptional = Bool
 
+isPositionedParameter :: Parameter ann -> Bool
+isPositionedParameter (_ :< PositionedParameter {}) = True
+isPositionedParameter _ = False
+
+isKeywordParameter :: Parameter ann -> Bool
+isKeywordParameter (_ :< KeywordParameter {}) = True
+isKeywordParameter _ = False
+
 type Argument ann = Cofree (Argument' ann) ann
 
 data Argument' ann self
@@ -260,17 +279,10 @@ instance (Show ann) => Show1 (Argument' ann) where
 
 type IsExpanded = Bool
 
--- | Show with brackets if the value contains a space.
---
--- Example:
---
--- >>> showWithBrackets "a"
--- "a"
---
--- >>> showWithBrackets "a b"
--- "(a b)"
-showWithBrackets :: String -> String
-showWithBrackets s =
-  if " " `isInfixOf` s
-    then "(" <> s <> ")"
-    else s
+isPositionedArgument :: Argument ann -> Bool
+isPositionedArgument (_ :< PositionedArgument {}) = True
+isPositionedArgument _ = False
+
+isKeywordArgument :: Argument ann -> Bool
+isKeywordArgument (_ :< KeywordArgument {}) = True
+isKeywordArgument _ = False

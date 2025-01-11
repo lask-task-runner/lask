@@ -22,12 +22,16 @@ data Position = Position
 
 data Span
   = Span Position Position
+  | NoSpan
   deriving (Show, Ord, Eq)
 
 instance Semigroup Span where
   Span s1 e1 <> Span s2 e2 =
     let ps = sort [s1, e1, s2, e2]
      in Span (head ps) (last ps)
+  s@Span {} <> NoSpan = s
+  NoSpan <> s@Span {} = s
+  NoSpan <> NoSpan = NoSpan
 
 -- | Create a span from two pairs of line and column numbers.
 --
@@ -50,3 +54,4 @@ instance Pretty Span where
     if p1 == p2
       then file <> ":" <> show l1 <> ":" <> show c1
       else file <> ":" <> show l1 <> ":" <> show c1 <> "-" <> show l2 <> ":" <> show c2
+  pretty NoSpan = "(no location)"
