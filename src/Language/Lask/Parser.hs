@@ -92,46 +92,7 @@ pExprStatement = cofreeSpanned $ do
     Nothing -> pure $ AST.ExprStatement name expr
 
 pType :: Parser (AST.Type Span)
-pType = do
-  v <- pTPrimary
-  choice
-    [ pAssemblyType v,
-      pure v
-    ]
-  where
-    pAssemblyType :: AST.Type Span -> Parser (AST.Type Span)
-    pAssemblyType f@(s1 :< _) = do
-      (s2, ts) <-
-        spanned $
-          between
-            (lexeme $ token TKSep $ char '[')
-            (lexeme $ token TKSep $ char ']')
-            (pType `sepBy` lexeme (token TKSep (char ',')))
-      pure $ s1 <> s2 :< AST.AssemblyType f ts
-
-pTPrimary :: Parser (AST.Type Span)
-pTPrimary =
-  choice
-    [ pTypeVar,
-      pArrayOrTupleType
-    ]
-
-pTypeVar :: Parser (AST.Type Span)
-pTypeVar = cofreeSpanned $ AST.TypeVar <$> lexeme (tUpperIdentifier TKTypeVar)
-
--- array and tuple type sugar syntax
-pArrayOrTupleType :: Parser (AST.Type Span)
-pArrayOrTupleType = do
-  (s, ts) <-
-    spanned $
-      between
-        (lexeme $ token TKSep $ char '[')
-        (lexeme $ token TKSep $ char ']')
-        (pType `sepBy` lexeme (token TKSep (char ',')))
-  case ts of
-    [] -> fail "type"
-    [t] -> pure $ s :< AST.AssemblyType (s :< AST.TypeVar "Array") [t]
-    _ -> pure $ s :< AST.AssemblyType (s :< AST.TypeVar "Tuple") ts
+pType = cofreeSpanned $ AST.TypeVar <$> lexeme (tUpperIdentifier TKTypeVar)
 
 pExpr :: Parser (AST.Expr Span)
 pExpr = makeExprParser pTerm opTable

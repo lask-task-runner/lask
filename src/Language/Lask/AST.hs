@@ -59,28 +59,16 @@ isExpr (_ :< ExprStatement {}) = True
 
 type Type ann = Cofree (Type' ann) ann
 
-data Type' ann self
+newtype Type' ann self
   = -- | Type variable. ex. String
     TypeVar String
-  | -- | Assembly Type ex. Array[String]
-    AssemblyType self [self]
   deriving (Show, Eq)
 
 instance Eq1 (Type' ann) where
   liftEq _ (TypeVar s1) (TypeVar s2) = s1 == s2
-  liftEq f (AssemblyType a1 b1) (AssemblyType a2 b2) =
-    f a1 a2
-      && length b1 == length b2
-      && all (uncurry f) (zip b1 b2)
-  liftEq _ _ _ = False
 
 instance (Show ann) => Show1 (Type' ann) where
   liftShowsPrec _ _ _ (TypeVar s) = showString $ unwords ["TypeVar", show s]
-  liftShowsPrec f f' n (AssemblyType a b) =
-    showString "AssemblyType ("
-      <> f n a
-      <> showString ") "
-      <> f' b
 
 type PackedArgument a = (String, (Maybe (Expr a), Maybe (Type a)))
 

@@ -20,9 +20,6 @@ spec = do
       shouldBe
         (show (() :< AST.TypeVar "a" :: AST.Type ()))
         "() :< TypeVar \"a\""
-      shouldBe
-        (show (() :< AST.AssemblyType (() :< AST.TypeVar "a") [() :< AST.TypeVar "a"] :: AST.Type ()))
-        "() :< AssemblyType (() :< TypeVar \"a\") [() :< TypeVar \"a\"]"
     it "expr" $ do
       shouldBe
         (show (() :< AST.Null :: AST.Expr ()))
@@ -102,15 +99,6 @@ spec = do
       shouldNotBe
         (() :< AST.TypeVar "a" :: AST.Type ())
         (() :< AST.TypeVar "b" :: AST.Type ())
-      shouldBe
-        (() :< AST.AssemblyType (() :< AST.TypeVar "a") [() :< AST.TypeVar "a"] :: AST.Type ())
-        (() :< AST.AssemblyType (() :< AST.TypeVar "a") [() :< AST.TypeVar "a"] :: AST.Type ())
-      shouldNotBe
-        (() :< AST.AssemblyType (() :< AST.TypeVar "a") [() :< AST.TypeVar "a"] :: AST.Type ())
-        (() :< AST.AssemblyType (() :< AST.TypeVar "b") [() :< AST.TypeVar "a"] :: AST.Type ())
-      shouldNotBe
-        (() :< AST.AssemblyType (() :< AST.TypeVar "a") [() :< AST.TypeVar "a"] :: AST.Type ())
-        (() :< AST.AssemblyType (() :< AST.TypeVar "a") [() :< AST.TypeVar "b"] :: AST.Type ())
     it "expr" $ do
       shouldBe
         (() :< AST.Null :: AST.Expr ())

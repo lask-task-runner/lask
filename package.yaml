@@ -18,11 +18,14 @@ description: Please see the README on GitHub at <https://github.com/lask-task-ru
 
 dependencies:
   - base >= 4.7 && < 5
+  - bytestring >= 0.11 && < 0.12
   - directory >= 1.0 && < 2
   - free >= 5.0 && < 6
   - megaparsec >= 9.6 && < 10
   - mtl >= 2.0 && < 3
   - parser-combinators >= 1.0 && < 2
+  - process >= 1.6 && < 2
+  - process-extras >= 0.7 && < 0.8
   - scientific >= 0.3 && < 0.4
   - text >= 2.0 && < 3
 

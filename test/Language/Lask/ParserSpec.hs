@@ -453,34 +453,6 @@ spec = do
               :< AST.TypeVar "Void",
             [Token TKTypeVar (mkSpan "test" 1 1 1 5)]
           )
-    it "array type" $ do
-      parse pType "test" "[String]"
-        `shouldBe` Right
-          ( mkSpan "test" 1 1 1 9
-              :< AST.AssemblyType
-                (mkSpan "test" 1 1 1 9 :< AST.TypeVar "Array")
-                [mkSpan "test" 1 2 1 8 :< AST.TypeVar "String"],
-            [ Token TKSep (mkSpan "test" 1 1 1 2),
-              Token TKTypeVar (mkSpan "test" 1 2 1 8),
-              Token TKSep (mkSpan "test" 1 8 1 9)
-            ]
-          )
-    it "tuple type" $ do
-      parse pType "test" "[String, Number]"
-        `shouldBe` Right
-          ( mkSpan "test" 1 1 1 17
-              :< AST.AssemblyType
-                (mkSpan "test" 1 1 1 17 :< AST.TypeVar "Tuple")
-                [ mkSpan "test" 1 2 1 8 :< AST.TypeVar "String",
-                  mkSpan "test" 1 10 1 16 :< AST.TypeVar "Number"
-                ],
-            [ Token TKSep (mkSpan "test" 1 1 1 2),
-              Token TKTypeVar (mkSpan "test" 1 2 1 8),
-              Token TKSep (mkSpan "test" 1 8 1 9),
-              Token TKTypeVar (mkSpan "test" 1 10 1 16),
-              Token TKSep (mkSpan "test" 1 16 1 17)
-            ]
-          )
   describe "expression statement" $ do
     it "variable" $ do
       parse pExprStatement "test" "a = 1"
