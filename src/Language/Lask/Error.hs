@@ -57,6 +57,9 @@ instance (Pretty ann) => Pretty (LanguageError ann) where
   pretty (s :< TypeError m) = pretty s <> ": type error: " <> m
   pretty (s :< RuntimeError m _) = pretty s <> ": runtime error: " <> m
 
+instance (Pretty ann) => Pretty [LanguageError ann] where
+  pretty = unlines . map pretty
+
 fromParseErrorBundle :: (TraversableStream a, VisualStream a) => ParseErrorBundle a Void -> LanguageError Span
 fromParseErrorBundle e =
   mkSpan' (errorBundleSourcePos e)

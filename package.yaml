@@ -18,15 +18,21 @@ description: Please see the README on GitHub at <https://github.com/lask-task-ru
 
 dependencies:
   - base >= 4.7 && < 5
+  - aeson >= 2.0 && < 3
   - bytestring >= 0.11 && < 0.12
+  - co-log-core >= 0.3.0 && < 0.4
   - directory >= 1.0 && < 2
   - free >= 5.0 && < 6
+  - lens >= 5.0 && < 6
+  - lsp >= 2.0 && < 3
   - megaparsec >= 9.6 && < 10
   - mtl >= 2.0 && < 3
+  - optparse-applicative >= 0.18 && < 0.19
   - parser-combinators >= 1.0 && < 2
   - process >= 1.6 && < 2
   - process-extras >= 0.7 && < 0.8
   - scientific >= 0.3 && < 0.4
+  - stm >= 2.0 && < 3
   - text >= 2.0 && < 3
 
 ghc-options:
@@ -44,7 +50,7 @@ library:
   source-dirs: src
 
 executables:
-  lask-exe:
+  lask:
     main: Main.hs
     source-dirs: app
     ghc-options:

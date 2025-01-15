@@ -7,7 +7,6 @@ where
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (join)
 import Control.Monad.Error.Class (MonadError (throwError))
-import Control.Monad.Except (ExceptT)
 import qualified Language.Lask.AST as AST
 import Language.Lask.Bundler (Environment (..), findExpr, findStatement)
 import Language.Lask.Error (LanguageError, LanguageError' (SemanticError))
@@ -31,7 +30,7 @@ infer ::
   Environment Span ->
   [AST.PackedArgument Span] ->
   AST.Expr Span ->
-  ExceptT (LanguageError Span) IO (AST.Type Span)
+  Either [LanguageError Span] (AST.Type Span)
 infer env args (s :< e) = case e of
   AST.Null -> pure tNull
   AST.Bool _ -> pure tBool
@@ -42,7 +41,7 @@ infer env args (s :< e) = case e of
   AST.Image _ -> pure tImage
   AST.Var name -> case findExpr env args name of
     Just a -> infer env args a
-    Nothing -> throwError $ s :< SemanticError ("Not defined: " <> name)
+    Nothing -> throwError [s :< SemanticError ("Not defined: " <> name)]
   AST.Accessor {} -> pure tAny
   AST.Call a _ -> infer env args a
   AST.Lambda {} -> pure tAny
