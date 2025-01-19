@@ -227,21 +227,19 @@ pParameter =
   where
     positionedParameter :: Parser (AST.Parameter Span)
     positionedParameter = cofreeSpanned $ do
-      name <- tLowerIdentifier TKParameter
-      isOptional <- isJust <$> optional (token TKOp $ char '?')
+      name <- lexeme $ tLowerIdentifier TKParameter
+      isOptional <- isJust <$> optional (lexeme $ token TKOp $ char '?')
       isRest <- isJust <$> optional (lexeme $ token TKOp $ string "...")
       paramType <- optional $ lexeme (token TKSep $ char ':') *> pType
-      sc
       defaultExpr <- optional $ lexeme (token TKOp $ char '=') *> pExpr
       pure $ AST.PositionedParameter name isRest isOptional paramType defaultExpr
     keywordParameter :: Parser (AST.Parameter Span)
     keywordParameter = cofreeSpanned $ do
       _ <- token TKOp $ char '-'
-      name <- tLowerIdentifier TKParameter
-      isOptional <- isJust <$> optional (token TKOp $ char '?')
+      name <- lexeme $ tLowerIdentifier TKParameter
+      isOptional <- isJust <$> optional (lexeme $ token TKOp $ char '?')
       isRest <- isJust <$> optional (lexeme $ token TKOp $ string "...")
       paramType <- optional $ lexeme (token TKSep $ char ':') *> pType
-      sc
       defaultExpr <- optional $ lexeme (token TKOp $ char '=') *> pExpr
       pure $ AST.KeywordParameter name isOptional isRest paramType defaultExpr
 
