@@ -25,6 +25,7 @@ library
   exposed-modules:
       Command.Lask.Entry
       Command.Lask.Parser
+      Command.Lask.Parser.Argument
       Command.Lask.Parser.CommandLine
       Language.Lask
       Language.Lask.AST
@@ -60,6 +61,7 @@ library
     , scientific ==0.3.*
     , stm >=2.0 && <3
     , text >=2.0 && <3
+    , vector ==0.13.*
   default-language: Haskell2010
 
 executable lask
@@ -88,6 +90,7 @@ executable lask
     , scientific ==0.3.*
     , stm >=2.0 && <3
     , text >=2.0 && <3
+    , vector ==0.13.*
   default-language: Haskell2010
 
 test-suite lask-test
@@ -125,4 +128,5 @@ test-suite lask-test
     , scientific ==0.3.*
     , stm >=2.0 && <3
     , text >=2.0 && <3
+    , vector ==0.13.*
   default-language: Haskell2010

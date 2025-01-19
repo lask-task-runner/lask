@@ -1,6 +1,7 @@
 module Language.Lask.Utils
   ( tupleToCofree,
     Pretty (..),
+    SwitchCofree (..),
     safeReadFile,
     coFst,
     coSnd,
@@ -25,6 +26,9 @@ coFst (m :< _) = m
 
 coSnd :: Cofree f a -> f (Cofree f a)
 coSnd (_ :< v) = v
+
+class SwitchCofree f where
+  switchCofree :: (a -> b) -> Cofree (f a) a -> Cofree (f b) b
 
 class Pretty a where
   pretty :: a -> String

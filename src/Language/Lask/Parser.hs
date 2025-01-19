@@ -1,13 +1,29 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Language.Lask.Parser
-  ( parse,
-    pModule,
-    pExprStatement,
-    pExpr,
-    pType,
+  ( Parser,
     Token (..),
     TokenKind (..),
+    parse,
+    pModule,
+    pExprStatement,
+    pType,
+    pExpr,
+    pNull,
+    pBool,
+    pNumber,
+    pString,
+    pStringWithExprExpansion,
+    pImage,
+    pObject,
+    pArray,
+    tIdentifier,
+    tUpperIdentifier,
+    tLowerIdentifier,
+    token,
+    spanned,
+    lexeme,
+    cofreeSpanned,
   )
 where
 

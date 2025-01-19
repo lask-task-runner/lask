@@ -17,14 +17,14 @@ eval ::
   Environment a ->
   [AST.PackedArgument a] ->
   AST.Expr a ->
-  ExceptT (LanguageError a) IO (AST.Expr a)
+  ExceptT [LanguageError a] IO (AST.Expr a)
 eval env args v = case v of
   e@(_ :< AST.Error {}) -> pure e
   s :< AST.Array vs -> (:<) s . AST.Array <$> mapM (eval env args) vs
   s :< AST.Object vs -> (:<) s . AST.Object <$> mapM (\(k, e) -> (,) k <$> eval env args e) vs
   s :< AST.Var name -> case findExpr env args name of
     Just a -> eval env args a
-    Nothing -> throwError $ s :< RuntimeError ("Not defined: " <> name) (ExitFailure 1)
+    Nothing -> throwError [s :< RuntimeError ("Not defined: " <> name) (ExitFailure 1)]
   _ :< AST.Call f args' -> do
     evaluatedArgs <-
       mapM
@@ -45,12 +45,12 @@ eval env args v = case v of
       (s :< e) ->
         case args of
           [] -> pure $ s :< e
-          _ -> throwError $ s :< RuntimeError "Not a function" (ExitFailure 1)
+          _ -> throwError [s :< RuntimeError "Not a function" (ExitFailure 1)]
   s :< AST.Accessor e (_ :< key) -> do
     evaluatedExpr <- eval env args e
     case evaluatedExpr of
       (_ :< AST.Object vs) -> case find (\(_ :< key', _) -> key == key') vs of -- TODO: Implement equality
         Just (_, foundValue) -> pure foundValue
         Nothing -> pure $ s :< AST.Null
-      _ -> throwError $ s :< RuntimeError "Accessors can only be used on objects" (ExitFailure 1)
+      _ -> throwError [s :< RuntimeError "Accessors can only be used on objects" (ExitFailure 1)]
   _ -> pure v

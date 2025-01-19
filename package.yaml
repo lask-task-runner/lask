@@ -34,6 +34,7 @@ dependencies:
   - scientific >= 0.3 && < 0.4
   - stm >= 2.0 && < 3
   - text >= 2.0 && < 3
+  - vector >= 0.13 && < 0.14
 
 ghc-options:
   - -Wall

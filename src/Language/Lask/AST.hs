@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Language.Lask.AST
   ( Module,
@@ -26,9 +27,16 @@ module Language.Lask.AST
 where
 
 import Control.Comonad.Cofree
+import Data.Aeson (FromJSON (parseJSON), ToJSON (toJSON))
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as K
+import qualified Data.Aeson.KeyMap as KM
+import Data.Bifunctor (bimap)
 import Data.Functor.Classes (Eq1 (liftEq), Show1 (liftShowsPrec))
 import Data.Scientific (Scientific)
-import Language.Lask.Utils (showWithBrackets)
+import qualified Data.Text as T
+import qualified Data.Vector as V
+import Language.Lask.Utils (Pretty (pretty), SwitchCofree (..), showWithBrackets)
 import System.Exit (ExitCode)
 
 type Module ann = Cofree (Module' ann) ann
@@ -69,6 +77,12 @@ instance Eq1 (Type' ann) where
 
 instance (Show ann) => Show1 (Type' ann) where
   liftShowsPrec _ _ _ (TypeVar s) = showString $ unwords ["TypeVar", show s]
+
+instance Pretty (Type a) where
+  pretty (_ :< TypeVar s) = s
+
+instance SwitchCofree Type' where
+  switchCofree f (a :< TypeVar s) = f a :< TypeVar s
 
 type PackedArgument a = (String, (Maybe (Expr a), Maybe (Type a)))
 
@@ -150,6 +164,56 @@ instance (Show ann) => Show1 (Expr' ann) where
     showString $ unwords ["Error", show s, showWithBrackets (show c)]
   liftShowsPrec _ _ _ (FixtureFun {}) = showString "FixtureFun"
 
+instance SwitchCofree Expr' where
+  switchCofree f (a :< Null) = f a :< Null
+  switchCofree f (a :< Bool b) = f a :< Bool b
+  switchCofree f (a :< Number n) = f a :< Number n
+  switchCofree f (a :< String s) = f a :< String s
+  switchCofree f (a :< Array as) = f a :< Array (map (switchCofree f) as)
+  switchCofree f (a :< Object os) =
+    f a :< Object (map (bimap (switchCofree f) (switchCofree f)) os)
+  switchCofree f (a :< Image i) = f a :< Image i
+  switchCofree f (a :< Var v) = f a :< Var v
+  switchCofree f (a :< Accessor a1 i1) =
+    f a :< Accessor (switchCofree f a1) (switchCofree f i1)
+  switchCofree f (a :< Call func as) =
+    f a :< Call (switchCofree f func) (map (switchCofree f) as)
+  switchCofree f (a :< Lambda ps e t) =
+    f a :< Lambda (map (switchCofree f) ps) (switchCofree f e) (switchCofree f <$> t)
+  switchCofree f (a :< Error s c) = f a :< Error s c
+  switchCofree _ (_ :< FixtureFun {}) = undefined
+
+instance ToJSON (Expr a) where
+  toJSON expr = case expr of
+    (_ :< Null) -> Aeson.Null
+    (_ :< Bool v) -> Aeson.Bool v
+    (_ :< Number v) -> Aeson.Number v
+    (_ :< String v) -> Aeson.String (T.pack v)
+    (_ :< Array vs) -> Aeson.Array $ V.fromList $ map toJSON vs
+    (_ :< Object vs) ->
+      Aeson.Object $
+        KM.fromList $
+          map
+            ( \case
+                (_ :< String i, v) -> (K.fromText (T.pack i), toJSON v)
+                (_, v) -> (K.fromText (T.pack "not value"), toJSON v)
+            )
+            vs
+    (_ :< _) -> Aeson.String (T.pack "not value")
+
+instance FromJSON (Expr ()) where
+  parseJSON e = case e of
+    Aeson.Null -> pure $ () :< Null
+    Aeson.Bool v -> pure $ () :< Bool v
+    Aeson.Number v -> pure $ () :< Number v
+    Aeson.String v -> pure $ () :< String (T.unpack v)
+    Aeson.Array vs -> (() :<) . Array <$> mapM parseJSON (V.toList vs)
+    Aeson.Object vs ->
+      (() :<) . Object
+        <$> mapM
+          (\(k, v) -> (,) (() :< String (K.toString k)) <$> parseJSON v)
+          (KM.toList vs)
+
 instance Show ([PackedArgument ann] -> IO a) where
   show _ = undefined
 
@@ -225,6 +289,12 @@ instance (Show ann) => Show1 (Parameter' ann) where
           showWithBrackets (show e)
         ]
 
+instance SwitchCofree Parameter' where
+  switchCofree f (a :< PositionedParameter p r o t e) =
+    f a :< PositionedParameter p r o (switchCofree f <$> t) (switchCofree f <$> e)
+  switchCofree f (a :< KeywordParameter i r o t e) =
+    f a :< KeywordParameter i r o (switchCofree f <$> t) (switchCofree f <$> e)
+
 type IsRest = Bool
 
 type IsOptional = Bool
@@ -264,6 +334,10 @@ instance (Show ann) => Show1 (Argument' ann) where
           show name,
           showWithBrackets (show a)
         ]
+
+instance SwitchCofree Argument' where
+  switchCofree f (a :< PositionedArgument e1 a1) = f a :< PositionedArgument e1 (switchCofree f a1)
+  switchCofree f (a :< KeywordArgument i1 a1) = f a :< KeywordArgument i1 (switchCofree f a1)
 
 type IsExpanded = Bool
 
