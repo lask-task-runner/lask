@@ -1,0 +1,16 @@
+// Sample function to greet using `echo`.
+// example:
+// >>> lask run hello
+hello(name = "World") = $ echo "Hello, #{ name }!";
+
+// Sample of a function that adds two numbers together,
+// using the eval command to print the function's return value
+// in JSON format on the stdout.
+// example:
+// >>> lask eval add 1 2
+add(a, b) = { "result": a + b }
+
+// This is a sample of running a cowsay in Docker.
+// example:
+// >>> lask run cowsay
+cowsay(text = "Hello, Docker!") = $[#rancher/cowsay] #{ text };
