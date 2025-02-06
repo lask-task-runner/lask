@@ -55,7 +55,7 @@ runRootCommand cmd = case cmd of
       liftEither $ infer filePath src functionName
     case result of
       Left e -> hPutStrLn stderr $ pretty e
-      Right e -> print $ pretty e
+      Right e -> putStrLn $ pretty e
 
 loadCommandLineEnvironment :: IO [(String, AST.Expr Span)]
 loadCommandLineEnvironment = do
