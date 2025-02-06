@@ -116,7 +116,14 @@ eRunScript =
                   (eString "stderr", preludeSpan :< AST.String err)
                 ]
       )
-      (Just tAny)
+      ( Just $
+          preludeSpan
+            :< AST.LambdaType
+              [ preludeSpan :< AST.PositionedParameterType False False tString,
+                preludeSpan :< AST.KeywordParameterType "image" False False tString
+              ]
+              tAny
+      )
 
 eRunScript1 :: AST.Expr Span
 eRunScript1 =
@@ -147,7 +154,14 @@ eRunScript1 =
             ExitSuccess -> pure $ preludeSpan :< AST.String out
             ExitFailure _ -> pure $ preludeSpan :< AST.Error ("Error command exec: " <> "$ " <> script) i
       )
-      (Just tString)
+      ( Just $
+          preludeSpan
+            :< AST.LambdaType
+              [ preludeSpan :< AST.PositionedParameterType False False tNumber,
+                preludeSpan :< AST.KeywordParameterType "image" False False tNumber
+              ]
+              tString
+      )
 
 eRunScript2 :: AST.Expr Span
 eRunScript2 =
@@ -178,7 +192,14 @@ eRunScript2 =
             ExitSuccess -> pure $ preludeSpan :< AST.String err
             ExitFailure _ -> pure $ preludeSpan :< AST.Error ("Error command exec: " <> "$ " <> script) i
       )
-      (Just tString)
+      ( Just $
+          preludeSpan
+            :< AST.LambdaType
+              [ preludeSpan :< AST.PositionedParameterType False False tString,
+                preludeSpan :< AST.KeywordParameterType "image" False False tString
+              ]
+              tString
+      )
 
 eRunCommand :: AST.Expr Span
 eRunCommand =
@@ -209,7 +230,14 @@ eRunCommand =
             ExitSuccess -> pure $ preludeSpan :< AST.String out
             ExitFailure _ -> pure $ preludeSpan :< AST.Error ("Error command exec: " <> "$ " <> script) i
       )
-      (Just tString)
+      ( Just $
+          preludeSpan
+            :< AST.LambdaType
+              [ preludeSpan :< AST.PositionedParameterType False False tString,
+                preludeSpan :< AST.KeywordParameterType "image" False False tString
+              ]
+              tString
+      )
 
 eRightOp :: AST.Expr Span
 eRightOp =
@@ -301,7 +329,14 @@ eNumberBinaryOp op =
           let (Just (_ :< AST.Number b), _) = fromJust $ lookup "b" args
           pure $ preludeSpan :< AST.Number (a `op` b)
       )
-      (Just tNumber)
+      ( Just $
+          preludeSpan
+            :< AST.LambdaType
+              [ preludeSpan :< AST.PositionedParameterType False False tNumber,
+                preludeSpan :< AST.PositionedParameterType False False tNumber
+              ]
+              tNumber
+      )
 
 eConcat :: AST.Expr Span
 eConcat =
@@ -320,7 +355,13 @@ eConcat =
           let strings' = map (\(_ :< AST.String s) -> s) strings
           pure $ preludeSpan :< AST.String (intercalate "" strings')
       )
-      (Just $ preludeSpan :< AST.TypeVar "String")
+      ( Just $
+          preludeSpan
+            :< AST.LambdaType
+              [ preludeSpan :< AST.PositionedParameterType False False tAny
+              ]
+              (preludeSpan :< AST.TypeVar "String")
+      )
 
 eStringAdd :: AST.Expr Span
 eStringAdd =
@@ -346,7 +387,14 @@ eStringAdd =
           let (Just (_ :< AST.String b), _) = fromJust $ lookup "b" args
           pure $ preludeSpan :< AST.String (a <> b)
       )
-      (Just $ preludeSpan :< AST.TypeVar "String")
+      ( Just $
+          preludeSpan
+            :< AST.LambdaType
+              [ preludeSpan :< AST.PositionedParameterType False False tString,
+                preludeSpan :< AST.PositionedParameterType False False tString
+              ]
+              (preludeSpan :< AST.TypeVar "String")
+      )
 
 mPrelude :: AST.Module Span
 mPrelude =

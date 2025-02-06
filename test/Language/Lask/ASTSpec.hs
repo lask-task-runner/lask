@@ -20,6 +20,18 @@ spec = do
       shouldBe
         (show (() :< AST.TypeVar "a" :: AST.Type ()))
         "() :< TypeVar \"a\""
+      shouldBe
+        ( show
+            ( ()
+                :< AST.LambdaType
+                  [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
+                    () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+                  ]
+                  (() :< AST.TypeVar "c") ::
+                AST.Type ()
+            )
+        )
+        "() :< LambdaType [() :< PositionedParameterType False False (() :< TypeVar \"a\"),() :< PositionedParameterType False False (() :< TypeVar \"b\")] (() :< TypeVar \"c\")"
     it "expr" $ do
       shouldBe
         (show (() :< AST.Null :: AST.Expr ()))
@@ -99,6 +111,40 @@ spec = do
       shouldNotBe
         (() :< AST.TypeVar "a" :: AST.Type ())
         (() :< AST.TypeVar "b" :: AST.Type ())
+      shouldBe
+        ( ()
+            :< AST.LambdaType
+              [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
+                () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+              ]
+              (() :< AST.TypeVar "c") ::
+            AST.Type ()
+        )
+        ( ()
+            :< AST.LambdaType
+              [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
+                () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+              ]
+              (() :< AST.TypeVar "c") ::
+            AST.Type ()
+        )
+      shouldNotBe
+        ( ()
+            :< AST.LambdaType
+              [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
+                () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+              ]
+              (() :< AST.TypeVar "c") ::
+            AST.Type ()
+        )
+        ( ()
+            :< AST.LambdaType
+              [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
+                () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+              ]
+              (() :< AST.TypeVar "d") ::
+            AST.Type ()
+        )
     it "expr" $ do
       shouldBe
         (() :< AST.Null :: AST.Expr ())

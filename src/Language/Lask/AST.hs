@@ -9,6 +9,8 @@ module Language.Lask.AST
     isExpr,
     Type,
     Type' (..),
+    ParameterType,
+    ParameterType' (..),
     PackedArgument,
     Expr,
     Expr' (..),
@@ -33,6 +35,7 @@ import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import Data.Bifunctor (bimap)
 import Data.Functor.Classes (Eq1 (liftEq), Show1 (liftShowsPrec))
+import Data.List (intercalate)
 import Data.Scientific (Scientific)
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -67,22 +70,108 @@ isExpr (_ :< ExprStatement {}) = True
 
 type Type ann = Cofree (Type' ann) ann
 
-newtype Type' ann self
-  = -- | Type variable. ex. String
+data Type' ann self
+  = -- \| Type variable. ex. String
     TypeVar String
+  | -- \| Lambda type. ex. (String, Number) -> Void
+    LambdaType [ParameterType ann] self
   deriving (Show, Eq)
 
-instance Eq1 (Type' ann) where
+instance (Eq ann) => Eq1 (Type' ann) where
   liftEq _ (TypeVar s1) (TypeVar s2) = s1 == s2
+  liftEq f (LambdaType ps1 r1) (LambdaType ps2 r2) =
+    length ps1 == length ps2 && all (uncurry (==)) (zip ps1 ps2) && f r1 r2
+  liftEq _ _ _ = False
 
 instance (Show ann) => Show1 (Type' ann) where
   liftShowsPrec _ _ _ (TypeVar s) = showString $ unwords ["TypeVar", show s]
+  liftShowsPrec f _ n (LambdaType ps r) =
+    showString "LambdaType "
+      <> showString (show ps)
+      <> showString " ("
+      <> f n r
+      <> showString ")"
 
 instance Pretty (Type a) where
   pretty (_ :< TypeVar s) = s
+  pretty (_ :< LambdaType ps r) =
+    "(" <> intercalate ", " (map pretty ps) <> ") -> " <> pretty r
 
 instance SwitchCofree Type' where
   switchCofree f (a :< TypeVar s) = f a :< TypeVar s
+  switchCofree f (a :< LambdaType ps r) =
+    f a :< LambdaType (map (switchCofree f) ps) (switchCofree f r)
+
+type ParameterType ann = Cofree (ParameterType' ann) ann
+
+data ParameterType' ann self
+  = PositionedParameterType
+      -- | Rest Parameter
+      IsRest
+      -- | Optional Parameter
+      IsOptional
+      -- | Parameter type
+      (Type ann)
+  | KeywordParameterType
+      String
+      -- | Rest Parameter
+      IsRest
+      -- | Optional Parameter
+      IsOptional
+      -- | Parameter type
+      (Type ann)
+  deriving (Show, Eq)
+
+instance (Eq ann) => Eq1 (ParameterType' ann) where
+  liftEq
+    _
+    (PositionedParameterType r1 o1 t1)
+    (PositionedParameterType r2 o2 t2) =
+      (r1, o1, t1) == (r2, o2, t2)
+  liftEq
+    _
+    (KeywordParameterType i1 r1 o1 t1)
+    (KeywordParameterType i2 r2 o2 t2) =
+      (i1, r1, o1, t1) == (i2, r2, o2, t2)
+  liftEq _ _ _ = False
+
+instance (Show ann) => Show1 (ParameterType' ann) where
+  liftShowsPrec _ _ _ (PositionedParameterType r o t) =
+    showString $
+      unwords
+        [ "PositionedParameterType",
+          show r,
+          show o,
+          showWithBrackets (show t)
+        ]
+  liftShowsPrec _ _ _ (KeywordParameterType i r o t) =
+    showString $
+      unwords
+        [ "KeywordParameterType",
+          show i,
+          show r,
+          show o,
+          showWithBrackets (show t)
+        ]
+
+instance Pretty (ParameterType a) where
+  pretty (_ :< PositionedParameterType r o t) =
+    (if r then "..." else "")
+      <> (if o then "?" else "")
+      <> pretty t
+  pretty (_ :< KeywordParameterType i r o t) =
+    "-"
+      <> i
+      <> (if r then "..." else "")
+      <> (if o then "?" else "")
+      <> ": "
+      <> pretty t
+
+instance SwitchCofree ParameterType' where
+  switchCofree f (a :< PositionedParameterType r o t) =
+    f a :< PositionedParameterType r o (switchCofree f t)
+  switchCofree f (a :< KeywordParameterType i r o t) =
+    f a :< KeywordParameterType i r o (switchCofree f t)
 
 type PackedArgument a = (String, (Maybe (Expr a), Maybe (Type a)))
 
