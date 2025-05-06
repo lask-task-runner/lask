@@ -18,20 +18,20 @@ spec = do
         "() :< ExprStatement \"a\" (() :< Null)"
     it "type" $ do
       shouldBe
-        (show (() :< AST.TypeVar "a" :: AST.Type ()))
-        "() :< TypeVar \"a\""
+        (show (() :< AST.AnyType :: AST.Type ()))
+        "() :< AnyType"
       shouldBe
         ( show
             ( ()
                 :< AST.LambdaType
-                  [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
-                    () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+                  [ () :< AST.PositionedParameterType False False (() :< AST.BoolType),
+                    () :< AST.PositionedParameterType False False (() :< AST.NumberType)
                   ]
-                  (() :< AST.TypeVar "c") ::
+                  (() :< AST.AnyType) ::
                 AST.Type ()
             )
         )
-        "() :< LambdaType [() :< PositionedParameterType False False (() :< TypeVar \"a\"),() :< PositionedParameterType False False (() :< TypeVar \"b\")] (() :< TypeVar \"c\")"
+        "() :< LambdaType [() :< PositionedParameterType False False (() :< BoolType),() :< PositionedParameterType False False (() :< NumberType)] (() :< AnyType)"
     it "expr" $ do
       shouldBe
         (show (() :< AST.Null :: AST.Expr ()))
@@ -106,43 +106,43 @@ spec = do
         (() :< AST.ExprStatement "a" (() :< AST.Number 1) :: AST.Statement ())
     it "type" $ do
       shouldBe
-        (() :< AST.TypeVar "a" :: AST.Type ())
-        (() :< AST.TypeVar "a" :: AST.Type ())
+        (() :< AST.AnyType :: AST.Type ())
+        (() :< AST.AnyType :: AST.Type ())
       shouldNotBe
-        (() :< AST.TypeVar "a" :: AST.Type ())
-        (() :< AST.TypeVar "b" :: AST.Type ())
+        (() :< AST.AnyType :: AST.Type ())
+        (() :< AST.VoidType :: AST.Type ())
       shouldBe
         ( ()
             :< AST.LambdaType
-              [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
-                () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+              [ () :< AST.PositionedParameterType False False (() :< AST.AnyType),
+                () :< AST.PositionedParameterType False False (() :< AST.VoidType)
               ]
-              (() :< AST.TypeVar "c") ::
+              (() :< AST.NullType) ::
             AST.Type ()
         )
         ( ()
             :< AST.LambdaType
-              [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
-                () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+              [ () :< AST.PositionedParameterType False False (() :< AST.AnyType),
+                () :< AST.PositionedParameterType False False (() :< AST.VoidType)
               ]
-              (() :< AST.TypeVar "c") ::
+              (() :< AST.NullType) ::
             AST.Type ()
         )
       shouldNotBe
         ( ()
             :< AST.LambdaType
-              [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
-                () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+              [ () :< AST.PositionedParameterType False False (() :< AST.AnyType),
+                () :< AST.PositionedParameterType False False (() :< AST.VoidType)
               ]
-              (() :< AST.TypeVar "c") ::
+              (() :< AST.NullType) ::
             AST.Type ()
         )
         ( ()
             :< AST.LambdaType
-              [ () :< AST.PositionedParameterType False False (() :< AST.TypeVar "a"),
-                () :< AST.PositionedParameterType False False (() :< AST.TypeVar "b")
+              [ () :< AST.PositionedParameterType False False (() :< AST.AnyType),
+                () :< AST.PositionedParameterType False False (() :< AST.VoidType)
               ]
-              (() :< AST.TypeVar "d") ::
+              (() :< AST.BoolType) ::
             AST.Type ()
         )
     it "expr" $ do
@@ -226,7 +226,7 @@ spec = do
         (() :< AST.Lambda [() :< AST.PositionedParameter "a" False False Nothing Nothing] (() :< AST.Number 1) Nothing :: AST.Expr ())
       shouldNotBe
         (() :< AST.Lambda [() :< AST.PositionedParameter "a" False False Nothing Nothing] (() :< AST.Null) Nothing :: AST.Expr ())
-        (() :< AST.Lambda [() :< AST.PositionedParameter "a" False False Nothing Nothing] (() :< AST.Null) (Just $ () :< AST.TypeVar "a") :: AST.Expr ())
+        (() :< AST.Lambda [() :< AST.PositionedParameter "a" False False Nothing Nothing] (() :< AST.Null) (Just $ () :< AST.VoidType) :: AST.Expr ())
       shouldBe
         (() :< AST.Error "a" (ExitFailure 1) :: AST.Expr ())
         (() :< AST.Error "a" (ExitFailure 1) :: AST.Expr ())
@@ -257,7 +257,7 @@ spec = do
         (() :< AST.PositionedParameter "a" False True Nothing Nothing :: AST.Parameter ())
       shouldNotBe
         (() :< AST.PositionedParameter "a" False False Nothing Nothing)
-        (() :< AST.PositionedParameter "a" False False (Just (() :< AST.TypeVar "Null")) Nothing)
+        (() :< AST.PositionedParameter "a" False False (Just (() :< AST.NullType)) Nothing)
       shouldNotBe
         (() :< AST.PositionedParameter "a" False False Nothing Nothing)
         (() :< AST.PositionedParameter "a" False False Nothing (Just (() :< AST.Null)))
@@ -275,7 +275,7 @@ spec = do
         (() :< AST.KeywordParameter "a" False True Nothing Nothing :: AST.Parameter ())
       shouldNotBe
         (() :< AST.KeywordParameter "a" False False Nothing Nothing)
-        (() :< AST.KeywordParameter "a" False False (Just (() :< AST.TypeVar "Null")) Nothing)
+        (() :< AST.KeywordParameter "a" False False (Just (() :< AST.NullType)) Nothing)
       shouldNotBe
         (() :< AST.KeywordParameter "a" False False Nothing Nothing)
         (() :< AST.KeywordParameter "a" False False Nothing (Just (() :< AST.Null)))

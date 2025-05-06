@@ -38,7 +38,7 @@ infer :: FilePath -> Text -> String -> Either [LanguageError Span] (AST.Type Spa
 infer file src name = do
   env <- load file src
   case findExpr env [] name of
-    Just e -> V.infer env [] e
+    Just e -> pure $ V.infer env [] e
     Nothing -> Left [NoSpan :< SemanticError ("Not defined: " <> name)]
 
 evaluate :: FilePath -> Text -> String -> [AST.Argument Span] -> ExceptT [LanguageError Span] IO (AST.Expr Span)

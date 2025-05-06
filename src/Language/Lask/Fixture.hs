@@ -1,14 +1,7 @@
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 module Language.Lask.Fixture
-  ( tVoid,
-    tAny,
-    tNull,
-    tBool,
-    tNumber,
-    tString,
-    tImage,
-    posParam,
+  ( posParam,
     eImage,
     eString,
     eNumber,
@@ -55,26 +48,14 @@ import System.Process (CreateProcess (..), createProcess, shell, waitForProcess)
 import System.Process.Common (showCreateProcessForUser)
 import System.Process.Internals (StdStream (CreatePipe))
 
-tVoid :: AST.Type Span
-tVoid = preludeSpan :< AST.TypeVar "Void"
-
 tAny :: AST.Type Span
-tAny = preludeSpan :< AST.TypeVar "Any"
-
-tNull :: AST.Type Span
-tNull = preludeSpan :< AST.TypeVar "Null"
-
-tBool :: AST.Type Span
-tBool = preludeSpan :< AST.TypeVar "Bool"
+tAny = preludeSpan :< AST.AnyType
 
 tNumber :: AST.Type Span
-tNumber = preludeSpan :< AST.TypeVar "Number"
+tNumber = preludeSpan :< AST.NumberType
 
 tString :: AST.Type Span
-tString = preludeSpan :< AST.TypeVar "String"
-
-tImage :: AST.Type Span
-tImage = preludeSpan :< AST.TypeVar "Image"
+tString = preludeSpan :< AST.StringType
 
 posParam :: String -> Maybe (AST.Type Span) -> Maybe (AST.Expr Span) -> AST.Parameter Span
 posParam name paramType defaultValue =
@@ -134,14 +115,14 @@ eRunScript1 =
             "script"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "String")
+            (Just $ tString)
             Nothing,
         preludeSpan
           :< AST.KeywordParameter
             "image"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "String")
+            (Just tString)
             (Just $ preludeSpan :< AST.Image "local")
       ]
       ( \args -> do
@@ -172,14 +153,14 @@ eRunScript2 =
             "script"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "String")
+            (Just tString)
             Nothing,
         preludeSpan
           :< AST.KeywordParameter
             "image"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "String")
+            (Just tString)
             (Just $ preludeSpan :< AST.Image "local")
       ]
       ( \args -> do
@@ -210,14 +191,14 @@ eRunCommand =
             "script"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "String")
+            (Just tString)
             Nothing,
         preludeSpan
           :< AST.KeywordParameter
             "image"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "String")
+            (Just tString)
             (Just $ preludeSpan :< AST.Image "local")
       ]
       ( \args -> do
@@ -314,14 +295,14 @@ eNumberBinaryOp op =
             "a"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "Number")
+            (Just tNumber)
             Nothing,
         preludeSpan
           :< AST.PositionedParameter
             "b"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "Number")
+            (Just tNumber)
             Nothing
       ]
       ( \args -> do
@@ -347,7 +328,7 @@ eConcat =
             "strings"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "List")
+            (Just tAny)
             Nothing
       ]
       ( \args -> do
@@ -360,7 +341,7 @@ eConcat =
             :< AST.LambdaType
               [ preludeSpan :< AST.PositionedParameterType False False tAny
               ]
-              (preludeSpan :< AST.TypeVar "String")
+              tString
       )
 
 eStringAdd :: AST.Expr Span
@@ -372,14 +353,14 @@ eStringAdd =
             "a"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "String")
+            (Just tString)
             Nothing,
         preludeSpan
           :< AST.PositionedParameter
             "b"
             False
             False
-            (Just $ preludeSpan :< AST.TypeVar "String")
+            (Just tString)
             Nothing
       ]
       ( \args -> do
@@ -393,7 +374,7 @@ eStringAdd =
               [ preludeSpan :< AST.PositionedParameterType False False tString,
                 preludeSpan :< AST.PositionedParameterType False False tString
               ]
-              (preludeSpan :< AST.TypeVar "String")
+              tString
       )
 
 mPrelude :: AST.Module Span

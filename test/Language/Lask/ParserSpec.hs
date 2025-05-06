@@ -263,7 +263,7 @@ spec = do
                       "a"
                       False
                       False
-                      (Just (mkSpan "test" 1 6 1 12 :< AST.TypeVar "Number"))
+                      (Just (mkSpan "test" 1 6 1 12 :< AST.NumberType))
                       Nothing
                 ]
                 (mkSpan "test" 1 17 1 18 :< AST.Var "a")
@@ -292,7 +292,7 @@ spec = do
                       Nothing
                 ]
                 (mkSpan "test" 1 17 1 18 :< AST.Var "a")
-                (Just (mkSpan "test" 1 7 1 13 :< AST.TypeVar "Number")),
+                (Just (mkSpan "test" 1 7 1 13 :< AST.NumberType)),
             [ Token TKSep (mkSpan "test" 1 1 1 2),
               Token TKSep (mkSpan "test" 1 2 1 3),
               Token TKParameter (mkSpan "test" 1 3 1 4),
@@ -450,7 +450,7 @@ spec = do
       parse pType "test" "Void"
         `shouldBe` Right
           ( mkSpan "test" 1 1 1 5
-              :< AST.TypeVar "Void",
+              :< AST.VoidType,
             [Token TKTypeVar (mkSpan "test" 1 1 1 5)]
           )
   describe "expression statement" $ do

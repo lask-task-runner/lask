@@ -108,7 +108,18 @@ pExprStatement = cofreeSpanned $ do
     Nothing -> pure $ AST.ExprStatement name expr
 
 pType :: Parser (AST.Type Span)
-pType = cofreeSpanned $ AST.TypeVar <$> lexeme (tUpperIdentifier TKTypeVar)
+pType =
+  cofreeSpanned $
+    lexeme $
+      choice
+        [ AST.AnyType <$ token TKTypeVar (string "Any"),
+          AST.VoidType <$ token TKTypeVar (string "Void"),
+          AST.NullType <$ token TKTypeVar (string "Null"),
+          AST.BoolType <$ token TKTypeVar (string "Bool"),
+          AST.NumberType <$ token TKTypeVar (string "Number"),
+          AST.StringType <$ token TKTypeVar (string "String"),
+          AST.ImageType <$ token TKTypeVar (string "Image")
+        ]
 
 pExpr :: Parser (AST.Expr Span)
 pExpr = makeExprParser pTerm opTable

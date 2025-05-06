@@ -18,7 +18,7 @@ spec = do
       findExpr env args "not-found" `shouldBe` Nothing
 
 args :: [AST.PackedArgument String]
-args = [("arg1", (Just $ "arg1" :< AST.Null, Just $ "type-arg1" :< AST.TypeVar "Null"))]
+args = [("arg1", (Just $ "arg1" :< AST.Null, Just $ "type-arg1" :< AST.NullType))]
 
 env :: Environment String
 env =

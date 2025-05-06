@@ -9,12 +9,10 @@ where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (join)
-import Control.Monad.Error.Class (MonadError (throwError))
 import Data.Maybe (fromMaybe)
 import qualified Language.Lask.AST as AST
 import Language.Lask.Bundler (Environment (..), findExpr, findStatement)
 import Language.Lask.Error (LanguageError, LanguageError' (SemanticError))
-import Language.Lask.Fixture (tAny, tBool, tImage, tNull, tNumber, tString)
 import Language.Lask.Span (Span (NoSpan))
 
 validateEnvironment :: (Eq a) => Environment a -> [LanguageError a]
@@ -35,46 +33,51 @@ class Inferable a where
     Environment Span ->
     [AST.PackedArgument Span] ->
     a ->
-    Either [LanguageError Span] (AST.Type Span)
+    AST.Type Span
 
 instance Inferable (AST.Expr Span) where
   infer ::
     Environment Span ->
     [AST.PackedArgument Span] ->
     AST.Expr Span ->
-    Either [LanguageError Span] (AST.Type Span)
+    AST.Type Span
   infer env args (s :< e) = case e of
-    AST.Null -> pure tNull
-    AST.Bool _ -> pure tBool
-    AST.Number _ -> pure tNumber
-    AST.String _ -> pure tString
-    AST.Array _ -> pure tAny
-    AST.Object _ -> pure tAny
-    AST.Image _ -> pure tImage
+    AST.Null -> NoSpan :< AST.NullType
+    AST.Bool _ -> NoSpan :< AST.BoolType
+    AST.Number _ -> NoSpan :< AST.NumberType
+    AST.String _ -> NoSpan :< AST.StringType
+    AST.Array _ -> NoSpan :< AST.AnyType
+    AST.Object _ -> NoSpan :< AST.AnyType
+    AST.Image _ -> NoSpan :< AST.ImageType
     AST.Var name -> case findExpr env args name of
       Just a -> infer env args a
-      Nothing -> throwError [s :< SemanticError ("Not defined: " <> name)]
-    AST.Accessor {} -> pure tAny
+      Nothing -> NoSpan :< AST.UnknownType -- undefined variable
+    AST.Accessor {} -> NoSpan :< AST.AnyType
     AST.Call f _ -> case infer env args f of
-      Left err -> Left err
-      Right (_ :< AST.LambdaType _ t) -> pure t
-      Right _ -> throwError [s :< SemanticError "function is expected"]
+      (_ :< AST.LambdaType _ t) -> t
+      _ -> NoSpan :< AST.UnknownType -- not function
     AST.Lambda ps body _ ->
-      (NoSpan :<) . AST.LambdaType (map inferParameter ps) <$> infer env args body
+      NoSpan :< AST.LambdaType (map inferParameter ps) (infer env args body)
     AST.FixtureFun _ _ maybeType -> case maybeType of
-      Just t -> pure t
-      Nothing -> pure tAny
-    AST.Error {} -> pure tAny
+      Just t -> t
+      Nothing -> NoSpan :< AST.AnyType
+    AST.Error {} -> NoSpan :< AST.AnyType
     where
       inferParameter (_ :< AST.PositionedParameter _ isRest isOption maybeType _) =
-        NoSpan :< AST.PositionedParameterType isRest isOption (fromMaybe tAny maybeType)
+        NoSpan :< AST.PositionedParameterType isRest isOption (fromMaybe (s :< AST.AnyType) maybeType)
       inferParameter (_ :< AST.KeywordParameter name isRest isOption maybeType _) =
-        NoSpan :< AST.KeywordParameterType name isRest isOption (fromMaybe tAny maybeType)
+        NoSpan :< AST.KeywordParameterType name isRest isOption (fromMaybe (s :< AST.AnyType) maybeType)
 
 instance Inferable (AST.Parameter Span) where
   infer ::
     Environment Span ->
     [AST.PackedArgument Span] ->
     AST.Parameter Span ->
-    Either [LanguageError Span] (AST.Type Span)
-  infer _ _ _ = pure tAny
+    AST.Type Span
+  infer _ _ _ = NoSpan :< AST.AnyType
+
+includeOf :: (Eq a) => AST.Type a -> AST.Type a -> Bool
+t1 `includeOf` t2 = case (t1, t2) of
+  (_, _ :< AST.AnyType) -> True
+  (_ :< AST.AnyType, _) -> True
+  (_, _) -> t1 == t2

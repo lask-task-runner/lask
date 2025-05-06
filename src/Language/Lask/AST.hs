@@ -71,36 +71,77 @@ isExpr (_ :< ExprStatement {}) = True
 type Type ann = Cofree (Type' ann) ann
 
 data Type' ann self
-  = -- \| Type variable. ex. String
-    TypeVar String
+  = -- \|Any type. ex. Any
+    AnyType
+  | -- \| Void type. ex. Void
+    VoidType
+  | -- \| Null type. ex. Null
+    NullType
+  | -- \| Boolean type. ex. Bool
+    BoolType
+  | -- \| Number type. ex. Number
+    NumberType
+  | -- \| String type. ex. String
+    StringType
+  | -- \| Image type. ex. Image
+    ImageType
   | -- \| Lambda type. ex. (String, Number) -> Void
     LambdaType [ParameterType ann] self
+  | -- \| Unknown type
+    UnknownType
   deriving (Show, Eq)
 
 instance (Eq ann) => Eq1 (Type' ann) where
-  liftEq _ (TypeVar s1) (TypeVar s2) = s1 == s2
+  liftEq _ AnyType AnyType = True
+  liftEq _ VoidType VoidType = True
+  liftEq _ NullType NullType = True
+  liftEq _ BoolType BoolType = True
+  liftEq _ NumberType NumberType = True
+  liftEq _ StringType StringType = True
+  liftEq _ ImageType ImageType = True
   liftEq f (LambdaType ps1 r1) (LambdaType ps2 r2) =
     length ps1 == length ps2 && all (uncurry (==)) (zip ps1 ps2) && f r1 r2
   liftEq _ _ _ = False
 
 instance (Show ann) => Show1 (Type' ann) where
-  liftShowsPrec _ _ _ (TypeVar s) = showString $ unwords ["TypeVar", show s]
+  liftShowsPrec _ _ _ AnyType = showString "AnyType"
+  liftShowsPrec _ _ _ VoidType = showString "VoidType"
+  liftShowsPrec _ _ _ NullType = showString "NullType"
+  liftShowsPrec _ _ _ BoolType = showString "BoolType"
+  liftShowsPrec _ _ _ NumberType = showString "NumberType"
+  liftShowsPrec _ _ _ StringType = showString "StringType"
+  liftShowsPrec _ _ _ ImageType = showString "ImageType"
   liftShowsPrec f _ n (LambdaType ps r) =
     showString "LambdaType "
       <> showString (show ps)
       <> showString " ("
       <> f n r
       <> showString ")"
+  liftShowsPrec _ _ _ UnknownType = showString "UnknownType"
 
 instance Pretty (Type a) where
-  pretty (_ :< TypeVar s) = s
+  pretty (_ :< AnyType) = "Any"
+  pretty (_ :< VoidType) = "Void"
+  pretty (_ :< NullType) = "Null"
+  pretty (_ :< BoolType) = "Bool"
+  pretty (_ :< NumberType) = "Number"
+  pretty (_ :< StringType) = "String"
+  pretty (_ :< ImageType) = "Image"
   pretty (_ :< LambdaType ps r) =
     "(" <> intercalate ", " (map pretty ps) <> ") -> " <> pretty r
+  pretty (_ :< UnknownType) = "Unknown"
 
 instance SwitchCofree Type' where
-  switchCofree f (a :< TypeVar s) = f a :< TypeVar s
+  switchCofree f (a :< AnyType) = f a :< AnyType
+  switchCofree f (a :< VoidType) = f a :< VoidType
+  switchCofree f (a :< NullType) = f a :< NullType
+  switchCofree f (a :< BoolType) = f a :< BoolType
+  switchCofree f (a :< NumberType) = f a :< NumberType
+  switchCofree f (a :< StringType) = f a :< StringType
+  switchCofree f (a :< ImageType) = f a :< ImageType
   switchCofree f (a :< LambdaType ps r) =
     f a :< LambdaType (map (switchCofree f) ps) (switchCofree f r)
+  switchCofree f (a :< UnknownType) = f a :< UnknownType
 
 type ParameterType ann = Cofree (ParameterType' ann) ann
 
