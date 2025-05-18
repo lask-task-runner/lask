@@ -75,9 +75,3 @@ instance Inferable (AST.Parameter Span) where
     AST.Parameter Span ->
     AST.Type Span
   infer _ _ _ = NoSpan :< AST.AnyType
-
-includeOf :: (Eq a) => AST.Type a -> AST.Type a -> Bool
-t1 `includeOf` t2 = case (t1, t2) of
-  (_, _ :< AST.AnyType) -> True
-  (_ :< AST.AnyType, _) -> True
-  (_, _) -> t1 == t2
