@@ -457,7 +457,7 @@ hPutAndGetContents = hPutAndGetContents' ""
 -- a low-level API for HTTP but does not appear to support Unix Sockets.
 runContainer :: String -> String -> IO CommandResult
 runContainer image args = do
-  -- TODO: Implement better default volume mounts and user-customisable methods.
+  -- TODO: Implement better default volume mounts and user-customizable methods.
   currentDir <- getCurrentDirectory
   let volume = currentDir <> ":/work"
   runSubprocess image $ "docker run --rm -v " <> volume <> " -w /work " <> image <> " " <> args
