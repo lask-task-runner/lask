@@ -115,7 +115,7 @@ eRunScript1 =
             "script"
             False
             False
-            (Just $ tString)
+            (Just tString)
             Nothing,
         preludeSpan
           :< AST.KeywordParameter
