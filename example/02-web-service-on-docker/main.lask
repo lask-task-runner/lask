@@ -1,25 +1,30 @@
-image-name = "web-service"
-container-name = "#{ image-name }-created-by-lask"
+sample-name = "lask-example-02"
 
 test = $[#golang:latest] go test -v ./...;
 
-build(image = image-name, version = "latest")
-  = $ docker build -t #{ image }:#{ version } .;
+build(
+  -image = sample-name,
+  -version = "latest"
+) = $ docker build -t #{ image }:#{ version } .;
 
 start(
-  image = image-name,
-  version = "latest"
+  -name = sample-name,
+  -image = sample-name,
+  -version = "latest"
 ) = $ docker run -d --rm \\
   -p 8000:8000 \\
-  --name #{ container-name } \\
+  --name #{ name } \\
   #{ image }:#{ version };
 
 stop(
-  image = image-name,
-  version = "latest"
-) = $ docker stop #{ container-name };
+  -name = sample-name,
+  -image = sample-name,
+  -version = "latest"
+) = $ docker stop #{ name };
 
-status(
-  image = image-name,
-  version = "latest"
-) = $ docker ps -a --filter name="#{ container-name }";
+status(-name = sample-name) = $ docker ps -a --filter name="#{ name }";
+
+clean(
+  -image = sample-name,
+  -version = "latest"
+) = $ docker rmi -f #{ image }:#{ version };
