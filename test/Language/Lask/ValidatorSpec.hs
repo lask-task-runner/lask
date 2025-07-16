@@ -3,7 +3,7 @@ module Language.Lask.ValidatorSpec (spec) where
 import Control.Comonad.Cofree
 import qualified Language.Lask.AST as AST
 import Language.Lask.Bundler
-import Language.Lask.Error (LanguageError' (SemanticError))
+import Language.Lask.Error (LanguageError' (DuplicateNameError, UndefinedError))
 import Language.Lask.Validator (validateEnvironment)
 import Test.Hspec
 
@@ -11,7 +11,7 @@ spec :: Spec
 spec = do
   describe "validate" $ do
     it "duplicated name" $ do
-      validateEnvironment env `shouldBe` ["f2" :< SemanticError "Already defined: current-f1"]
+      validateEnvironment env `shouldBe` ["f2" :< DuplicateNameError "current-f1"]
 
 env :: Environment String
 env =

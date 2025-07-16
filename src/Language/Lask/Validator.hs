@@ -12,7 +12,7 @@ import Control.Monad (join)
 import Data.Maybe (fromMaybe)
 import qualified Language.Lask.AST as AST
 import Language.Lask.Bundler (Environment (..), findExpr, findStatement)
-import Language.Lask.Error (LanguageError, LanguageError' (SemanticError))
+import Language.Lask.Error (LanguageError, LanguageError' (DuplicateNameError, UndefinedError))
 import Language.Lask.Span (Span (NoSpan))
 
 validateEnvironment :: (Eq a) => Environment a -> [LanguageError a]
@@ -25,7 +25,7 @@ validateStatementDuplicate ::
   AST.Statement a ->
   [LanguageError a]
 validateStatementDuplicate statements s@(sp :< AST.ExprStatement name _) = case findStatement statements name of
-  Just s' -> ([sp :< SemanticError ("Already defined: " <> name) | s /= s'])
+  Just s' -> ([sp :< DuplicateNameError name | s /= s'])
   Nothing -> []
 
 class Inferable a where

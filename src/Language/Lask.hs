@@ -13,7 +13,7 @@ import Control.Monad.Except (ExceptT, MonadError (throwError), liftEither)
 import Data.Text (Text)
 import qualified Language.Lask.AST as AST
 import Language.Lask.Bundler (Environment (Environment), findExpr)
-import Language.Lask.Error (LanguageError, LanguageError' (SemanticError))
+import Language.Lask.Error (LanguageError, LanguageError' (UndefinedError))
 import qualified Language.Lask.Executor as E
 import Language.Lask.Fixture (mPrelude)
 import qualified Language.Lask.Parser as P
@@ -39,12 +39,17 @@ infer file src name = do
   env <- load file src
   case findExpr env [] name of
     Just e -> pure $ V.infer env [] e
-    Nothing -> Left [NoSpan :< SemanticError ("Not defined: " <> name)]
+    Nothing -> Left [NoSpan :< UndefinedError name]
 
-evaluate :: FilePath -> Text -> String -> [AST.Argument Span] -> ExceptT [LanguageError Span] IO (AST.Expr Span)
+evaluate ::
+  FilePath ->
+  Text ->
+  String ->
+  [AST.Argument Span] ->
+  ExceptT [LanguageError Span] IO (AST.Expr Span)
 evaluate file src func args = do
   env <- liftEither $ load file src
   case findExpr env [] func of
     Just e@(s :< AST.Lambda {}) -> E.eval env [] (s :< AST.Call e args)
     Just e -> E.eval env [] e
-    Nothing -> throwError [NoSpan :< SemanticError ("Not defined: " <> func)]
+    Nothing -> throwError [NoSpan :< UndefinedError func]
