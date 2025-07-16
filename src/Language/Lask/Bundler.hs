@@ -1,3 +1,5 @@
+{-# LANGUAGE LambdaCase #-}
+
 module Language.Lask.Bundler
   ( Environment (..),
     readModule,
@@ -6,6 +8,7 @@ module Language.Lask.Bundler
     findExprFromEnvironment,
     findExprFromStatements,
     findStatement,
+    findParameter,
     packArguments,
   )
 where
@@ -71,6 +74,15 @@ findExprFromStatements statements name =
 findStatement :: [AST.Statement a] -> String -> Maybe (AST.Statement a)
 findStatement statements name =
   find (\(_ :< AST.ExprStatement name' _) -> name' == name) (filter AST.isExpr statements)
+
+findParameter :: [AST.Parameter a] -> String -> Maybe (AST.Parameter a)
+findParameter params name =
+  find
+    ( \case
+        _ :< AST.PositionedParameter name' _ _ _ _ -> name' == name
+        _ :< AST.KeywordParameter name' _ _ _ _ -> name' == name
+    )
+    params
 
 packArguments ::
   (Semigroup ann) =>

@@ -9,15 +9,17 @@ where
 
 import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Monad (join)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Language.Lask.AST as AST
-import Language.Lask.Bundler (Environment (..), findExpr, findStatement)
+import Language.Lask.Bundler (Environment (..), findExpr, findExprFromEnvironment, findParameter, findStatement)
 import Language.Lask.Error (LanguageError, LanguageError' (DuplicateNameError, UndefinedError))
 import Language.Lask.Span (Span (NoSpan))
 
 validateEnvironment :: (Eq a) => Environment a -> [LanguageError a]
-validateEnvironment (Environment _ (_ :< AST.Module statements)) = do
-  join $ map (validateStatementDuplicate statements) statements
+validateEnvironment env@(Environment _ (_ :< AST.Module statements)) = do
+  join $
+    map (validateStatementDuplicate statements) statements
+      ++ map (validateStatementUndefined env []) statements
 
 validateStatementDuplicate ::
   (Eq a) =>
@@ -27,6 +29,62 @@ validateStatementDuplicate ::
 validateStatementDuplicate statements s@(sp :< AST.ExprStatement name _) = case findStatement statements name of
   Just s' -> ([sp :< DuplicateNameError name | s /= s'])
   Nothing -> []
+
+validateStatementUndefined ::
+  (Eq a) =>
+  Environment a ->
+  [AST.Parameter a] ->
+  AST.Statement a ->
+  [LanguageError a]
+validateStatementUndefined env args (_ :< AST.ExprStatement _ expr) = validateExpressionUndefined env args expr
+
+validateExpressionUndefined ::
+  (Eq a) =>
+  Environment a ->
+  [AST.Parameter a] ->
+  AST.Expr a ->
+  [LanguageError a]
+validateExpressionUndefined env args (sp :< expr) = case expr of
+  AST.Var name -> ([sp :< UndefinedError name | not (referenceable env args name)])
+  AST.Accessor target _ -> validateExpressionUndefined env args target
+  AST.Call func arguments ->
+    validateExpressionUndefined env args func
+      ++ concatMap (validateArgumentUndefined env args) arguments
+  AST.Lambda params body _ ->
+    let newArgs = args ++ params
+     in validateExpressionUndefined env newArgs body
+  AST.Array elements -> concatMap (validateExpressionUndefined env args) elements
+  AST.Object properties -> concatMap (validateObjectPropertyUndefined env args) properties
+  AST.FixtureFun {} -> [] -- FixtureFun doesn't contain expressions to validate
+  AST.Error _ _ -> [] -- Error message is just a string, not an expression
+  _ -> []
+
+referenceable ::
+  Environment a ->
+  [AST.Parameter a] ->
+  String ->
+  Bool
+referenceable env args name =
+  isJust (findExprFromEnvironment env name)
+    || isJust (findParameter args name)
+
+validateArgumentUndefined ::
+  (Eq a) =>
+  Environment a ->
+  [AST.Parameter a] ->
+  AST.Argument a ->
+  [LanguageError a]
+validateArgumentUndefined env args (_ :< AST.PositionedArgument _ expr) = validateExpressionUndefined env args expr
+validateArgumentUndefined env args (_ :< AST.KeywordArgument _ expr) = validateExpressionUndefined env args expr
+
+validateObjectPropertyUndefined ::
+  (Eq a) =>
+  Environment a ->
+  [AST.Parameter a] ->
+  (AST.Expr a, AST.Expr a) ->
+  [LanguageError a]
+validateObjectPropertyUndefined env args (key, value) =
+  validateExpressionUndefined env args key ++ validateExpressionUndefined env args value
 
 class Inferable a where
   infer ::
