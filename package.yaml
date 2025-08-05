@@ -71,6 +71,7 @@ tests:
       - -with-rtsopts=-N
     dependencies:
       - lask
+      - doctest >= 0.22 && < 0.23
       - hspec >= 2.11 && < 3
       - hspec-core >= 2.11 && < 3
       - hspec-megaparsec >= 2.2 && < 3
