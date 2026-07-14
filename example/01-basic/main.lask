@@ -13,4 +13,4 @@ add(a, b) = { "result": a + b }
 // This is a sample of running a cowsay in Docker.
 // example:
 // >>> lask run cowsay
-cowsay(text = "Hello, Docker!") = $[#rancher/cowsay] #{ text };
+cowsay(text = "Hello, Lask!") = $[#rancher/cowsay] #{ text };
