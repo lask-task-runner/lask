@@ -1,9 +1,8 @@
 module Main (main) where
 
 import Command.Lask.Entry (runRootCommand)
-import Command.Lask.Parser (pRootCommand)
-import Control.Monad (join)
+import Command.Lask.Options (pRootCommand)
 import Options.Applicative
 
 main :: IO ()
-main = join $ execParser (info (runRootCommand <$> pRootCommand <**> helper) idm)
+main = runRootCommand =<< execParser (info (pRootCommand <**> helper) idm)

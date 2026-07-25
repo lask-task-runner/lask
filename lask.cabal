@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.37.0.
+-- This file has been generated from package.yaml by hpack version 0.39.6.
 --
 -- see: https://github.com/sol/hpack
 
@@ -23,20 +23,37 @@ source-repository head
 
 library
   exposed-modules:
+      Command.Lask.ArgCodec
       Command.Lask.Entry
-      Command.Lask.Parser
-      Command.Lask.Parser.Argument
-      Command.Lask.Parser.CommandLine
+      Command.Lask.Options
       Language.Lask
-      Language.Lask.AST
-      Language.Lask.Bundler
-      Language.Lask.Error
-      Language.Lask.Executor
-      Language.Lask.Fixture
-      Language.Lask.Parser
+      Language.Lask.Builtins.Impl
+      Language.Lask.Builtins.Names
+      Language.Lask.Builtins.Sig
+      Language.Lask.Core.AST
+      Language.Lask.Desugar.Return
+      Language.Lask.Diagnostic
+      Language.Lask.Elaborate
+      Language.Lask.EnvFile
+      Language.Lask.ErrorCode
+      Language.Lask.Lexer
+      Language.Lask.Lexer.Layout
+      Language.Lask.Lexer.Token
+      Language.Lask.Module.Loader
+      Language.Lask.Module.Resolve
+      Language.Lask.Obs.CommandLog
+      Language.Lask.Obs.Events
+      Language.Lask.Repl
+      Language.Lask.Runtime.Environment
+      Language.Lask.Runtime.Eval
+      Language.Lask.Runtime.Value
+      Language.Lask.Serialize
       Language.Lask.Span
+      Language.Lask.Syntax.AST
+      Language.Lask.Syntax.Parser
+      Language.Lask.Syntax.TokenStream
+      Language.Lask.Types
       Language.Lask.Utils
-      Language.Lask.Validator
       Language.LSP.Lask
   other-modules:
       Paths_lask
@@ -45,11 +62,16 @@ library
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
   build-depends:
       aeson >=2.0 && <3
+    , aeson-pretty >=0.8 && <1
+    , async >=2.2 && <3
     , base >=4.7 && <5
     , bytestring ==0.11.*
     , co-log-core >=0.3.0 && <0.4
+    , containers >=0.6 && <0.8
     , directory >=1.0 && <2
+    , filepath >=1.4 && <2
     , free >=5.0 && <6
+    , haskeline >=0.8 && <1
     , lens >=5.0 && <6
     , lsp >=2.0 && <3
     , megaparsec >=9.6 && <10
@@ -58,9 +80,11 @@ library
     , parser-combinators >=1.0 && <2
     , process >=1.6 && <2
     , process-extras ==0.7.*
+    , random >=1.2 && <2
     , scientific ==0.3.*
     , stm >=2.0 && <3
     , text >=2.0 && <3
+    , time >=1.0 && <2
     , vector ==0.13.*
   default-language: Haskell2010
 
@@ -73,11 +97,16 @@ executable lask
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       aeson >=2.0 && <3
+    , aeson-pretty >=0.8 && <1
+    , async >=2.2 && <3
     , base >=4.7 && <5
     , bytestring ==0.11.*
     , co-log-core >=0.3.0 && <0.4
+    , containers >=0.6 && <0.8
     , directory >=1.0 && <2
+    , filepath >=1.4 && <2
     , free >=5.0 && <6
+    , haskeline >=0.8 && <1
     , lask
     , lens >=5.0 && <6
     , lsp >=2.0 && <3
@@ -87,9 +116,11 @@ executable lask
     , parser-combinators >=1.0 && <2
     , process >=1.6 && <2
     , process-extras ==0.7.*
+    , random >=1.2 && <2
     , scientific ==0.3.*
     , stm >=2.0 && <3
     , text >=2.0 && <3
+    , time >=1.0 && <2
     , vector ==0.13.*
   default-language: Haskell2010
 
@@ -97,23 +128,31 @@ test-suite lask-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      Language.Lask.ASTSpec
-      Language.Lask.BundlerSpec
-      Language.Lask.ExecutorSpec
-      Language.Lask.ParserSpec
-      Language.Lask.ValidatorSpec
+      Command.Lask.CliSpec
+      Language.Lask.ElaborateSpec
+      Language.Lask.LexerSpec
+      Language.Lask.Module.ResolveSpec
+      Language.Lask.Obs.CommandLogSpec
+      Language.Lask.Runtime.EnvironmentSpec
+      Language.Lask.Runtime.EvalSpec
+      Language.Lask.Syntax.ParserSpec
       Paths_lask
   hs-source-dirs:
       test
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       aeson >=2.0 && <3
+    , aeson-pretty >=0.8 && <1
+    , async >=2.2 && <3
     , base >=4.7 && <5
     , bytestring ==0.11.*
     , co-log-core >=0.3.0 && <0.4
+    , containers >=0.6 && <0.8
     , directory >=1.0 && <2
     , doctest ==0.22.*
+    , filepath >=1.4 && <2
     , free >=5.0 && <6
+    , haskeline >=0.8 && <1
     , hspec >=2.11 && <3
     , hspec-core >=2.11 && <3
     , hspec-megaparsec >=2.2 && <3
@@ -126,8 +165,11 @@ test-suite lask-test
     , parser-combinators >=1.0 && <2
     , process >=1.6 && <2
     , process-extras ==0.7.*
+    , random >=1.2 && <2
     , scientific ==0.3.*
     , stm >=2.0 && <3
+    , temporary >=1.3 && <2
     , text >=2.0 && <3
+    , time >=1.0 && <2
     , vector ==0.13.*
   default-language: Haskell2010

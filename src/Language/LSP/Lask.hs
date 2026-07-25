@@ -8,14 +8,15 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeOperators #-}
 
+-- | Language server: diagnostics from the full front-end pipeline and
+-- semantic tokens straight from the lexer token stream.
 module Language.LSP.Lask (serve) where
 
 import Colog.Core (LogAction (..), Severity (..), WithSeverity (..), (<&))
 import qualified Colog.Core as L
-import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Concurrent
 import Control.Concurrent.STM
-import Control.Lens hiding (Iso, (:<))
+import Control.Lens hiding (Iso)
 import Control.Monad (forever, join)
 import Control.Monad.IO.Class
 import qualified Data.Aeson as J
@@ -31,19 +32,22 @@ import Language.LSP.Protocol.Types
 import qualified Language.LSP.Protocol.Types as LSP
 import Language.LSP.Server
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
-import Language.Lask (tokenize, validate)
-import Language.Lask.Error (LanguageError)
-import Language.Lask.Parser (Token (Token), TokenKind (..))
+import Language.Lask (checkText)
+import qualified Language.Lask.Diagnostic as D
+import Language.Lask.ErrorCode (codeText)
+import Language.Lask.Lexer (lexTokens)
+import qualified Language.Lask.Lexer.Token as Tok
 import qualified Language.Lask.Span as S
 import Language.Lask.Utils (Pretty (pretty))
 
-data Config = Config {fooTheBar :: Bool, wibbleFactor :: Int}
+data Config = Config
   deriving (Generic, Show)
 
 instance J.ToJSON Config where
-  toEncoding = J.genericToEncoding J.defaultOptions
+  toJSON _ = J.object []
 
-instance J.FromJSON Config
+instance J.FromJSON Config where
+  parseJSON _ = pure Config
 
 newtype ReactorInput = ReactorAction (IO ())
 
@@ -59,7 +63,7 @@ serve = do
   rin <- atomically newTChan :: IO (TChan ReactorInput)
   runServer $
     ServerDefinition
-      { defaultConfig = Config {fooTheBar = False, wibbleFactor = 0},
+      { defaultConfig = Config,
         parseConfig = \_old v -> do
           case J.fromJSON v of
             J.Error e -> Left (T.pack e)
@@ -67,7 +71,6 @@ serve = do
         onConfigChange = const $ pure (),
         configSection = "lask",
         doInitialize = \env _ -> forkIO (reactor stderrLogger rin) >> pure (Right env),
-        -- Handlers log to both the client and stderr
         staticHandlers = \_caps -> lspHandlers dualLogger rin,
         interpretHandler = \env -> Iso (runLspT env) liftIO,
         options = lspOptions
@@ -113,9 +116,9 @@ handle logger =
   mconcat
     [ notificationHandler LSP.SMethod_Initialized $ \_msg -> do
         logger <& "Processing the Initialized notification" `WithSeverity` Info,
-      notificationHandler LSP.SMethod_TextDocumentDidOpen $ sendSyntaxError logger,
-      notificationHandler LSP.SMethod_TextDocumentDidChange $ sendSyntaxError logger,
-      notificationHandler LSP.SMethod_TextDocumentDidSave $ sendSyntaxError logger,
+      notificationHandler LSP.SMethod_TextDocumentDidOpen $ sendDocumentDiagnostics logger,
+      notificationHandler LSP.SMethod_TextDocumentDidChange $ sendDocumentDiagnostics logger,
+      notificationHandler LSP.SMethod_TextDocumentDidSave $ sendDocumentDiagnostics logger,
       requestHandler LSP.SMethod_TextDocumentSemanticTokensFull $ \req responder -> do
         let doc =
               req
@@ -134,16 +137,16 @@ handle logger =
               Right ts -> responder $ Right $ LSP.InL ts
               Left t -> responder $ Left $ LSP.ResponseError (LSP.InR LSP.ErrorCodes_InternalError) t Nothing
           Nothing -> responder $ Left $ LSP.ResponseError (LSP.InR LSP.ErrorCodes_InternalError) "cannot get virtual file" Nothing,
-      notificationHandler LSP.SMethod_WorkspaceDidChangeConfiguration $ \_ -> pure (), -- Nothing to do
-      notificationHandler LSP.SMethod_TextDocumentDidClose $ \_ -> pure () -- Nothing to do
+      notificationHandler LSP.SMethod_WorkspaceDidChangeConfiguration $ \_ -> pure (),
+      notificationHandler LSP.SMethod_TextDocumentDidClose $ \_ -> pure ()
     ]
 
-sendSyntaxError ::
+sendDocumentDiagnostics ::
   (m ~ LspM Config, LSP.HasUri a1 Uri, LSP.HasTextDocument a2 a1, LSP.HasParams s a2) =>
   L.LogAction m (WithSeverity T.Text) ->
   s ->
   LspT Config IO ()
-sendSyntaxError logger msg = do
+sendDocumentDiagnostics logger msg = do
   let doc =
         msg
           ^. LSP.params
@@ -151,101 +154,87 @@ sendSyntaxError logger msg = do
             . LSP.uri
             . to LSP.toNormalizedUri
   let (NormalizedUri _ path) = doc
-  logger <& ("Processing DidSaveTextDocument for: " <> T.pack (show doc)) `WithSeverity` Info
+  logger <& ("Publishing diagnostics for: " <> T.pack (show doc)) `WithSeverity` Info
   mdoc <- getVirtualFile doc
   case mdoc of
     Just file -> do
-      let vs = validate (T.unpack path) (virtualFileText file)
-      sendDiagnostics doc (Just $ virtualFileVersion file) vs
+      ds <- liftIO $ checkText (T.unpack path) (virtualFileText file)
+      sendDiagnostics doc (Just $ virtualFileVersion file) ds
     Nothing -> sendDiagnostics doc Nothing []
 
-sendDiagnostics :: LSP.NormalizedUri -> Maybe Int32 -> [LanguageError S.Span] -> LspM Config ()
-sendDiagnostics fileUri version es = do
+sendDiagnostics :: LSP.NormalizedUri -> Maybe Int32 -> [D.Diagnostic] -> LspM Config ()
+sendDiagnostics fileUri version ds = do
   let diags =
         map
-          ( \e@(s :< _) -> do
+          ( \d ->
               LSP.Diagnostic
-                (toRange s)
-                (Just LSP.DiagnosticSeverity_Error) -- severity
-                Nothing -- code
+                (toRange (D.diagSpan d))
+                (Just LSP.DiagnosticSeverity_Error)
+                (Just (LSP.InR (codeText (D.diagCode d))))
                 Nothing
-                (Just "lask") -- source
-                (T.pack $ pretty e)
-                Nothing -- tags
+                (Just "lask")
+                (T.pack $ pretty d)
+                Nothing
                 (Just [])
                 Nothing
           )
-          es
+          ds
   publishDiagnostics 100 fileUri version (partitionBySource diags)
 
 lexSemanticTokens :: String -> Text -> Either Text [SemanticTokenAbsolute]
 lexSemanticTokens fileName src =
-  case tokenize fileName src of
+  case lexTokens fileName src of
     Left e -> Left $ T.pack $ pretty e
-    -- split input into lines because language server protocol is not supporting multi-line token.
-    Right ts -> Right $ makeSemanticTokenAbsolutes $ join $ map (splitMultiLineToken src) ts
+    -- The protocol has no multi-line tokens; split them per line.
+    Right ts -> Right $ join $ map toAbsolutes ts
   where
-    makeSemanticTokenAbsolutes :: [Token] -> [SemanticTokenAbsolute]
-    makeSemanticTokenAbsolutes [] = []
-    makeSemanticTokenAbsolutes (Token x (S.Span (S.Position _ l1 c1) (S.Position _ _ c2)) : ts) =
-      case toSemanticTokenTypes x of
-        Just t ->
-          SemanticTokenAbsolute
-            (fromIntegral $ l1 - 1)
+    toAbsolutes :: Tok.Spanned Tok.Token -> [SemanticTokenAbsolute]
+    toAbsolutes (Tok.Spanned sp t) = case toSemanticTokenTypes t of
+      Just typ ->
+        [ SemanticTokenAbsolute
+            (fromIntegral $ l - 1)
             (fromIntegral $ c1 - 1)
             (fromIntegral $ c2 - c1)
-            t
+            typ
             []
-            : makeSemanticTokenAbsolutes ts
-        Nothing -> makeSemanticTokenAbsolutes ts
-    makeSemanticTokenAbsolutes (_ : ts) = makeSemanticTokenAbsolutes ts
-    toSemanticTokenTypes :: TokenKind -> Maybe SemanticTokenTypes
+        | (l, c1, c2) <- splitSpanLines sp
+        ]
+      Nothing -> []
+
+    splitSpanLines (S.Span (S.Position _ l1 c1) (S.Position _ l2 c2))
+      | l1 == l2 = [(l1, c1, c2)]
+      | otherwise =
+          [ (l, s, e)
+          | l <- [l1 .. l2],
+            let s = if l == l1 then c1 else 1,
+            let e = if l == l2 then c2 else lineLength l + 1
+          ]
+    splitSpanLines S.NoSpan = []
+
+    lineLength l = case drop (l - 1) (T.splitOn "\n" src) of
+      (x : _) -> T.length x
+      [] -> 0
+
+    toSemanticTokenTypes :: Tok.Token -> Maybe SemanticTokenTypes
     toSemanticTokenTypes t = case t of
-      TKTypeVar -> Just SemanticTokenTypes_Type
-      TKOp -> Just SemanticTokenTypes_Operator
-      TKVar -> Just SemanticTokenTypes_Variable
-      TKFunction -> Just SemanticTokenTypes_Function
-      TKKeyword -> Just SemanticTokenTypes_Keyword
-      TKNull -> Just SemanticTokenTypes_Macro
-      TKBool -> Just SemanticTokenTypes_Macro
-      TKNumber -> Just SemanticTokenTypes_Number
-      TKString -> Just SemanticTokenTypes_String
-      TKComment -> Just SemanticTokenTypes_Comment
-      TKParameter -> Just SemanticTokenTypes_Parameter
-      TKTypeParameter -> Just SemanticTokenTypes_TypeParameter
-      TKProperty -> Just SemanticTokenTypes_Property
-      TKImage -> Just SemanticTokenTypes_Macro
+      Tok.TUpperId _ -> Just SemanticTokenTypes_Type
+      Tok.TOp _ -> Just SemanticTokenTypes_Operator
+      Tok.TLowerId _ -> Just SemanticTokenTypes_Variable
+      Tok.TKw _ -> Just SemanticTokenTypes_Keyword
+      Tok.TNull -> Just SemanticTokenTypes_Macro
+      Tok.TBool _ -> Just SemanticTokenTypes_Macro
+      Tok.TNumber _ -> Just SemanticTokenTypes_Number
+      Tok.TRawString _ -> Just SemanticTokenTypes_String
+      Tok.TString _ -> Just SemanticTokenTypes_String
+      Tok.TEnvHead _ -> Just SemanticTokenTypes_Macro
+      Tok.TCommand {} -> Just SemanticTokenTypes_String
       _ -> Nothing
 
-splitMultiLineToken :: Text -> Token -> [Token]
-splitMultiLineToken _ (Token _ S.NoSpan) = []
-splitMultiLineToken src (Token kind (S.Span (S.Position f1 l1 c1) (S.Position f2 l2 c2))) =
-  map
-    ( \l -> do
-        let c1' = if l == l1 then c1 else 1
-        let c2' = if l == l2 then c2 else T.length (getLineAt l src) + 1
-        Token
-          kind
-          (S.Span (S.Position f1 l c1') (S.Position f2 l c2'))
-    )
-    [l1 .. l2]
-  where
-    getLineAt :: Int -> Text -> Text
-    getLineAt line input = T.splitOn "\n" input !! (line - 1)
-
 toRange :: S.Span -> Range
-toRange (S.Span p1@(S.Position _ l1 c1) p2@(S.Position _ l2 c2)) =
-  if p1 == p2
-    then
-      mkRange
-        (fromIntegral l1 - 1)
-        (fromIntegral c1 - 1)
-        (fromIntegral l2 - 1)
-        (fromIntegral c2)
-    else
-      mkRange
-        (fromIntegral l1 - 1)
-        (fromIntegral c1 - 1)
-        (fromIntegral l2 - 1)
-        (fromIntegral c2 - 1)
+toRange (S.Span (S.Position _ l1 c1) (S.Position _ l2 c2)) =
+  mkRange
+    (fromIntegral l1 - 1)
+    (fromIntegral c1 - 1)
+    (fromIntegral l2 - 1)
+    (fromIntegral c2 - 1)
 toRange S.NoSpan = Range (Position 0 0) (Position 0 0)

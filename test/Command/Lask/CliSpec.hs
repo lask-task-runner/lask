@@ -1,0 +1,284 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | End-to-end tests against the built @lask@ binary, covering the
+-- CLI examples of spec chapter 16 (source + argv + stdin ->
+-- stdout\/stderr\/exit code).
+module Command.Lask.CliSpec (spec) where
+
+import Data.List (isInfixOf)
+import System.Directory (createDirectoryIfMissing, findExecutable)
+import System.Exit (ExitCode (..))
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
+import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode, readProcess)
+import Test.Hspec
+
+-- | Locate the freshly built binary via stack.
+findLask :: IO FilePath
+findLask = do
+  stackBin <- findExecutable "stack"
+  case stackBin of
+    Nothing -> fail "stack not found"
+    Just _ -> do
+      root <- readProcess "stack" ["path", "--local-install-root"] ""
+      pure (takeWhile (/= '\n') root </> "bin" </> "lask")
+
+data Result = Result
+  { resExit :: Int,
+    resOut :: String,
+    resErr :: String
+  }
+  deriving (Show, Eq)
+
+runLask :: FilePath -> FilePath -> [String] -> String -> IO Result
+runLask lask dir args input = do
+  (code, out, err) <- readCreateProcessWithExitCode ((proc lask args) {cwd = Just dir}) input
+  pure (Result (exitOf code) out err)
+  where
+    exitOf ExitSuccess = 0
+    exitOf (ExitFailure n) = n
+
+withProject :: [(FilePath, String)] -> (FilePath -> IO a) -> IO a
+withProject files action =
+  withSystemTempDirectory "lask-e2e" $ \dir -> do
+    mapM_
+      ( \(name, content) -> do
+          createDirectoryIfMissing True dir
+          writeFile (dir </> name) content
+      )
+      files
+    action dir
+
+spec :: Spec
+spec = beforeAll findLask $ do
+  describe "spec 16.1: minimal program" $ do
+    it "eval prints the JSON result, run prints nothing" $ \lask ->
+      withProject [("main.lask", "hello() = \"hello, lask\"\n")] $ \dir -> do
+        e <- runLask lask dir ["eval", "hello"] ""
+        e `shouldBe` Result 0 "\"hello, lask\"\n" ""
+        r <- runLask lask dir ["run", "hello"] ""
+        r `shouldBe` Result 0 "" ""
+
+  describe "spec 16.2: arguments" $ do
+    let src =
+          "greet(name: String, --prefix: String = \"hello\"): String =\n\
+          \  concat(prefix, concat(\", \", name))\n\
+          \add(x: Number, y: Number): Number = x + y\n"
+    it "binds positional and keyword arguments with auto decode" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        g <- runLask lask dir ["eval", "greet", "alice", "--prefix", "hi"] ""
+        g `shouldBe` Result 0 "\"hi, alice\"\n" ""
+        a <- runLask lask dir ["eval", "add", "1", "2"] ""
+        a `shouldBe` Result 0 "3\n" ""
+    it "reports missing positionals as usage errors (exit 4)" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "add", "1"] ""
+        resExit r `shouldBe` 4
+    it "arg-decode text keeps arguments as strings" $ \lask ->
+      withProject [("main.lask", "id2(x: String): String = x\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "--arg-decode", "text", "id2", "5"] ""
+        r `shouldBe` Result 0 "\"5\"\n" ""
+
+  describe "spec 16.3: function values" $ do
+    let src =
+          "inc(x: Number): Number = x + 1\n\
+          \double(x: Number): Number = x * 2\n\
+          \incThenDouble = inc >> double\n"
+    it "calls function-valued declarations positionally" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "incThenDouble", "3"] ""
+        r `shouldBe` Result 0 "8\n" ""
+
+  describe "kebab-case name mapping (spec 11.2)" $ do
+    it "maps function and keyword names" $ \lask ->
+      withProject [("main.lask", "show_version(--out_dir: String = \".\"): String = out_dir\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "show-version", "--out-dir", "/tmp"] ""
+        r `shouldBe` Result 0 "\"/tmp\"\n" ""
+
+  describe "stdin (spec 9)" $ do
+    it "binds stdin as a String" $ \lask ->
+      withProject [("main.lask", "shout(): String = toUpper(trim(stdin))\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "shout"] "  hello  \n"
+        r `shouldBe` Result 0 "\"HELLO\"\n" ""
+
+  describe "exit codes (spec 11.3, 16.9)" $ do
+    it "passes command exit codes through" $ \lask ->
+      withProject [("main.lask", "f() = $ exit 42\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 42
+        resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO"
+    it "uses the Error code of uncaught fail" $ \lask ->
+      withProject [("main.lask", "f(): Number = fail({code: 75, message: \"retry later\"})\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 75
+        resErr r `shouldSatisfy` isInfixOf "retry later"
+    it "normalizes out-of-range codes to 1" $ \lask ->
+      withProject [("main.lask", "f(): Number = fail({code: 0, message: \"zero\"})\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 1
+    it "exits 0 when the failure is caught" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "f(): Number = try {\n\
+            \  fail({code: 75, message: \"m\"})\n\
+            \} catch (e) {\n\
+            \  e.code\n\
+            \}\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["eval", "f"] ""
+          r `shouldBe` Result 0 "75\n" ""
+    it "exits 1 on static errors without evaluating" $ \lask ->
+      withProject [("main.lask", "x: Number = \"s\"\nf() = $ echo should-not-run\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 1
+    it "exits 4 on unknown functions" $ \lask ->
+      withProject [("main.lask", "a = 1\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "nope"] ""
+        resExit r `shouldBe` 4
+
+  describe "output encodings (spec 11.3, 13.1)" $ do
+    it "encodes records as JSON by default" $ \lask ->
+      withProject [("main.lask", "u() = {name: \"a\", age: 20}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "u"] ""
+        r `shouldBe` Result 0 "{\"age\":20,\"name\":\"a\"}\n" ""
+    it "prints raw text with --stdout-encode text" $ \lask ->
+      withProject [("main.lask", "s() = \"plain\"\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "--stdout-encode", "text", "s"] ""
+        r `shouldBe` Result 0 "plain\n" ""
+    it "prints Void as nothing" $ \lask ->
+      withProject [("main.lask", "f() = for (x : []) {}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        r `shouldBe` Result 0 "" ""
+
+  describe "check and infer (spec 11.1)" $ do
+    it "check reports validity" $ \lask ->
+      withProject [("main.lask", "a = 1\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        r `shouldBe` Result 0 "the module is valid\n" ""
+    it "check reports diagnostics as JSON with --format json" $ \lask ->
+      withProject [("main.lask", "x: Number = \"s\"\n")] $ \dir -> do
+        r <- runLask lask dir ["check", "--format", "json"] ""
+        resExit r `shouldBe` 1
+        resOut r `shouldSatisfy` isInfixOf "E-TYPE-MISMATCH"
+    it "infer prints declaration types" $ \lask ->
+      withProject [("main.lask", "add(x: Number, y: Number): Number = x + y\n")] $ \dir -> do
+        r <- runLask lask dir ["infer", "--symbol", "add"] ""
+        r `shouldBe` Result 0 "add: Function<Number, Number, Number>\n" ""
+
+  describe "commands and environments (spec 16.5, 16.7)" $ do
+    it "runs local commands with interpolation" $ \lask ->
+      withProject [("main.lask", "n = \"world\"\nf() = $ echo hello #{n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"hello world\\n\"\n"
+    it "envs lists referenced environments" $ \lask ->
+      withProject
+        [ ("main.lask", "f() = $[#env(\"builder\")] make\ng() = $[#alpine:3.20] ls\n"),
+          ("environments.lask.json", "{\"environments\": {\"builder\": {\"kind\": \"docker\", \"params\": {\"image\": \"golang:1.22\"}}}}")
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["envs"] ""
+          resExit r `shouldBe` 0
+          resOut r `shouldSatisfy` isInfixOf "builder"
+          resOut r `shouldSatisfy` isInfixOf "alpine:3.20"
+    it "rejects undefined environment names before evaluation" $ \lask ->
+      withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 1
+        resErr r `shouldSatisfy` isInfixOf "E-TYPE-ENV-CONSTRUCT"
+
+  describe "command execution logs (spec 12.3)" $ do
+    let src = "f() = $* sh -lc \"echo out; echo err 1>&2\"\n"
+    it "relays child output to stderr in the text format" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` ""
+        resErr r `shouldSatisfy` isInfixOf "[#local:1] $ sh -lc"
+        resErr r `shouldSatisfy` isInfixOf "[#local:1] 1| out"
+        resErr r `shouldSatisfy` isInfixOf "[#local:1] 2| err"
+        resErr r `shouldSatisfy` isInfixOf "[#local:1] exit 0"
+    it "keeps stdout clean: only the eval result" $ \lask ->
+      withProject [("main.lask", "f() = do {\n  v = $ echo value\n  trim(v)\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"value\"\n"
+        resErr r `shouldSatisfy` isInfixOf "1| value"
+    it "emits JSON Lines with stream/event fields under --format json" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "--format", "json", "--trace-id", "t-9", "f"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldSatisfy` isInfixOf "\"event\":\"start\""
+        resErr r `shouldSatisfy` isInfixOf "\"stream\":\"1\""
+        resErr r `shouldSatisfy` isInfixOf "\"stream\":\"2\""
+        resErr r `shouldSatisfy` isInfixOf "\"event\":\"exit\""
+        resErr r `shouldSatisfy` isInfixOf "\"code\":0"
+        resErr r `shouldSatisfy` isInfixOf "\"exec\":1"
+        resErr r `shouldSatisfy` isInfixOf "\"traceId\":\"t-9\""
+        -- The command appears on the start line only (spec 12.3).
+        let cmdLogLines = filter (isInfixOf "\"exec\"") (lines (resErr r))
+            startLines = filter (isInfixOf "\"event\":\"start\"") cmdLogLines
+            relayLines = filter (isInfixOf "\"stream\"") cmdLogLines
+        all (isInfixOf "\"command\"") startLines `shouldBe` True
+        any (isInfixOf "\"command\"") relayLines `shouldBe` False
+        -- Every stderr line is a single JSON object (spec 12.2).
+        all (\l -> take 1 l == "{") (lines (resErr r)) `shouldBe` True
+    it "logs exit with level warn on non-zero codes" $ \lask ->
+      withProject [("main.lask", "f() = $* sh -lc \"exit 3\"\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "--format", "json", "f"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldSatisfy` isInfixOf "\"code\":3"
+        resErr r `shouldSatisfy` isInfixOf "\"level\":\"warn\""
+    it "reports static errors as JSON Lines on stderr" $ \lask ->
+      withProject [("main.lask", "x: Number = \"s\"\ny: Number = true\nf() = 1\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "--format", "json", "f"] ""
+        resExit r `shouldBe` 1
+        let errLines = lines (resErr r)
+        all (\l -> take 1 l == "{") errLines `shouldBe` True
+        resErr r `shouldSatisfy` isInfixOf "\"stage\":\"static\""
+
+  describe "observability (spec 12, 13.3)" $ do
+    let src =
+          "inner(): Number = fail({code: 9, message: \"deep\"})\n\
+          \outer(): Number = inner()\n"
+    it "prints a stack trace for uncaught failures" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "outer"] ""
+        resExit r `shouldBe` 9
+        resErr r `shouldSatisfy` isInfixOf "at inner (main.lask)"
+        resErr r `shouldSatisfy` isInfixOf "at outer (main.lask)"
+    it "emits call/return events with the given trace id" $ \lask ->
+      withProject [("main.lask", "f(x: Number): Number = x + 1\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "--format", "json", "--trace-id", "t-1", "f", "41"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldSatisfy` isInfixOf "\"kind\":\"call\""
+        resErr r `shouldSatisfy` isInfixOf "\"kind\":\"return\""
+        resErr r `shouldSatisfy` isInfixOf "\"traceId\":\"t-1\""
+        resErr r `shouldSatisfy` isInfixOf "\"name\":\"f\""
+    it "emits a FailEvent even when the failure is caught (12.5)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "boom(): Number = fail({code: 5, message: \"m\"})\n\
+            \f(): Number = try {\n\
+            \  boom()\n\
+            \} catch (e) {\n\
+            \  0\n\
+            \}\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["eval", "--format", "json", "f"] ""
+          resExit r `shouldBe` 0
+          resErr r `shouldSatisfy` isInfixOf "\"kind\":\"fail\""
+
+  describe "modules (spec 5)" $ do
+    it "imports across files" $ \lask ->
+      withProject
+        [ ("main.lask", "import { add } from \"lib.lask\"\nsum2(a: Number, b: Number): Number = add(a, b)\n"),
+          ("lib.lask", "add(x: Number, y: Number): Number = x + y\n")
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["eval", "sum2", "20", "22"] ""
+          r `shouldBe` Result 0 "42\n" ""
