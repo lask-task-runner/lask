@@ -3,7 +3,7 @@
 Lask (coined by combining "lambda" and "task") is a task runner based on functional programming.
 Tasks are expressed as functions in `.lask` modules and executed from the CLI. The language,
 CLI, execution environments and observability are defined by the specification in
-[doc/spec_ja.md](doc/spec_ja.md).
+[doc/spec.md](doc/spec.md).
 
 ```lask
 // main.lask
