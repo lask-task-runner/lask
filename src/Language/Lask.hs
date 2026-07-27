@@ -4,6 +4,7 @@ module Language.Lask
   ( Compiled (..),
     compileFile,
     compileWith,
+    compileText,
     checkText,
   )
 where
@@ -34,11 +35,15 @@ compileWith reader entry = do
     core <- elaborateProgram prog scopes
     pure (Compiled prog scopes core)
 
--- | Diagnostics for an in-editor document: the entry module's text is
+-- | Compile an in-editor document: the entry module's text is
 -- provided directly; imported modules are read from disk.
-checkText :: FilePath -> Text -> IO [Diagnostic]
-checkText path txt = either id (const []) <$> compileWith reader path
+compileText :: FilePath -> Text -> IO (Either [Diagnostic] Compiled)
+compileText path txt = compileWith reader path
   where
     reader p
       | normalise p == normalise path = pure (Right txt)
       | otherwise = fileReader p
+
+-- | Diagnostics for an in-editor document.
+checkText :: FilePath -> Text -> IO [Diagnostic]
+checkText path txt = either id (const []) <$> compileText path txt

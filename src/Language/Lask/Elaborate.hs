@@ -11,6 +11,7 @@ module Language.Lask.Elaborate
   ( CoreProgram (..),
     CoreDecl (..),
     StaticParams (..),
+    HoverInfo (..),
     elaborateProgram,
   )
 where
@@ -63,9 +64,22 @@ data StaticParams = StaticParams
 data CoreProgram = CoreProgram
   { cpEntry :: FilePath,
     cpBaseDir :: FilePath,
-    cpDecls :: Map Key CoreDecl
+    cpDecls :: Map Key CoreDecl,
+    -- | Name references with their types, recorded during
+    -- elaboration for editor tooling (hover).
+    cpHover :: [HoverInfo]
   }
   deriving (Show)
+
+-- | A resolved name occurrence: where it was written, what it is, and
+-- (for top-level targets) which declaration it refers to.
+data HoverInfo = HoverInfo
+  { hiSpan :: Span,
+    hiName :: Text,
+    hiType :: Type,
+    hiDecl :: Maybe Key
+  }
+  deriving (Show, Eq)
 
 -- Elaboration monad ----------------------------------------------------------
 
@@ -77,10 +91,16 @@ data Ctx = Ctx
 data St = St
   { stDecls :: Map Key CoreDecl,
     stAliases :: Map Key Type,
-    stActive :: Set Key
+    stActive :: Set Key,
+    stHover :: [HoverInfo]
   }
 
 type TC = StateT St (Either Diagnostic)
+
+-- | Record a resolved name occurrence for hover (editor tooling).
+recordVar :: Span -> Text -> Type -> Maybe Key -> TC ()
+recordVar sp n t d =
+  modify (\s -> s {stHover = HoverInfo sp n t d : stHover s})
 
 -- | Local value bindings with their types.
 type Locals = Map Text Type
@@ -112,14 +132,15 @@ mismatch sp expected actual =
 
 elaborateProgram :: Program -> Map FilePath GlobalScope -> Either [Diagnostic] CoreProgram
 elaborateProgram prog scopes =
-  case evalStateT (elabAll >> gets stDecls) (St Map.empty Map.empty Set.empty) of
+  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s))) (St Map.empty Map.empty Set.empty []) of
     Left d -> Left [d]
-    Right decls ->
+    Right (decls, hover) ->
       Right
         CoreProgram
           { cpEntry = progEntry prog,
             cpBaseDir = progBaseDir prog,
-            cpDecls = decls
+            cpDecls = decls,
+            cpHover = hover
           }
   where
     ctx = Ctx prog scopes
@@ -518,6 +539,7 @@ check ctx path locals e@(Expr sp f) expected = case f of
         subst <- unifyOrFail sp (schemeType scheme) expected Map.empty
         let t = applySubst subst (schemeType scheme)
         unless (isGround t && conformsTo t expected) (mismatch sp expected t)
+        recordVar sp n t Nothing
         pure (Core sp (CVar (BuiltinRef bn)))
   EBin op a b | isEqOp op || expected == TyBool -> do
     (c, t) <- elabBin ctx path locals sp op a b (Just expected)
@@ -581,15 +603,21 @@ lookupValueTarget ctx path n =
 
 inferVar :: Ctx -> FilePath -> Locals -> Span -> Text -> TC (Core, Type)
 inferVar ctx path locals sp n = case Map.lookup n locals of
-  Just t -> pure (Core sp (CVar (LocalRef n)), t)
+  Just t -> do
+    recordVar sp n t Nothing
+    pure (Core sp (CVar (LocalRef n)), t)
   Nothing -> case lookupValueTarget ctx path n of
     Just (VTopLevel defPath defName) -> do
       t <- declType ctx (defPath, defName)
+      recordVar sp n t (Just (defPath, defName))
       pure (Core sp (CVar (TopRef defPath defName)), t)
-    Just (VBuiltin "stdin") -> pure (Core sp (CVar (BuiltinRef "stdin")), TyString)
+    Just (VBuiltin "stdin") -> do
+      recordVar sp n TyString Nothing
+      pure (Core sp (CVar (BuiltinRef "stdin")), TyString)
     Just (VBuiltin bn) -> case Map.lookup bn builtinSchemes of
       Just scheme
-        | null (schemeVars scheme) ->
+        | null (schemeVars scheme) -> do
+            recordVar sp n (schemeType scheme) Nothing
             pure (Core sp (CVar (BuiltinRef bn)), schemeType scheme)
         | otherwise ->
             abort . diag ETypeMismatch sp $
@@ -683,6 +711,7 @@ elabDot ctx path locals sp inner fsp fld = case exprF inner of
       Just key <- namespaceTarget m -> do
         -- Namespace member (resolution rank 4, spec 7.2).
         t <- declType ctx (key, fld)
+        recordVar fsp fld t (Just (key, fld))
         pure (Core sp (CVar (TopRef key fld)), t)
   _ -> do
     (c, t) <- infer ctx path locals inner
@@ -1107,7 +1136,9 @@ elabCall ctx path locals sp fn args mExpected = do
         | otherwise -> case lookupValueTarget ctx path n of
             Just (VTopLevel p dn) -> staticFromDecl (p, dn)
             Just (VBuiltin bn) -> case Map.lookup bn builtinSchemes of
-              Just scheme -> pure (CalleeBuiltin bn scheme)
+              Just scheme -> do
+                recordVar (exprSpan fn) bn (schemeType scheme) Nothing
+                pure (CalleeBuiltin bn scheme)
               Nothing -> abort (diag ENameUndefined (exprSpan fn) ("undefined name: '" <> n <> "'"))
             Nothing -> abort (diag ENameUndefined (exprSpan fn) ("undefined name: '" <> n <> "'"))
       EDot (Expr _ (EVar m)) (Spanned _ fld)
@@ -1138,9 +1169,11 @@ elabCall ctx path locals sp fn args mExpected = do
       if key `Set.member` active
         then do
           t <- headerType ctx key
+          recordVar (exprSpan fn) n t (Just key)
           pure (Just (Core (exprSpan fn) (CVar (TopRef p n)), t, Nothing))
         else do
           cd <- demandDecl ctx key
+          recordVar (exprSpan fn) n (cdType cd) (Just key)
           pure (Just (Core (exprSpan fn) (CVar (TopRef p n)), cdType cd, cdParams cd))
 
     -- Static binding per 7.5 for declarations.

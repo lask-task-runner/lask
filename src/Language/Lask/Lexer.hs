@@ -12,10 +12,12 @@
 -- so the parser never needs lexer modes.
 module Language.Lask.Lexer
   ( lexTokens,
+    lexTokensWithComments,
     lexLayout,
   )
 where
 
+import Control.Monad.State.Strict (State, lift, modify, runState)
 import Data.Char (chr, isDigit, isHexDigit)
 import qualified Data.Char as Char
 import Data.Text (Text)
@@ -26,17 +28,23 @@ import Language.Lask.ErrorCode (ErrorCode (ESyntaxUnexpectedToken), Stage (Stage
 import Language.Lask.Lexer.Layout (layout)
 import Language.Lask.Lexer.Token
 import Language.Lask.Span (Span (Span), fromSourcePos)
-import Text.Megaparsec hiding (Token, Tokens)
+import Text.Megaparsec hiding (State, Token, Tokens)
 import Text.Megaparsec.Char (char)
 
-type Lexer = Parsec Void Text
+-- Comments are lexically whitespace (spec 3.3) but their spans are
+-- collected on the side for editor tooling (semantic highlighting).
+type Lexer = ParsecT Void Text (State [Span])
 
 -- | Tokenize a module source. Newlines are kept as 'TNewline'.
 lexTokens :: FilePath -> Text -> Either Diagnostic [Spanned Token]
-lexTokens file src =
-  case runParser pModuleTokens file src of
-    Left bundle -> Left (bundleToDiagnostic bundle)
-    Right ts -> Right ts
+lexTokens file src = fst <$> lexTokensWithComments file src
+
+-- | Tokenize, also returning the source spans of comments (in order).
+lexTokensWithComments :: FilePath -> Text -> Either Diagnostic ([Spanned Token], [Span])
+lexTokensWithComments file src =
+  case runState (runParserT pModuleTokens file src) [] of
+    (Left bundle, _) -> Left (bundleToDiagnostic bundle)
+    (Right ts, comments) -> Right (ts, reverse comments)
 
 -- | Tokenize and apply the newline-significance rules (spec 6.5).
 lexLayout :: FilePath -> Text -> Either Diagnostic [Spanned Token]
@@ -51,9 +59,16 @@ sc =
   skipMany $
     choice
       [ skipSome (satisfy (\c -> c == ' ' || c == '\t')),
-        lineComment,
-        blockComment
+        recordSpan lineComment,
+        recordSpan blockComment
       ]
+
+recordSpan :: Lexer () -> Lexer ()
+recordSpan p = do
+  start <- getSourcePos
+  p
+  end <- getSourcePos
+  lift (modify (Span (fromSourcePos start) (fromSourcePos end) :))
 
 lineComment :: Lexer ()
 lineComment = do

@@ -136,6 +136,7 @@ test-suite lask-test
       Language.Lask.Runtime.EnvironmentSpec
       Language.Lask.Runtime.EvalSpec
       Language.Lask.Syntax.ParserSpec
+      Language.LSP.LaskSpec
       Paths_lask
   hs-source-dirs:
       test
@@ -159,6 +160,7 @@ test-suite lask-test
     , lask
     , lens >=5.0 && <6
     , lsp >=2.0 && <3
+    , lsp-types >=2.0 && <3
     , megaparsec >=9.6 && <10
     , mtl >=2.0 && <3
     , optparse-applicative ==0.18.*
