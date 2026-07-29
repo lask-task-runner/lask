@@ -1,7 +1,10 @@
-name: Test
+name: CI
 
 on:
   push:
+    branches:
+      - main
+  pull_request:
 
 jobs:
   test:
@@ -18,12 +21,12 @@ jobs:
           stack-version: "latest"
 
       - name: Cache Stack dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.stack
             .stack-work
-          key: ${{ runner.os }}-stack-${{ hashFiles('**/stack.yaml.lock') }}
+          key: ${{ runner.os }}-stack-${{ hashFiles('stack.yaml', 'package.yaml', 'lask.cabal') }}
           restore-keys: |
             ${{ runner.os }}-stack-
 
@@ -37,4 +40,4 @@ jobs:
         run: stack test
 
       - name: Run doctests
-        run: stack exec doctest app/** src/**
+        run: stack exec doctest app src

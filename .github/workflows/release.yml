@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-amd64
+          - os: macos-13
+            target: macos-amd64
+          - os: macos-14
+            target: macos-arm64
+          - os: windows-latest
+            target: windows-amd64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Haskell Stack
+        uses: haskell/actions/setup@v2
+        with:
+          ghc-version: "9.4"
+          enable-stack: true
+          stack-version: "latest"
+
+      - name: Build binary
+        shell: bash
+        run: |
+          stack build --copy-bins --local-bin-path dist/bin
+
+      - name: Package for Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/release
+          cp dist/bin/lask dist/release/lask
+          tar -C dist/release -czf "lask-v${VERSION}-${{ matrix.target }}.tar.gz" lask
+          shasum -a 256 "lask-v${VERSION}-${{ matrix.target }}.tar.gz" > "lask-v${VERSION}-${{ matrix.target }}.tar.gz.sha256"
+
+      - name: Package for Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          New-Item -ItemType Directory -Force dist/release | Out-Null
+          Copy-Item dist/bin/lask.exe dist/release/lask.exe
+          Compress-Archive -Path dist/release/lask.exe -DestinationPath "lask-v$version-${{ matrix.target }}.zip" -Force
+          $hash = (Get-FileHash "lask-v$version-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "lask-v$version-${{ matrix.target }}.zip.sha256" -Value "$hash  lask-v$version-${{ matrix.target }}.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            lask-*.tar.gz
+            lask-*.zip
+            lask-*.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          mkdir -p out
+          find artifacts -type f -exec cp {} out/ \;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
