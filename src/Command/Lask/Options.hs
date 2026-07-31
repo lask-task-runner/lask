@@ -6,6 +6,7 @@ module Command.Lask.Options
     CommonOpts (..),
     RunOpts (..),
     EnvsOpts (..),
+    DepsAddSource (..),
     pRootCommand,
   )
 where
@@ -52,6 +53,11 @@ data RootCommand
   | CmdInfer CommonOpts (Maybe Text)
   | CmdRepl CommonOpts
   | CmdEnvs EnvsOpts
+  | CmdDepsSync CommonOpts
+  | CmdDepsAdd CommonOpts Text DepsAddSource
+
+-- | The source of a @deps add@ entry (spec 11.5).
+data DepsAddSource = AddGit Text Text | AddUrl Text
 
 pCommon :: Parser CommonOpts
 pCommon =
@@ -135,4 +141,30 @@ pRootCommand =
           )
         <> command "repl" (info (CmdRepl <$> pCommon) (progDesc "Interactive session"))
         <> command "envs" (info (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))
+        <> command "deps" (info pDepsCommand (progDesc "Manage external dependencies"))
     )
+
+pDepsCommand :: Parser RootCommand
+pDepsCommand =
+  hsubparser
+    ( command
+        "sync"
+        (info (CmdDepsSync <$> pCommon) (progDesc "Fetch and verify all declared dependencies"))
+        <> command
+          "add"
+          ( info
+              ( CmdDepsAdd
+                  <$> pCommon
+                  <*> (T.pack <$> argument str (metavar "NAME"))
+                  <*> pAddSource
+              )
+              (progDesc "Fetch a source, record it with its content hash, and cache it")
+          )
+    )
+  where
+    pAddSource =
+      ( AddGit
+          <$> (T.pack <$> strOption (long "git" <> metavar "URL" <> help "Git repository URL"))
+          <*> (T.pack <$> strOption (long "rev" <> metavar "REV" <> help "Tag or commit"))
+      )
+        <|> (AddUrl . T.pack <$> strOption (long "url" <> metavar "URL" <> help "Archive or single .lask file URL"))

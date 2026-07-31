@@ -77,6 +77,7 @@ This specification is intended to serve as the reference for implementation, ver
   - [11.2 Function Invocation](#112-function-invocation)
   - [11.3 Input/Output Contract](#113-inputoutput-contract)
   - [11.4 Environment Check (`envs`)](#114-environment-check-envs)
+  - [11.5 Dependency Management (`deps`)](#115-dependency-management-deps)
 - [12. Observability](#12-observability)
   - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
   - [12.2 Execution Log](#122-execution-log)
@@ -177,6 +178,7 @@ This section defines the principal terms used in this specification.
 - Module: A source-file unit consisting of a set of declarations and imports.
 - Execution environment: The target context in which commands are executed. Specified by environment expressions `#local` / `#docker(...)` / `#env(...)` (and the Docker sugar `#image-name`).
 - Environment definition file: `environments.lask.json` (10.3), which defines named environments (remote connection targets, etc.).
+- Dependency definition file: `dependencies.lask.json` (Chapter 5), which declares external Lask source code fetched over the internet (source location, version, and content hash).
 - Execution event: A time-series record unit representing calls, return values, and failures.
 - Serialization: The process of converting a value into an external representation so that it can be stored and transferred.
 - Core expression: An expression remaining after static expansion of syntactic sugar (7.6). The evaluation target of the dynamic semantics (Chapter 8).
@@ -532,7 +534,14 @@ Module loading unit:
 
 - One source file is regarded as one module.
 - A module can depend on other modules via `import` declarations.
-- `ImportPath` is treated as a module identifier resolvable by the implementation.
+
+Import path resolution:
+
+- An `ImportPath` starting with `./` or `../` is a local import. It is resolved relative to the directory of the importing module.
+- Any other `ImportPath` (a bare path) is an external import. Its first path segment must be a dependency name declared in the dependency definition file (see "External dependencies" below); otherwise it is a static error (`E-MODULE-UNRESOLVED`).
+- If the dependency is a single `.lask` file, the dependency name itself is the module path (e.g. `import { send } from "notify"`).
+- For a dependency fetched as a source tree (`git`, or an archive `url`), the remainder of the path is resolved within the fetched tree (e.g. `import { rollout } from "deploy-kit/deploy.lask"`).
+- A bare dependency name with no path remainder resolves to `main.lask` at the root of the fetched tree (the entry-point convention). Publishers should expose the public API of a tree dependency from its `main.lask`. If the tree has no `main.lask`, the bare-name import is a static error (`E-MODULE-UNRESOLVED`).
 
 Public scope and visibility:
 
@@ -548,6 +557,12 @@ Import forms:
 - Type aliases (`upper_id`) can be brought in by named import. Because a type reference in a type annotation is limited to a `NamedType` (4.2) consisting of a single `upper_id`, type references via a namespace (`m.TypeName`) are not possible. To use a type, use a named import.
 - No form is provided that unconditionally brings in all public symbols (the names to be brought in are made explicit in the declaration).
 
+Evaluation timing of top-level declarations:
+
+- A function declaration defines a closure and evaluates nothing at load time.
+- The right-hand side of a top-level value declaration is evaluated lazily: at most once, on first reference, and the result is cached thereafter. A failure during this evaluation propagates from the referencing site.
+- Consequently, importing a module never executes commands or produces effects by itself. Evaluation occurs only when a function is invoked or a value is referenced.
+
 Rules for same-name symbol collisions:
 
 - If a top-level declaration of the current module and a symbol brought in by a named import (under its post-renaming name) have the same name, it is an error before type checking.
@@ -556,8 +571,42 @@ Rules for same-name symbol collisions:
 
 Handling of circular imports:
 
-- The module dependency graph must be a directed acyclic graph (DAG).
+- The module dependency graph must be a directed acyclic graph (DAG). This requirement extends across external dependencies.
 - If a circular import is detected, it is a module resolution error before execution.
+
+External dependencies:
+
+External Lask source code fetched over the internet is declared in the dependency definition file and imported by name. Code contains only the dependency name (intent); the source location, version, and integrity information are bound in the project file.
+
+Dependency definition file:
+
+- The default file name is `dependencies.lask.json`, loaded from the base directory for module resolution (the same location as `main.lask`). No per-invocation override of this file is provided (dependencies must be identical for every invocation).
+- Schema:
+
+```json
+{
+  "dependencies": {
+    "deploy-kit": {"git": "https://github.com/example/lask-deploy-kit", "rev": "v1.2.0", "hash": "sha256-..."},
+    "notify": {"url": "https://example.com/tasks/notify.lask", "hash": "sha256-..."}
+  }
+}
+```
+
+- The top-level `dependencies` map associates a dependency name (a string conforming to `lower_id`; 3.2) with an entry.
+- An entry has exactly one source: `git` (a repository URL; `rev` — a tag or commit — is required) or `url` (an archive or a single `.lask` file).
+- `hash` (a content hash of the fetched source) is required for every entry. The same dependency definition must always yield identical source code.
+- Entries are typically recorded with `lask deps add` (11.5), which fetches the source and computes the content hash on first use.
+- Secrets (credentials, tokens) must not be written in this file.
+
+Fetching and verification:
+
+- Dependencies are fetched into an implementation-defined cache and verified against `hash` by the CLI (`lask deps sync`; 11.5). A verification failure is `E-MODULE-HASH-MISMATCH`.
+- `check`, `run`, `eval`, and `envs` must not access the network for module resolution. If a declared dependency is not present in the cache, or fails verification, it is a static error (`E-MODULE-UNRESOLVED`).
+- An external module may itself have a `dependencies.lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted).
+
+Execution environments in external modules:
+
+- Only the environment definition file of the root project is in effect (10.3). `#env(name)` in an external module resolves against the root project's environment definitions; an undefined name is a static error. Environment definition files carried by external modules have no effect.
 
 Examples:
 
@@ -574,13 +623,17 @@ joinWithComma(xs: Strings): String = join(xs, ",")
 
 ```lask
 // module: app/main.lask
-import { add } from "lib/math.lask"
-import * as types from "lib/types.lask"
+import { add } from "./lib/math.lask"
+import * as types from "./lib/types.lask"
+import { send } from "notify"
 
 sum2(a: Number, b: Number) = add(a, b)
 labels = ["a", "b", "c"]
 csv = types.joinWithComma(labels)
+notify_all(): Void = forEach(labels, \(x) -> send(x))
 ```
+
+Here `notify` is an external dependency declared in `dependencies.lask.json` as a single-file source.
 
 ## 6. Expressions
 
@@ -1368,6 +1421,7 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
 - `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, invalid target type of `cast`; 4.2, 15.8)
 - `E-MODULE-CYCLE`: module circular dependency
+- `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
 
 Error diagnostics include at least the following.
 
@@ -1765,6 +1819,7 @@ File resolution:
 
 - The default file name is `environments.lask.json`, loaded from the base directory for module resolution (the same location as `main.lask`).
 - The file to load can be replaced with the CLI's `--env-file <path>` (11.1). Replacement is a full substitution at the file level; merging of multiple files is not performed.
+- When external dependencies (Chapter 5) are used, only the root project's environment definition file is in effect. Environment definition files carried by external modules have no effect.
 
 Schema:
 
@@ -1959,6 +2014,7 @@ The CLI must provide the following subcommands.
 - `infer`: returns type inference results.
 - `repl`: provides an execution environment for interactively evaluating expressions and functions.
 - `envs`: enumerates the execution environments used by tasks and checks their accessibility (11.4).
+- `deps`: manages external dependencies — fetches and verifies them, and records new entries (11.5).
 
 Basic invocation syntax:
 
@@ -1983,6 +2039,8 @@ lask eval [--module <path>] <function> [args ...]
 lask infer [--module <path>] [--symbol <name>]
 lask repl [--module <path>]
 lask envs [--module <path>] [--env-file <path>] [<function>] [--check]
+lask deps sync [--module <path>]
+lask deps add <name> (--git <url> --rev <rev> | --url <url>) [--module <path>]
 ```
 
 Policy on environment specification:
@@ -2171,6 +2229,38 @@ $ lask envs provision --check
 ansible  remote  automation@203.0.113.10:22  ok
 builder  docker  golang:1.22                 ok
 ```
+
+### 11.5 Dependency Management (`deps`)
+
+`deps` manages the external dependencies declared in the dependency definition file (Chapter 5).
+
+Syntax:
+
+```text
+lask deps sync [--module <path>]
+lask deps add <name> (--git <url> --rev <rev> | --url <url>) [--module <path>]
+```
+
+Rules (`sync`):
+
+- `deps sync` fetches all dependencies declared in `dependencies.lask.json` — including transitive dependencies of external modules — into an implementation-defined cache, and verifies each against its `hash`.
+- `deps sync` is the only subcommand permitted to access the network for module resolution. All other subcommands resolve modules exclusively from the cache (Chapter 5).
+- Fetched sources are stored content-addressed; re-running `deps sync` with an unchanged definition file performs no network access for already-verified entries.
+- A hash verification failure is reported as `E-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
+
+Rules (`add`):
+
+- `deps add` fetches the specified source, computes its content hash, records the entry under `<name>` in `dependencies.lask.json` (creating the file if it does not exist), and places the verified source in the cache.
+- `<name>` must conform to `lower_id` (3.2). If an entry with the same name already exists, it is replaced (its source and hash are overwritten).
+- The recorded hash follows the trust-on-first-use model: the content trusted at recording time is pinned, and any subsequent change to the published source is detected by `deps sync` as `E-MODULE-HASH-MISMATCH`.
+- `--git` requires `--rev` (a tag or commit). `--url` accepts an archive or a single `.lask` file (Chapter 5).
+
+Exit codes (common to `sync` and `add`):
+
+- `0`: all dependencies fetched and verified.
+- `1`: the dependency definition file is missing (while dependencies are declared), malformed, or violates the schema (Chapter 5).
+- `3`: a fetch or verification failure (network failure, `E-MODULE-HASH-MISMATCH`).
+- `4`: CLI usage error.
 
 ## 12. Observability
 
@@ -2539,6 +2629,8 @@ Representative codes:
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
 - `E-MODULE-CYCLE`
+- `E-MODULE-UNRESOLVED`
+- `E-MODULE-HASH-MISMATCH`
 - `E-RUNTIME-DIV-BY-ZERO`
 - `E-RUNTIME-COMMAND-NONZERO`
 - `E-RUNTIME-AWAIT-FAILED`
@@ -2598,6 +2690,7 @@ Minimum targets:
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
 - `E-MODULE-CYCLE`
+- `E-MODULE-UNRESOLVED`
 
 Rules:
 

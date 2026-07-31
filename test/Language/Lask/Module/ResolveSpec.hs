@@ -38,28 +38,28 @@ spec = do
   describe "module loading" $ do
     it "loads a two-module program" $
       ok
-        [ ("main.lask", "import { add } from \"lib.lask\"\nsum2(a: Number, b: Number) = add(a, b)"),
+        [ ("main.lask", "import { add } from \"./lib.lask\"\nsum2(a: Number, b: Number) = add(a, b)"),
           ("lib.lask", "add(x: Number, y: Number): Number = x + y")
         ]
 
     it "detects circular imports" $
       failsWith
-        [ ("main.lask", "import { a } from \"a.lask\"\nx = a"),
-          ("a.lask", "import { b } from \"b.lask\"\na = b"),
-          ("b.lask", "import { a } from \"a.lask\"\nb = a")
+        [ ("main.lask", "import { a } from \"./a.lask\"\nx = a"),
+          ("a.lask", "import { b } from \"./b.lask\"\na = b"),
+          ("b.lask", "import { a } from \"./a.lask\"\nb = a")
         ]
         EModuleCycle
 
     it "reports unknown import symbols" $
       failsWith
-        [ ("main.lask", "import { missing } from \"lib.lask\"\nx = missing"),
+        [ ("main.lask", "import { missing } from \"./lib.lask\"\nx = missing"),
           ("lib.lask", "a = 1")
         ]
         ENameUndefined
 
     it "reports unreadable modules" $
       failsWith
-        [("main.lask", "import { a } from \"nope.lask\"\nx = a")]
+        [("main.lask", "import { a } from \"./nope.lask\"\nx = a")]
         ENameUndefined
 
   describe "top-level collisions" $ do
@@ -77,7 +77,7 @@ spec = do
 
     it "rejects import names colliding with top-level declarations" $
       failsWith
-        [ ("main.lask", "import { a } from \"lib.lask\"\na = 1"),
+        [ ("main.lask", "import { a } from \"./lib.lask\"\na = 1"),
           ("lib.lask", "a = 2")
         ]
         ENameDuplicate
@@ -88,20 +88,20 @@ spec = do
   describe "namespace imports" $ do
     it "resolves namespace member references" $
       ok
-        [ ("main.lask", "import * as m from \"lib.lask\"\nx = m.f(1)"),
+        [ ("main.lask", "import * as m from \"./lib.lask\"\nx = m.f(1)"),
           ("lib.lask", "f(a: Number) = a")
         ]
 
     it "reports missing namespace members" $
       failsWith
-        [ ("main.lask", "import * as m from \"lib.lask\"\nx = m.g(1)"),
+        [ ("main.lask", "import * as m from \"./lib.lask\"\nx = m.g(1)"),
           ("lib.lask", "f(a: Number) = a")
         ]
         ENameUndefined
 
     it "local bindings shadow namespaces in accessor position" $
       ok
-        [ ("main.lask", "import * as m from \"lib.lask\"\nf(m: Record<g: Number>) = m.g"),
+        [ ("main.lask", "import * as m from \"./lib.lask\"\nf(m: Record<g: Number>) = m.g"),
           ("lib.lask", "h(a: Number) = a")
         ]
 
@@ -151,7 +151,7 @@ spec = do
 
     it "resolves imported type aliases" $
       ok
-        [ ("main.lask", "import { Strings } from \"lib.lask\"\nxs: Strings = [\"a\"]"),
+        [ ("main.lask", "import { Strings } from \"./lib.lask\"\nxs: Strings = [\"a\"]"),
           ("lib.lask", "type Strings = Array<String>")
         ]
 

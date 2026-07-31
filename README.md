@@ -35,7 +35,10 @@ $ lask eval greet alice --prefix hi
 - Command execution with environment selection: `$ cmd` (stdout), `$2 cmd` (stderr),
   `$* cmd` (whole result), `$[#alpine:3.20] cmd` (Docker),
   `$[#env("name")] cmd` (named environments from `environments.lask.json`, including SSH remotes).
-- Modules with named/namespace imports; stdin bound as the `stdin` string; JSON I/O.
+- Modules with named/namespace imports (`./`-relative paths); stdin bound as the `stdin` string; JSON I/O.
+- External dependencies fetched over the internet, pinned by content hash in
+  `dependencies.lask.json` (`lask deps add` / `lask deps sync`); execution never touches
+  the network — modules resolve from a verified local cache.
 - Observability: trace IDs, `call`/`return`/`fail` execution events (`--format json`),
   stack traces, spec-defined exit codes.
 
@@ -56,6 +59,8 @@ $ lask run <function> [args...]    # execute (result not printed)
 $ lask eval <function> [args...]   # execute and print the result as JSON
 $ lask infer [--symbol <name>]     # show inferred types
 $ lask envs [--check]              # list/check referenced environments
+$ lask deps sync                   # fetch + verify external dependencies
+$ lask deps add <name> --git <url> --rev <rev>   # or --url <url>
 $ lask repl                        # interactive session
 $ lask serve                       # language server (LSP)
 ```

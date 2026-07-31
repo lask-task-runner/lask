@@ -1,18 +1,26 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Module loading (spec chapter 5): resolves the import graph from
--- an entry module, requiring it to be a DAG (@E-MODULE-CYCLE@).
+-- an entry module, requiring it to be a DAG (@E-MODULE-CYCLE@) —
+-- including across external dependencies.
 --
--- Import paths are resolved relative to the base directory, i.e. the
--- directory of the entry module (the same directory used for
--- @environments.lask.json@ resolution, spec 10.3).
+-- Import paths starting with @./@ or @..\/@ are local imports,
+-- resolved relative to the directory of the importing module. Any
+-- other path is an external import: its first segment must be a
+-- dependency name declared in @dependencies.lask.json@ and present in
+-- the cache (@E-MODULE-UNRESOLVED@ otherwise). Module resolution
+-- never accesses the network; fetching is done by @lask deps sync@.
 module Language.Lask.Module.Loader
   ( Program (..),
     LoadedModule (..),
     ModuleReader,
+    LoaderEnv (..),
     loadProgram,
     loadProgramWith,
+    loadProgramEnv,
+    defaultLoaderEnv,
     fileReader,
+    collapseDots,
   )
 where
 
@@ -22,15 +30,37 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import Language.Lask.Deps.Cache (cachePathFor, defaultCacheDir)
+import Language.Lask.Deps.File (DepsFile (..), defaultDepsFileName, entryIsSingleFile, loadDepsFile)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
-import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, ENameUndefined), Stage (StageStatic))
+import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, EModuleUnresolved, ENameUndefined), Stage (StageStatic))
 import Language.Lask.Span (Span (NoSpan))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.Parser (parseModule)
-import System.FilePath (normalise, takeDirectory, (</>))
+import System.Directory (doesDirectoryExist, doesFileExist)
+import System.FilePath (joinPath, normalise, splitDirectories, takeDirectory, (</>))
 
 -- | How to read module sources; injectable for hermetic tests.
 type ModuleReader = FilePath -> IO (Either Text Text)
+
+-- | All external capabilities of the loader, injectable for tests.
+data LoaderEnv = LoaderEnv
+  { leReader :: ModuleReader,
+    -- | Load the dependency definition file of a tree root directory.
+    leLoadDeps :: FilePath -> IO (Either Diagnostic (Maybe DepsFile)),
+    leCacheDir :: FilePath,
+    -- | Existence check for cache entries (files and directories).
+    leExists :: FilePath -> IO Bool
+  }
+
+-- | The per-module resolution context: the module's directory (for
+-- local imports) and its dependency scope — the definition file of
+-- the tree the module belongs to (spec chapter 5: transitive
+-- dependencies resolve independently per dependency).
+data ModCtx = ModCtx
+  { mcDir :: FilePath,
+    mcDeps :: Maybe DepsFile
+  }
 
 data Program = Program
   { progEntry :: FilePath,
@@ -56,35 +86,55 @@ fileReader path = do
     Left e -> Left (T.pack (show (e :: IOException)))
     Right src -> Right src
 
+defaultLoaderEnv :: ModuleReader -> IO LoaderEnv
+defaultLoaderEnv reader = do
+  cacheDir <- defaultCacheDir
+  pure
+    LoaderEnv
+      { leReader = reader,
+        leLoadDeps = \dir -> loadDepsFile (dir </> defaultDepsFileName),
+        leCacheDir = cacheDir,
+        leExists = \p -> (||) <$> doesFileExist p <*> doesDirectoryExist p
+      }
+
 loadProgram :: FilePath -> IO (Either [Diagnostic] Program)
 loadProgram = loadProgramWith fileReader
 
 loadProgramWith :: ModuleReader -> FilePath -> IO (Either [Diagnostic] Program)
 loadProgramWith reader entryPath = do
-  let entry = normalise entryPath
+  env <- defaultLoaderEnv reader
+  loadProgramEnv env entryPath
+
+loadProgramEnv :: LoaderEnv -> FilePath -> IO (Either [Diagnostic] Program)
+loadProgramEnv env entryPath = do
+  let entry = collapseDots (normalise entryPath)
       baseDir = takeDirectory entry
-  result <- go baseDir [] Map.empty [] entry
-  pure $ case result of
-    Left ds -> Left ds
-    Right (mods, order) ->
-      Right
-        Program
-          { progEntry = entry,
-            progBaseDir = baseDir,
-            progModules = mods,
-            progOrder = reverse order
-          }
+  rootDepsE <- leLoadDeps env baseDir
+  case rootDepsE of
+    Left d -> pure (Left [d])
+    Right rootDeps -> do
+      result <- go (ModCtx baseDir rootDeps) [] Map.empty [] entry
+      pure $ case result of
+        Left ds -> Left ds
+        Right (mods, order) ->
+          Right
+            Program
+              { progEntry = entry,
+                progBaseDir = baseDir,
+                progModules = mods,
+                progOrder = reverse order
+              }
   where
     -- DFS with an explicit visiting stack for cycle detection.
     -- The accumulated order is reversed topological order.
     go ::
-      FilePath ->
+      ModCtx ->
       [FilePath] ->
       Map FilePath LoadedModule ->
       [FilePath] ->
       FilePath ->
       IO (Either [Diagnostic] (Map FilePath LoadedModule, [FilePath]))
-    go baseDir visiting done order path
+    go ctx visiting done order path
       | path `Map.member` done = pure (Right (done, order))
       | path `elem` visiting =
           pure . Left . pure $
@@ -92,7 +142,7 @@ loadProgramWith reader entryPath = do
               (T.pack ("cycle: " <> showCycle path visiting))
               (mkDiagnostic EModuleCycle StageStatic NoSpan "circular module import")
       | otherwise = do
-          srcOrErr <- reader path
+          srcOrErr <- leReader env path
           case srcOrErr of
             Left err ->
               pure . Left . pure $
@@ -106,27 +156,105 @@ loadProgramWith reader entryPath = do
               Left d -> pure (Left [d])
               Right m -> do
                 let importPaths = [p | Decl _ f <- moduleDecls m, p <- declImportPath f]
-                    resolved = [(p, normalise (baseDir </> T.unpack p)) | p <- importPaths]
-                loadAll baseDir (path : visiting) done order resolved >>= \r -> pure $ do
-                  (done', order') <- r
-                  let lm =
-                        LoadedModule
-                          { lmPath = path,
-                            lmModule = m,
-                            lmImportKeys = Map.fromList resolved
-                          }
-                  pure (Map.insert path lm done', path : order')
+                resolvedE <- resolveAll ctx importPaths
+                case resolvedE of
+                  Left d -> pure (Left [d])
+                  Right resolved ->
+                    loadAll (path : visiting) done order resolved >>= \r -> pure $ do
+                      (done', order') <- r
+                      let lm =
+                            LoadedModule
+                              { lmPath = path,
+                                lmModule = m,
+                                lmImportKeys = Map.fromList [(p, k) | (p, k, _) <- resolved]
+                              }
+                      pure (Map.insert path lm done', path : order')
 
-    loadAll _ _ done order [] = pure (Right (done, order))
-    loadAll baseDir visiting done order ((_, key) : rest) = do
-      r <- go baseDir visiting done order key
+    resolveAll _ [] = pure (Right [])
+    resolveAll ctx (p : rest) = do
+      r <- resolveImport env ctx p
+      case r of
+        Left d -> pure (Left d)
+        Right (key, childCtx) -> fmap ((p, key, childCtx) :) <$> resolveAll ctx rest
+
+    loadAll _ done order [] = pure (Right (done, order))
+    loadAll visiting done order ((_, key, childCtx) : rest) = do
+      r <- go childCtx visiting done order key
       case r of
         Left ds -> pure (Left ds)
-        Right (done', order') -> loadAll baseDir visiting done' order' rest
+        Right (done', order') -> loadAll visiting done' order' rest
 
     showCycle path visiting =
       let chain = reverse (path : takeWhile (/= path) visiting) <> [path]
        in foldr1 (\a b -> a <> " -> " <> b) chain
+
+-- | Resolve one import path (spec chapter 5): local (@./@\/@..\/@)
+-- relative to the importing module's directory, keeping the same
+-- dependency scope; otherwise external, against the importer's
+-- dependency definition file and the cache.
+resolveImport :: LoaderEnv -> ModCtx -> Text -> IO (Either Diagnostic (FilePath, ModCtx))
+resolveImport env ctx pathText
+  | isLocal = do
+      let file = collapseDots (normalise (mcDir ctx </> T.unpack pathText))
+      pure (Right (file, ctx {mcDir = takeDirectory file}))
+  | otherwise = do
+      let (depName, rest) = T.breakOn "/" pathText
+      case mcDeps ctx >>= Map.lookup depName . depsEntries of
+        Nothing ->
+          pure . Left . unresolved $
+            "undeclared dependency: '" <> depName <> "' (declare it in " <> T.pack defaultDepsFileName <> ")"
+        Just entry -> do
+          let base = cachePathFor (leCacheDir env) entry
+          present <- leExists env base
+          if not present
+            then
+              pure . Left . unresolved $
+                "dependency '" <> depName <> "' is not in the cache; run 'lask deps sync'"
+            else
+              if entryIsSingleFile entry
+                then
+                  if T.null rest
+                    then pure (Right (base, ModCtx (takeDirectory base) Nothing))
+                    else
+                      pure . Left . unresolved $
+                        "dependency '" <> depName <> "' is a single file and has no submodules"
+                else do
+                  let relPath = if T.null rest then "main.lask" else T.unpack (T.drop 1 rest)
+                      file = collapseDots (normalise (base </> relPath))
+                  fileOk <- leExists env file
+                  if not fileOk
+                    then
+                      pure . Left . unresolved $
+                        if T.null rest
+                          then "dependency '" <> depName <> "' has no main.lask"
+                          else "no such module in dependency '" <> depName <> "': " <> T.pack relPath
+                    else do
+                      treeDepsE <- leLoadDeps env base
+                      case treeDepsE of
+                        Left d -> pure (Left d)
+                        Right treeDeps -> pure (Right (file, ModCtx (takeDirectory file) treeDeps))
+  where
+    isLocal = "./" `T.isPrefixOf` pathText || "../" `T.isPrefixOf` pathText
+    unresolved = mkDiagnostic EModuleUnresolved StageStatic NoSpan
+
+-- | Collapse @.@ and @..@ segments so module identities are stable
+-- for cycle detection and caching.
+collapseDots :: FilePath -> FilePath
+collapseDots p =
+  let segs = splitDirectories p
+      step acc s
+        | s == "." = acc
+        | s == "..",
+          (t : rest) <- acc,
+          t /= "..",
+          t /= "/",
+          t /= "." =
+            rest
+        | otherwise = s : acc
+      collapsed = reverse (foldl step [] segs)
+   in case collapsed of
+        [] -> "."
+        _ -> joinPath collapsed
 
 declImportPath :: DeclF -> [Text]
 declImportPath (DImportNamed _ p) = [p]

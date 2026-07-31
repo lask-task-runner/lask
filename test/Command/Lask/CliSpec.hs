@@ -6,11 +6,12 @@
 module Command.Lask.CliSpec (spec) where
 
 import Data.List (isInfixOf)
-import System.Directory (createDirectoryIfMissing, findExecutable)
+import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, removeDirectoryRecursive)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode, readProcess)
+import System.Process (CreateProcess (cwd, env), proc, readCreateProcessWithExitCode, readProcess)
 import Test.Hspec
 
 -- | Locate the freshly built binary via stack.
@@ -31,8 +32,16 @@ data Result = Result
   deriving (Show, Eq)
 
 runLask :: FilePath -> FilePath -> [String] -> String -> IO Result
-runLask lask dir args input = do
-  (code, out, err) <- readCreateProcessWithExitCode ((proc lask args) {cwd = Just dir}) input
+runLask lask dir = runLaskEnv lask dir []
+
+-- | Run the binary with extra environment variables (e.g.
+-- @LASK_CACHE_DIR@ for hermetic dependency tests).
+runLaskEnv :: FilePath -> FilePath -> [(String, String)] -> [String] -> String -> IO Result
+runLaskEnv lask dir extraEnv args input = do
+  baseEnv <- getEnvironment
+  let fullEnv = extraEnv <> [(k, v) | (k, v) <- baseEnv, k `notElem` map fst extraEnv]
+  (code, out, err) <-
+    readCreateProcessWithExitCode ((proc lask args) {cwd = Just dir, env = Just fullEnv}) input
   pure (Result (exitOf code) out err)
   where
     exitOf ExitSuccess = 0
@@ -276,9 +285,96 @@ spec = beforeAll findLask $ do
   describe "modules (spec 5)" $ do
     it "imports across files" $ \lask ->
       withProject
-        [ ("main.lask", "import { add } from \"lib.lask\"\nsum2(a: Number, b: Number): Number = add(a, b)\n"),
+        [ ("main.lask", "import { add } from \"./lib.lask\"\nsum2(a: Number, b: Number): Number = add(a, b)\n"),
           ("lib.lask", "add(x: Number, y: Number): Number = x + y\n")
         ]
         $ \dir -> do
           r <- runLask lask dir ["eval", "sum2", "20", "22"] ""
           r `shouldBe` Result 0 "42\n" ""
+
+  describe "external dependencies (spec 5, 11.5)" $ do
+    it "adds, resolves, syncs and verifies a single-file url dependency" $ \lask ->
+      withSystemTempDirectory "lask-deps" $ \root -> do
+        let cache = root </> "cache"
+            srcDir = root </> "published"
+            proj = root </> "proj"
+            extraEnv = [("LASK_CACHE_DIR", cache)]
+        createDirectoryIfMissing True srcDir
+        createDirectoryIfMissing True proj
+        writeFile (srcDir </> "notify.lask") "send(x: String): String = concat(\"sent:\", x)\n"
+        writeFile (proj </> "main.lask") "import { send } from \"notify\"\nf(): String = send(\"a\")\n"
+
+        -- Before the dependency is declared: E-MODULE-UNRESOLVED
+        -- (check prints diagnostics to stdout, spec 11.3).
+        r0 <- runLaskEnv lask proj extraEnv ["check"] ""
+        resExit r0 `shouldBe` 1
+        resOut r0 `shouldSatisfy` isInfixOf "E-MODULE-UNRESOLVED"
+
+        -- deps add fetches (file:// URL, no network), records and caches.
+        r1 <- runLaskEnv lask proj extraEnv ["deps", "add", "notify", "--url", "file://" <> srcDir </> "notify.lask"] ""
+        resExit r1 `shouldBe` 0
+        doesFileExist (proj </> "dependencies.lask.json") `shouldReturn` True
+
+        r2 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
+        r2 `shouldBe` Result 0 "\"sent:a\"\n" ""
+
+        -- Wiping the cache: resolution must not touch the network.
+        removeDirectoryRecursive cache
+        r3 <- runLaskEnv lask proj extraEnv ["check"] ""
+        resExit r3 `shouldBe` 1
+        resOut r3 `shouldSatisfy` isInfixOf "E-MODULE-UNRESOLVED"
+        resOut r3 `shouldSatisfy` isInfixOf "deps sync"
+
+        -- deps sync restores the cache and verifies the hash.
+        r4 <- runLaskEnv lask proj extraEnv ["deps", "sync"] ""
+        resExit r4 `shouldBe` 0
+        r5 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
+        r5 `shouldBe` Result 0 "\"sent:a\"\n" ""
+
+        -- Tampering with the published source: sync must detect the
+        -- mismatch and place nothing in the cache (exit 3).
+        removeDirectoryRecursive cache
+        writeFile (srcDir </> "notify.lask") "send(x: String): String = concat(\"evil:\", x)\n"
+        r6 <- runLaskEnv lask proj extraEnv ["deps", "sync"] ""
+        resExit r6 `shouldBe` 3
+        resErr r6 `shouldSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
+        r7 <- runLaskEnv lask proj extraEnv ["check"] ""
+        resExit r7 `shouldBe` 1
+
+    it "adds and imports a git tree dependency (main.lask convention and subpaths)" $ \lask ->
+      withSystemTempDirectory "lask-deps-git" $ \root -> do
+        let cache = root </> "cache"
+            repo = root </> "repo"
+            proj = root </> "proj"
+            extraEnv = [("LASK_CACHE_DIR", cache)]
+        createDirectoryIfMissing True repo
+        createDirectoryIfMissing True proj
+        writeFile (repo </> "main.lask") "import { u } from \"./util.lask\"\nhello(): String = u\n"
+        writeFile (repo </> "util.lask") "u: String = \"from-kit\"\n"
+        let git args = readCreateProcessWithExitCode ((proc "git" args) {cwd = Just repo}) ""
+        _ <- git ["init", "--quiet"]
+        _ <- git ["add", "."]
+        _ <- git ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "-m", "init"]
+        _ <- git ["tag", "v1"]
+        writeFile (proj </> "main.lask") $
+          "import { hello } from \"kit\"\n"
+            <> "import { u } from \"kit/util.lask\"\n"
+            <> "f(): String = concat(hello(), u)\n"
+        r1 <- runLaskEnv lask proj extraEnv ["deps", "add", "kit", "--git", "file://" <> repo, "--rev", "v1"] ""
+        resExit r1 `shouldBe` 0
+        r2 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
+        r2 `shouldBe` Result 0 "\"from-kitfrom-kit\"\n" ""
+
+    it "requires a source option for deps add (exit 4)" $ \lask ->
+      withProject [("main.lask", "a = 1\n")] $ \dir -> do
+        r <- runLask lask dir ["deps", "add", "kit"] ""
+        resExit r `shouldSatisfy` (/= 0)
+
+    it "reports malformed dependency files with exit 1" $ \lask ->
+      withProject
+        [ ("main.lask", "a = 1\n"),
+          ("dependencies.lask.json", "{\"dependencies\": {\"kit\": {\"git\": \"https://x\"}}}")
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["deps", "sync"] ""
+          resExit r `shouldBe` 1

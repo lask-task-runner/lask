@@ -28,6 +28,8 @@ data ErrorCode
   | ETypeKeyword
   | ETypeIllformed
   | EModuleCycle
+  | EModuleUnresolved
+  | EModuleHashMismatch
   | ERuntimeDivByZero
   | ERuntimeCommandNonzero
   | ERuntimeAwaitFailed
@@ -68,6 +70,8 @@ codeText c = case c of
   ETypeKeyword -> "E-TYPE-KEYWORD"
   ETypeIllformed -> "E-TYPE-ILLFORMED"
   EModuleCycle -> "E-MODULE-CYCLE"
+  EModuleUnresolved -> "E-MODULE-UNRESOLVED"
+  EModuleHashMismatch -> "E-MODULE-HASH-MISMATCH"
   ERuntimeDivByZero -> "E-RUNTIME-DIV-BY-ZERO"
   ERuntimeCommandNonzero -> "E-RUNTIME-COMMAND-NONZERO"
   ERuntimeAwaitFailed -> "E-RUNTIME-AWAIT-FAILED"

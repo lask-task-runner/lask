@@ -26,6 +26,9 @@ import qualified Data.Text.IO as TIO
 import qualified Language.LSP.Lask as LSP
 import Language.Lask (Compiled (..), compileFile)
 import Language.Lask.Core.AST
+import Language.Lask.Deps.Cache (defaultCacheDir)
+import Language.Lask.Deps.Fetch (DepSource (..), fetchAndStore, syncAll)
+import Language.Lask.Deps.File
 import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
 import Language.Lask.EnvFile
@@ -41,7 +44,7 @@ import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Types (Type (..), renderType)
 import Language.Lask.Utils (Pretty (pretty))
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.IO (hIsTerminalDevice, hPutStrLn, stderr, stdin)
 import System.Process (proc)
 
@@ -54,6 +57,8 @@ runRootCommand cmd = case cmd of
   CmdInfer opts symbol -> cmdInfer opts symbol
   CmdRepl opts -> cmdRepl opts
   CmdEnvs envsOpts -> cmdEnvs envsOpts
+  CmdDepsSync opts -> cmdDepsSync opts
+  CmdDepsAdd opts name source -> cmdDepsAdd opts name source
 
 -- check ---------------------------------------------------------------------
 
@@ -398,6 +403,75 @@ checkEnvRef envsOpts sink nextExec envFile ref = case refKind ref of
           Left e -> Left (codeText EIoSshConnect <> ": " <> T.pack (show (e :: IOError)))
       Nothing -> pure (Left (codeText EIoEnvResolve <> ": undefined environment"))
   _ -> pure (Left (codeText EIoEnvResolve <> ": " <> refTarget ref))
+
+-- deps (spec 11.5) ------------------------------------------------------------
+
+-- | @lask deps sync@: fetch and verify every declared dependency
+-- (including transitive ones) into the cache. This is the only
+-- subcommand allowed to access the network for module resolution.
+cmdDepsSync :: CommonOpts -> IO ()
+cmdDepsSync opts = do
+  cacheDir <- defaultCacheDir
+  let depsPath = takeDirectory (optModule opts) </> defaultDepsFileName
+  r <- loadDepsFile depsPath
+  case r of
+    Left d -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+      exitWith (ExitFailure 1)
+    Right Nothing -> do
+      putStrLn "no dependencies declared"
+      exitSuccess
+    Right (Just df) -> do
+      results <- syncAll cacheDir df
+      mapM_
+        ( \(name, status) -> case status of
+            Right () -> TIO.putStrLn (name <> " ok")
+            Left d -> do
+              TIO.putStrLn (name <> " NG")
+              TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+        )
+        results
+      let failed = [() | (_, Left _) <- results]
+      exitWith (if null failed then ExitSuccess else ExitFailure 3)
+
+-- | @lask deps add@: fetch the source, pin its content hash (trust on
+-- first use), record the entry and place the verified source in the
+-- cache.
+cmdDepsAdd :: CommonOpts -> Text -> DepsAddSource -> IO ()
+cmdDepsAdd opts name source = do
+  unless (isLowerIdent name) $
+    usageError opts ("dependency name must be a lower-case identifier: '" <> name <> "'")
+  cacheDir <- defaultCacheDir
+  let depsPath = takeDirectory (optModule opts) </> defaultDepsFileName
+      depSource = case source of
+        AddGit url rev -> SrcGit url rev
+        AddUrl url -> SrcUrl url
+  existingE <- loadDepsFile depsPath
+  existing <- case existingE of
+    Left d -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+      exitWith (ExitFailure 1)
+    Right mDf -> pure (maybe (DepsFile Map.empty) id mDf)
+  fetched <- fetchAndStore cacheDir depSource
+  case fetched of
+    Left d -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+      exitWith (ExitFailure 3)
+    Right hash -> do
+      let entry = case depSource of
+            SrcGit url rev -> DepGit url rev hash
+            SrcUrl url -> DepUrl url hash
+          updated = DepsFile (Map.insert name entry (depsEntries existing))
+      BL.writeFile depsPath (renderDepsFile updated)
+      TIO.putStrLn (name <> " " <> hash)
+      exitSuccess
+  where
+    isLowerIdent t = case T.uncons t of
+      Just (c, rest) ->
+        (c >= 'a' && c <= 'z' || c == '_') && T.all identChar rest
+      Nothing -> False
+    identChar c =
+      c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
 
 -- Shared helpers -----------------------------------------------------------------
 

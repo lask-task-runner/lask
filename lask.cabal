@@ -31,6 +31,10 @@ library
       Language.Lask.Builtins.Names
       Language.Lask.Builtins.Sig
       Language.Lask.Core.AST
+      Language.Lask.Deps.Cache
+      Language.Lask.Deps.Fetch
+      Language.Lask.Deps.File
+      Language.Lask.Deps.Hash
       Language.Lask.Desugar.Return
       Language.Lask.Diagnostic
       Language.Lask.Elaborate
@@ -65,9 +69,11 @@ library
     , aeson-pretty >=0.8 && <1
     , async >=2.2 && <3
     , base >=4.7 && <5
+    , base16-bytestring >=1.0 && <2
     , bytestring ==0.11.*
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
+    , cryptohash-sha256 >=0.11 && <1
     , directory >=1.0 && <2
     , filepath >=1.4 && <2
     , free >=5.0 && <6
@@ -83,6 +89,7 @@ library
     , random >=1.2 && <2
     , scientific ==0.3.*
     , stm >=2.0 && <3
+    , temporary >=1.3 && <2
     , text >=2.0 && <3
     , time >=1.0 && <2
     , vector ==0.13.*
@@ -100,9 +107,11 @@ executable lask
     , aeson-pretty >=0.8 && <1
     , async >=2.2 && <3
     , base >=4.7 && <5
+    , base16-bytestring >=1.0 && <2
     , bytestring ==0.11.*
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
+    , cryptohash-sha256 >=0.11 && <1
     , directory >=1.0 && <2
     , filepath >=1.4 && <2
     , free >=5.0 && <6
@@ -119,6 +128,7 @@ executable lask
     , random >=1.2 && <2
     , scientific ==0.3.*
     , stm >=2.0 && <3
+    , temporary >=1.3 && <2
     , text >=2.0 && <3
     , time >=1.0 && <2
     , vector ==0.13.*
@@ -129,8 +139,10 @@ test-suite lask-test
   main-is: Spec.hs
   other-modules:
       Command.Lask.CliSpec
+      Language.Lask.Deps.DepsSpec
       Language.Lask.ElaborateSpec
       Language.Lask.LexerSpec
+      Language.Lask.Module.LoaderSpec
       Language.Lask.Module.ResolveSpec
       Language.Lask.Obs.CommandLogSpec
       Language.Lask.Runtime.EnvironmentSpec
@@ -146,9 +158,11 @@ test-suite lask-test
     , aeson-pretty >=0.8 && <1
     , async >=2.2 && <3
     , base >=4.7 && <5
+    , base16-bytestring >=1.0 && <2
     , bytestring ==0.11.*
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
+    , cryptohash-sha256 >=0.11 && <1
     , directory >=1.0 && <2
     , doctest ==0.22.*
     , filepath >=1.4 && <2

@@ -112,7 +112,7 @@ spec = do
     it "shows types of imported symbols with their docs" $
       withSystemTempDirectory "lask-hover" $ \dir -> do
         writeFile (dir </> "lib.lask") "// Doubles a number.\ndouble(n: Number): Number = n * 2\n"
-        let docSrc = "import { double } from \"lib.lask\"\nf() = double(3)\n"
+        let docSrc = "import { double } from \"./lib.lask\"\nf() = double(3)\n"
         h <- hoverAt (dir </> "main.lask") docSrc (Position 1 6) -- `double` reference
         let t = case h of
               Just (Hover (InL (MarkupContent _ x)) _) -> Just x
@@ -127,5 +127,5 @@ spec = do
       withSystemTempDirectory "lask-lsp" $ \dir -> do
         writeFile (dir </> "a.lask") "a = 1\n"
         let docUri = Uri ("file://" <> T.pack (dir </> "main.lask"))
-        ds <- checkText (uriPath docUri) "import { a } from \"a.lask\"\nx = a"
+        ds <- checkText (uriPath docUri) "import { a } from \"./a.lask\"\nx = a"
         ds `shouldBe` []

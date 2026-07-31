@@ -237,7 +237,7 @@ spec = do
     it "resolves imported declarations with types" $ do
       r <-
         elab
-          [ ("main.lask", "import { add } from \"lib.lask\"\nx = add(1, 2)"),
+          [ ("main.lask", "import { add } from \"./lib.lask\"\nx = add(1, 2)"),
             ("lib.lask", "add(a: Number, b: Number): Number = a + b")
           ]
       case r of
@@ -246,7 +246,7 @@ spec = do
     it "namespace member calls check keyword arguments" $ do
       r <-
         elab
-          [ ("main.lask", "import * as m from \"lib.lask\"\nx = m.greet(\"a\", prefix = \"hi\")"),
+          [ ("main.lask", "import * as m from \"./lib.lask\"\nx = m.greet(\"a\", prefix = \"hi\")"),
             ("lib.lask", "greet(name: String, --prefix: String = \"hello\"): String = concat(prefix, name)")
           ]
       case r of
