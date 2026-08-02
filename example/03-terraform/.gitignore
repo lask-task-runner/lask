@@ -1,0 +1,5 @@
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/lask-terraform.generated.tfvars.json

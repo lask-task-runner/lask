@@ -1,0 +1,9 @@
+{
+    "dependencies": {
+        "terraform": {
+            "git": "https://github.com/lask-task-runner/lask-terraform",
+            "hash": "sha256-9d0f47414fe20c68eabea46640b96f89154df49fca35ac8540335b6e28e3486a",
+            "rev": "171d51a6d4d004ea5ae4de6034f0d3c659e44221"
+        }
+    }
+}
