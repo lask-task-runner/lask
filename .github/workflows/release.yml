@@ -1,10 +1,3 @@
-# Release notes for maintainers:
-# - The release workflow publishes APT repository metadata to the `gh-pages` branch.
-# - Configure these repository secrets before publishing tags:
-#   - APT_GPG_PRIVATE_KEY: ASCII-armored private key used to sign APT metadata.
-#   - APT_GPG_PASSPHRASE: passphrase for the private key.
-#   - APT_GPG_KEY_ID (optional): key ID to use for signing. If omitted, the first imported secret key is used.
-
 name: Release
 
 on:
@@ -115,66 +108,8 @@ jobs:
           mkdir -p out
           find artifacts -type f -exec cp {} out/ \;
 
-      - name: Build APT repository files
-        shell: bash
-        env:
-          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
-          APT_GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
-        run: |
-          if [ -z "${APT_GPG_PRIVATE_KEY}" ] || [ -z "${APT_GPG_PASSPHRASE}" ]; then
-            echo "APT signing secrets are required: APT_GPG_PRIVATE_KEY and APT_GPG_PASSPHRASE"
-            exit 1
-          fi
-
-          sudo apt-get update
-          sudo apt-get install -y apt-utils gnupg
-
-          mkdir -p apt-repo/pool/main/l/lask
-          cp artifacts/linux-amd64/lask_*.deb apt-repo/pool/main/l/lask/
-
-          mkdir -p apt-repo/dists/stable/main/binary-amd64
-          apt-ftparchive packages apt-repo/pool > apt-repo/dists/stable/main/binary-amd64/Packages
-          gzip -kf apt-repo/dists/stable/main/binary-amd64/Packages
-
-          apt-ftparchive \
-            -o APT::FTPArchive::Release::Origin="lask-task-runner" \
-            -o APT::FTPArchive::Release::Label="lask" \
-            -o APT::FTPArchive::Release::Suite="stable" \
-            -o APT::FTPArchive::Release::Codename="stable" \
-            -o APT::FTPArchive::Release::Architectures="amd64" \
-            -o APT::FTPArchive::Release::Components="main" \
-            release apt-repo/dists/stable > apt-repo/dists/stable/Release
-
-          export GNUPGHOME="$(mktemp -d)"
-          echo "${APT_GPG_PRIVATE_KEY}" | gpg --batch --import
-
-          if [ -n "${APT_GPG_KEY_ID}" ]; then
-            KEY_ID="${APT_GPG_KEY_ID}"
-          else
-            KEY_ID="$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')"
-          fi
-
-          gpg --batch --yes --pinentry-mode loopback --passphrase "${APT_GPG_PASSPHRASE}" \
-            --default-key "${KEY_ID}" \
-            --clearsign -o apt-repo/dists/stable/InRelease apt-repo/dists/stable/Release
-
-          gpg --batch --yes --pinentry-mode loopback --passphrase "${APT_GPG_PASSPHRASE}" \
-            --default-key "${KEY_ID}" \
-            --armor --detach-sign -o apt-repo/dists/stable/Release.gpg apt-repo/dists/stable/Release
-
-          gpg --batch --yes --output apt-repo/lask-archive-keyring.gpg --dearmor < <(gpg --batch --yes --armor --export "${KEY_ID}")
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: out/*
           generate_release_notes: true
-
-      - name: Publish APT repository to gh-pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: apt-repo
-          force_orphan: true
