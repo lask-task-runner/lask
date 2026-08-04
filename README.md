@@ -1,8 +1,14 @@
 # Lask
 
-Lask (coined by combining "lambda" and "task") is a task runner based on functional programming.
-Tasks are expressed as functions in `.lask` modules and executed from the CLI. The language,
-CLI, execution environments and observability are defined by the specification in
+Lask (lambda + task) is a locally verifiable, type-safe task runner. It brings the composability
+of functional programming to your daily automation and CI/CD pipelines.
+
+Instead of sprawling shell scripts or YAML pipelines, tasks in Lask are plain functions with real
+types and arguments. This allows `lask check` to catch typos, missing arguments, and type mismatches
+before execution begins. Whether running on your laptop, inside a Docker container, or over SSH,
+the workflow remains cleanly reproducible.
+
+The language, CLI, execution environments, and observability are defined by the specification in
 [doc/spec.md](doc/spec.md).
 
 ```lask
@@ -25,6 +31,12 @@ $ lask eval greet alice --prefix hi
 "hi, alice"
 ```
 
+### Why Lask
+
+- **Locally Verifiable**: The exact same task definitions run locally and in CI. Static analysis (`lask check`) guarantees your arguments and types are correct before execution starts, ending the "push and pray" cycle.
+- **First-Class Environments**: Execution environments (`#local`, `#docker(...)`, `#env(...)`) are treated as normal language values. Pinning the exact execution environment directly in code—alongside your functions and types—ensures strict reproducibility anywhere, without forcing you to migrate to a heavy framework.
+- **Composable & Modular**: Unlike Makefiles or shell scripts where passing arguments safely and reusing code is difficult, Lask uses structured function arguments (keyword, variadic, defaults) and standard module imports.
+
 ### Features
 
 - Statically checked before execution: syntax, name resolution, and a structural type system
@@ -42,7 +54,34 @@ $ lask eval greet alice --prefix hi
 - Observability: trace IDs, `call`/`return`/`fail` execution events (`--format json`),
   stack traces, spec-defined exit codes.
 
+### Status
+
+Lask is pre-1.0: features are `experimental` until the first tagged release, and breaking
+changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what
+`stable` will mean once released.
+
 ### Installation
+
+#### Homebrew (macOS)
+
+```bash
+$ brew tap lask-task-runner/tap
+$ brew trust lask-task-runner/tap
+$ brew install lask
+```
+
+#### APT (Debian/Ubuntu)
+
+```bash
+$ curl -fsSL https://lask-task-runner.github.io/lask/lask-archive-keyring.gpg | \
+  sudo tee /usr/share/keyrings/lask-archive-keyring.gpg > /dev/null
+$ echo "deb [signed-by=/usr/share/keyrings/lask-archive-keyring.gpg] https://lask-task-runner.github.io/lask stable main" | \
+  sudo tee /etc/apt/sources.list.d/lask.list > /dev/null
+$ sudo apt update
+$ sudo apt install -y lask
+```
+
+#### Build from source
 
 To build Lask, you need the Haskell toolchain ([GHCup](https://www.haskell.org/ghcup/)
 or `brew install haskell-stack`).
