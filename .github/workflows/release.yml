@@ -1,3 +1,10 @@
+# Release notes for maintainers:
+# - The release workflow publishes APT repository metadata to the `gh-pages` branch.
+# - Configure these repository secrets before publishing tags:
+#   - APT_GPG_PRIVATE_KEY: ASCII-armored private key used to sign APT metadata.
+#   - APT_GPG_PASSPHRASE: passphrase for the private key.
+#   - APT_GPG_KEY_ID (optional): key ID to use for signing. If omitted, the first imported secret key is used.
+
 name: Release
 
 on:
