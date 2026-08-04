@@ -1,34 +1,50 @@
 # Lask
 
-Lask (lambda + task) is a locally verifiable, type-safe task runner. It brings the composability
-of functional programming to your daily automation and CI/CD pipelines.
+Lask (lambda + task) is a locally verifiable, type-safe task runner. It brings the composability of functional programming to your daily automation and CI/CD pipelines.
 
-Instead of sprawling shell scripts or YAML pipelines, tasks in Lask are plain functions with real
-types and arguments. This allows `lask check` to catch typos, missing arguments, and type mismatches
-before execution begins. Whether running on your laptop, inside a Docker container, or over SSH,
-the workflow remains cleanly reproducible.
+Instead of sprawling shell scripts or YAML pipelines, tasks in Lask are plain functions with real types and arguments. This allows `lask check` to catch typos, missing arguments, and type mismatches before execution begins. Whether running on your laptop, inside a Docker container, or over SSH, the workflow remains cleanly reproducible.
 
-The language, CLI, execution environments, and observability are defined by the specification in
-[doc/spec.md](doc/spec.md).
+The language, CLI, execution environments, and observability are defined by the specification in [doc/spec.md](doc/spec.md).
 
 ```lask
-// main.lask
-greet(name: String, --prefix: String = "hello"): String =
-  concat(prefix, concat(", ", name))
+// Sample function to greet using `echo`.
+// example:
+// >>> lask run hello --name Lask
+hello(--name: String = "World"): String = $ echo "Hello, #{name}!"
 
-publish(tag: String): String = do {
-  if (tag == "") { return "skip: no tag" }
-  r = $* ./release.sh #{tag}
-  if (r.code != 0) { return r.stderr }
-  "released"
+// Sample function to run Go tests in the Docker environment.
+// example:
+// >>> lask run test_backend
+test_backend(): String = $[#golang:1.22] go test ./...
+
+// Sample function to run Node.js tests in the Docker environment.
+// example:
+// >>> lask run test_frontend
+test_frontend(): String = $[#node:20] npm test
+
+// Sample function to run both backend and frontend tests concurrently.
+// example:
+// >>> lask run test_all
+test_all(): String = do {
+  test1 = async test_backend()
+  test2 = async test_frontend()
+  await test1
+  await test2
+  return "successfully ran all tests"
 }
 
-build_in_docker() = $[#golang:1.22] go build ./...
-```
-
-```bash
-$ lask eval greet alice --prefix hi
-"hi, alice"
+// Sample function to build a Go binary with version info.
+// example:
+// >>> lask run build --version 1.0.0
+build(--version: String = "latest"): String = do {
+  build1 = async $[#golang:1.22] go build -o my-api --ldflags "-X main.version=#{version}" ./cmd/my-api
+  build2 = async $[#node:20] npm run build
+  await build1
+  $ docker build -t my-api:#{version} ./api
+  await build2
+  $ docker build -t my-gui:#{version} ./gui
+  return "successfully built my-api:#{version} and my-gui:#{version}"
+}
 ```
 
 ### Why Lask
@@ -39,20 +55,12 @@ $ lask eval greet alice --prefix hi
 
 ### Features
 
-- Statically checked before execution: syntax, name resolution, and a structural type system
-  (`Number`, `String`, `Bool`, `Array<T>`, `Map<T>`, `Record<...>`, `Function<...>`,
-  `AsyncHandle<T>`, `Environment`).
-- Procedural sugar (`do`, `if`/`else`, `for`, `return`, `try`/`catch`/`finally`,
-  `async`/`await`) normalized onto a small functional core.
-- Command execution with environment selection: `$ cmd` (stdout), `$2 cmd` (stderr),
-  `$* cmd` (whole result), `$[#alpine:3.20] cmd` (Docker),
-  `$[#env("name")] cmd` (named environments from `environments.lask.json`, including SSH remotes).
+- Statically checked before execution: syntax, name resolution, and a structural type system (`Number`, `String`, `Bool`, `Array<T>`, `Map<T>`, `Record<...>`, `Function<...>`, `AsyncHandle<T>`, `Environment`).
+- Procedural sugar (`do`, `if`/`else`, `for`, `return`, `try`/`catch`/`finally`, `async`/`await`) normalized onto a small functional core.
+- Command execution with environment selection: `$ cmd` (stdout), `$2 cmd` (stderr), `$* cmd` (whole result), `$[#alpine:3.20] cmd` (Docker), `$[#env("name")] cmd` (named environments from `environments.lask.json`, including SSH remotes).
 - Modules with named/namespace imports (`./`-relative paths); stdin bound as the `stdin` string; JSON I/O.
-- External dependencies fetched over the internet, pinned by content hash in
-  `dependencies.lask.json` (`lask deps add` / `lask deps sync`); execution never touches
-  the network — modules resolve from a verified local cache.
-- Observability: trace IDs, `call`/`return`/`fail` execution events (`--format json`),
-  stack traces, spec-defined exit codes.
+- External dependencies fetched over the internet, pinned by content hash in `dependencies.lask.json` (`lask deps add` / `lask deps sync`); execution never touches the network — modules resolve from a verified local cache.
+- Observability: trace IDs, `call`/`return`/`fail` execution events (`--format json`), stack traces, spec-defined exit codes.
 
 ### Status
 
@@ -70,24 +78,57 @@ $ brew trust lask-task-runner/tap
 $ brew install lask
 ```
 
-#### APT (Debian/Ubuntu)
+#### Manual install (download binary)
+
+Download the archive for your platform from the
+[latest release](https://github.com/lask-task-runner/lask/releases/latest) and put the `lask`
+binary on your `PATH`.
+
+macOS / Linux:
 
 ```bash
-$ curl -fsSL https://lask-task-runner.github.io/lask/lask-archive-keyring.gpg | \
-  sudo tee /usr/share/keyrings/lask-archive-keyring.gpg > /dev/null
-$ echo "deb [signed-by=/usr/share/keyrings/lask-archive-keyring.gpg] https://lask-task-runner.github.io/lask stable main" | \
-  sudo tee /etc/apt/sources.list.d/lask.list > /dev/null
-$ sudo apt update
-$ sudo apt install -y lask
+$ VERSION=$(curl -fsSL https://api.github.com/repos/lask-task-runner/lask/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f4)
+$ TARGET=macos-arm64   # also available: macos-eases/download/${VERSION}/lask-${VERSION}-${TARGET}.tar.gz"
+$ tar -xzf lask.tar.gz
+
+$ curl -fsSL -o lask.tar.gz \
+  "https://github.com/lask-task-runner/lask/rel [latest release](https://github.com/lask-task-runner/lask/releases/latest) and put the `lask` $ mkdir -p ~/.local/bin
+$ install -m 0755 lask ~/.local/bin/lask
+$ rm lask.tar.gz lask
 ```
+
+Make sure `~/.local/bin` is on your `PATH` (add `export PATH="$HOME/.local/bin:$PATH"` to your
+shell profile if it isn't), then verify with `lask --help`.
+
+Windows (PowerShell):
+ ```powershell
+> $version = (Invoke-RestMethod https://api.github.com/repos/lask-task-runner/lask/releases/latest).tag_name
+> Invoke-WebRequest -Uri "https://github.com/lask-task-runner/lask/releases/download/$version/lask-$version-windows-amd64.zip" -OutFile lask.zip
+> Expand-Archive -Path lask.zip -DestinationPath "$env:LOCALAPPDATA\Programs\lask" -Force
+> setx PATH "$env:PATH;$env:LOCALAPPDATA\Programs\lask"
+```
+
+Restart your terminal for the updated `PATH` to take effect, then verify with `lask --help`.
+
+To uninstall, remove the installed binary:
+
+```bash
+$ rm ~/.local/bin/lask
+```
+
+```powershell
+> Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\lask"
+```
+
+> **Note**: Package manager support beyond Homebrew (APT, Chocolatey) is planned for a future release.
 
 #### Build from source
 
 To build Lask, you need the Haskell toolchain ([GHCup](https://www.haskell.org/ghcup/)
-or `brew install haskell-stack`).
+or `bre
+ install haskell-stack`).
 
-```bash
-$ stack --local-bin-path /usr/local/bin/ install
+```bash $ stack --local-bin-path /usr/local/bin/ install
 ```
 
 ### Usage
@@ -105,11 +146,11 @@ $ lask serve                       # language server (LSP)
 ```
 
 Function and keyword-argument names map from kebab-case on the CLI
-(`lask run show-version --out-dir /tmp` calls `show_version(--out_dir ...)`).
+
+`lask run show-version --out-dir /tmp` calls `show_version(--out_dir ...)`).
 
 ### Example
-
-```bash
+ ```bash
 $ cd ./example/01-basic
 $ lask run hello
 $ lask eval add 1 2
