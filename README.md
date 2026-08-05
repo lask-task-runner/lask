@@ -68,6 +68,12 @@ Lask is pre-1.0: features are `experimental` until the first tagged release, and
 changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what
 `stable` will mean once released.
 
+### Supported Editors
+
+Lask provides a VS Code extension for a rich editing experience, including syntax highlighting, type checking, go-to-definition, and autocomplete powered by the built-in language server.
+
+You can install the [Lask extension from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ToruIkeda.vscode-lask) or search for "Lask" within VS Code.
+
 ### Installation
 
 #### Homebrew (macOS)
@@ -128,7 +134,8 @@ To build Lask, you need the Haskell toolchain ([GHCup](https://www.haskell.org/g
 or `bre
  install haskell-stack`).
 
-```bash $ stack --local-bin-path /usr/local/bin/ install
+```bash
+$ stack --local-bin-path /usr/local/bin/ install
 ```
 
 ### Usage
