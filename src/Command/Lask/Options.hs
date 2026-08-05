@@ -55,6 +55,7 @@ data RootCommand
   | CmdEnvs EnvsOpts
   | CmdDepsSync CommonOpts
   | CmdDepsAdd CommonOpts Text DepsAddSource
+  | CmdVersion
 
 -- | The source of a @deps add@ entry (spec 11.5).
 data DepsAddSource = AddGit Text Text | AddUrl Text
@@ -142,6 +143,7 @@ pRootCommand =
         <> command "repl" (info (CmdRepl <$> pCommon) (progDesc "Interactive session"))
         <> command "envs" (info (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))
         <> command "deps" (info pDepsCommand (progDesc "Manage external dependencies"))
+        <> command "version" (info (pure CmdVersion) (progDesc "Print the lask version"))
     )
 
 pDepsCommand :: Parser RootCommand

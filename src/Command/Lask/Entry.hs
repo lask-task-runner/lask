@@ -23,6 +23,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
+import Data.Version (showVersion)
 import qualified Language.LSP.Lask as LSP
 import Language.Lask (Compiled (..), compileFile)
 import Language.Lask.Core.AST
@@ -43,6 +44,7 @@ import Language.Lask.Serialize (encodeValue, encodeValuePretty, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Types (Type (..), renderType)
 import Language.Lask.Utils (Pretty (pretty))
+import Paths_lask (version)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.FilePath (takeDirectory, (</>))
 import System.IO (hIsTerminalDevice, hPutStrLn, stderr, stdin)
@@ -59,6 +61,12 @@ runRootCommand cmd = case cmd of
   CmdEnvs envsOpts -> cmdEnvs envsOpts
   CmdDepsSync opts -> cmdDepsSync opts
   CmdDepsAdd opts name source -> cmdDepsAdd opts name source
+  CmdVersion -> cmdVersion
+
+-- version ---------------------------------------------------------------------
+
+cmdVersion :: IO ()
+cmdVersion = putStrLn ("lask " ++ showVersion version)
 
 -- check ---------------------------------------------------------------------
 
