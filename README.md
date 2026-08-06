@@ -86,9 +86,7 @@ Lask is a task runner, not a build system. Here is how it compares to the tools 
 
 ### Status
 
-Lask is pre-1.0: features are `experimental` until the first tagged release, and breaking
-changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what
-`stable` will mean once released.
+Lask is pre-1.0: features are `experimental` until the first tagged release, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released.
 
 ### Supported Editors
 
@@ -108,28 +106,23 @@ $ brew install lask
 
 #### Manual install (download binary)
 
-Download the archive for your platform from the
-[latest release](https://github.com/lask-task-runner/lask/releases/latest) and put the `lask`
-binary on your `PATH`.
+Download the archive for your platform from the [latest release](https://github.com/lask-task-runner/lask/releases/latest) and put the `lask` binary on your `PATH`.
 
 macOS / Linux:
 
 ```bash
 $ VERSION=$(curl -fsSL https://api.github.com/repos/lask-task-runner/lask/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f4)
-$ TARGET=macos-arm64   # also available: macos-eases/download/${VERSION}/lask-${VERSION}-${TARGET}.tar.gz"
+$ TARGET=linux-amd64 # or macos-amd64, macos-arm64
+$ curl -fsSL -o lask.tar.gz "https://github.com/lask-task-runner/lask/releases/download/${VERSION}/lask-${VERSION}-${TARGET}.tar.gz"
 $ tar -xzf lask.tar.gz
-
-$ curl -fsSL -o lask.tar.gz \
-  "https://github.com/lask-task-runner/lask/rel [latest release](https://github.com/lask-task-runner/lask/releases/latest) and put the `lask` $ mkdir -p ~/.local/bin
-$ install -m 0755 lask ~/.local/bin/lask
-$ rm lask.tar.gz lask
+$ sudo mv ./lask /usr/local/bin
 ```
 
-Make sure `~/.local/bin` is on your `PATH` (add `export PATH="$HOME/.local/bin:$PATH"` to your
-shell profile if it isn't), then verify with `lask --help`.
+Make sure `~/.local/bin` is on your `PATH` (add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if it isn't), then verify with `lask --help`.
 
 Windows (PowerShell):
- ```powershell
+
+```powershell
 > $version = (Invoke-RestMethod https://api.github.com/repos/lask-task-runner/lask/releases/latest).tag_name
 > Invoke-WebRequest -Uri "https://github.com/lask-task-runner/lask/releases/download/$version/lask-$version-windows-amd64.zip" -OutFile lask.zip
 > Expand-Archive -Path lask.zip -DestinationPath "$env:LOCALAPPDATA\Programs\lask" -Force
@@ -152,9 +145,7 @@ $ rm ~/.local/bin/lask
 
 #### Build from source
 
-To build Lask, you need the Haskell toolchain ([GHCup](https://www.haskell.org/ghcup/)
-or `bre
- install haskell-stack`).
+To build Lask, you need the Haskell toolchain ([GHCup](https://www.haskell.org/ghcup/) or `brew install haskell-stack`).
 
 ```bash
 $ stack --local-bin-path /usr/local/bin/ install
