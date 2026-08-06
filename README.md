@@ -62,6 +62,28 @@ build(--version: String = "latest"): String = do {
 - External dependencies fetched over the internet, pinned by content hash in `dependencies.lask.json` (`lask deps add` / `lask deps sync`); execution never touches the network — modules resolve from a verified local cache.
 - Observability: trace IDs, `call`/`return`/`fail` execution events (`--format json`), stack traces, spec-defined exit codes.
 
+### Comparison
+
+Lask is a task runner, not a build system. Here is how it compares to the tools it most often replaces:
+
+|                                        | Lask | make | just | Task (go-task) |
+| -------------------------------------- | :--: | :--: | :--: | :------------: |
+| Static checks before execution (`lask check`) | ✅ types, names, arity | — | syntax only | schema only |
+| Typed task arguments with defaults      | ✅ `--name: String = "World"` | — | untyped strings | untyped vars |
+| Execution environments as values (Docker / SSH) | ✅ `$[#golang:1.22]` | — | — | — |
+| Concurrency in the language             | ✅ `async` / `await` | `-j` (per-target) | — | `deps` run in parallel |
+| Code reuse across projects              | ✅ hash-pinned module imports | `include` | `import` (local) | `includes` |
+| File-based incremental rebuilds         | — | ✅ | — | ✅ checksum / timestamp |
+| Config format                           | typed language | Makefile | justfile | YAML |
+| Install                                 | single binary (Homebrew / Releases) | preinstalled | single binary | single binary |
+
+**When to use something else:**
+
+- If your tasks are primarily *"rebuild only what changed"* over file targets, `make` (or a real build system like Bazel) is the right tool. Lask does not track file freshness.
+- If all you need is a flat list of one-line command aliases, `just` is simpler and that simplicity is a feature.
+
+**When Lask pays off:** tasks that take arguments, call each other, run in pinned Docker/SSH environments, or run concurrently — the point where Makefiles and YAML pipelines usually turn into untestable shell scripts. `lask check` verifies all of it before anything executes.
+
 ### Status
 
 Lask is pre-1.0: features are `experimental` until the first tagged release, and breaking
