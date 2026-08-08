@@ -17,6 +17,7 @@ module Language.LSP.Lask
     uriPath,
     hoverAt,
     hoverMarkdown,
+    completionAt,
   )
 where
 
@@ -42,19 +43,25 @@ import Language.LSP.Server
 import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Control.Exception (IOException)
 import qualified Control.Exception as E
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.List (minimumBy, sortOn)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust, listToMaybe, maybeToList)
 import Data.Ord (comparing)
+import qualified Data.Set as Set
 import qualified Data.Text.IO as TIO
-import Language.Lask (Compiled (..), checkText, compileText)
+import Language.Lask (Compiled (..), Partial (..), checkText, compileText, compileTextPartial)
+import Language.Lask.Builtins.Sig (builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), HoverInfo (..))
 import Language.Lask.ErrorCode (codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
 import qualified Language.Lask.Lexer.Token as Tok
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
+import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics)
 import qualified Language.Lask.Syntax.AST as AST
-import Language.Lask.Types (renderType)
+import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
+import Language.Lask.Types (Type (..), renderType)
 import System.FilePath (normalise)
 import qualified Language.Lask.Span as S
 import Language.Lask.Utils (Pretty (pretty))
@@ -117,7 +124,8 @@ lspHandlers logger rin = mapHandlers goReq goNot (handle logger)
 lspOptions :: Options
 lspOptions =
   defaultOptions
-    { optTextDocumentSync = Just syncOptions
+    { optTextDocumentSync = Just syncOptions,
+      optCompletionTriggerCharacters = Just ['.']
     }
 
 syncOptions :: LSP.TextDocumentSyncOptions
@@ -163,6 +171,17 @@ handle logger =
           Just file -> do
             h <- liftIO $ hoverAt path (virtualFileText file) pos
             responder $ Right $ maybe (LSP.InR LSP.Null) LSP.InL h,
+      requestHandler LSP.SMethod_TextDocumentCompletion $ \req responder -> do
+        let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
+            doc = LSP.toNormalizedUri uri
+            path = uriPath uri
+            pos = req ^. LSP.params . LSP.position
+        mdoc <- getVirtualFile doc
+        case mdoc of
+          Nothing -> responder $ Right $ LSP.InL []
+          Just file -> do
+            items <- liftIO $ completionAt path (virtualFileText file) pos
+            responder $ Right $ LSP.InL items,
       notificationHandler LSP.SMethod_WorkspaceDidChangeConfiguration $ \_ -> pure (),
       notificationHandler LSP.SMethod_TextDocumentDidClose $ \_ -> pure ()
     ]
@@ -460,3 +479,353 @@ declDocs compiled docPath docSrc (Just (declPath, name)) = do
             Just rest -> T.strip (maybe rest id (T.stripSuffix "*/" rest))
             Nothing -> noLine
        in T.stripEnd noBlock
+
+-- Completion ------------------------------------------------------------------
+
+-- | A candidate before it is turned into a protocol item. 'candRank'
+-- follows the name resolution ranks (spec 7.2) and drives the sort
+-- order; keyword parameters of the enclosing call come first.
+data Cand = Cand
+  { candLabel :: Text,
+    candKind :: CompletionItemKind,
+    candDetail :: Maybe Text,
+    candInsert :: Maybe Text,
+    candRank :: Int
+  }
+
+-- | Completion candidates for a document position: names in scope
+-- (locals, module top level, imports, builtins), reserved words, the
+-- public members of a namespace or the fields of a record after a
+-- dot, and the keyword parameters of the call being written.
+completionAt :: FilePath -> Text -> Position -> IO [CompletionItem]
+completionAt path src (Position pl pc)
+  | afterDot = do
+      p <- compileTextPartial path healedDot
+      pure (items (dotCands p))
+  | otherwise = do
+      -- The word being typed is replaced by a placeholder identifier;
+      -- if that still does not parse (a half-written declaration, say)
+      -- the whole line is replaced by a trivial binding so that the
+      -- rest of the buffer is still analysed.
+      first <- compileTextPartial path healedWord
+      p <-
+        if hasSyntax first
+          then pure first
+          else compileTextPartial path healedLine
+      let scope = scopeFor p
+      pure . items $
+        localCands p
+          <> globalCands p scope
+          <> tokenCands
+          <> keywordCands
+          <> kwParamCands p scope
+  where
+    -- Narrowing is left to the client: it matches case-insensitively
+    -- and fuzzily, so filtering here only ever removes candidates the
+    -- user expects. It also keeps the result independent of how much
+    -- of the word has been typed, which is what lets the client reuse
+    -- one answer for the whole word.
+    items cs =
+      [ toItem c
+      | c <- dedup cs,
+        -- The healed buffers introduce `_` as a placeholder name.
+        candLabel c /= "_"
+      ]
+    hasSyntax p = isJust (partialProgram p) || isJust (partialModule p)
+
+    srcLines = T.splitOn "\n" src
+    lineIdx = fromIntegral pl :: Int
+    col = fromIntegral pc :: Int
+    lineText = case drop lineIdx srcLines of
+      (x : _) -> x
+      [] -> ""
+    before = T.take col lineText
+    prefix = T.takeWhileEnd isIdentChar before
+    startCol = col - T.length prefix
+
+    -- Everything left of the cursor with the partial name removed; a
+    -- trailing dot means a member of whatever precedes it is wanted.
+    beforeName = T.dropWhileEnd isIdentChar before
+    afterDot = "." `T.isSuffixOf` beforeName
+    dotCol = T.length beforeName - 1
+    receiver = T.dropEnd 1 beforeName
+    qualifier =
+      let q = T.takeWhileEnd isIdentChar receiver
+       in if T.null q then Nothing else Just q
+    -- A chained receiver (`a.b.`, `f().`, `xs[0].`) is not something
+    -- the single name lookups below can resolve.
+    chained =
+      case T.unsnoc (T.dropWhileEnd isIdentChar receiver) of
+        Just (_, c) -> c `elem` ['.', ')', ']']
+        Nothing -> False
+
+    replaceLine f = T.intercalate "\n" (zipWith apply [0 ..] srcLines)
+      where
+        apply i l
+          | i == (lineIdx :: Int) = f l
+          | otherwise = l
+
+    healedWord = replaceLine (\l -> T.take startCol l <> "_" <> T.drop col l)
+    healedLine = replaceLine (const (T.replicate startCol " " <> "_ = null"))
+    -- The dot and the partial member name are dropped entirely, so the
+    -- receiver keeps its own type instead of becoming a bad selection.
+    healedDot = replaceLine (\l -> T.take dotCol l <> T.drop col l)
+
+    cursor = S.Position path (lineIdx + 1) (startCol + 1)
+    -- The last character of the receiver, for the hover lookup.
+    receiverEnd = S.Position path (lineIdx + 1) dotCol
+
+    isIdentChar c = isAsciiLower c || isAsciiUpper c || isDigit c || c == '_'
+
+    scopeFor p =
+      listToMaybe
+        [gs | (k, gs) <- Map.toList (partialScopes p), normalise k == normalise path]
+
+    entryPath p = maybe path progEntry (partialProgram p)
+
+    localCands p =
+      [ Cand n CompletionItemKind_Variable Nothing Nothing 1
+      | m <- maybeToList (partialModule p),
+        n <- localsAt path m cursor
+      ]
+
+    globalCands p (Just gs) =
+      [valueCand p n t | (n, t) <- Map.toList (gsValues gs)]
+        <> [ Cand n CompletionItemKind_Module Nothing Nothing 4
+           | n <- Map.keys (gsNamespaces gs)
+           ]
+    globalCands p Nothing =
+      [ Cand n CompletionItemKind_Function Nothing Nothing 2
+      | m <- maybeToList (partialModule p),
+        n <- topLevelNames m
+      ]
+        <> [builtinCand n n | n <- Map.keys builtinSchemes]
+
+    -- A floor under everything above: names the lexer can see even
+    -- when neither the loader nor the parser gets through the buffer.
+    -- Ranked with the module's own top level, and only reached by
+    -- 'dedup' when the analysed candidates do not already have it.
+    tokenCands =
+      [ Cand n CompletionItemKind_Function Nothing Nothing 2
+      | n <- tokenNames path src
+      ]
+
+    valueCand p n (VTopLevel modPath declName) =
+      Cand n (kindFor ty) (renderType <$> ty) Nothing rank
+      where
+        ty = declType p modPath declName
+        rank = if normalise modPath == normalise (entryPath p) then 2 else 3
+    valueCand _ n (VBuiltin b) = builtinCand n b
+
+    builtinCand label n = case Map.lookup n builtinSchemes of
+      Just sch ->
+        let ty = schemeType sch
+         in Cand label (kindFor (Just ty)) (Just (renderType ty)) Nothing 5
+      Nothing -> Cand label CompletionItemKind_Variable Nothing Nothing 5
+
+    keywordCands =
+      [ Cand w CompletionItemKind_Keyword Nothing Nothing 6
+      | w <-
+          map Tok.keywordText [minBound .. maxBound :: Tok.Keyword]
+            <> ["true", "false", "null"]
+      ]
+
+    -- After a dot: the public members of a namespace, else the fields
+    -- of the receiver's record type. Nothing at all beats guessing.
+    dotCands p
+      | chained = []
+      | otherwise = case qualifier of
+          Nothing -> []
+          Just q -> case namespaceCands p (scopeFor p) q of
+            [] -> recordCands p
+            cs -> cs
+
+    namespaceCands p scope q =
+      [ c
+      | gs <- maybeToList scope,
+        key <- maybeToList (Map.lookup q (gsNamespaces gs)),
+        prog <- maybeToList (partialProgram p),
+        lm <- maybeToList (Map.lookup key (progModules prog)),
+        let pub = modulePublics lm,
+        c <-
+          [ let ty = declType p key n
+             in Cand n (kindFor ty) (renderType <$> ty) Nothing 4
+          | n <- Set.toList (pubValues pub)
+          ]
+            <> [ Cand n CompletionItemKind_Interface Nothing Nothing 4
+               | n <- Set.toList (pubTypes pub)
+               ]
+      ]
+
+    recordCands p =
+      [ Cand n CompletionItemKind_Field (Just (renderType t)) Nothing 4
+      | TyRecord fields <- maybeToList (receiverType p),
+        (n, t) <- Map.toList fields
+      ]
+
+    -- The type elaboration recorded for the innermost expression
+    -- ending at the dot.
+    receiverType p = do
+      core <- partialCore p
+      let hits = [hi | hi <- cpHover core, covers (hiSpan hi)]
+      hi <- listToMaybe (sortOn (spanSize . hiSpan) hits)
+      pure (hiType hi)
+
+    covers (S.Span (S.Position f l1 c1) (S.Position _ l2 c2)) =
+      normalise f == normalise path
+        && (l1, c1) <= (S.line receiverEnd, S.column receiverEnd)
+        && (S.line receiverEnd, S.column receiverEnd) < (l2, c2)
+    covers S.NoSpan = False
+
+    spanSize (S.Span (S.Position _ l1 c1) (S.Position _ l2 c2)) = (l2 - l1, c2 - c1)
+    spanSize S.NoSpan = (maxBound, maxBound)
+
+    -- Keyword parameters are written `name = value` at the call site.
+    kwParamCands p scope =
+      [ Cand n CompletionItemKind_Property Nothing (Just (n <> " = ")) 0
+      | m <- maybeToList (partialModule p),
+        ns <- maybeToList (enclosingCall path m cursor),
+        n <- calleeKeywords p scope ns
+      ]
+
+    calleeKeywords p scope ns = case ns of
+      [n] -> case scope >>= Map.lookup n . gsValues of
+        Just (VTopLevel modPath declName) -> keywordsOf p modPath declName
+        Just (VBuiltin _) -> []
+        Nothing -> keywordsOf p (entryPath p) n
+      [q, n] -> case scope >>= Map.lookup q . gsNamespaces of
+        Just key -> keywordsOf p key n
+        Nothing -> []
+      _ -> []
+
+    keywordsOf p modPath declName =
+      [ n
+      | m <- maybeToList (moduleAt p modPath),
+        ps <- maybeToList (declParams m declName),
+        AST.Param _ (AST.PKeyword n _ _) <- ps
+      ]
+
+    moduleAt p modPath
+      | normalise modPath == normalise path = partialModule p
+      | otherwise = do
+          prog <- partialProgram p
+          lm <-
+            listToMaybe
+              [ l
+              | (k, l) <- Map.toList (progModules prog),
+                normalise k == normalise modPath
+              ]
+          pure (lmModule lm)
+
+    declParams m declName =
+      listToMaybe $
+        [ps | AST.Decl _ (AST.DFunction n ps _ _) <- AST.moduleDecls m, n == declName]
+          <> [ ps
+             | AST.Decl _ (AST.DValue n _ (AST.Expr _ (AST.ELambda ps _ _))) <- AST.moduleDecls m,
+               n == declName
+             ]
+
+    topLevelNames m =
+      [ n
+      | AST.Decl _ f <- AST.moduleDecls m,
+        n <- case f of
+          AST.DValue n' _ _ -> [n']
+          AST.DFunction n' _ _ _ -> [n']
+          _ -> []
+      ]
+
+    declType p modPath declName = do
+      core <- partialCore p
+      cd <- Map.lookup (modPath, declName) (cpDecls core)
+      pure (cdType cd)
+
+    kindFor (Just (TyFun _ _)) = CompletionItemKind_Function
+    kindFor _ = CompletionItemKind_Variable
+
+    -- The same name can be reached at several ranks; keep the nearest.
+    dedup cs =
+      Map.elems $
+        Map.fromListWith
+          (\new old -> if candRank new < candRank old then new else old)
+          [(candLabel c, c) | c <- cs]
+
+    toItem c =
+      CompletionItem
+        (candLabel c)
+        Nothing
+        (Just (candKind c))
+        Nothing
+        (candDetail c)
+        Nothing
+        Nothing
+        Nothing
+        (Just (T.pack (show (candRank c)) <> "-" <> candLabel c))
+        Nothing
+        (candInsert c)
+        Nothing
+        Nothing
+        Nothing
+        Nothing
+        Nothing
+        Nothing
+        Nothing
+        Nothing
+
+-- | Top level and imported names read straight off the token stream.
+--
+-- The lexer accepts a great deal that the parser rejects, so this
+-- keeps the names a user has already written available while the
+-- buffer as a whole is still half-written: a declaration is any
+-- identifier in column one that is followed by @(@, @=@ or @:@.
+tokenNames :: FilePath -> Text -> [Text]
+tokenNames path src = case lexTokens path src of
+  Left _ -> []
+  Right ts -> declNames ts <> importNames ts
+  where
+    declNames ts =
+      [ n
+      | (Tok.Spanned sp t, next) <- zip ts (drop 1 ts),
+        inColumnOne sp,
+        n <- identText t,
+        opensDecl (Tok.spannedValue next)
+      ]
+
+    opensDecl Tok.TLParen = True
+    opensDecl Tok.TAssign = True
+    opensDecl Tok.TColon = True
+    opensDecl _ = False
+
+    inColumnOne (S.Span (S.Position _ _ c) _) = c == 1
+    inColumnOne S.NoSpan = False
+
+    identText (Tok.TLowerId n) = [n]
+    identText (Tok.TUpperId n) = [n]
+    identText _ = []
+
+    importNames (Tok.Spanned _ (Tok.TKw Tok.KImport) : rest) =
+      boundByImport rest <> importNames rest
+    importNames (_ : rest) = importNames rest
+    importNames [] = []
+
+    -- `import * as m from "..."`
+    boundByImport
+      ( Tok.Spanned _ (Tok.TOp Tok.OpMul)
+          : Tok.Spanned _ (Tok.TKw Tok.KAs)
+          : Tok.Spanned _ alias
+          : _
+        ) = identText alias
+    -- `import { a, b as c } from "..."`
+    boundByImport (Tok.Spanned _ Tok.TLBrace : rest) = specNames rest
+    boundByImport _ = []
+
+    specNames
+      ( Tok.Spanned _ _
+          : Tok.Spanned _ (Tok.TKw Tok.KAs)
+          : Tok.Spanned _ alias
+          : rest
+        ) = identText alias <> nextSpec rest
+    specNames (Tok.Spanned _ t : rest) = identText t <> nextSpec rest
+    specNames [] = []
+
+    nextSpec (Tok.Spanned _ Tok.TComma : rest) = specNames rest
+    nextSpec _ = []

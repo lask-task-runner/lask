@@ -10,6 +10,9 @@ module Language.Lask.Module.Resolve
   ( GlobalScope (..),
     ValueTarget (..),
     TypeTarget (..),
+    Publics (..),
+    modulePublics,
+    buildScopes,
     validateProgram,
   )
 where
@@ -54,10 +57,7 @@ data GlobalScope = GlobalScope
 validateProgram :: Program -> Either [Diagnostic] (Map FilePath GlobalScope)
 validateProgram prog =
   let publics = Map.map modulePublics (progModules prog)
-      scoped =
-        [ (lmPath lm, buildScope prog publics lm)
-        | lm <- Map.elems (progModules prog)
-        ]
+      scoped = scopedModules prog
       scopes = Map.fromList [(p, gs) | (p, (gs, _)) <- scoped]
       buildDiags = concat [ds | (_, (_, ds)) <- scoped]
       refDiags =
@@ -68,6 +68,20 @@ validateProgram prog =
       cycleDiags = aliasCycleDiags prog scopes
       allDiags = buildDiags <> refDiags <> cycleDiags
    in if null allDiags then Right scopes else Left allDiags
+
+-- | Per-module scopes with the collision diagnostics discarded, so
+-- that editor tooling can still resolve names in a program that does
+-- not validate.
+buildScopes :: Program -> Map FilePath GlobalScope
+buildScopes prog = Map.fromList [(p, gs) | (p, (gs, _)) <- scopedModules prog]
+
+scopedModules :: Program -> [(FilePath, (GlobalScope, [Diagnostic]))]
+scopedModules prog =
+  [ (lmPath lm, buildScope prog publics lm)
+  | lm <- Map.elems (progModules prog)
+  ]
+  where
+    publics = Map.map modulePublics (progModules prog)
 
 data Publics = Publics
   { pubValues :: Set Text,

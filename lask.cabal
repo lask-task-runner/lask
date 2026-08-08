@@ -55,6 +55,7 @@ library
       Language.Lask.Span
       Language.Lask.Syntax.AST
       Language.Lask.Syntax.Parser
+      Language.Lask.Syntax.Scope
       Language.Lask.Syntax.TokenStream
       Language.Lask.Types
       Language.Lask.Utils
