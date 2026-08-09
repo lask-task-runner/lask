@@ -1,5 +1,5 @@
+install_path = "$HOME/.local/bin"
 test() = $ stack test
 doctest() = $ stack exec doctest app/** src/**
-install() = $ stack --local-bin-path /usr/local/bin/ install
-uninstall() = $ rm /usr/local/bin/lask
-count(--image: Environment = #aldanial/cloc:2.02) = $[image] cloc . --vcs=git
+install() = $ stack --local-bin-path #{install_path} install
+uninstall() = $ rm #{install_path}/lask
