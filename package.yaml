@@ -28,7 +28,6 @@ dependencies:
   - containers >= 0.6 && < 0.8
   - directory >= 1.0 && < 2
   - filepath >= 1.4 && < 2
-  - free >= 5.0 && < 6
   - haskeline >= 0.8 && < 1
   - lens >= 5.0 && < 6
   - lsp >= 2.0 && < 3
