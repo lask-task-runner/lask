@@ -1,9 +1,22 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 0.1.0)"
+        required: true
+        type: string
+      check_version:
+        description: "Verify that package.yaml version matches the specified version"
+        required: true
+        type: boolean
+        default: true
+      ref:
+        description: "Branch or tag to build from (e.g. main, v0.1.0)"
+        required: true
+        default: main
+        type: string
 
 permissions:
   contents: write
@@ -14,17 +27,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
-      - name: Verify package.yaml version matches tag
+      - name: Verify package.yaml version matches input
+        if: inputs.check_version
         shell: bash
         run: |
           PACKAGE_VERSION="$(awk '/^version:/ { print $2; exit }' package.yaml)"
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          INPUT_VERSION="${{ inputs.version }}"
 
           echo "package.yaml version: ${PACKAGE_VERSION}"
-          echo "git tag version: ${TAG_VERSION}"
+          echo "input version:        ${INPUT_VERSION}"
 
-          test "${PACKAGE_VERSION}" = "${TAG_VERSION}"
+          test "${PACKAGE_VERSION}" = "${INPUT_VERSION}"
 
   build:
     needs: verify_version
@@ -45,11 +61,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Setup Haskell Stack
         uses: haskell/actions/setup@v2
         with:
-          ghc-version: "9.6"
+          ghc-version: "9.4"
           enable-stack: true
           stack-version: "latest"
 
@@ -62,7 +80,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ inputs.version }}"
           mkdir -p dist/release
           cp dist/bin/lask dist/release/lask
           tar -C dist/release -czf "lask-v${VERSION}-${{ matrix.target }}.tar.gz" lask
@@ -72,7 +90,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          $version = "${{ inputs.version }}"
           New-Item -ItemType Directory -Force dist/release | Out-Null
           Copy-Item dist/bin/lask.exe dist/release/lask.exe
           Compress-Archive -Path dist/release/lask.exe -DestinationPath "lask-v$version-${{ matrix.target }}.zip" -Force
@@ -83,7 +101,7 @@ jobs:
         if: matrix.target == 'linux-amd64'
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ inputs.version }}"
           PKGROOT="dist/deb"
           mkdir -p "${PKGROOT}/DEBIAN" "${PKGROOT}/usr/bin"
           install -m 0755 dist/bin/lask "${PKGROOT}/usr/bin/lask"
@@ -120,14 +138,15 @@ jobs:
         with:
           path: artifacts
 
-      - name: Prepare release files
+      - name: Collect all release files
         shell: bash
         run: |
           mkdir -p out
           find artifacts -type f -exec cp {} out/ \;
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload combined release artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: out/*
-          generate_release_notes: true
+          name: lask-${{ inputs.version }}
+          path: out/*
+          retention-days: 90
