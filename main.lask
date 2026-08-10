@@ -1,5 +1,20 @@
 install_path = "$HOME/.local/bin"
-test() = $ stack test
-doctest() = $ stack exec doctest app/** src/**
-install() = $ stack --local-bin-path #{install_path} install
-uninstall() = $ rm #{install_path}/lask
+
+envs: Map<Environment> = { "local": #local, "docker": #haskell:9.6.5 }
+
+unittest(--env: String = "docker") = $[envs[env]] stack install --test && stack test
+
+doctest(--env: String = "docker") = $[envs[env]] stack install --test && stack exec doctest app/** src/**
+
+test(--env: String = "docker") = do {
+  t1 = async unittest(env = env)
+  t2 = async doctest(env = env)
+  return {
+    unittest: await t1,
+    doctest: await t2
+  }
+}
+
+install(--output = install_path) = $ stack --local-bin-path #{output} install
+
+uninstall(--output = install_path) = $ rm #{output}/lask
