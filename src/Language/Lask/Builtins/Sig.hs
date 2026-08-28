@@ -50,8 +50,8 @@ builtinSchemes =
       ("length", mono [TyString] TyNumber),
       ("concat", mono [TyString, TyString] TyString),
       ("trim", mono [TyString] TyString),
-      ("toLower", mono [TyString] TyString),
-      ("toUpper", mono [TyString] TyString),
+      ("to_lower", mono [TyString] TyString),
+      ("to_upper", mono [TyString] TyString),
       ("split", mono [TyString, TyString] (TyArray TyString)),
       ("join", mono [TyArray TyString, TyString] TyString),
       ("replace", mono [TyString, TyString, TyString] TyString),
@@ -59,16 +59,16 @@ builtinSchemes =
       ("map", Scheme ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] (TyArray (tv "U"))),
       ("filter", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] (TyArray (tv "T"))),
       ("reduce", Scheme ["T", "U"] [TyArray (tv "T"), tv "U", TyFun [tv "U", tv "T"] (tv "U")] (tv "U")),
-      ("forEach", Scheme ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] TyVoid),
+      ("for_each", Scheme ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] TyVoid),
       ("append", Scheme ["T"] [TyArray (tv "T"), tv "T"] (TyArray (tv "T"))),
-      ("concatArray", Scheme ["T"] [TyArray (tv "T"), TyArray (tv "T")] (TyArray (tv "T"))),
+      ("concat_array", Scheme ["T"] [TyArray (tv "T"), TyArray (tv "T")] (TyArray (tv "T"))),
       ("get", Scheme ["T"] [TyMap (tv "T"), TyString] (tv "T")),
-      ("hasKey", Scheme ["T"] [TyMap (tv "T"), TyString] TyBool),
+      ("has_key", Scheme ["T"] [TyMap (tv "T"), TyString] TyBool),
       ("keys", Scheme ["T"] [TyMap (tv "T")] (TyArray TyString)),
       ("values", Scheme ["T"] [TyMap (tv "T")] (TyArray (tv "T"))),
       -- 15.5 command execution (keyword parameter --env is not part
       -- of the function type, spec 6.6)
-      ("runCommand", mono [TyString] commandResultType),
+      ("run_command", mono [TyString] commandResultType),
       -- 15.6 parallel/async
       ("spawn", Scheme ["T"] [TyFun [] (tv "T")] (TyAsync (tv "T"))),
       ("all", Scheme ["T"] [TyArray (TyAsync (tv "T"))] (TyArray (tv "T"))),
@@ -78,12 +78,12 @@ builtinSchemes =
       ("fail", Scheme ["T"] [errorType] (tv "T")),
       ("error", mono [TyNumber, TyString] errorType),
       -- 15.8 serialization / cast
-      ("toJson", mono [TyAny] TyString),
-      ("fromJson", mono [TyString] TyAny),
+      ("to_json", mono [TyAny] TyString),
+      ("from_json", mono [TyString] TyAny),
       ("encode", mono [TyAny, TyString] TyString),
       ("decode", mono [TyString, TyString] TyAny),
       ("cast", Scheme ["T"] [TyAny] (tv "T")),
-      ("getEnv", mono [TyString] TyString)
+      ("get_env", mono [TyString] TyString)
       -- The reserved identifier stdin (9.3) is a String value, not a
       -- function; the elaborator resolves it specially.
     ]

@@ -26,11 +26,11 @@ coreFunctionNames =
       "map",
       "filter",
       "reduce",
-      "forEach",
-      "runCommand",
+      "for_each",
+      "run_command",
       "recover",
       "fail",
-      "getEnv"
+      "get_env"
     ]
 
 -- | Reserved identifiers that cannot be bound (spec 3.3, 9.3).
@@ -63,8 +63,8 @@ builtinValueNames =
       "length",
       "concat",
       "trim",
-      "toLower",
-      "toUpper",
+      "to_lower",
+      "to_upper",
       "split",
       "join",
       "replace",
@@ -72,15 +72,15 @@ builtinValueNames =
       "map",
       "filter",
       "reduce",
-      "forEach",
+      "for_each",
       "append",
-      "concatArray",
+      "concat_array",
       "get",
-      "hasKey",
+      "has_key",
       "keys",
       "values",
       -- 15.5 command execution
-      "runCommand",
+      "run_command",
       -- 15.6 parallel/async
       "spawn",
       "all",
@@ -90,12 +90,12 @@ builtinValueNames =
       "fail",
       "error",
       -- 15.8 serialization / cast
-      "toJson",
-      "fromJson",
+      "to_json",
+      "from_json",
       "encode",
       "decode",
       "cast",
-      "getEnv"
+      "get_env"
     ]
 
 -- | Builtin type aliases that user code must not redefine

@@ -151,7 +151,7 @@ spec = do
       rejects "x = if (true) { 2 } else { \"a\" }" ETypeMismatch
     it "types for over arrays as map" $
       hasType "f(xs: Array<String>) = for (x : xs) { concat(\"item:\", x) }" "f" "Function<Array<String>, Array<String>>"
-    it "types Void-bodied for as forEach" $
+    it "types Void-bodied for as for_each" $
       hasType "f(xs: Array<String>) = for (x : xs) {}" "f" "Function<Array<String>, Void>"
     it "types do blocks by the last statement" $
       hasType "f() = do {\n  a = 1\n  a + 1\n}" "f" "Function<Number>"
@@ -228,7 +228,7 @@ spec = do
     it "rejects mismatched catch types" $
       rejects "f() = try { 1 } catch (e) { \"x\" }" ETypeMismatch
     it "types try/finally by the body" $
-      hasType "f() = try { 1 } finally { runCommand(\"true\") }" "f" "Function<Number>"
+      hasType "f() = try { 1 } finally { run_command(\"true\") }" "f" "Function<Number>"
 
   describe "misc" $ do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"

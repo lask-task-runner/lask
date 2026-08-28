@@ -78,8 +78,8 @@ spec = do
   describe "strings" $ do
     it "interpolates expressions" $
       evalsTo "f() = \"v=#{1 + 1}!\"" "f" "\"v=2!\""
-    it "runs builtins: split/join/replace/toUpper" $
-      evalsTo "f() = join(map(split(\"a-b\", \"-\"), \\(s: String) -> toUpper(s)), \"+\")" "f" "\"A+B\""
+    it "runs builtins: split/join/replace/to_upper" $
+      evalsTo "f() = join(map(split(\"a-b\", \"-\"), \\(s: String) -> to_upper(s)), \"+\")" "f" "\"A+B\""
     it "counts length in characters" $
       evalsTo "f() = length(\"あいう\")" "f" "3"
 
@@ -136,10 +136,10 @@ spec = do
       failsWith "xs = [1]\nf() = xs[5]" "f" ERuntimeAccess
     it "fails on missing map keys" $
       failsWith "m: Map<Number> = {\"a\": 1}\nf() = m[\"b\"]" "f" ERuntimeAccess
-    it "hasKey guards get" $
-      evalsTo "m: Map<Number> = {\"a\": 1}\nf() = if (hasKey(m, \"b\")) { get(m, \"b\") } else { 0 }" "f" "0"
+    it "has_key guards get" $
+      evalsTo "m: Map<Number> = {\"a\": 1}\nf() = if (has_key(m, \"b\")) { get(m, \"b\") } else { 0 }" "f" "0"
     it "appends and concatenates arrays" $
-      evalsTo "f() = concatArray(append([1], 2), [3])" "f" "[1,2,3]"
+      evalsTo "f() = concat_array(append([1], 2), [3])" "f" "[1,2,3]"
 
   describe "numeric edge cases" $ do
     it "fails division by zero" $
@@ -213,17 +213,17 @@ spec = do
 
   describe "serialization and cast (spec 13, 15.8)" $ do
     it "encodes records to JSON" $
-      evalsTo "f() = toJson({b: 1, a: \"x\"})" "f" "\"{\\\"a\\\":\\\"x\\\",\\\"b\\\":1}\""
+      evalsTo "f() = to_json({b: 1, a: \"x\"})" "f" "\"{\\\"a\\\":\\\"x\\\",\\\"b\\\":1}\""
     it "decodes and casts JSON" $
       -- do-block bindings cannot carry annotations (spec 6.5), so
       -- cast obtains its context type from a parameter position.
       evalsTo
-        "pick(r: Record<a: Number>): Number = r.a\nf() = pick(cast(fromJson(\"{\\\"a\\\": 1}\")))"
+        "pick(r: Record<a: Number>): Number = r.a\nf() = pick(cast(from_json(\"{\\\"a\\\": 1}\")))"
         "f"
         "1"
     it "fails cast on mismatching data" $
       failsWith
-        "pick(r: Record<a: Number>): Number = r.a\nf() = pick(cast(fromJson(\"{\\\"a\\\": \\\"s\\\"}\")))"
+        "pick(r: Record<a: Number>): Number = r.a\nf() = pick(cast(from_json(\"{\\\"a\\\": \\\"s\\\"}\")))"
         "f"
         ERuntimeCast
     it "casts records to maps" $
@@ -232,7 +232,7 @@ spec = do
         "f"
         "1"
     it "fails on invalid JSON with E-IO-DATA-DECODE" $
-      failsWith "f() = fromJson(\"{oops\")" "f" EIoDataDecode
+      failsWith "f() = from_json(\"{oops\")" "f" EIoDataDecode
     it "serializes Void as tagged metadata" $
       evalsTo "f() = for (x : []) {}" "f" "{\"$type\":\"Void\"}"
     it "serializes environments as tagged metadata" $

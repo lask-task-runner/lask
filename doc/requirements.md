@@ -114,7 +114,7 @@ This section describes the specifications that must be satisfied.
 * **Standard I/O and pipes**
   * Data must be passable between functions through standard I/O.
   * A scheme in which standard input is received until EOF and then passed to function evaluation must be supported; receiving during execution is out of scope.
-  * Standard input must be received as a UTF-8 string, and structuring such as line splitting or JSON interpretation must be performed explicitly with in-language standard functions (split, fromJson, etc.). No mechanism is provided to switch the decoding method via runtime options (to prevent the meaning of the program from changing per invocation).
+  * Standard input must be received as a UTF-8 string, and structuring such as line splitting or JSON interpretation must be performed explicitly with in-language standard functions (split, from_json, etc.). No mechanism is provided to switch the decoding method via runtime options (to prevent the meaning of the program from changing per invocation).
 
 * **Execution model and error handling**
   * Execution must be sequential by default while allowing parallel execution.

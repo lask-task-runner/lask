@@ -470,7 +470,7 @@ infer ctx path locals (Expr sp f) = case f of
               }
         (fnName, resTy) =
           if bodyTy == TyVoid
-            then ("forEach", TyVoid)
+            then ("for_each", TyVoid)
             else ("map", TyArray bodyTy)
     pure (Core sp (CApp (Core sp (CVar (BuiltinRef fnName))) [xsCore, bodyLam] []), resTy)
   ETry body mCatch mFin -> elabTry ctx path locals sp body mCatch mFin Nothing
@@ -967,13 +967,13 @@ elabCommand ctx path locals sp stream mEnv parts = do
         abort . withExpectedActual "Environment" (renderType t) $
           diag ETypeCommandEnv (exprSpan envExpr) "command environment must be an Environment"
       pure [("env", c)]
-  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "runCommand"))) [cmdCore] envArg)
+  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore] envArg)
   case stream of
     StreamAll -> pure (call, commandResultType)
     StreamOut -> pure (streamSelect call "stdout", TyString)
     StreamErr -> pure (streamSelect call "stderr", TyString)
   where
-    -- do { r = runCommand(...);
+    -- do { r = run_command(...);
     --      if (r.code == 0) { r.<stream> } else { fail({code: r.code, message: r.stderr}) } }
     streamSelect call field =
       let r = "%r"
@@ -1220,7 +1220,7 @@ elabCall ctx path locals sp fn args mExpected = do
         go seen (Arg _ (APos _) : rest) = go seen rest -- unreachable (validated)
 
     -- Builtin calls: scheme instantiation (spec 4.4), plus the
-    -- special cases of cast (15.8) and runCommand's --env (6.6).
+    -- special cases of cast (15.8) and run_command's --env (6.6).
     elabBuiltinCall name scheme
       | name == "cast" = do
           expected <- maybe castNeedsType pure mExpected
@@ -1234,9 +1234,9 @@ elabCall ctx path locals sp fn args mExpected = do
       | otherwise = do
           kwCores <- case (name, kwArgs) of
             (_, []) -> pure []
-            ("runCommand", _) -> bindKeywords [("env", TyEnvironment)]
+            ("run_command", _) -> bindKeywords [("env", TyEnvironment)]
             _ -> abort (diag ETypeKeyword sp ("'" <> name <> "' takes no keyword arguments"))
-          when (name == "runCommand") $
+          when (name == "run_command") $
             mapM_
               ( \(kn, _) ->
                   when (kn /= "env") (() <$ abort (diag ETypeKeyword sp ("unknown keyword argument: '" <> kn <> "'")))

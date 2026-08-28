@@ -106,7 +106,7 @@ spec = beforeAll findLask $ do
 
   describe "stdin (spec 9)" $ do
     it "binds stdin as a String" $ \lask ->
-      withProject [("main.lask", "shout(): String = toUpper(trim(stdin))\n")] $ \dir -> do
+      withProject [("main.lask", "shout(): String = to_upper(trim(stdin))\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "shout"] "  hello  \n"
         r `shouldBe` Result 0 "\"HELLO\"\n" ""
 

@@ -70,8 +70,13 @@ spec = do
   describe "launch argument construction (spec 10.5, 10.9)" $ do
     it "builds docker run arguments with mounted workdir" $
       dockerArgs "/proj" "alpine:3.20" (Map.fromList [("memory", VString "4g")]) "uname -a"
-        `shouldBe` [ "run", "--rm", "-v", "/proj:/work", "-w", "/work",
-                     "--memory", "4g", "alpine:3.20", "/bin/sh", "-c", "uname -a"
+        `shouldBe` [ "run", "--rm",
+                     "-v", "/proj:/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "--memory", "4g",
+                     "alpine:3.20",
+                     "-c", "uname -a"
                    ]
     it "builds ssh arguments with strict host key checking by default" $
       sshArgs defaultSshSettings "h.example" (Just "u") (Just 2222) "ls"

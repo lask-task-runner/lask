@@ -630,7 +630,7 @@ import { send } from "notify"
 sum2(a: Number, b: Number) = add(a, b)
 labels = ["a", "b", "c"]
 csv = types.joinWithComma(labels)
-notify_all(): Void = forEach(labels, \(x) -> send(x))
+notify_all(): Void = for_each(labels, \(x) -> send(x))
 ```
 
 Here `notify` is an external dependency declared in `dependencies.lask.json` as a single-file source.
@@ -841,19 +841,19 @@ Control structures are provided as the block-form expressions `IfExpr` / `ForExp
 Definitions as functions:
 
 - `choose` is a core function that receives a condition value and two branch functions and evaluates only one of them.
-- Iteration over collections is expressed with the purpose-specific core functions `map` / `filter` / `reduce` / `forEach` (15.4).
+- Iteration over collections is expressed with the purpose-specific core functions `map` / `filter` / `reduce` / `for_each` (15.4).
   - `map` applies the body function to each element and returns the results as an array in the same order.
   - `filter` keeps, in the same order, only the elements for which the predicate returns true.
   - `reduce` aggregates a collection into a single value with an initial value and a folding function.
-  - `forEach` applies the body function to each element, discards the results, and returns `Void` (iteration for side effects).
+  - `for_each` applies the body function to each element, discards the results, and returns `Void` (iteration for side effects).
 
 Desugaring rules:
 
 - `if (c) { ... } else { ... }` is syntactic sugar for `choose(c, \() -> do { ... }, \() -> do { ... })`.
-- `for (x : xs) { ... }` is syntactic sugar for `map(xs, \(x) -> do { ... })`. However, when the type of the body block is `Void` (including an empty block), it is syntactic sugar for `forEach(xs, \(x) -> do { ... })` (`Array<Void>` is not constructed; 4.4).
-- For iteration for side effects where the result array is unnecessary, either make the body of type `Void` or use `forEach` directly.
+- `for (x : xs) { ... }` is syntactic sugar for `map(xs, \(x) -> do { ... })`. However, when the type of the body block is `Void` (including an empty block), it is syntactic sugar for `for_each(xs, \(x) -> do { ... })` (`Array<Void>` is not constructed; 4.4).
+- For iteration for side effects where the result array is unnecessary, either make the body of type `Void` or use `for_each` directly.
 
-Here `choose` is a core function that exists only to serve as a normalization target, and is not exposed in the built-in library (it cannot be referenced, declared, or overridden by user code). `map` / `filter` / `reduce` / `forEach` are functions of the built-in library (15.4) and at the same time core functions serving as normalization targets, and likewise must not be overridden.
+Here `choose` is a core function that exists only to serve as a normalization target, and is not exposed in the built-in library (it cannot be referenced, declared, or overridden by user code). `map` / `filter` / `reduce` / `for_each` are functions of the built-in library (15.4) and at the same time core functions serving as normalization targets, and likewise must not be overridden.
 
 Typing rules:
 
@@ -861,11 +861,11 @@ Typing rules:
 - `map` is typed as `Function<Array<T>, Function<T, U>, Array<U>>`.
 - `filter` is typed as `Function<Array<T>, Function<T, Bool>, Array<T>>`.
 - `reduce` is typed as `Function<Array<T>, U, Function<U, T, U>, U>`.
-- `forEach` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because conformance of function types is limited to identity (4.4), in order to accept bodies of arbitrary return type through instantiation of built-in polymorphism).
+- `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because conformance of function types is limited to identity (4.4), in order to accept bodies of arbitrary return type through instantiation of built-in polymorphism).
 - An `IfExpr` is well-typed only when the condition expression is `Bool` and the types of the two branch blocks are the same `T`, and the type of the whole expression is `T`.
 - An `if` without `else` is not an expression. It appears solely as the `return` guard statement (the `GuardStmt` of 6.5), only in statement position.
 - A `ForExpr`, when the target expression is `Array<T>` and the type of the body block is `R` (`R` other than `Void`), has the type `Array<R>` as the whole expression.
-- When the type of the body block is `Void`, the `ForExpr` is normalized to `forEach` and the type of the whole expression is `Void`.
+- When the type of the body block is `Void`, the `ForExpr` is normalized to `for_each` and the type of the whole expression is `Void`.
 
 Evaluation rules:
 
@@ -1014,13 +1014,13 @@ shell_char   = unicode_char .
 Here `shell_char` is `unicode_char` (the common lexical element of Chapter 3; excluding newlines). A command string terminates at the end of the line (details follow the lexical rules of this section).
 
 A command execution expression is syntactic sugar for concisely writing shell command execution.
-Semantically it is handled by normalization to the built-in function `runCommand`. The stream specifiers `1`, `2`, and `*` derive from file descriptor numbers and select which part of the command's result is received (`1` = standard output, `2` = standard error, `*` = the entire result).
+Semantically it is handled by normalization to the built-in function `run_command`. The stream specifiers `1`, `2`, and `*` derive from file descriptor numbers and select which part of the command's result is received (`1` = standard output, `2` = standard error, `*` = the entire result).
 
 Definition as a function:
 
-- `runCommand` is a core function that executes a command in the specified execution environment and returns the entire result (exit code, standard output, standard error).
-- Its signature is `runCommand(cmd: String, --env: Environment = #local): CommandResult`. The execution environment is given by the keyword parameter `env`, and when unspecified it is completed with the default execution environment `#local` (10.1).
-- `runCommand` succeeds regardless of the exit code as long as the command completes (8.7). Failures occur only for execution infrastructure faults (unresolvable environment, inability to connect, inability to launch the command, etc.).
+- `run_command` is a core function that executes a command in the specified execution environment and returns the entire result (exit code, standard output, standard error).
+- Its signature is `run_command(cmd: String, --env: Environment = #local): CommandResult`. The execution environment is given by the keyword parameter `env`, and when unspecified it is completed with the default execution environment `#local` (10.1).
+- `run_command` succeeds regardless of the exit code as long as the command completes (8.7). Failures occur only for execution infrastructure faults (unresolvable environment, inability to connect, inability to launch the command, etc.).
 
 The `CommandResult` type:
 
@@ -1029,19 +1029,19 @@ The `CommandResult` type:
 
 Desugaring rules:
 
-- `$* cmd` is syntactic sugar for `runCommand("cmd")`.
+- `$* cmd` is syntactic sugar for `run_command("cmd")`.
 - `$ cmd` and `$1 cmd` are syntactic sugar for the following expression (`r` is a fresh identifier that does not collide with others).
 
   ```lask
   do {
-    r = runCommand("cmd")
+    r = run_command("cmd")
     if (r.code == 0) { r.stdout } else { fail({code: r.code, message: r.stderr}) }
   }
   ```
 
 - `$2 cmd` is syntactic sugar for the expression above with its success branch replaced by `r.stderr`.
-- The environment specifications `$[env]`, `$1[env]`, `$2[env]`, and `$*[env]` pass `env = env` to the `runCommand` of the respective expanded form.
-- Only core functions (normalization to `runCommand`, `fail`, and `choose`) and a record literal appear in the expanded forms, so the behavior can never be changed by user definitions.
+- The environment specifications `$[env]`, `$1[env]`, `$2[env]`, and `$*[env]` pass `env = env` to the `run_command` of the respective expanded form.
+- Only core functions (normalization to `run_command`, `fail`, and `choose`) and a record literal appear in the expanded forms, so the behavior can never be changed by user definitions.
 - `#{e}` inside a `shell_string` is evaluated first as string interpolation, and the post-interpolation string is passed as the command body.
 
 Lexical rules:
@@ -1052,22 +1052,22 @@ Lexical rules:
 - Inside the command string, the shell's `;`, quotation marks, pipes, etc. can be used without escaping.
 - `#{` starts an interpolation. To include a literal `#{`, write `\#{`. A `#` not followed by `{` is treated as an ordinary character.
 - Inside `do`, the newline that terminates a command string simultaneously serves as statement termination (6.5).
-- A command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$ git --version` is interpreted as `runCommand("git --version") |> trim`.
-- All tokens on the same line after a command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. To process it inside an expression, first bind it and then use it, or call `runCommand` directly.
+- A command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$ git --version` is interpreted as `run_command("git --version") |> trim`.
+- All tokens on the same line after a command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. To process it inside an expression, first bind it and then use it, or call `run_command` directly.
 
-Here `runCommand` is a core function and must not be directly declared or overridden by user code (15.5).
+Here `run_command` is a core function and must not be directly declared or overridden by user code (15.5).
 
 Environment specification rules:
 
 - `Environment` is a basic type defined in 4.1, and the responsibilities of execution environments are defined in Chapter 10.
 - `env` is an expression of type `Environment`. It is usually constructed with an environment expression (6.7) — `#local`, `#docker(...)` (including the sugar `#image-name`), or `#env(...)` — but any expression that returns an `Environment` value (a variable reference, etc.) can be placed there.
 - If resolution of `env` fails, it is a pre-execution error.
-- The default execution environment (the environment used by `$ ...` / `runCommand`) is always `#local` (10.1).
+- The default execution environment (the environment used by `$ ...` / `run_command`) is always `#local` (10.1).
 - Detailed environment resolution rules and responsibilities follow Chapter 10.
 
 Typing rules:
 
-- `runCommand` is typed as `Function<String, CommandResult>` (the keyword parameter `env` does not appear in the function type; 7.5).
+- `run_command` is typed as `Function<String, CommandResult>` (the keyword parameter `env` does not appear in the function type; 7.5).
 - As a result of the desugaring, the expression type of `$ ...`, `$1 ...`, and `$2 ...` is `String`, and the expression type of `$* ...` is `CommandResult`.
 - If `env` does not conform to `Environment`, it is a type error.
 - The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a type error.
@@ -1309,7 +1309,7 @@ Resolution rules:
 - If no candidate exists at any precedence level, it is an undefined reference error.
 - Reserved words must not be bound as identifiers.
 - Symbols of the built-in library are resolved at the lowest level (fifth precedence), so a user-defined symbol of the same name always takes priority (shadowing; 15.1).
-- However, core function names specified as non-overridable (`spawn`, `choose`, `map`, `filter`, `reduce`, `forEach`, `runCommand`, `recover`, `fail`; Chapter 6) and `stdin` (9.3) must not be declared or bound at any of the first through fourth precedence levels. A violation is a duplicate definition error (`E-NAME-DUPLICATE`).
+- However, core function names specified as non-overridable (`spawn`, `choose`, `map`, `filter`, `reduce`, `for_each`, `run_command`, `recover`, `fail`; Chapter 6) and `stdin` (9.3) must not be declared or bound at any of the first through fourth precedence levels. A violation is a duplicate definition error (`E-NAME-DUPLICATE`).
 
 ### 7.3 Scope and Shadowing
 
@@ -1372,10 +1372,10 @@ Consistency of helper functions (normalization targets of syntactic sugar):
 - `map`: `Function<Array<T>, Function<T, U>, Array<U>>`
 - `filter`: `Function<Array<T>, Function<T, Bool>, Array<T>>`
 - `reduce`: `Function<Array<T>, U, Function<U, T, U>, U>`
-- `forEach`: `Function<Array<T>, Function<T, U>, Void>`
+- `for_each`: `Function<Array<T>, Function<T, U>, Void>`
 - `recover`: `Function<Function<T>, Function<Error, T>, T>`
 - `fail`: `Function<Error, T>`
-- `runCommand`: `Function<String, CommandResult>` (with a keyword parameter `--env: Environment = #local`)
+- `run_command`: `Function<String, CommandResult>` (with a keyword parameter `--env: Environment = #local`)
 
 Type variables in signatures (`T`, `U`, etc.) are instantiated and checked per call according to the built-in polymorphism rules of 4.4.
 
@@ -1394,7 +1394,7 @@ The expansion order during static verification is as follows.
 2. `await e` -> core function application `await(e)` (normalization of the parenthesis-omitted form)
 3. Continuation-distribution transformation of `return` (including guard statements) (6.5)
 4. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`
-5. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `forEach(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
+5. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
 6. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
 7. Sequential-execution expansion of `do { ... }`
 8. Expansion of environment expression sugar (`#name` -> `#name()`, and `#image-name` other than environment kind names -> `#docker("image-name")`)
@@ -1402,7 +1402,7 @@ The expansion order during static verification is as follows.
 
 Type checking is performed on the core expressions after expansion. The meaning of the expansion result must be equivalent to that of the original syntax.
 
-Only the choice of expansion target in step 5 (`map` / `forEach`) depends on the type of the body block (type-directed expansion). Implementations must type the body block first and determine the expansion target from that result. All other expansions are purely syntactic.
+Only the choice of expansion target in step 5 (`map` / `for_each`) depends on the type of the body block (type-directed expansion). Implementations must type the body block first and determine the expansion target from that result. All other expansions are purely syntactic.
 
 ### 7.7 Static Errors
 
@@ -1519,7 +1519,7 @@ Evaluation of `reduce(xs, init, f)`:
 3. Traverse the elements from left to right, evaluating `f(acc, xi)` for the accumulator `acc` and each element `xi`, and take the result as the new accumulator value.
 4. Return the accumulator value after traversal completes. If any application fails, stop there and the whole expression fails.
 
-Evaluation of `forEach(xs, body)`:
+Evaluation of `for_each(xs, body)`:
 
 1. Evaluate `xs` to obtain an array value.
 2. Traverse the elements from left to right, evaluating `body(xi)` for each element `xi` and discarding the result.
@@ -1551,7 +1551,7 @@ Multiple `await`s on the same `h` return the same completion result.
 
 ### 8.7 Command Execution (Core Function)
 
-Evaluation of `runCommand(cmd, env = ...)`:
+Evaluation of `run_command(cmd, env = ...)`:
 
 1. Evaluate `cmd` to a string (for command sugar containing interpolation, the interpolation expressions are evaluated from left to right and the finalized string is passed).
 2. Evaluate `env`. If unspecified, it is completed with the default value `#local` (7.5).
@@ -1563,7 +1563,7 @@ Construction rules for `CommandResult`:
 
 - `code`: set to the process's exit code as is. Termination by signal may be mapped according to shell convention (`128 + signal number`).
 - `stdout` / `stderr`: set to the contents of each stream (up to an implementation-defined size limit; on overflow, a summary preserving the head and tail may be used).
-- `runCommand` fails only in the case of execution infrastructure failures (environment unresolvable, connection failure, command unable to start, etc.) (external I/O error; Chapter 14).
+- `run_command` fails only in the case of execution infrastructure failures (environment unresolvable, connection failure, command unable to start, etc.) (external I/O error; Chapter 14).
 
 Error value conversion of failures caused by non-zero exit (carrying over the exit code and standard error output) follows 8.10.
 
@@ -1576,7 +1576,7 @@ An environment expression `#kind(args)` (6.7) is a core expression that remains 
 3. Return an `Environment` value consisting of the environment kind and the normalized parameter set.
 4. If the evaluation of an argument expression or a default-value expression fails, the entire environment expression fails.
 
-Resolution of an environment value to an execution environment (10.4) is performed not at environment expression evaluation time but immediately before command launch by `runCommand`.
+Resolution of an environment value to an execution environment (10.4) is performed not at environment expression evaluation time but immediately before command launch by `run_command`.
 
 Equality comparison:
 
@@ -1605,7 +1605,7 @@ Failure propagation rules:
 
 - If a subexpression fails, the failure propagates to the enclosing expression unless explicitly caught.
 - `choose` propagates only the failure of the selected branch.
-- `map` / `filter` / `reduce` / `forEach` return the first failure that occurs as the failure of the whole.
+- `map` / `filter` / `reduce` / `for_each` return the first failure that occurs as the failure of the whole.
 - `await` rethrows the corresponding asynchronous failure.
 - `recover` catches failures of the body (described later in this section). Failures inside the handler are not caught and propagate.
 
@@ -1685,7 +1685,7 @@ Rules:
 Type rules:
 
 - The static type of `stdin` is fixed to `String`. It must not be changed by implementation or CLI settings.
-- Structuring such as line splitting or JSON interpretation is performed within the language by applying functions of the built-in library (e.g., `split(stdin, "\n")` (15.3), `fromJson(stdin)` (15.8)). The transition from the result of `fromJson` (`Any`) to a concrete type uses `cast` (15.8) in combination.
+- Structuring such as line splitting or JSON interpretation is performed within the language by applying functions of the built-in library (e.g., `split(stdin, "\n")` (15.3), `from_json(stdin)` (15.8)). The transition from the result of `from_json` (`Any`) to a concrete type uses `cast` (15.8) in combination.
 
 ### 9.4 Standard Input Decoding
 
@@ -1736,7 +1736,7 @@ Data passing rules:
 - Value passing between functions is performed only through positional arguments, keyword arguments, and return values.
 - `e |> f` is sugar for `f(e)`, passing the left-hand result to the right-hand function.
 - `f >> g` denotes function composition and is treated at evaluation time as a single data flow that passes the result of `f` to `g`.
-- `map(xs, body)` aggregates element-wise data flow into an array. When the result is not needed and the purpose is side effects, use `forEach(xs, body)`.
+- `map(xs, body)` aggregates element-wise data flow into an array. When the result is not needed and the purpose is side effects, use `for_each(xs, body)`.
 
 Rules for connecting to I/O:
 
@@ -1751,7 +1751,7 @@ normalize() = do {
   text = stdin
   text
     |> trim
-    |> toLower
+    |> to_lower
 }
 
 fanout(xs: Array<String>) =
@@ -1764,7 +1764,7 @@ This chapter defines the execution environments that can be specified when invok
 
 ### 10.1 The `Environment` Type and Environment Expressions
 
-`Environment` is a built-in primitive type (4.1) representing the execution-target context that `runCommand` (6.6) receives as the keyword parameter `env`. `Environment` values are constructed only by evaluating an environment expression (6.7) `#environment-kind(arguments...)`.
+`Environment` is a built-in primitive type (4.1) representing the execution-target context that `run_command` (6.6) receives as the keyword parameter `env`. `Environment` values are constructed only by evaluating an environment expression (6.7) `#environment-kind(arguments...)`.
 
 Rules:
 
@@ -1773,12 +1773,12 @@ Rules:
   - `#local` (local execution)
   - `#docker(...)` (Docker execution environment, including the sugar `#image-name`)
   - `#env(...)` (reference to a named environment; resolved to `remote` etc. defined in the environment definition file (10.3))
-- The `env` argument of `runCommand` must be normalized to an `Environment` value at evaluation time.
-- The default execution environment (the environment used by `$ cmd` / `runCommand`; 6.6, 8.7) is always `#local`. The default execution environment must not be changed by CLI options or other external configuration. Commands to be executed anywhere other than locally must always specify the environment explicitly with `$[env]` (or the `env` argument of `runCommand`).
+- The `env` argument of `run_command` must be normalized to an `Environment` value at evaluation time.
+- The default execution environment (the environment used by `$ cmd` / `run_command`; 6.6, 8.7) is always `#local`. The default execution environment must not be changed by CLI options or other external configuration. Commands to be executed anywhere other than locally must always specify the environment explicitly with `$[env]` (or the `env` argument of `run_command`).
 
 Type conformance:
 
-- The type and signature of `runCommand` follow the definition in 7.5.
+- The type and signature of `run_command` follow the definition in 7.5.
 - Passing a value other than `Environment` to the `env` argument is a type error.
 
 ### 10.2 Target Environment Profiles and Environment Constructor Signatures
@@ -1853,7 +1853,7 @@ provision(): String =
 
 ### 10.4 Environment Resolution Rules
 
-Environment resolution is performed immediately before command launch by `runCommand`.
+Environment resolution is performed immediately before command launch by `run_command`.
 
 Resolution procedure:
 
@@ -1939,7 +1939,7 @@ In this specification, absorbing environment differences refers to the responsib
 
 Responsibilities:
 
-- Unify the return value and failure contract of the command execution API (`runCommand`) across environments.
+- Unify the return value and failure contract of the command execution API (`run_command`) across environments.
 - Standardize the observation interface for exit codes, stdout, and stderr.
 - Map environment-specific failures to the common error classification of this specification (Chapter 14).
 - To the extent possible, internalize implementation differences such as retries and connection initialization, and do not leak them into language-level semantics.
@@ -1981,7 +1981,7 @@ Execution procedure:
 3. Establish the SSH session.
 4. Apply the cwd rules of 10.5 and the environment variable rules of 10.6 to the connection target.
 5. Execute the specified command in non-interactive mode.
-6. Collect the exit code, stdout, and stderr, and map them to the `runCommand` contract of 8.7.
+6. Collect the exit code, stdout, and stderr, and map them to the `run_command` contract of 8.7.
 
 Failure rules:
 
@@ -2129,7 +2129,7 @@ The CLI's input/output follows the contract of Chapter 9 and must satisfy the fo
 Standard input contract:
 
 - stdin is always read as a UTF-8 string and bound to `stdin` as a `String` value (9.2–9.4). No option to select a decoding mode (`--stdin-decode` etc.) is provided.
-- Structuring such as line splitting or JSON interpretation is performed inside the function by applying `split` / `fromJson` etc.
+- Structuring such as line splitting or JSON interpretation is performed inside the function by applying `split` / `from_json` etc.
 - `run` / `eval` accept stdin.
 - `repl` uses stdin for interactive input, and therefore does not provide the `stdin` reference variable (9.2, 9.3).
 - `check` / `infer` / `serve` may accept stdin, but the meaning must be defined in the subcommand specification.
@@ -2168,7 +2168,7 @@ Representative examples:
 # Type check only (main.lask is the default target)
 lask check
 
-# Function execution (local; JSON is interpreted via fromJson(stdin) inside main.lask)
+# Function execution (local; JSON is interpreted via from_json(stdin) inside main.lask)
 echo '{"name":"alice"}' | lask run greet
 
 # Execution with keyword arguments (in main.lask: greet(name: String, --prefix: String = "hello"))
@@ -2303,7 +2303,7 @@ Output rules:
 
 ### 12.3 Command Execution Log
 
-During execution of `runCommand` (8.7), the implementation must relay the child process's standard output and standard error to its own stderr in real time as the command execution log. The relay is performed in parallel with the capture into `CommandResult` (8.7) and must not affect the evaluation result (value semantics).
+During execution of `run_command` (8.7), the implementation must relay the child process's standard output and standard error to its own stderr in real time as the command execution log. The relay is performed in parallel with the capture into `CommandResult` (8.7) and must not affect the evaluation result (value semantics).
 
 Relay rules:
 
@@ -2355,7 +2355,7 @@ Implementations must be able to generate and record stack traces at all times up
 
 - Contain at least function names, call order, and, where possible, source positions (line/column or span).
 - When crossing asynchronous boundaries (`spawn` / `await`), the parent-child relationship must be traceable.
-- Failures involving command execution (`runCommand`) may include the environment kind and a summary of the executed command.
+- Failures involving command execution (`run_command`) may include the environment kind and a summary of the executed command.
 
 Omission rules:
 
@@ -2391,7 +2391,7 @@ Minimum guarantees:
 
 - Each `CallEvent` must ultimately correspond to exactly one `ReturnEvent` or `FailEvent`.
 - Event order must preserve causal order for the same function execution.
-- When command execution (`runCommand`) is involved, the `ArgumentsSummary` may include an environment kind summary.
+- When command execution (`run_command`) is involved, the `ArgumentsSummary` may include an environment kind summary.
 - Even when a failure is caught by `try` / `catch` (6.9), the `FailEvent` corresponding to the failed function call is emitted. Catching must not cancel the event.
 
 ### 12.7 In-flight Diagnostics
@@ -2457,7 +2457,7 @@ Rules for `Any`:
 
 Round-trip rules for tagged metadata:
 
-- `fromJson` / `decode` (15.8) do not treat the `$type` field specially, and read tagged metadata as an ordinary object (`Record` or `Map`).
+- `from_json` / `decode` (15.8) do not treat the `$type` field specially, and read tagged metadata as an ordinary object (`Record` or `Map`).
 - Therefore, restoring `Void`, `Environment`, or function values from their serialized results (round-trip conversion) is not guaranteed.
 
 Numeric rules:
@@ -2725,7 +2725,7 @@ Representative examples:
 - `E-IO-SSH-CONNECT`: SSH connection failure
 - `E-IO-SSH-AUTH`: SSH authentication failure
 - `E-IO-FS`: filesystem access failure
-- `E-IO-DATA-DECODE`: failure decoding input data (stdin decoding in 9.4, `fromJson`/`decode` in 15.8)
+- `E-IO-DATA-DECODE`: failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8)
 
 Rules:
 
@@ -2747,7 +2747,7 @@ Default classification:
 
 Propagation rules:
 
-- Expressions containing `do` / collection functions (`map`, `filter`, `reduce`, `forEach`) / `await` follow the failure propagation rules of 8.10.
+- Expressions containing `do` / collection functions (`map`, `filter`, `reduce`, `for_each`) / `await` follow the failure propagation rules of 8.10.
 - Unless explicitly caught by `try` / `catch` (6.9), a failure propagates to the top level, and the process exits with the `code` of the `Error` value (8.10, 11.3).
 - The `recoverable` / `non-recoverable` classification is information for diagnostics and operations, and does not affect catchability. Both runtime errors and external I/O errors occurring during evaluation can be caught.
 
@@ -2815,8 +2815,8 @@ The built-in library provides at least the following functions.
 - `length`: `Function<String, Number>`
 - `concat`: `Function<String, String, String>`
 - `trim`: `Function<String, String>`
-- `toLower`: `Function<String, String>`
-- `toUpper`: `Function<String, String>`
+- `to_lower`: `Function<String, String>`
+- `to_upper`: `Function<String, String>`
 - `split`: `Function<String, String, Array<String>>`
 - `join`: `Function<Array<String>, String, String>`
 - `replace`: `Function<String, String, String, String>`
@@ -2836,32 +2836,32 @@ The built-in library provides at least the following functions.
 - `map`: `Function<Array<T>, Function<T, U>, Array<U>>`
 - `filter`: `Function<Array<T>, Function<T, Bool>, Array<T>>`
 - `reduce`: `Function<Array<T>, U, Function<U, T, U>, U>`
-- `forEach`: `Function<Array<T>, Function<T, U>, Void>`
+- `for_each`: `Function<Array<T>, Function<T, U>, Void>`
 - `append`: `Function<Array<T>, T, Array<T>>`
-- `concatArray`: `Function<Array<T>, Array<T>, Array<T>>`
+- `concat_array`: `Function<Array<T>, Array<T>, Array<T>>`
 - `get`: `Function<Map<T>, String, T>`
-- `hasKey`: `Function<Map<T>, String, Bool>`
+- `has_key`: `Function<Map<T>, String, Bool>`
 - `keys`: `Function<Map<T>, Array<String>>`
 - `values`: `Function<Map<T>, Array<T>>`
 
 Semantics:
 
-- `map`/`filter`/`reduce`/`forEach` traverse the input array from left to right (evaluation rules in 8.5).
+- `map`/`filter`/`reduce`/`for_each` traverse the input array from left to right (evaluation rules in 8.5).
 - `reduce` requires an initial value.
-- `forEach` discards each application result and returns `Void`. It is used for iteration whose purpose is side effects.
-- `map`, `filter`, `reduce`, and `forEach` are core functions that include the normalization targets of the control structures of 6.4, and must not be overridden by user code (subject to the exception provision of 15.1).
-- `get` results in a runtime error (`E-RUNTIME-ACCESS`) when the key is absent. This is the same failure contract as index access `m[k]` (6.8, 8.9). To tolerate a missing key, check in advance with `hasKey`.
+- `for_each` discards each application result and returns `Void`. It is used for iteration whose purpose is side effects.
+- `map`, `filter`, `reduce`, and `for_each` are core functions that include the normalization targets of the control structures of 6.4, and must not be overridden by user code (subject to the exception provision of 15.1).
+- `get` results in a runtime error (`E-RUNTIME-ACCESS`) when the key is absent. This is the same failure contract as index access `m[k]` (6.8, 8.9). To tolerate a missing key, check in advance with `has_key`.
 
 ### 15.5 Command Execution Functions
 
 The built-in library provides at least the following functions.
 
-- `runCommand`: `Function<String, CommandResult>` (with keyword parameter `--env: Environment = #local`)
+- `run_command`: `Function<String, CommandResult>` (with keyword parameter `--env: Environment = #local`)
 
 Contract:
 
 - Follows the rules of 6.6, 8.7, and Chapter 10. `CommandResult` is the built-in type alias defined in 6.6.
-- `runCommand` succeeds regardless of the exit code as long as the command completes. The diagnostic code for failures caused by a non-zero exit of the command execution expressions `$`, `$1`, and `$2` (6.6) is `E-RUNTIME-COMMAND-NONZERO`.
+- `run_command` succeeds regardless of the exit code as long as the command completes. The diagnostic code for failures caused by a non-zero exit of the command execution expressions `$`, `$1`, and `$2` (6.6) is `E-RUNTIME-COMMAND-NONZERO`.
 - Environment resolution failure is `E-IO-ENV-RESOLVE`.
 
 ### 15.6 Parallel and Asynchronous Helper Functions
@@ -2911,8 +2911,8 @@ Failure rules:
 
 The built-in library provides at least the following functions.
 
-- `toJson`: `Function<Any, String>`
-- `fromJson`: `Function<String, Any>`
+- `to_json`: `Function<Any, String>`
+- `from_json`: `Function<String, Any>`
 - `encode`: `Function<Any, String, String>`
 - `decode`: `Function<String, String, Any>`
 - `cast`: `Function<Any, T>`
@@ -2921,7 +2921,7 @@ Format arguments:
 
 - The 2nd argument of `encode`/`decode` is a format specification string, and at least `json` and `pretty-json` are accepted.
 
-JSON conversion rules of `fromJson` / `decode`:
+JSON conversion rules of `from_json` / `decode`:
 
 - JSON number -> `Number`
 - JSON string -> `String`
@@ -2934,7 +2934,7 @@ JSON conversion rules of `fromJson` / `decode`:
 Type migration via `cast`:
 
 - `cast(v)` checks at runtime whether the value `v` conforms to the target type `T`, and if it conforms, returns `v` as a value of type `T`. It is the sole means of migration from `Any` to a concrete type (4.4).
-- The target type `T` must be uniquely concretized from the expected type at the reference position via built-in polymorphism (4.4) (e.g., `user: Record<name: String> = cast(fromJson(stdin))`).
+- The target type `T` must be uniquely concretized from the expected type at the reference position via built-in polymorphism (4.4) (e.g., `user: Record<name: String> = cast(from_json(stdin))`).
 - The target type `T` is limited to data types (`Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, and `Array`/`Map`/`Record` composed of them). A `cast` to a type containing `Void`, `Function`, or `AsyncHandle` is a static error (`E-TYPE-ILLFORMED`).
 
 Runtime type check rules for `cast`:
@@ -2943,7 +2943,7 @@ Runtime type check rules for `cast`:
 - `Array<T>`: the value is an array value and every element conforms at runtime to `T`.
 - `Map<T>`: every value conforms at runtime to `T`.
 - `Record<...>`: the key set matches the field set of the target type, and each value conforms at runtime to the corresponding field type.
-- Record values and map values are mutually acceptable. When the structural conditions are satisfied, the implementation converts to the target type's representation (record or map) as needed (to absorb the implementation choice for JSON objects in `fromJson`).
+- Record values and map values are mutually acceptable. When the structural conditions are satisfied, the implementation converts to the target type's representation (record or map) as needed (to absorb the implementation choice for JSON objects in `from_json`).
 - Positions of `Any` within the target type pass without checking.
 - If the check fails, it is a runtime error (`E-RUNTIME-CAST`). The diagnostics should include the failing position (field path, index).
 
@@ -3234,7 +3234,7 @@ Expected behavior:
 
 ### 16.8 Execution Event Example
 
-An event output example on failure involving command execution with environments (`runCommand`) is shown. The following is the `FailEvent` emitted when the SSH connection times out during execution of `lask run deploy prod`.
+An event output example on failure involving command execution with environments (`run_command`) is shown. The following is the `FailEvent` emitted when the SSH connection times out during execution of `lask run deploy prod`.
 
 ```json
 {
