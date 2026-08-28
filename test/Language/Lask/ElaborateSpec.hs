@@ -234,6 +234,31 @@ spec = do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"
     it "rejects Array<Void> annotations" $
       rejects "xs: Array<Void> = []" ETypeIllformed
+
+  describe "secret bindings (spec 6.10)" $ do
+    it "accepts !! on String bindings of every kind" $ do
+      accepts "a!!: String = \"s\""
+      accepts "a!! = \"s\""
+      accepts "f(x!!: String) = x"
+      accepts "f(--x!!: String = \"d\") = x"
+      accepts "f() = do { x!! = \"s\"\n  x }"
+
+    it "leaves the binding's type unchanged (no distinct secret type)" $ do
+      hasType "a!!: String = \"s\"" "a" "String"
+      hasType "f(x!!: String): String = x" "f" "Function<String, String>"
+
+    it "rejects !! on a non-String value declaration" $
+      rejects "n!!: Number = 1" ETypeSecretNonString
+
+    it "rejects !! on a non-String inferred bind statement" $
+      rejects "f() = do { n!! = 1\n  n }" ETypeSecretNonString
+
+    it "rejects !! on non-String parameters" $ do
+      rejects "f(n!!: Number) = n" ETypeSecretNonString
+      rejects "f(--n!!: Number = 1) = n" ETypeSecretNonString
+
+    it "rejects !! on a function-typed binding" $
+      rejects "g!! = \\(x: String) -> x" ETypeSecretNonString
     it "resolves imported declarations with types" $ do
       r <-
         elab

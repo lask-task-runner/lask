@@ -83,7 +83,9 @@ builtinSchemes =
       ("encode", mono [TyAny, TyString] TyString),
       ("decode", mono [TyString, TyString] TyAny),
       ("cast", Scheme ["T"] [TyAny] (tv "T")),
-      ("get_env", mono [TyString] TyString)
+      -- 15.9 environment access / secret marking
+      ("get_env", mono [TyString] TyString),
+      ("mark_secret", mono [TyString] TyString)
       -- The reserved identifier stdin (9.3) is a String value, not a
       -- function; the elaborator resolves it specially.
     ]

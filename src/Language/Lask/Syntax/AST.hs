@@ -9,6 +9,7 @@ module Language.Lask.Syntax.AST
     Decl (..),
     DeclF (..),
     ImportSpec (..),
+    Secrecy (..),
     Param (..),
     ParamF (..),
     SType (..),
@@ -46,10 +47,15 @@ data DeclF
     DImportNamespace Text Text
   | -- | @type Name = Type@
     DTypeAlias Text SType
-  | -- | @name [: Type] = expr@
-    DValue Text (Maybe SType) Expr
+  | -- | @name[!!] [: Type] = expr@
+    DValue Text Secrecy (Maybe SType) Expr
   | -- | @name(params) [: Type] = expr@ (sugar for a lambda binding)
     DFunction Text [Param] (Maybe SType) Expr
+  deriving (Show, Eq)
+
+-- | Whether a binding carries the @!!@ secret marker (spec 6.10).
+-- Only the binding is marked; the bound type is unaffected.
+data Secrecy = Public | Secret
   deriving (Show, Eq)
 
 data ImportSpec = ImportSpec
@@ -63,11 +69,12 @@ data Param = Param {paramSpan :: Span, paramF :: ParamF}
   deriving (Show, Eq)
 
 data ParamF
-  = PPositional Text (Maybe SType)
-  | -- | @...name : Array\<T\>@
+  = -- | @name[!!] : T@
+    PPositional Text Secrecy (Maybe SType)
+  | -- | @...name : Array\<T\>@. Cannot be marked @!!@ (spec 6.1).
     PVariadic Text (Maybe SType)
-  | -- | @--name : T = default@
-    PKeyword Text (Maybe SType) Expr
+  | -- | @--name[!!] : T = default@
+    PKeyword Text Secrecy (Maybe SType) Expr
   deriving (Show, Eq)
 
 data SType = SType {stypeSpan :: Span, stypeF :: STypeF}
@@ -140,7 +147,8 @@ data Stmt = Stmt {stmtSpan :: Span, stmtF :: StmtF}
   deriving (Show, Eq)
 
 data StmtF
-  = SBind Text Expr
+  = -- | @name[!!] = expr@
+    SBind Text Secrecy Expr
   | SExpr Expr
   | SReturn Expr
   | -- | @if (cond) { ... }@ without @else@ in statement position.
@@ -157,7 +165,7 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DImportNamed specs path -> DImportNamed (map stripSpec specs) path
   DImportNamespace a p -> DImportNamespace a p
   DTypeAlias n t -> DTypeAlias n (stripSpansType t)
-  DValue n t e -> DValue n (fmap stripSpansType t) (stripSpansExpr e)
+  DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
   DFunction n ps t e ->
     DFunction n (map stripParam ps) (fmap stripSpansType t) (stripSpansExpr e)
   where
@@ -165,9 +173,9 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
 
 stripParam :: Param -> Param
 stripParam (Param _ f) = Param NoSpan $ case f of
-  PPositional n t -> PPositional n (fmap stripSpansType t)
+  PPositional n sec t -> PPositional n sec (fmap stripSpansType t)
   PVariadic n t -> PVariadic n (fmap stripSpansType t)
-  PKeyword n t d -> PKeyword n (fmap stripSpansType t) (stripSpansExpr d)
+  PKeyword n sec t d -> PKeyword n sec (fmap stripSpansType t) (stripSpansExpr d)
 
 stripSpansType :: SType -> SType
 stripSpansType (SType _ f) = SType NoSpan $ case f of
@@ -213,7 +221,7 @@ stripBlock (Block _ ss) = Block NoSpan (map stripStmt ss)
 
 stripStmt :: Stmt -> Stmt
 stripStmt (Stmt _ f) = Stmt NoSpan $ case f of
-  SBind n e -> SBind n (stripSpansExpr e)
+  SBind n sec e -> SBind n sec (stripSpansExpr e)
   SExpr e -> SExpr (stripSpansExpr e)
   SReturn e -> SReturn (stripSpansExpr e)
   SGuard c b -> SGuard (stripSpansExpr c) (stripBlock b)

@@ -50,6 +50,7 @@ library
       Language.Lask.Repl
       Language.Lask.Runtime.Environment
       Language.Lask.Runtime.Eval
+      Language.Lask.Runtime.Secrets
       Language.Lask.Runtime.Value
       Language.Lask.Serialize
       Language.Lask.Span
@@ -147,6 +148,7 @@ test-suite lask-test
       Language.Lask.Obs.CommandLogSpec
       Language.Lask.Runtime.EnvironmentSpec
       Language.Lask.Runtime.EvalSpec
+      Language.Lask.Runtime.SecretsSpec
       Language.Lask.Syntax.ParserSpec
       Language.LSP.LaskSpec
       Paths_lask

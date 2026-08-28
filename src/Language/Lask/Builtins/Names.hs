@@ -30,7 +30,8 @@ coreFunctionNames =
       "run_command",
       "recover",
       "fail",
-      "get_env"
+      "get_env",
+      "mark_secret"
     ]
 
 -- | Reserved identifiers that cannot be bound (spec 3.3, 9.3).
@@ -95,7 +96,9 @@ builtinValueNames =
       "encode",
       "decode",
       "cast",
-      "get_env"
+      -- 15.9 environment access / secret marking
+      "get_env",
+      "mark_secret"
     ]
 
 -- | Builtin type aliases that user code must not redefine

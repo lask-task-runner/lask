@@ -418,7 +418,7 @@ declDocs compiled docPath docSrc (Just (declPath, name)) = do
     declStartLine = do
       lm <- Map.lookup (normalisedKey declPath) modules
       let matches d = case AST.declF d of
-            AST.DValue n _ _ -> n == name
+            AST.DValue n _ _ _ -> n == name
             AST.DFunction n _ _ _ -> n == name
             _ -> False
       case [AST.declSpan d | d <- AST.moduleDecls (lmModule lm), matches d] of

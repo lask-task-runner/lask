@@ -3,6 +3,7 @@
 module Language.Lask.Runtime.EvalSpec (spec) where
 
 import Control.Exception (try)
+import Data.Either (isRight)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Builtins.Impl (CommandRunner)
@@ -12,8 +13,10 @@ import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
 import Language.Lask.Runtime.Eval (applyValue, mkRtCtx, topValue)
+import Language.Lask.Runtime.Secrets (maskSecrets, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue)
+import System.Environment (setEnv, unsetEnv)
 import Test.Hspec
 
 -- | Mock command runner: no real processes in unit tests.
@@ -241,3 +244,58 @@ spec = do
   describe "stdin (spec 9.3)" $ do
     it "exposes stdin as a String" $
       evalsTo "f() = trim(stdin)" "f" "\"in-data\""
+
+  describe "secret bindings (spec 6.10)" $ do
+    -- The registry is process-global, so each case clears it and
+    -- checks masking through the same path the command log uses.
+    let registeredAfter src name = do
+          resetSecretRegistryForTests
+          r <- run src name
+          masked <- maskSecrets "value=s3cr3t-value"
+          resetSecretRegistryForTests
+          pure (r, masked)
+        masksAfterEval src name = do
+          (r, masked) <- registeredAfter src name
+          r `shouldSatisfy` isRight
+          masked `shouldBe` "value=***"
+
+    it "registers a !!-marked value declaration" $
+      masksAfterEval "a!!: String = \"s3cr3t-value\"\nf() = a" "f"
+
+    it "registers a !!-marked bind statement" $
+      masksAfterEval "f() = do { a!! = \"s3cr3t-value\"\n  a }" "f"
+
+    it "registers a !!-marked positional parameter" $
+      masksAfterEval "g(x!!: String): String = x\nf() = g(\"s3cr3t-value\")" "f"
+
+    it "registers a !!-marked keyword parameter's default" $
+      masksAfterEval "g(--x!!: String = \"s3cr3t-value\"): String = x\nf() = g()" "f"
+
+    it "registers a !!-marked keyword parameter's caller-supplied value" $
+      masksAfterEval "g(--x!!: String = \"unused-default\"): String = x\nf() = g(x = \"s3cr3t-value\")" "f"
+
+    it "leaves the value itself untouched for the running program" $
+      evalsTo "g(x!!: String): String = x\nf() = g(\"s3cr3t-value\")" "f" "\"s3cr3t-value\""
+
+    it "does not register anything without the marker" $ do
+      (r, masked) <- registeredAfter "a: String = \"s3cr3t-value\"\nf() = a" "f"
+      r `shouldSatisfy` isRight
+      masked `shouldBe` "value=s3cr3t-value"
+
+    it "registers an explicit mark_secret call" $
+      masksAfterEval "f() = mark_secret(\"s3cr3t-value\")" "f"
+
+    it "does not register values merely because get_env returned them" $ do
+      -- Masking is opt-in (spec 12.8): a region or log level read from
+      -- the environment must stay readable in logs.
+      setEnv "LASK_TEST_SECRET_VAR" "s3cr3t-value"
+      (r, masked) <- registeredAfter "f() = get_env(\"LASK_TEST_SECRET_VAR\")" "f"
+      unsetEnv "LASK_TEST_SECRET_VAR"
+      r `shouldBe` Right "\"s3cr3t-value\""
+      masked `shouldBe` "value=s3cr3t-value"
+
+    it "masks a get_env value once it is bound to a !!-marked name" $ do
+      setEnv "LASK_TEST_SECRET_VAR" "s3cr3t-value"
+      out <- masksAfterEval "f() = do { k!! = get_env(\"LASK_TEST_SECRET_VAR\")\n  k }" "f"
+      unsetEnv "LASK_TEST_SECRET_VAR"
+      pure out

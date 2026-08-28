@@ -24,6 +24,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Language.Lask.ErrorCode
+import Language.Lask.Runtime.Secrets (registerSecret)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, valueFromJson)
 import System.Environment (getEnvironment)
@@ -131,12 +132,19 @@ callBuiltin apply runCmd name args kwArgs = case (name, args) of
     "json" -> decodeJson s
     "pretty-json" -> decodeJson s
     _ -> throwIO (ioFailure EIoDataDecode ("unsupported format: '" <> fmt <> "'"))
-  -- other --------------------------------------------------------------------
+  -- 15.9 environment access / secret marking ---------------------------------
+  -- Reading the environment does not by itself make a value secret:
+  -- masking is opt-in through `!!` / `mark_secret` (spec 6.10, 12.8).
   ("get_env", [VString key]) -> do
     envs <- getEnvironment
     case lookup (T.unpack key) envs of
       Just value -> pure (VString (T.pack value))
       Nothing -> pure VNull
+  -- The desugaring target of `!!` secret bindings (spec 6.10): register
+  -- the value for log masking (12.8) and hand it back untouched.
+  ("mark_secret", [VString value]) -> do
+    registerSecret value
+    pure (VString value)
   _ ->
     throwIO . runtimeFailure ERuntimeCast $
       "invalid builtin call: '" <> name <> "' with " <> T.pack (show (length args)) <> " arguments"

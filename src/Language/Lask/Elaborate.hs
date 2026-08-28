@@ -152,7 +152,7 @@ elaborateProgram prog scopes =
           Decl _ f <- moduleDecls (lmModule lm),
           n <- declValueName f
         ]
-    declValueName (DValue n _ _) = [n]
+    declValueName (DValue n _ _ _) = [n]
     declValueName (DFunction n _ _ _) = [n]
     declValueName _ = []
 
@@ -162,7 +162,7 @@ lookupDeclAst :: Ctx -> Key -> Maybe Decl
 lookupDeclAst ctx (path, name) = do
   lm <- Map.lookup path (progModules (ctxProg ctx))
   let match d = case declF d of
-        DValue n _ _ -> n == name
+        DValue n _ _ _ -> n == name
         DFunction n _ _ _ -> n == name
         _ -> False
   case filter match (moduleDecls (lmModule lm)) of
@@ -190,7 +190,7 @@ headerType ctx key@(path, name) = case lookupDeclAst ctx key of
     DFunction _ ps (Just rt) _ -> do
       posTys <- paramHeaderTypes ctx path ps
       TyFun posTys <$> typeFromS ctx path rt
-    DValue _ (Just t) _ -> typeFromS ctx path t
+    DValue _ _ (Just t) _ -> typeFromS ctx path t
     _ ->
       abort . diag ETypeMismatch sp $
         "recursive declaration '" <> name <> "' needs a return type annotation"
@@ -204,7 +204,7 @@ paramHeaderTypes ctx path ps =
       Just t <- [positionalOf f]
     ]
   where
-    positionalOf (PPositional _ ann) = Just (maybe (pure TyAny) (typeFromS ctx path) ann)
+    positionalOf (PPositional _ _ ann) = Just (maybe (pure TyAny) (typeFromS ctx path) ann)
     positionalOf (PVariadic _ ann) =
       Just (maybe (pure (TyArray TyAny)) (typeFromS ctx path) ann)
     positionalOf (PKeyword {}) = Nothing
@@ -230,13 +230,16 @@ elabDecl ctx path (Decl sp f) = case f of
   DFunction name ps rt body -> do
     (lam, ty, params) <- elabLambda ctx path Map.empty sp (Just name) ps rt body
     pure (CoreDecl path name ty lam (Just params))
-  DValue name ann rhs -> do
+  DValue name sec ann rhs -> do
     annTy <- traverse (typeFromS ctx path) ann
     case exprF rhs of
       -- A directly lambda-valued binding keeps declaration parameter
       -- info (callable with keyword arguments, spec 7.5).
       ELambda ps rt body -> do
         (lam, ty, params) <- elabLambda ctx path Map.empty (exprSpan rhs) (Just name) ps rt body
+        -- A function-typed binding can never be a secret (6.10 allows
+        -- only String); report that before the annotation check.
+        _ <- applySecrecy sp name sec ty lam
         case annTy of
           Just t | not (conformsTo ty t) -> mismatch sp t ty
           Just t -> pure (CoreDecl path name t lam (Just params))
@@ -247,8 +250,47 @@ elabDecl ctx path (Decl sp f) = case f of
           Nothing -> infer ctx path Map.empty rhs
         when (ty == TyVoid) $
           abort (diag ETypeIllformed sp "a Void value cannot be bound at top level")
-        pure (CoreDecl path name ty core Nothing)
+        core' <- applySecrecy sp name sec ty core
+        pure (CoreDecl path name ty core' Nothing)
   _ -> abort (diag ENameUndefined sp "internal: not a value declaration")
+
+-- Secret bindings (spec 6.10) ---------------------------------------------------
+
+-- | Wrap a core expression in a @mark_secret@ application, the
+-- desugaring target of @!!@ (spec 6.10). The value itself is
+-- unchanged; this only registers it for log masking (12.8).
+markSecretCall :: Span -> Core -> Core
+markSecretCall sp inner =
+  Core sp (CApp (Core sp (CVar (BuiltinRef "mark_secret"))) [inner] [])
+
+-- | Apply the @!!@ marker to a binding whose type is now known.
+-- @!!@ is permitted only on @String@ bindings (spec 6.10).
+applySecrecy :: Span -> Text -> Secrecy -> Type -> Core -> TC Core
+applySecrecy _ _ Public _ core = pure core
+applySecrecy sp name Secret ty core = do
+  checkSecretType sp name ty
+  pure (markSecretCall sp core)
+
+checkSecretType :: Span -> Text -> Type -> TC ()
+checkSecretType sp name ty =
+  unless (ty == TyString) $
+    abort . diag ETypeSecretNonString sp $
+      "'" <> name <> "!!' marks a secret binding, which must be String, but its type is "
+        <> renderType ty
+
+-- | Rebind each @!!@-marked parameter through @mark_secret@ at the top
+-- of the function body (spec 6.10). Done on the surface body, before
+-- it is elaborated, so the rebinding goes through the ordinary block
+-- and shadowing rules.
+wrapSecretParams :: [Text] -> Expr -> Expr
+wrapSecretParams [] body = body
+wrapSecretParams names body =
+  Expr sp (EDo (Block sp (map bind names <> [Stmt sp (SExpr body)])))
+  where
+    sp = exprSpan body
+    bind n = Stmt sp (SBind n Public (call n))
+    call n =
+      Expr sp (ECall (Expr sp (EVar "mark_secret")) [Arg sp (APos (Expr sp (EVar n)))])
 
 -- Types from surface syntax -----------------------------------------------------
 
@@ -324,9 +366,11 @@ elabLambda ::
   Expr ->
   TC (Core, Type, StaticParams)
 elabLambda ctx path locals sp mName ps retAnn body = do
-  (params, kwDefaults, bodyLocals) <- elabParams ctx path locals ps
+  (params, kwDefaults, bodyLocals, secretParams) <- elabParams ctx path locals ps
   retTy <- traverse (typeFromS ctx path) retAnn
-  body' <- lift (transformFunctionBody body)
+  -- Wrapped after the early-return transform so the rebindings sit in
+  -- a plain, return-free block (spec 6.10 desugaring).
+  body' <- wrapSecretParams secretParams <$> lift (transformFunctionBody body)
   (bodyCore, bodyTy) <- case retTy of
     Just t -> (,) <$> check ctx path bodyLocals body' t <*> pure t
     Nothing -> infer ctx path bodyLocals body'
@@ -354,33 +398,37 @@ lambdaName (Span (Position _ l c) _) =
 lambdaName NoSpan = "<lambda>"
 
 -- | Elaborate the parameter list: types, keyword defaults (evaluated
--- in the scope of preceding parameters, spec 8.3), and the body scope.
+-- in the scope of preceding parameters, spec 8.3), the body scope, and
+-- the names of @!!@-marked parameters (spec 6.10), whose types have
+-- been validated here and which the caller rebinds in the body.
 elabParams ::
   Ctx ->
   FilePath ->
   Locals ->
   [Param] ->
-  TC (StaticParams, [(Text, Core)], Locals)
-elabParams ctx path outer = go [] Nothing [] [] outer
+  TC (StaticParams, [(Text, Core)], Locals, [Text])
+elabParams ctx path outer = go [] Nothing [] [] [] outer
   where
-    go pos var kws defaults locals [] =
+    go pos var kws defaults secrets locals [] =
       pure
         ( StaticParams (reverse pos) var (reverse kws),
           reverse defaults,
-          Map.union locals outer
+          Map.union locals outer,
+          reverse secrets
         )
-    go pos var kws defaults locals (Param psp f : rest) = case f of
-      PPositional n ann -> do
+    go pos var kws defaults secrets locals (Param psp f : rest) = case f of
+      PPositional n sec ann -> do
         t <- maybe (pure TyAny) (typeFromS ctx path) ann
         checkParamType psp t
-        go ((n, t) : pos) var kws defaults (Map.insert n t locals) rest
+        secrets' <- addSecret psp n sec t secrets
+        go ((n, t) : pos) var kws defaults secrets' (Map.insert n t locals) rest
       PVariadic n ann -> do
         t <- maybe (pure (TyArray TyAny)) (typeFromS ctx path) ann
         elemTy <- case t of
           TyArray e -> pure e
           _ -> abort (diag ETypeIllformed psp "variadic parameter type must be Array<T>")
-        go pos (Just (n, elemTy)) kws defaults (Map.insert n t locals) rest
-      PKeyword n ann dflt -> do
+        go pos (Just (n, elemTy)) kws defaults secrets (Map.insert n t locals) rest
+      PKeyword n sec ann dflt -> do
         (dCore, dTy) <- case ann of
           Just a -> do
             t <- typeFromS ctx path a
@@ -388,7 +436,13 @@ elabParams ctx path outer = go [] Nothing [] [] outer
             c <- check ctx path (Map.union locals outer) dflt t
             pure (c, t)
           Nothing -> infer ctx path (Map.union locals outer) dflt
-        go pos var ((n, dTy) : kws) ((n, dCore) : defaults) (Map.insert n dTy locals) rest
+        secrets' <- addSecret psp n sec dTy secrets
+        go pos var ((n, dTy) : kws) ((n, dCore) : defaults) secrets' (Map.insert n dTy locals) rest
+
+    addSecret _ _ Public _ secrets = pure secrets
+    addSecret psp n Secret t secrets = do
+      checkSecretType psp n t
+      pure (n : secrets)
 
     checkParamType psp t =
       when (t == TyVoid) $
@@ -567,15 +621,15 @@ elabLambdaAgainst ::
   [Type] ->
   TC (Core, Type, StaticParams)
 elabLambdaAgainst ctx path locals sp ps rt body expPs = do
-  let positionals = [p | p@(Param _ (PPositional _ _)) <- ps]
+  let positionals = [p | p@(Param _ (PPositional _ _ _)) <- ps]
   ps' <-
     if length positionals == length expPs && length positionals == length ps
       then pure (zipWith adopt ps expPs)
       else pure ps
   elabLambda ctx path locals sp Nothing ps' rt body
   where
-    adopt (Param psp (PPositional n Nothing)) expTy =
-      Param psp (PPositional n (Just (typeToS psp expTy)))
+    adopt (Param psp (PPositional n sec Nothing)) expTy =
+      Param psp (PPositional n sec (Just (typeToS psp expTy)))
     adopt p _ = p
 
 -- | Encode a semantic type back into surface syntax for adoption.
@@ -831,20 +885,22 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
       | Just t <- mExpected, t /= TyVoid && t /= TyAny =
           abort (diag ETypeMismatch bsp ("an empty block has type Void, expected " <> renderType t))
       | otherwise = pure ([], TyVoid)
-    go locals [Stmt _ f] = case f of
-      SBind n e -> do
+    go locals [Stmt ssp f] = case f of
+      SBind n sec e -> do
         (c, t) <- inferOrCheck locals e
-        pure ([CSBind n c], t)
+        c' <- applySecrecy ssp n sec t c
+        pure ([CSBind n c'], t)
       SExpr e -> do
         (c, t) <- inferOrCheck locals e
         pure ([CSExpr c], t)
       SReturn _ -> returnErr
       SGuard _ _ -> returnErr
-    go locals (Stmt _ f : rest) = case f of
-      SBind n e -> do
+    go locals (Stmt ssp f : rest) = case f of
+      SBind n sec e -> do
         (c, t) <- infer ctx path locals e
+        c' <- applySecrecy ssp n sec t c
         (cs, ty) <- go (Map.insert n t locals) rest
-        pure (CSBind n c : cs, ty)
+        pure (CSBind n c' : cs, ty)
       SExpr e -> do
         (c, _) <- infer ctx path locals e
         (cs, ty) <- go locals rest

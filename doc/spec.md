@@ -35,6 +35,7 @@ This specification is intended to serve as the reference for implementation, ver
   - [6.7 Environment Expressions](#67-environment-expressions)
   - [6.8 Accessor Expressions](#68-accessor-expressions)
   - [6.9 Error Handling Expressions](#69-error-handling-expressions)
+  - [6.10 Secret Bindings](#610-secret-bindings)
 - [7. Static Semantics](#7-static-semantics)
   - [7.1 Verification Context](#71-verification-context)
   - [7.2 Name Resolution Order](#72-name-resolution-order)
@@ -109,7 +110,8 @@ This specification is intended to serve as the reference for implementation, ver
   - [15.6 Parallel and Asynchronous Helper Functions](#156-parallel-and-asynchronous-helper-functions)
   - [15.7 Error Handling Functions](#157-error-handling-functions)
   - [15.8 Serialization and Type-Migration Helper Functions](#158-serialization-and-type-migration-helper-functions)
-  - [15.9 Error Contract](#159-error-contract)
+  - [15.9 Environment Access and Secret Marking Functions](#159-environment-access-and-secret-marking-functions)
+  - [15.10 Error Contract](#1510-error-contract)
 - [16. Examples](#16-examples)
   - [16.1 Minimal Program](#161-minimal-program)
   - [16.2 Functions with Type Annotations](#162-functions-with-type-annotations)
@@ -512,7 +514,7 @@ TopLevelDecl  = ( ImportDecl | TypeAliasDecl | Declaration ) decl_end .
 decl_end      = newline | ";" .
 TypeAliasDecl = "type" upper_id "=" Type .
 Declaration = ValueDecl | FunctionDecl .
-ValueDecl   = lower_id [ ":" Type ] "=" Expression .
+ValueDecl   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 FunctionDecl = lower_id "(" [ FunctionParameterList ] ")" [ ":" Type ] "=" Expression .
 
 ImportDecl      = "import" ( NamedImports | NamespaceImport ) "from" ImportPath .
@@ -529,6 +531,7 @@ Declaration termination rules:
 - `;` is an optional separator for writing multiple declarations on one line, and is not required at the end of a line.
 - `as` and `from` are not continuation tokens (6.5). An `import` declaration must be written on one line, except inside the braces of `NamedImports` (which may span multiple lines by the open-bracket continuation rule). The closing `}` and the `from` clause must be placed on the same line.
 - A line-leading `(` or `[` does not continue the preceding declaration and is interpreted as the start of a new declaration. Since a top-level declaration begins with `import`, `type`, or an identifier, this case results in a syntax error.
+- The optional `!!` marker on a `ValueDecl` name declares a secret binding (6.10); it does not affect parsing of the rest of the declaration.
 
 Module loading unit:
 
@@ -662,10 +665,10 @@ FunctionParameterList = PositionalParameters [ "," VariadicParameter ] [ "," Key
                       | VariadicParameter [ "," KeywordParameters ]
                       | KeywordParameters .
 PositionalParameters  = PositionalParameter { "," PositionalParameter } .
-PositionalParameter   = lower_id [ ":" Type ] .
+PositionalParameter   = lower_id [ "!!" ] [ ":" Type ] .
 VariadicParameter     = "..." lower_id [ ":" ArrayType ] .
 KeywordParameters     = KeywordParameter { "," KeywordParameter } .
-KeywordParameter      = "--" lower_id [ ":" Type ] "=" Expression .
+KeywordParameter      = "--" lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 LambdaExpr            = "\\" "(" [ FunctionParameterList ] ")" [ ":" Type ] "->" Expression .
 ```
 
@@ -677,6 +680,7 @@ Meaning of the parameter notation:
 - Binding a positional parameter by name, and binding a keyword parameter by position, are not possible (`E-TYPE-KEYWORD`).
 - `--` is a lexeme that appears only as the declaration marker of a keyword parameter, and is not interpreted as a sequence of the operator `-`.
 - Parameter names are used for references within the function body and for the binding interface of keyword parameters (references within the body use `name` for every kind).
+- A positional or keyword parameter name may be marked `!!` to declare it a secret binding (6.10). A variadic parameter cannot be marked `!!`.
 
 Keyword arguments:
 
@@ -878,7 +882,7 @@ Evaluation rules:
 ```ebnf
 DoExpr     = "do" Block .
 DoStmt     = ( BindStmt | ExprStmt | ReturnStmt | GuardStmt ) stmt_end .
-BindStmt   = lower_id "=" Expression .
+BindStmt   = lower_id [ "!!" ] "=" Expression .
 ExprStmt   = Expression .
 ReturnStmt = "return" Expression .
 GuardStmt  = "if" "(" Expression ")" Block .
@@ -1271,6 +1275,67 @@ build(): String = do {
 }
 ```
 
+### 6.10 Secret Bindings
+
+```ebnf
+(* !! attaches to the name in ValueDecl (5), PositionalParameter, and
+   KeywordParameter (6.1). It is not a standalone production. *)
+```
+
+A secret binding is a `ValueDecl` (5), `BindStmt` (6.5), positional parameter, or keyword parameter (6.1) whose name is marked `!!`. It declares that whatever value ends up bound to that name must be masked out of the command execution log (12.3) wherever it later appears, per the sensitive-information protection contract of 12.8.
+
+Semantics:
+
+- `!!` is a single lexeme that appears only as the secret marker of a binding, and is not interpreted as a sequence of the operator `!` (mirroring the rule for `--` in 6.1). Consequently `!!e` is not a double negation; write `! !e` for that.
+
+- `!!` carries no meaning in the static type system. `a!!: String` gives `a` the type `String`, exactly as `a: String` would; there is no distinct "secret" type, and secrecy is not part of any function type or unified during type checking.
+- `!!` is a marker on the *binding*, evaluated as a side effect when the value is bound: for a `ValueDecl` or `BindStmt`, at evaluation of its right-hand side; for a parameter, at argument binding (8.3), regardless of whether the bound value came from a caller-supplied argument or a keyword parameter's default-value expression.
+- The effect of binding a value to a `!!`-marked name is to register that value with the masking mechanism of 12.8. Registration is by value, not by name or source: once a value is registered, every future occurrence of that exact value in observation data is masked, however it got there (12.8).
+
+Desugaring rules:
+
+- `!!` is syntactic sugar for wrapping the bound expression with the core function `mark_secret` (15.9):
+  ```lask
+  a!!: String = e
+  (* is equivalent to *)
+  a: String = mark_secret(e)
+  ```
+- A `!!`-marked parameter is equivalent to an unmarked parameter of the same kind, with an assignment prepended to the function body that rebinds the parameter through `mark_secret`:
+  ```lask
+  f(x!!: String) = body
+  (* is equivalent to *)
+  f(x: String) = do { x = mark_secret(x); body }
+  ```
+  The same transform applies to a `!!`-marked keyword parameter, after default-value completion (8.3).
+- `mark_secret` is a core function (15.9) and must not be directly declared or overridden by user code (7.2).
+
+Typing rules:
+
+- `!!` is permitted only where the declared or inferred type is `String`. A `!!` marker on a name whose type is anything other than `String` is a static error (`E-TYPE-SECRET-NON-STRING`).
+
+Scope of the masking effect:
+
+- Masking (12.8) applies only to observation data: the command execution log (12.3), in both the logged command text and relayed output lines.
+- Masking never applies to a `CommandResult`'s `stdout` / `stderr` (8.7) or to a function's return value as observed by the running program (a `!!`-marked value flows through ordinary evaluation unchanged). In particular, `eval`'s primary result on stdout (9.5, 11.3) is never masked: if a program's return value is derived from a secret binding, outputting it faithfully is the whole point of that program, and the primary-result contract of 11.3 takes precedence.
+- The matching rule is exact-value substring matching (12.8), not static or dynamic taint tracking through the type system. A transformation that changes the value's character sequence (e.g. `to_upper`, `replace`, slicing, encoding) breaks the match for the transformed result; a transformation that only embeds the value unchanged inside a larger string (e.g. `concat`, string interpolation) does not.
+- A variadic parameter cannot be marked `!!` (6.1).
+
+Examples:
+
+```lask
+deploy(
+  // `region` is not sensitive, so it stays readable in the log even
+  // though it is read the same way as the key below.
+  --region: String = get_env("AWS_DEFAULT_REGION"),
+  --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
+) = do {
+  // `secret_key` is masked in the command log below, whether it came
+  // from the default expression or was supplied directly as
+  // `lask run deploy --secret_key ...`.
+  $ aws configure set aws_secret_access_key #{secret_key} --region #{region}
+}
+```
+
 ## 7. Static Semantics
 
 This chapter defines the semantics that can be verified before execution.
@@ -1309,7 +1374,7 @@ Resolution rules:
 - If no candidate exists at any precedence level, it is an undefined reference error.
 - Reserved words must not be bound as identifiers.
 - Symbols of the built-in library are resolved at the lowest level (fifth precedence), so a user-defined symbol of the same name always takes priority (shadowing; 15.1).
-- However, core function names specified as non-overridable (`spawn`, `choose`, `map`, `filter`, `reduce`, `for_each`, `run_command`, `recover`, `fail`; Chapter 6) and `stdin` (9.3) must not be declared or bound at any of the first through fourth precedence levels. A violation is a duplicate definition error (`E-NAME-DUPLICATE`).
+- However, core function names specified as non-overridable (`spawn`, `choose`, `map`, `filter`, `reduce`, `for_each`, `run_command`, `recover`, `fail`, Chapter 6; `get_env`, `mark_secret`, 6.10/15.9) and `stdin` (9.3) must not be declared or bound at any of the first through fourth precedence levels. A violation is a duplicate definition error (`E-NAME-DUPLICATE`).
 
 ### 7.3 Scope and Shadowing
 
@@ -1420,6 +1485,7 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
 - `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, invalid target type of `cast`; 4.2, 15.8)
+- `E-TYPE-SECRET-NON-STRING`: `!!` applied to a binding whose type is not `String` (6.10)
 - `E-MODULE-CYCLE`: module circular dependency
 - `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
 
@@ -2414,9 +2480,17 @@ Rules:
 
 Because sensitive information may be mixed into observation data, implementations must satisfy the following.
 
-- Environment variable values, credentials, private keys, and tokens are masked or removed.
+- Values the program has declared sensitive — credentials, private keys, and tokens, marked as secret bindings (6.10) — are masked or removed.
 - Command arguments are summarized as necessary, avoiding full-text output.
 - Even on SSH authentication failure, the secrets themselves must not be output.
+
+Masking mechanism:
+
+- A value is in scope for masking once it is registered as sensitive. Registration happens for every value bound to a `!!`-marked name, and for every explicit `mark_secret` call (6.10).
+- Registration is opt-in and is never inferred from a value's origin. In particular, reading a value with `get_env` (15.9) does not register it: most environment variables (a region, a log level) are not sensitive, and masking them would degrade the usefulness of logs without improving safety. A credential read from the environment is marked at its binding, as in `--secret_key!!: String = get_env("...")`.
+- Registration is by value, not by name, type, or source: masking is applied by finding registered values as exact substrings of observation data and replacing each match with a fixed mask, regardless of which command, binding, or interpolation the value passed through to get there.
+- Masking is applied only to observation data (the command execution log of 12.3: the logged command text and relayed output lines) at the point that data is produced. It is never applied to a `CommandResult`'s `stdout` / `stderr` (8.7) or to any other value as observed by the running program (including `eval`'s primary result on stdout, 9.5/11.3): those must remain faithful to the real value.
+- Because matching is by exact substring, a value that has been transformed (case conversion, replacement, slicing, encoding, hashing, ...) since registration is no longer found and is not masked. This is a known limitation, not a defect: full protection would require tracking sensitive values through transformations (taint tracking), which this specification does not require of implementations.
 
 Retention policy:
 
@@ -2628,6 +2702,7 @@ Representative codes:
 - `E-TYPE-FIELD-DUPLICATE`
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
+- `E-TYPE-SECRET-NON-STRING`
 - `E-MODULE-CYCLE`
 - `E-MODULE-UNRESOLVED`
 - `E-MODULE-HASH-MISMATCH`
@@ -2689,6 +2764,7 @@ Minimum targets:
 - `E-TYPE-FIELD-DUPLICATE`
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
+- `E-TYPE-SECRET-NON-STRING`
 - `E-MODULE-CYCLE`
 - `E-MODULE-UNRESOLVED`
 
@@ -2953,7 +3029,22 @@ Contract:
 - Invalid JSON is reported as `E-IO-DATA-DECODE`.
 - An unsupported format specification is reported consistently as either `E-CLI-USAGE` or `E-IO-DATA-DECODE`.
 
-### 15.9 Error Contract
+### 15.9 Environment Access and Secret Marking Functions
+
+The built-in library provides at least the following functions.
+
+- `get_env`: `Function<String, String>`
+- `mark_secret`: `Function<String, String>`
+
+Semantics:
+
+- `get_env(name)` returns the value of the process environment variable `name`, or `Null` if it is not set. `get_env` is a core function (7.2) and must not be directly declared or overridden by user code.
+- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked.
+- `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged.
+- `mark_secret` is a core function and must not be directly declared or overridden by user code (7.2). It is the desugaring target of `!!` secret bindings (6.10); user code may also call it directly to register a value that isn't declared with `!!`.
+- Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out) and no effect on control flow: it is not a source of failure.
+
+### 15.10 Error Contract
 
 Functions of the built-in library must be consistent with the Error System of Chapter 14.
 

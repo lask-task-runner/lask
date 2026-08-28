@@ -83,6 +83,7 @@ renderToken t = case t of
   TAssign -> "="
   TBackslash -> "\\"
   TDashDash -> "--"
+  TBangBang -> "!!"
   TEllipsis -> "..."
   TNewline -> "newline"
 
