@@ -29,7 +29,8 @@ coreFunctionNames =
       "forEach",
       "runCommand",
       "recover",
-      "fail"
+      "fail",
+      "getEnv"
     ]
 
 -- | Reserved identifiers that cannot be bound (spec 3.3, 9.3).
@@ -93,7 +94,8 @@ builtinValueNames =
       "fromJson",
       "encode",
       "decode",
-      "cast"
+      "cast",
+      "getEnv"
     ]
 
 -- | Builtin type aliases that user code must not redefine

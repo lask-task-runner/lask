@@ -26,6 +26,7 @@ import qualified Data.Vector as V
 import Language.Lask.ErrorCode
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, valueFromJson)
+import System.Environment (getEnvironment)
 
 -- | Apply a function value to positional and keyword arguments.
 type Apply = Value -> [Value] -> [(Text, Value)] -> IO Value
@@ -130,6 +131,12 @@ callBuiltin apply runCmd name args kwArgs = case (name, args) of
     "json" -> decodeJson s
     "pretty-json" -> decodeJson s
     _ -> throwIO (ioFailure EIoDataDecode ("unsupported format: '" <> fmt <> "'"))
+  -- other --------------------------------------------------------------------
+  ("getEnv", [VString key]) -> do
+    envs <- getEnvironment
+    case lookup (T.unpack key) envs of
+      Just value -> pure (VString (T.pack value))
+      Nothing -> pure VNull
   _ ->
     throwIO . runtimeFailure ERuntimeCast $
       "invalid builtin call: '" <> name <> "' with " <> T.pack (show (length args)) <> " arguments"

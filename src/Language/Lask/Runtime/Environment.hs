@@ -145,9 +145,9 @@ envLogInfo original resolved = (summary, json)
 -- the working directory inside the container).
 dockerArgs :: FilePath -> Text -> Map Text Value -> Text -> [String]
 dockerArgs baseDir image opts cmd =
-  ["run", "--rm", "-v", baseDir <> ":/work", "-w", "/work"]
+  ["run", "--rm", "-v", baseDir <> ":/work", "-w", "/work", "--entrypoint", "/bin/sh"]
     <> optArgs
-    <> [T.unpack image, "/bin/sh", "-c", T.unpack cmd]
+    <> [T.unpack image, "-c", T.unpack cmd]
   where
     optArgs =
       concat

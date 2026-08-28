@@ -82,7 +82,8 @@ builtinSchemes =
       ("fromJson", mono [TyString] TyAny),
       ("encode", mono [TyAny, TyString] TyString),
       ("decode", mono [TyString, TyString] TyAny),
-      ("cast", Scheme ["T"] [TyAny] (tv "T"))
+      ("cast", Scheme ["T"] [TyAny] (tv "T")),
+      ("getEnv", mono [TyString] TyString)
       -- The reserved identifier stdin (9.3) is a String value, not a
       -- function; the elaborator resolves it specially.
     ]
