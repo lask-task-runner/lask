@@ -152,15 +152,15 @@ spec = do
       ls `shouldSatisfy` notElem "y"
     it "offers builtins with their type as detail" $ do
       items <- completionAt "test.lask" "x = to" (Position 0 6)
-      map (^. L.label) items `shouldSatisfy` elem "toLower"
-      [i ^. L.detail | i <- items, i ^. L.label == "toLower"]
+      map (^. L.label) items `shouldSatisfy` elem "to_lower"
+      [i ^. L.detail | i <- items, i ^. L.label == "to_lower"]
         `shouldBe` [Just "Function<String, String>"]
     it "leaves narrowing to the client" $ do
       -- The client matches case-insensitively and fuzzily, so a
       -- candidate must not be dropped just because the typed word is
       -- not a literal prefix of it.
       ls <- labels "test.lask" "x = cA" 0 6
-      ls `shouldSatisfy` elem "concatArray"
+      ls `shouldSatisfy` elem "concat_array"
     it "offers reserved words" $ do
       ls <- labels "test.lask" "im" 0 2
       ls `shouldSatisfy` elem "import"
@@ -182,7 +182,7 @@ spec = do
         ls `shouldMatchList` ["double", "hidden"]
     it "still offers builtins and reserved words when the buffer does not parse" $ do
       ls <- labels "test.lask" "y = }\nz = to" 1 6
-      ls `shouldSatisfy` elem "toJson"
+      ls `shouldSatisfy` elem "to_json"
 
   describe "completion resilience" $ do
     it "offers top-level names while a new declaration is being named" $ do
@@ -222,10 +222,10 @@ spec = do
   describe "completion edge cases" $ do
     it "offers builtins in an empty document" $ do
       ls <- labels "test.lask" "" 0 0
-      ls `shouldSatisfy` elem "toLower"
+      ls `shouldSatisfy` elem "to_lower"
     it "handles a column past the end of the line" $ do
       ls <- labels "test.lask" "y = 1\nz = " 1 99
-      ls `shouldSatisfy` elem "toLower"
+      ls `shouldSatisfy` elem "to_lower"
     it "handles CRLF line endings" $ do
       ls <- labels "test.lask" "inc(x: Number) = x + 1\r\ny = i" 1 5
       ls `shouldSatisfy` elem "inc"

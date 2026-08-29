@@ -702,7 +702,7 @@ completionAt path src (Position pl pc)
       [ n
       | m <- maybeToList (moduleAt p modPath),
         ps <- maybeToList (declParams m declName),
-        AST.Param _ (AST.PKeyword n _ _) <- ps
+        AST.Param _ (AST.PKeyword n _ _ _) <- ps
       ]
 
     moduleAt p modPath
@@ -721,7 +721,7 @@ completionAt path src (Position pl pc)
       listToMaybe $
         [ps | AST.Decl _ (AST.DFunction n ps _ _) <- AST.moduleDecls m, n == declName]
           <> [ ps
-             | AST.Decl _ (AST.DValue n _ (AST.Expr _ (AST.ELambda ps _ _))) <- AST.moduleDecls m,
+             | AST.Decl _ (AST.DValue n _ _ (AST.Expr _ (AST.ELambda ps _ _))) <- AST.moduleDecls m,
                n == declName
              ]
 
@@ -729,7 +729,7 @@ completionAt path src (Position pl pc)
       [ n
       | AST.Decl _ f <- AST.moduleDecls m,
         n <- case f of
-          AST.DValue n' _ _ -> [n']
+          AST.DValue n' _ _ _ -> [n']
           AST.DFunction n' _ _ _ -> [n']
           _ -> []
       ]

@@ -27,7 +27,7 @@ localsAt path (Module ds) pos = nub (concat (reverse (concatMap goDecl ds)))
     goDecl (Decl sp f)
       | not (at sp) = []
       | otherwise = case f of
-          DValue _ _ e -> goExpr e
+          DValue _ _ _ e -> goExpr e
           DFunction _ ps _ body ->
             [map paramName ps] <> concatMap goExpr (paramDefaults ps) <> goExpr body
           _ -> []
@@ -60,11 +60,11 @@ localsAt path (Module ds) pos = nub (concat (reverse (concatMap goDecl ds)))
         go acc (Stmt ssp sf : rest)
           | at ssp = acc : goStmt sf
           | otherwise = go (acc <> bound sf) rest
-        bound (SBind n _) = [n]
+        bound (SBind n _ _) = [n]
         bound _ = []
 
     goStmt sf = case sf of
-      SBind _ e -> goExpr e
+      SBind _ _ e -> goExpr e
       SExpr e -> goExpr e
       SReturn e -> goExpr e
       SGuard c b -> goExpr c <> goBlock b
@@ -96,7 +96,7 @@ enclosingExprs path (Module ds) pos = concatMap goDecl ds
     goDecl (Decl sp f)
       | not (at sp) = []
       | otherwise = case f of
-          DValue _ _ e -> descend e
+          DValue _ _ _ e -> descend e
           DFunction _ ps _ body -> concatMap descend (paramDefaults ps <> [body])
           _ -> []
 
@@ -132,7 +132,7 @@ blockExprs :: Block -> [Expr]
 blockExprs (Block _ ss) = concatMap stmtExprs ss
   where
     stmtExprs (Stmt _ sf) = case sf of
-      SBind _ e -> [e]
+      SBind _ _ e -> [e]
       SExpr e -> [e]
       SReturn e -> [e]
       SGuard c b -> c : blockExprs b
@@ -146,12 +146,12 @@ argExpr (Arg _ (AKw _ e)) = e
 
 paramName :: Param -> Text
 paramName (Param _ f) = case f of
-  PPositional n _ -> n
+  PPositional n _ _ -> n
   PVariadic n _ -> n
-  PKeyword n _ _ -> n
+  PKeyword n _ _ _ -> n
 
 paramDefaults :: [Param] -> [Expr]
-paramDefaults ps = [d | Param _ (PKeyword _ _ d) <- ps]
+paramDefaults ps = [d | Param _ (PKeyword _ _ _ d) <- ps]
 
 -- | Whether a span covers a position. The end is exclusive (spans end
 -- just past their last character), matching hover; an inclusive end
