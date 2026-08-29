@@ -37,13 +37,6 @@ import System.IO.Unsafe (unsafePerformIO)
 mask :: Text
 mask = "***"
 
--- | Below this length, a value is not registered: short strings are
--- too likely to appear incidentally (region codes, flags, single
--- digits) and masking them would make logs misleading rather than
--- safe.
-minSecretLength :: Int
-minSecretLength = 4
-
 {-# NOINLINE secretRegistry #-}
 secretRegistry :: IORef [Text]
 secretRegistry = unsafePerformIO (newIORef [])
@@ -53,9 +46,15 @@ secretRegistry = unsafePerformIO (newIORef [])
 -- Idempotent in effect (duplicates in the registry are harmless:
 -- 'maskSecrets' just replaces the same substring twice), so call sites
 -- don't need to deduplicate.
+--
+-- Registration happens for every value bound to a @!!@-marked name,
+-- with no length exemption (spec 12.8): a short credential is still a
+-- credential. The empty string is skipped since 'replaceAll' treats
+-- it as a no-op match anyway; registering it would only grow the
+-- registry for nothing.
 registerSecret :: Text -> IO ()
 registerSecret value
-  | T.length value < minSecretLength = pure ()
+  | T.null value = pure ()
   | otherwise = atomicModifyIORef' secretRegistry (\vs -> (value : vs, ()))
 
 -- | Replaces every occurrence of every registered secret with 'mask'.

@@ -21,9 +21,13 @@ spec = before_ resetSecretRegistryForTests . after_ resetSecretRegistryForTests 
       maskSecrets "AWS_SECRET_ACCESS_KEY=\"d4k2GgGmiPQ6MLehdouDTPcMI+Ka0P9mtjcetOP/\" aws s3 sync"
         `shouldReturn` "AWS_SECRET_ACCESS_KEY=\"***\" aws s3 sync"
 
-    it "does not register values shorter than the minimum length" $ do
-      registerSecret "ab"
-      maskSecrets "ab" `shouldReturn` "ab"
+    it "registers short values too (spec 12.8 has no length exemption)" $ do
+      registerSecret "42"
+      maskSecrets "num=42" `shouldReturn` "num=***"
+
+    it "does not register the empty string (a no-op match anyway)" $ do
+      registerSecret ""
+      maskSecrets "anything at all" `shouldReturn` "anything at all"
 
     it "matches the longest registered value first to avoid partial masking" $ do
       registerSecret "secret"
