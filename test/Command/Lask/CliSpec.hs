@@ -87,6 +87,29 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", "id2(x: String): String = x\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "--arg-decode", "text", "id2", "5"] ""
         r `shouldBe` Result 0 "\"5\"\n" ""
+    -- Reproduces a report against example/04-webapp/main.lask:
+    -- `--access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID")` works
+    -- when the default (a get_env call, always a String) is used, but
+    -- passing an explicit CLI value that happens to look like JSON
+    -- (all digits, `true`, `false`, `null`) fails to bind even though
+    -- the parameter is typed `String`. Spec 11.2 says auto mode must
+    -- prefer `String` in this ambiguous case; the CLI currently
+    -- decodes JSON first and only checks conformance afterward, so it
+    -- errors out instead of falling back.
+    it "auto decode prefers String for a String-typed keyword parameter (spec 11.2)" $ \lask ->
+      withProject [("main.lask", "show(--access_key_id: String = \"default\"): String = access_key_id\n")] $ \dir -> do
+        digits <- runLask lask dir ["eval", "show", "--access-key-id", "123456789012"] ""
+        digits `shouldBe` Result 0 "\"123456789012\"\n" ""
+        boolLike <- runLask lask dir ["eval", "show", "--access-key-id", "true"] ""
+        boolLike `shouldBe` Result 0 "\"true\"\n" ""
+    it "auto decode prefers String for a String-typed positional parameter (spec 11.2)" $ \lask ->
+      withProject [("main.lask", "id3(x: String): String = x\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "id3", "123456789012"] ""
+        r `shouldBe` Result 0 "\"123456789012\"\n" ""
+    it "auto decode prefers String for a !!-marked secret keyword parameter (spec 6.10, 11.2)" $ \lask ->
+      withProject [("main.lask", "show(--access_key_id!!: String = \"default\"): String = access_key_id\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "show", "--access-key-id", "123456789012"] ""
+        r `shouldBe` Result 0 "\"123456789012\"\n" ""
 
   describe "spec 16.3: function values" $ do
     let src =
