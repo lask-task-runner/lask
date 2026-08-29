@@ -213,11 +213,16 @@ pValueOrFunction = do
         e <- pExpr
         pure (Decl (sp <> exprSpan e) (DFunction name ps rt e)),
       do
+        sec <- pSecrecy
         t <- optional (sym TColon *> pType)
         _ <- sym TAssign
         e <- pExpr
-        pure (Decl (sp <> exprSpan e) (DValue name t e))
+        pure (Decl (sp <> exprSpan e) (DValue name sec t e))
     ]
+
+-- | The optional @!!@ secret marker following a bound name (spec 6.10).
+pSecrecy :: P Secrecy
+pSecrecy = maybe Public (const Secret) <$> optional (sym TBangBang)
 
 -- Parameters ------------------------------------------------------------------
 
@@ -233,13 +238,20 @@ pParam =
     [ do
         s <- sym TDashDash
         Spanned _ n <- lowerId
+        sec <- pSecrecy
         t <- optional (sym TColon *> pType)
         _ <- sym TAssign
         d <- pExpr
-        pure (Param (s <> exprSpan d) (PKeyword n t d)),
+        pure (Param (s <> exprSpan d) (PKeyword n sec t d)),
       do
         s <- sym TEllipsis
         Spanned sp n <- lowerId
+        -- A variadic parameter cannot be marked !! (spec 6.1); reject
+        -- it here rather than letting the marker parse and be ignored.
+        marked <- optional (sym TBangBang)
+        case marked of
+          Just _ -> fail "a variadic parameter cannot be marked '!!'"
+          Nothing -> pure ()
         t <- optional (sym TColon *> pType)
         case t of
           Just ty
@@ -249,8 +261,9 @@ pParam =
         pure (Param (s <> maybe sp stypeSpan t) (PVariadic n t)),
       do
         Spanned sp n <- lowerId
+        sec <- pSecrecy
         t <- optional (sym TColon *> pType)
-        pure (Param (sp <> maybe sp stypeSpan t) (PPositional n t))
+        pure (Param (sp <> maybe sp stypeSpan t) (PPositional n sec t))
     ]
   where
     isArrayForm (SType _ (SArray _)) = True
@@ -582,9 +595,10 @@ pStmt =
 pBindStmt :: P Stmt
 pBindStmt = do
   Spanned sp n <- lowerId
+  sec <- pSecrecy
   _ <- sym TAssign
   e <- pExpr
-  pure (Stmt (sp <> exprSpan e) (SBind n e))
+  pure (Stmt (sp <> exprSpan e) (SBind n sec e))
 
 -- | Statement-position @if@ without @else@ (spec 6.5 GuardStmt). Only
 -- reached when the expression parser failed, i.e. there is no @else@.

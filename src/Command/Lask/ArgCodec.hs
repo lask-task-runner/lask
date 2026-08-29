@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | CLI argument decoding and binding (spec 11.2): kebab-to-snake
 -- name mapping, @--arg-decode@ modes and binding against the static
@@ -156,7 +157,20 @@ bindCliArgs params mode cliArgs = do
       Left e -> pure (Left e)
       Right v -> do
         r <- try (castValue ty v)
-        pure $ case r of
-          Right v' -> Right v'
-          Left lf ->
-            Left (what <> " '" <> raw <> "' does not fit the parameter type: " <> tshow (lf :: LaskFailure))
+        case r of
+          Right v' -> pure (Right v')
+          Left lf
+            -- Auto mode decodes JSON without knowing the declared
+            -- type, so a value like `true` or an all-digit string
+            -- can decode to a non-String even when the parameter
+            -- wants `String`. Spec 11.2: "in auto mode, when
+            -- ambiguous, String takes precedence" - so retry as the
+            -- literal raw text before giving up.
+            | mode == DecodeAuto -> do
+                r2 <- try (castValue ty (VString raw))
+                pure $ case r2 of
+                  Right v2 -> Right v2
+                  Left (_ :: LaskFailure) ->
+                    Left (what <> " '" <> raw <> "' does not fit the parameter type: " <> tshow (lf :: LaskFailure))
+            | otherwise ->
+                pure (Left (what <> " '" <> raw <> "' does not fit the parameter type: " <> tshow (lf :: LaskFailure)))

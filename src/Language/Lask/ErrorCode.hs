@@ -27,6 +27,7 @@ data ErrorCode
   | ETypeFieldDuplicate
   | ETypeKeyword
   | ETypeIllformed
+  | ETypeSecretNonString
   | EModuleCycle
   | EModuleUnresolved
   | EModuleHashMismatch
@@ -69,6 +70,7 @@ codeText c = case c of
   ETypeFieldDuplicate -> "E-TYPE-FIELD-DUPLICATE"
   ETypeKeyword -> "E-TYPE-KEYWORD"
   ETypeIllformed -> "E-TYPE-ILLFORMED"
+  ETypeSecretNonString -> "E-TYPE-SECRET-NON-STRING"
   EModuleCycle -> "E-MODULE-CYCLE"
   EModuleUnresolved -> "E-MODULE-UNRESOLVED"
   EModuleHashMismatch -> "E-MODULE-HASH-MISMATCH"

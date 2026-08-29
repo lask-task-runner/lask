@@ -1,15 +1,10 @@
 module Language.Lask.Utils
-  ( tupleToCofree,
-    Pretty (..),
-    SwitchCofree (..),
+  ( Pretty (..),
     safeReadFile,
-    coFst,
-    coSnd,
     showWithBrackets,
   )
 where
 
-import Control.Comonad.Cofree
 import Control.Monad.Error.Class (MonadError (..))
 import Control.Monad.Except (ExceptT)
 import Control.Monad.IO.Class (MonadIO (..))
@@ -18,17 +13,6 @@ import Data.Text (Text)
 import qualified Data.Text.IO as T
 import System.Directory (doesFileExist)
 
-tupleToCofree :: (a, f (Cofree f a)) -> Cofree f a
-tupleToCofree (s, v) = s :< v
-
-coFst :: Cofree f a -> a
-coFst (m :< _) = m
-
-coSnd :: Cofree f a -> f (Cofree f a)
-coSnd (_ :< v) = v
-
-class SwitchCofree f where
-  switchCofree :: (a -> b) -> Cofree (f a) a -> Cofree (f b) b
 
 class Pretty a where
   pretty :: a -> String

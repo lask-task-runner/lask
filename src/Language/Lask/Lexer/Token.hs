@@ -114,6 +114,9 @@ data Token
   | TAssign
   | TBackslash
   | TDashDash
+  | -- | @!!@, the secret-binding marker (spec 6.10). Like 'TDashDash',
+    -- this is its own lexeme and is never read as two 'OpNot's.
+    TBangBang
   | TEllipsis
   | TNewline
   deriving (Show, Eq, Ord)

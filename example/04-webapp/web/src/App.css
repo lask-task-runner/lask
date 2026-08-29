@@ -1,0 +1,272 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #d8dce3;
+  --text: #1b1f24;
+  --muted: #5c6672;
+  --accent: #2f6feb;
+  --accent-text: #ffffff;
+  --danger-bg: #fdeceb;
+  --danger-border: #f0b4b0;
+  --danger-text: #97231c;
+  --ok-bg: #e6f4ea;
+  --ok-text: #1a6b32;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171b;
+    --surface: #1c2026;
+    --border: #313842;
+    --text: #e7eaee;
+    --muted: #9aa4b1;
+    --accent: #5b8df5;
+    --accent-text: #10141a;
+    --danger-bg: #3a1f1e;
+    --danger-border: #6d3733;
+    --danger-text: #f3b7b2;
+    --ok-bg: #1b3524;
+    --ok-text: #86d3a1;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+  line-height: 1.5;
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  margin: 0 0 1rem;
+  font-size: 1.15rem;
+}
+
+.lede {
+  margin: 0;
+  color: var(--muted);
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.user {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+button.secondary {
+  background: none;
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 500;
+}
+
+button.secondary:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.signin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+/* Health summary -------------------------------------------------------- */
+
+.health {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin: 0;
+}
+
+.health div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.health dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.health dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.badge[data-state="connected"] {
+  background: var(--ok-bg);
+  color: var(--ok-text);
+}
+
+/* Order form ------------------------------------------------------------ */
+
+.order-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.order-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.order-form label:first-child {
+  flex: 1 1 12rem;
+}
+
+input {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.qty input {
+  width: 6rem;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* Row action: reads as a control, not as a primary call to action. */
+.link-danger {
+  padding: 0.2rem 0.4rem;
+  background: none;
+  color: var(--danger-text);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.link-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
+/* Orders table ---------------------------------------------------------- */
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+th,
+td {
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+th {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom-width: 2px;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+td.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Status messages ------------------------------------------------------- */
+
+.muted {
+  color: var(--muted);
+  margin: 0;
+}
+
+[role="alert"] {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 0.9rem;
+}

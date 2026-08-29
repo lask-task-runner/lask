@@ -18,32 +18,26 @@ import * as tf from "terraform"
 
 // Applies the desired version and returns the deployed_version output.
 deploy(
-  --version: String = "1.0.0",
-  --env: Environment = #docker("alpine/terragrunt:1.5.7"),
-  --bin: String = "terraform"
-): String = do {
-  tf.init(dir = "infra", env = env, bin = bin)
-  tf.apply(dir = "infra", env = env, bin = bin, vars = {app_version: version})
-  as_string(tf.output_value("deployed_version", dir = "infra", env = env, bin = bin))
+  --version: String = "1.0.0"
+  ): String = do {
+  tf.init(dir = "infra" )
+  tf.apply(dir = "infra",  vars = {app_version: version})
+  as_string(tf.output_value("deployed_version", dir = "infra"))
 }
 
 // True when the infrastructure differs from the desired version.
-drifted(
-  --version: String = "1.0.0",
-  --env: Environment = #docker("alpine/terragrunt:1.5.7"),
-  --bin: String = "terraform"
+plan(
+  --version: String = "1.0.0"
 ): Bool = do {
-  tf.init(dir = "infra", env = env, bin = bin)
-  p = tf.plan(dir = "infra", env = env, bin = bin, vars = {app_version: version})
+  tf.init(dir = "infra")
+  p = tf.plan(dir = "infra", vars = {app_version: version})
   p.changed
 }
 
-teardown(
-  --version: String = "1.0.0",
-  --env: Environment = #docker("alpine/terragrunt:1.5.7"),
-  --bin: String = "terraform"
+destroy(
+  --version: String = "1.0.0"
 ): String = do {
-  tf.destroy(dir = "infra", env = env, bin = bin, vars = {app_version: version}, auto_approve = true)
+  tf.destroy(dir = "infra",  vars = {app_version: version}, auto_approve = true)
   "destroyed"
 }
 
