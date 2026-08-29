@@ -15,6 +15,22 @@ test(--env: String = "docker") = do {
   }
 }
 
-install(--output = install_path) = $ stack --local-bin-path #{output} install
+install(--output = install_path, --env: String = "local") = do {
+  if (env == "local") {
+    $ stack --local-bin-path #{output} install
+  } else {
+    build_on_docker(output = install_path)
+  }
+}
+
+build_on_docker(--output = install_path) = do {
+  host_os = $ uname -s
+  if (host_os != "Linux\n") {
+    fail({ code: 1, message: "install on docker is only supported on Linux." })
+  } else {
+    $[envs["docker"]] stack --local-bin-path . install --allow-different-user
+    $ mv ./lask #{output}/lask
+  }
+}
 
 uninstall(--output = install_path) = $ rm #{output}/lask
