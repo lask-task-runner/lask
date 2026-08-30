@@ -309,6 +309,9 @@ pPunct =
       TOp OpGe <$ chunk ">=",
       TOp OpEq <$ chunk "==",
       TOp OpNe <$ chunk "!=",
+      -- Before the bare '!' so the secret marker (spec 6.10) is one
+      -- lexeme, mirroring how '--' shadows a '-' pair (6.1).
+      TBangBang <$ chunk "!!",
       TOp OpAnd <$ chunk "&&",
       TOp OpNot <$ char '!',
       TOp OpLt <$ char '<',

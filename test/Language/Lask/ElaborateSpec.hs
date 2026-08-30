@@ -151,7 +151,7 @@ spec = do
       rejects "x = if (true) { 2 } else { \"a\" }" ETypeMismatch
     it "types for over arrays as map" $
       hasType "f(xs: Array<String>) = for (x : xs) { concat(\"item:\", x) }" "f" "Function<Array<String>, Array<String>>"
-    it "types Void-bodied for as forEach" $
+    it "types Void-bodied for as for_each" $
       hasType "f(xs: Array<String>) = for (x : xs) {}" "f" "Function<Array<String>, Void>"
     it "types do blocks by the last statement" $
       hasType "f() = do {\n  a = 1\n  a + 1\n}" "f" "Function<Number>"
@@ -228,12 +228,37 @@ spec = do
     it "rejects mismatched catch types" $
       rejects "f() = try { 1 } catch (e) { \"x\" }" ETypeMismatch
     it "types try/finally by the body" $
-      hasType "f() = try { 1 } finally { runCommand(\"true\") }" "f" "Function<Number>"
+      hasType "f() = try { 1 } finally { run_command(\"true\") }" "f" "Function<Number>"
 
   describe "misc" $ do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"
     it "rejects Array<Void> annotations" $
       rejects "xs: Array<Void> = []" ETypeIllformed
+
+  describe "secret bindings (spec 6.10)" $ do
+    it "accepts !! on String bindings of every kind" $ do
+      accepts "a!!: String = \"s\""
+      accepts "a!! = \"s\""
+      accepts "f(x!!: String) = x"
+      accepts "f(--x!!: String = \"d\") = x"
+      accepts "f() = do { x!! = \"s\"\n  x }"
+
+    it "leaves the binding's type unchanged (no distinct secret type)" $ do
+      hasType "a!!: String = \"s\"" "a" "String"
+      hasType "f(x!!: String): String = x" "f" "Function<String, String>"
+
+    it "rejects !! on a non-String value declaration" $
+      rejects "n!!: Number = 1" ETypeSecretNonString
+
+    it "rejects !! on a non-String inferred bind statement" $
+      rejects "f() = do { n!! = 1\n  n }" ETypeSecretNonString
+
+    it "rejects !! on non-String parameters" $ do
+      rejects "f(n!!: Number) = n" ETypeSecretNonString
+      rejects "f(--n!!: Number = 1) = n" ETypeSecretNonString
+
+    it "rejects !! on a function-typed binding" $
+      rejects "g!! = \\(x: String) -> x" ETypeSecretNonString
     it "resolves imported declarations with types" $ do
       r <-
         elab

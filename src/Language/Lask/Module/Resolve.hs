@@ -10,6 +10,9 @@ module Language.Lask.Module.Resolve
   ( GlobalScope (..),
     ValueTarget (..),
     TypeTarget (..),
+    Publics (..),
+    modulePublics,
+    buildScopes,
     validateProgram,
   )
 where
@@ -54,10 +57,7 @@ data GlobalScope = GlobalScope
 validateProgram :: Program -> Either [Diagnostic] (Map FilePath GlobalScope)
 validateProgram prog =
   let publics = Map.map modulePublics (progModules prog)
-      scoped =
-        [ (lmPath lm, buildScope prog publics lm)
-        | lm <- Map.elems (progModules prog)
-        ]
+      scoped = scopedModules prog
       scopes = Map.fromList [(p, gs) | (p, (gs, _)) <- scoped]
       buildDiags = concat [ds | (_, (_, ds)) <- scoped]
       refDiags =
@@ -68,6 +68,20 @@ validateProgram prog =
       cycleDiags = aliasCycleDiags prog scopes
       allDiags = buildDiags <> refDiags <> cycleDiags
    in if null allDiags then Right scopes else Left allDiags
+
+-- | Per-module scopes with the collision diagnostics discarded, so
+-- that editor tooling can still resolve names in a program that does
+-- not validate.
+buildScopes :: Program -> Map FilePath GlobalScope
+buildScopes prog = Map.fromList [(p, gs) | (p, (gs, _)) <- scopedModules prog]
+
+scopedModules :: Program -> [(FilePath, (GlobalScope, [Diagnostic]))]
+scopedModules prog =
+  [ (lmPath lm, buildScope prog publics lm)
+  | lm <- Map.elems (progModules prog)
+  ]
+  where
+    publics = Map.map modulePublics (progModules prog)
 
 data Publics = Publics
   { pubValues :: Set Text,
@@ -82,7 +96,7 @@ modulePublics lm =
     }
   where
     decls = map declF (moduleDecls (lmModule lm))
-    valueName (DValue n _ _) = Just n
+    valueName (DValue n _ _ _) = Just n
     valueName (DFunction n _ _ _) = Just n
     valueName _ = Nothing
     typeName (DTypeAlias n _) = Just n
@@ -107,7 +121,7 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
 
     go gs ds [] = (gs, reverse ds)
     go gs ds (Decl sp f : rest) = case f of
-      DValue n _ _ -> goValue gs ds rest sp n
+      DValue n _ _ _ -> goValue gs ds rest sp n
       DFunction n _ _ _ -> goValue gs ds rest sp n
       DTypeAlias n _ ->
         let dups =
@@ -189,7 +203,7 @@ checkModule :: Map FilePath Publics -> GlobalScope -> LoadedModule -> [Diagnosti
 checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
   where
     checkDecl (Decl _ f) = case f of
-      DValue _ t e -> maybe [] checkType t <> checkExpr [] e
+      DValue _ _ t e -> maybe [] checkType t <> checkExpr [] e
       DFunction _ ps t body ->
         checkParams [] ps
           <> maybe [] checkType t
@@ -199,9 +213,9 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       DImportNamespace {} -> []
 
     paramNames ps = Set.fromList [paramName p | p <- ps]
-    paramName (Param _ (PPositional n _)) = n
+    paramName (Param _ (PPositional n _ _)) = n
     paramName (Param _ (PVariadic n _)) = n
-    paramName (Param _ (PKeyword n _ _)) = n
+    paramName (Param _ (PKeyword n _ _ _)) = n
 
     -- Parameters: duplicate/core-name checks, annotation checks, and
     -- default expressions checked in the scope of preceding params
@@ -212,9 +226,9 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
         go _ [] = []
         go seen (Param sp f : rest) =
           let (n, t, d) = case f of
-                PPositional n' t' -> (n', t', Nothing)
+                PPositional n' _ t' -> (n', t', Nothing)
                 PVariadic n' t' -> (n', t', Nothing)
-                PKeyword n' t' d' -> (n', t', Just d')
+                PKeyword n' _ t' d' -> (n', t', Just d')
            in [dupDiag sp n | n `Set.member` seen]
                 <> [coreDiag sp n | isUnbindableName n]
                 <> maybe [] checkType t
@@ -302,7 +316,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       where
         go _ [] = []
         go sc@(layer : rest0) (Stmt sp f : rest) = case f of
-          SBind n e ->
+          SBind n _ e ->
             checkExpr sc e
               <> [dupDiag sp n | n `Set.member` layer]
               <> [coreDiag sp n | isUnbindableName n]

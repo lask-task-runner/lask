@@ -7,10 +7,12 @@ import Data.Either (isLeft)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Language.Lask.EnvFile
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Runtime.Environment
+import Language.Lask.Runtime.Secrets (registerSecret, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
 import Test.Hspec
 
@@ -70,8 +72,13 @@ spec = do
   describe "launch argument construction (spec 10.5, 10.9)" $ do
     it "builds docker run arguments with mounted workdir" $
       dockerArgs "/proj" "alpine:3.20" (Map.fromList [("memory", VString "4g")]) "uname -a"
-        `shouldBe` [ "run", "--rm", "-v", "/proj:/work", "-w", "/work",
-                     "--memory", "4g", "alpine:3.20", "/bin/sh", "-c", "uname -a"
+        `shouldBe` [ "run", "--rm",
+                     "-v", "/proj:/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "--memory", "4g",
+                     "alpine:3.20",
+                     "-c", "uname -a"
                    ]
     it "builds ssh arguments with strict host key checking by default" $
       sshArgs defaultSshSettings "h.example" (Just "u") (Just 2222) "ls"
@@ -154,6 +161,23 @@ spec = do
       let execsOf cmd = [clExec cl | cl <- entries, clCommand cl == cmd]
       execsOf "echo a" `shouldSatisfy` all (== 1)
       execsOf "echo b" `shouldSatisfy` all (== 2)
+
+    it "masks a registered secret out of the log without touching the captured result (spec 12.8)" $ do
+      resetSecretRegistryForTests
+      registerSecret "sup3rsecret"
+      (r, entries) <- runWithLog "echo sup3rsecret; echo sup3rsecret 1>&2"
+      resetSecretRegistryForTests
+      case r of
+        Right (0, out, errOut) -> do
+          -- The value returned to the running program is the real one.
+          out `shouldBe` "sup3rsecret\n"
+          errOut `shouldBe` "sup3rsecret\n"
+        other -> expectationFailure (show other)
+      -- The observed log copy is masked, on both the relayed lines...
+      [l | ClLine 1 l <- kinds entries] `shouldBe` ["***"]
+      [l | ClLine 2 l <- kinds entries] `shouldBe` ["***"]
+      -- ...and the command string on the start line.
+      map clCommand entries `shouldSatisfy` (not . any (T.isInfixOf "sup3rsecret"))
 
   describe "environment log info (spec 12.3)" $ do
     it "summarizes environments in environment-expression notation" $ do

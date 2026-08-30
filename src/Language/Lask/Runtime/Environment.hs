@@ -44,6 +44,7 @@ import Language.Lask.Builtins.Impl (CommandRunner)
 import Language.Lask.EnvFile (EnvEntry (..), EnvFile (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
+import Language.Lask.Runtime.Secrets (maskSecrets)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (valueToJson)
 import System.Exit (ExitCode (..))
@@ -145,9 +146,9 @@ envLogInfo original resolved = (summary, json)
 -- the working directory inside the container).
 dockerArgs :: FilePath -> Text -> Map Text Value -> Text -> [String]
 dockerArgs baseDir image opts cmd =
-  ["run", "--rm", "-v", baseDir <> ":/work", "-w", "/work"]
+  ["run", "--rm", "-v", baseDir <> ":/work", "-w", "/work", "--entrypoint", "/bin/sh"]
     <> optArgs
-    <> [T.unpack image, "/bin/sh", "-c", T.unpack cmd]
+    <> [T.unpack image, "-c", T.unpack cmd]
   where
     optArgs =
       concat
@@ -224,36 +225,44 @@ runLoggedProcess ::
   CreateProcess ->
   IO (Int, Text, Text)
 runLoggedProcess sink summary envJson execNo cmd cp = do
+  -- Masked against the registry as it stands now (spec 12.8), before
+  -- the command runs and before any sink can retain the log record.
+  maskedCmd <- maskSecrets cmd
   (mIn, mOut, mErr, ph) <-
     createProcess cp {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
   mapM_ hClose mIn
-  emit ClStart
+  emit maskedCmd ClStart
   (out, errOut) <- case (mOut, mErr) of
     (Just hOut, Just hErr) ->
-      concurrently (relayStream 1 hOut) (relayStream 2 hErr)
+      concurrently (relayStream maskedCmd 1 hOut) (relayStream maskedCmd 2 hErr)
     _ -> pure ("", "")
   exitCode <- waitForProcess ph
   let code = case exitCode of
         ExitSuccess -> 0
         ExitFailure n -> n
-  emit (ClExit code)
+  emit maskedCmd (ClExit code)
   pure (code, out, errOut)
   where
-    emit kind = do
+    -- `cmd` (unmasked) already drove `cp` before this function was
+    -- even called, so passing the masked copy here only affects what
+    -- gets logged, never execution.
+    emit maskedCmd kind = do
       now <- getCurrentTime
-      sink (CommandLog now summary envJson execNo cmd kind)
+      sink (CommandLog now summary envJson execNo maskedCmd kind)
 
     -- Read a stream in chunks: accumulate the raw text verbatim for
     -- the CommandResult (trailing newlines and unterminated final
-    -- lines preserved), and relay completed lines as they arrive.
-    relayStream :: Int -> Handle -> IO Text
-    relayStream fd h = go [] ""
+    -- lines preserved; never masked — the language must see the real
+    -- value, spec 8.7), and relay completed lines as they arrive
+    -- (masked, since only the log copy is observation data).
+    relayStream :: Text -> Int -> Handle -> IO Text
+    relayStream maskedCmd fd h = go [] ""
       where
         go rawAcc pending = do
           chunk <- TIO.hGetChunk h
           if T.null chunk
             then do
-              unless (T.null pending) (emit (ClLine fd (stripCR pending)))
+              unless (T.null pending) (relayLine pending)
               hClose h
               pure (T.concat (reverse rawAcc))
             else do
@@ -261,6 +270,7 @@ runLoggedProcess sink summary envJson execNo cmd cp = do
                   pieces = T.splitOn "\n" combined
                   completeLines = init pieces
                   pending' = last pieces
-              mapM_ (emit . ClLine fd . stripCR) completeLines
+              mapM_ relayLine completeLines
               go (chunk : rawAcc) pending'
+        relayLine line = maskSecrets (stripCR line) >>= emit maskedCmd . ClLine fd
         stripCR = T.dropWhileEnd (== '\r')

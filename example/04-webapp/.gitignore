@@ -1,0 +1,16 @@
+.env
+__pycache__/
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/archive.zip
+api/archive.zip
+api/vendor/
+web/node_modules/
+web/dist/
+e2e/node_modules/
+# Traces and videos record the values typed into the sign-in form, so
+# these are secret-bearing artifacts (e2e/package-lock.json IS committed).
+e2e/test-results/
+e2e/playwright-report/
+e2e/blob-report/

@@ -13,6 +13,7 @@ module Language.Lask.Lexer.Token
     isContinuationEnd,
     startsContinuation,
     keywordFromText,
+    keywordText,
     stripToken,
     stripTokens,
   )
@@ -113,6 +114,9 @@ data Token
   | TAssign
   | TBackslash
   | TDashDash
+  | -- | @!!@, the secret-binding marker (spec 6.10). Like 'TDashDash',
+    -- this is its own lexeme and is never read as two 'OpNot's.
+    TBangBang
   | TEllipsis
   | TNewline
   deriving (Show, Eq, Ord)
@@ -155,6 +159,27 @@ keywordFromText t = case t of
   "catch" -> Just KCatch
   "finally" -> Just KFinally
   _ -> Nothing
+
+-- | The spelling of a reserved word.
+--
+-- >>> keywordText KImport
+-- "import"
+keywordText :: Keyword -> Text
+keywordText k = case k of
+  KImport -> "import"
+  KFrom -> "from"
+  KAs -> "as"
+  KType -> "type"
+  KDo -> "do"
+  KAsync -> "async"
+  KAwait -> "await"
+  KIf -> "if"
+  KElse -> "else"
+  KFor -> "for"
+  KReturn -> "return"
+  KTry -> "try"
+  KCatch -> "catch"
+  KFinally -> "finally"
 
 -- | Erase spans recursively (nested streams included); test helper.
 stripToken :: Token -> Token

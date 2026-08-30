@@ -24,8 +24,10 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Language.Lask.ErrorCode
+import Language.Lask.Runtime.Secrets (registerSecret)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, valueFromJson)
+import System.Environment (getEnvironment)
 
 -- | Apply a function value to positional and keyword arguments.
 type Apply = Value -> [Value] -> [(Text, Value)] -> IO Value
@@ -54,8 +56,8 @@ callBuiltin apply runCmd name args kwArgs = case (name, args) of
   ("length", [VString s]) -> num (fromIntegral (T.length s))
   ("concat", [VString a, VString b]) -> pure (VString (a <> b))
   ("trim", [VString s]) -> pure (VString (T.strip s))
-  ("toLower", [VString s]) -> pure (VString (T.toLower s))
-  ("toUpper", [VString s]) -> pure (VString (T.toUpper s))
+  ("to_lower", [VString s]) -> pure (VString (T.toLower s))
+  ("to_upper", [VString s]) -> pure (VString (T.toUpper s))
   ("split", [VString s, VString sep])
     | T.null sep -> pure (VArray (V.fromList (map (VString . T.singleton) (T.unpack s))))
     | otherwise -> pure (VArray (V.fromList (map VString (T.splitOn sep s))))
@@ -69,17 +71,17 @@ callBuiltin apply runCmd name args kwArgs = case (name, args) of
   ("filter", [VArray xs, f]) -> VArray <$> V.filterM (\x -> truthy <$> apply f [x] []) xs
   ("reduce", [VArray xs, initV, f]) ->
     V.foldM (\acc x -> apply f [acc, x] []) initV xs
-  ("forEach", [VArray xs, f]) -> V.mapM_ (\x -> apply f [x] []) xs >> pure VVoid
+  ("for_each", [VArray xs, f]) -> V.mapM_ (\x -> apply f [x] []) xs >> pure VVoid
   ("append", [VArray xs, x]) -> pure (VArray (V.snoc xs x))
-  ("concatArray", [VArray a, VArray b]) -> pure (VArray (a <> b))
+  ("concat_array", [VArray a, VArray b]) -> pure (VArray (a <> b))
   ("get", [VMap m, VString k]) -> case Map.lookup k m of
     Just v -> pure v
     Nothing -> throwIO (runtimeFailure ERuntimeAccess ("key not found: '" <> k <> "'"))
-  ("hasKey", [VMap m, VString k]) -> pure (VBool (Map.member k m))
+  ("has_key", [VMap m, VString k]) -> pure (VBool (Map.member k m))
   ("keys", [VMap m]) -> pure (VArray (V.fromList (map VString (Map.keys m))))
   ("values", [VMap m]) -> pure (VArray (V.fromList (Map.elems m)))
   -- 15.5 command execution --------------------------------------------------
-  ("runCommand", [VString cmd]) -> do
+  ("run_command", [VString cmd]) -> do
     let env = case lookup "env" kwArgs of
           Just (VEnv e) -> e
           _ -> EnvValue "local" Map.empty
@@ -120,8 +122,8 @@ callBuiltin apply runCmd name args kwArgs = case (name, args) of
   ("%commandFail", [err]) -> throwIO (LaskFailure (Just ERuntimeCommandNonzero) err [])
   ("error", [VNumber code, VString msg]) -> pure (errorValue code msg)
   -- 15.8 serialization ------------------------------------------------------------
-  ("toJson", [v]) -> pure (VString (encodeValue v))
-  ("fromJson", [VString s]) -> decodeJson s
+  ("to_json", [v]) -> pure (VString (encodeValue v))
+  ("from_json", [VString s]) -> decodeJson s
   ("encode", [v, VString fmt]) -> case fmt of
     "json" -> pure (VString (encodeValue v))
     "pretty-json" -> pure (VString (encodeValuePretty v))
@@ -130,6 +132,19 @@ callBuiltin apply runCmd name args kwArgs = case (name, args) of
     "json" -> decodeJson s
     "pretty-json" -> decodeJson s
     _ -> throwIO (ioFailure EIoDataDecode ("unsupported format: '" <> fmt <> "'"))
+  -- 15.9 environment access / secret marking ---------------------------------
+  -- Reading the environment does not by itself make a value secret:
+  -- masking is opt-in through `!!` / `mark_secret` (spec 6.10, 12.8).
+  ("get_env", [VString key]) -> do
+    envs <- getEnvironment
+    case lookup (T.unpack key) envs of
+      Just value -> pure (VString (T.pack value))
+      Nothing -> pure VNull
+  -- The desugaring target of `!!` secret bindings (spec 6.10): register
+  -- the value for log masking (12.8) and hand it back untouched.
+  ("mark_secret", [VString value]) -> do
+    registerSecret value
+    pure (VString value)
   _ ->
     throwIO . runtimeFailure ERuntimeCast $
       "invalid builtin call: '" <> name <> "' with " <> T.pack (show (length args)) <> " arguments"

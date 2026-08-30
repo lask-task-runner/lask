@@ -1,0 +1,153 @@
+python = #python:3.12.14-alpine3.24
+node = #node:20.20.2-alpine3.23
+terraform = #terraform-aws-cli
+playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
+curl = #curlimages/curl:8.21.0
+
+// Runs the API's Python unit tests (api/).
+test_api() = $[python] pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
+
+// Runs the frontend's unit tests (web/).
+test_web() = $[node] cd web && npm ci --no-audit --no-fund && npm test
+
+// Runs the fast, offline tests. test_e2e is kept separate since it needs
+// a deployed stack and a signed-in user.
+test() = do {
+  test_api()
+  test_web()
+}
+
+// Browser end-to-end test against the deployed site (e2e/): opens the
+// site, signs in through the real Cognito Hosted UI, and walks through
+// creating, listing, and deleting an order.
+//
+// The sign-in user must already exist: run `lask run create_user` once
+// first, with the same email/password as E2E_EMAIL/E2E_PASSWORD in .env.
+test_e2e(
+  --email: String = get_env("E2E_EMAIL"),
+  --password!!: String = get_env("E2E_PASSWORD")
+) = do {
+  build_infra_image()
+  website = $[terraform] terraform -chdir="infra" output -raw website_url
+
+  $[playwright] cd e2e && \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && \
+    E2E_BASE_URL="#{website}" \
+    E2E_EMAIL="#{email}" \
+    E2E_PASSWORD="#{password}" \
+    npx playwright test
+}
+
+// Installs the API's Python dependencies into api/vendor so the Lambda
+// deployment package (infra/lambda.tf) includes them.
+build_lambda_deps() = $[python] pip install -q --no-cache-dir -r api/requirements.txt --target api/vendor --upgrade
+
+// Builds the React frontend (web/) with the deployed API and Cognito
+// settings baked in as environment variables, so the built bundle needs
+// no configuration once it is uploaded to S3.
+build_web(
+  api_url: String,
+  cognito_authority: String,
+  cognito_client_id: String,
+  cognito_domain: String,
+  redirect_uri: String
+) = $[node] cd web && npm ci --no-audit --no-fund && \
+  VITE_API_URL="#{api_url}" \
+  VITE_COGNITO_AUTHORITY="#{cognito_authority}" \
+  VITE_COGNITO_CLIENT_ID="#{cognito_client_id}" \
+  VITE_COGNITO_DOMAIN="#{cognito_domain}" \
+  VITE_REDIRECT_URI="#{redirect_uri}" \
+  npm run build
+
+// Deploys everything: applies the Terraform infra, builds the frontend
+// against it, and uploads the result to S3/CloudFront.
+deploy(
+  --region: String = get_env("AWS_DEFAULT_REGION"),
+  --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
+  --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
+) = do {
+  build_lambda_deps()
+  build_infra_image()
+  $[terraform] terraform -chdir="infra" init
+  $[terraform] terraform -chdir="infra" apply -auto-approve \
+    -var "aws_region=#{region}" \
+    -var "aws_access_key_id=#{access_key_id}" \
+    -var "aws_secret_access_key=#{secret_key}"
+
+  api_url = $[terraform] terraform -chdir="infra" output -raw api_url
+  bucket = $[terraform] terraform -chdir="infra" output -raw frontend_bucket
+  authority = $[terraform] terraform -chdir="infra" output -raw cognito_issuer
+  client_id = $[terraform] terraform -chdir="infra" output -raw user_pool_client_id
+  domain = $[terraform] terraform -chdir="infra" output -raw cognito_domain
+  website = $[terraform] terraform -chdir="infra" output -raw website_url
+  dist_id = $[terraform] terraform -chdir="infra" output -raw cloudfront_distribution_id
+
+  build_web(api_url, authority, client_id, domain, "#{website}/")
+
+  $[terraform] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" aws s3 sync web/dist "s3://#{bucket}" --delete
+
+  // Invalidates the cached index.html so the new build is served
+  // immediately instead of the previous one.
+  $[terraform] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" aws cloudfront create-invalidation --distribution-id "#{dist_id}" --paths "/index.html" --output text
+}
+
+// Creates a Cognito sign-in user with a permanent password (self sign-up
+// is disabled, so this is the only way to add one).
+create_user(
+  email: String,
+  password!!: String,
+  --region: String = get_env("AWS_DEFAULT_REGION"),
+  --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
+  --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
+) = do {
+  build_infra_image()
+  pool = $[terraform] terraform -chdir="infra" output -raw user_pool_id
+  $[terraform] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" \
+    aws cognito-idp admin-create-user \
+      --user-pool-id "#{pool}" --username "#{email}" \
+      --user-attributes Name=email,Value="#{email}" Name=email_verified,Value=true \
+      --message-action SUPPRESS --output text
+  $[terraform] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" \
+    aws cognito-idp admin-set-user-password \
+      --user-pool-id "#{pool}" --username "#{email}" \
+      --password "#{password}" --permanent
+}
+
+// Tears down everything deploy() created.
+destroy(
+  --region: String = get_env("AWS_DEFAULT_REGION"),
+  --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
+  --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
+) = do {
+  build_infra_image()
+  $[terraform] terraform -chdir="infra" destroy -auto-approve \
+    -var "aws_region=#{region}" \
+    -var "aws_access_key_id=#{access_key_id}" \
+    -var "aws_secret_access_key=#{secret_key}"
+}
+
+// Reads a Terraform output by name, e.g. api_url or website_url.
+//   lask eval --stdout-encode text terraform_output api_url
+terraform_output(name: String): String =
+  $[terraform] terraform -chdir="infra" output -raw "#{name}"
+
+type Healthcheck = Record<status: String>
+
+// Calls the deployed API's health route and returns its HTTP status.
+healthcheck_api(): Healthcheck = do {
+  url = $[terraform] terraform -chdir="infra" output -raw api_url
+  status = $[curl] curl -s -o /dev/null -w "%{http_code}" "#{url}"
+  return { status: status }
+}
+
+// Same as healthcheck_api, but for the frontend: it's a static site with
+// no JSON body, so the HTTP status code is the health signal instead.
+healthcheck_web(): Healthcheck = do {
+  url = $[terraform] terraform -chdir="infra" output -raw website_url
+  status = $[curl] curl -s -o /dev/null -w "%{http_code}" "#{url}"
+  return { status: status }
+}
+
+// Builds the Docker image with Terraform and the AWS CLI that the
+// `terraform` environment declared at the top of this file refers to.
+build_infra_image() = $ docker build -t terraform-aws-cli -f infra/Dockerfile .

@@ -56,19 +56,19 @@ spec :: Spec
 spec = do
   describe "declarations" $ do
     it "parses a value declaration" $
-      pModule "a = 1" `shouldBe` Right [DValue "a" Nothing (num 1)]
+      pModule "a = 1" `shouldBe` Right [DValue "a" Public Nothing (num 1)]
 
     it "parses a typed value declaration" $
       pModule "a: Number = 1"
-        `shouldBe` Right [DValue "a" (Just (ty SNumber)) (num 1)]
+        `shouldBe` Right [DValue "a" Public (Just (ty SNumber)) (num 1)]
 
     it "parses a function declaration" $
       pModule "add(x: Number, y: Number): Number = x + y"
         `shouldBe` Right
           [ DFunction
               "add"
-              [ Param NoSpan (PPositional "x" (Just (ty SNumber))),
-                Param NoSpan (PPositional "y" (Just (ty SNumber)))
+              [ Param NoSpan (PPositional "x" Public (Just (ty SNumber))),
+                Param NoSpan (PPositional "y" Public (Just (ty SNumber)))
               ]
               (Just (ty SNumber))
               (ex (EBin OpAdd (var "x") (var "y")))
@@ -79,9 +79,9 @@ spec = do
         `shouldBe` Right
           [ DFunction
               "f"
-              [ Param NoSpan (PPositional "a" Nothing),
+              [ Param NoSpan (PPositional "a" Public Nothing),
                 Param NoSpan (PVariadic "xs" (Just (ty (SArray (ty SNumber))))),
-                Param NoSpan (PKeyword "n" (Just (ty SNumber)) (num 3))
+                Param NoSpan (PKeyword "n" Public (Just (ty SNumber)) (num 3))
               ]
               Nothing
               (var "a")
@@ -92,6 +92,25 @@ spec = do
 
     it "rejects variadic parameters with non-array annotation" $
       pModule "f(...xs: Number) = xs" `shouldSatisfy` isLeft
+
+    it "parses the !! secret marker on a value declaration (spec 6.10)" $
+      pModule "a!!: String = \"s\""
+        `shouldBe` Right [DValue "a" Secret (Just (ty SString)) (str "s")]
+
+    it "parses !! on positional and keyword parameters (spec 6.10)" $
+      pModule "f(a!!: String, --n!!: String = \"d\") = a"
+        `shouldBe` Right
+          [ DFunction
+              "f"
+              [ Param NoSpan (PPositional "a" Secret (Just (ty SString))),
+                Param NoSpan (PKeyword "n" Secret (Just (ty SString)) (str "d"))
+              ]
+              Nothing
+              (var "a")
+          ]
+
+    it "rejects !! on a variadic parameter (spec 6.1)" $
+      pModule "f(...xs!!: Array<String>) = xs" `shouldSatisfy` isLeft
 
     it "parses a type alias" $
       pModule "type Strings = Array<String>"
@@ -115,19 +134,20 @@ spec = do
     it "parses multiple declarations separated by newlines and semicolons" $
       pModule "a = 1; b = 2\nc = 3"
         `shouldBe` Right
-          [DValue "a" Nothing (num 1), DValue "b" Nothing (num 2), DValue "c" Nothing (num 3)]
+          [DValue "a" Public Nothing (num 1), DValue "b" Public Nothing (num 2), DValue "c" Public Nothing (num 3)]
 
   describe "types" $ do
     it "parses nested generics with >> splitting" $
       pModule "xs: Array<Array<Number>> = []"
         `shouldBe` Right
-          [DValue "xs" (Just (ty (SArray (ty (SArray (ty SNumber)))))) (ex (EArray []))]
+          [DValue "xs" Public (Just (ty (SArray (ty (SArray (ty SNumber)))))) (ex (EArray []))]
 
     it "parses record types with identifier and string field names" $
       pModule "u: Record<name: String, \"X-Api-Key\": String> = u2"
         `shouldBe` Right
           [ DValue
               "u"
+              Public
               (Just (ty (SRecord [(sp "name", ty SString), (sp "X-Api-Key", ty SString)])))
               (var "u2")
           ]
@@ -135,14 +155,14 @@ spec = do
     it "parses function types" $
       pModule "f: Function<Number, Number, Number> = add"
         `shouldBe` Right
-          [DValue "f" (Just (ty (SFunction [ty SNumber, ty SNumber] (ty SNumber)))) (var "add")]
+          [DValue "f" Public (Just (ty (SFunction [ty SNumber, ty SNumber] (ty SNumber)))) (var "add")]
 
     it "parses Function<R> as a nullary function type" $
       pModule "f: Function<Number> = g"
-        `shouldBe` Right [DValue "f" (Just (ty (SFunction [] (ty SNumber)))) (var "g")]
+        `shouldBe` Right [DValue "f" Public (Just (ty (SFunction [] (ty SNumber)))) (var "g")]
 
     it "parses >= splitting after a generic type" $
-      pModule "m: Map<String>= x" `shouldBe` Right [DValue "m" (Just (ty (SMap (ty SString)))) (var "x")]
+      pModule "m: Map<String>= x" `shouldBe` Right [DValue "m" Public (Just (ty (SMap (ty SString)))) (var "x")]
 
   describe "expressions" $ do
     it "parses operator precedence: * over +" $
@@ -174,7 +194,7 @@ spec = do
       pExpr "\\(x: Number): Number -> x + 1"
         `shouldBe` Right
           ( ELambda
-              [Param NoSpan (PPositional "x" (Just (ty SNumber)))]
+              [Param NoSpan (PPositional "x" Public (Just (ty SNumber)))]
               (Just (ty SNumber))
               (ex (EBin OpAdd (var "x") (num 1)))
           )
@@ -228,11 +248,15 @@ spec = do
   describe "do blocks and statements" $ do
     it "parses do blocks with binds and trailing expression" $
       pExpr "do {\n  a = 1\n  a\n}"
-        `shouldBe` Right (EDo (block [SBind "a" (num 1), SExpr (var "a")]))
+        `shouldBe` Right (EDo (block [SBind "a" Public (num 1), SExpr (var "a")]))
 
     it "parses semicolon-separated statements" $
       pExpr "do { a = 1; a }"
-        `shouldBe` Right (EDo (block [SBind "a" (num 1), SExpr (var "a")]))
+        `shouldBe` Right (EDo (block [SBind "a" Public (num 1), SExpr (var "a")]))
+
+    it "parses the !! secret marker on a bind statement (spec 6.10)" $
+      pExpr "do { a!! = \"s\"; a }"
+        `shouldBe` Right (EDo (block [SBind "a" Secret (str "s"), SExpr (var "a")]))
 
     it "parses empty do blocks" $
       pExpr "do {}" `shouldBe` Right (EDo (block []))

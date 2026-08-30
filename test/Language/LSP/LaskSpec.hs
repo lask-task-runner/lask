@@ -2,9 +2,15 @@
 
 module Language.LSP.LaskSpec (spec) where
 
+import Control.Lens ((^.))
+import Control.Monad (forM_, unless)
+import Data.Char (isDigit)
+import Data.List (nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Language.LSP.Lask (hoverAt, lexSemanticTokens, uriPath)
+import qualified Data.Text.IO as TIO
+import Language.LSP.Lask (completionAt, hoverAt, lexSemanticTokens, uriPath)
+import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.Lask (checkText)
 import System.FilePath ((</>))
@@ -129,3 +135,243 @@ spec = do
         let docUri = Uri ("file://" <> T.pack (dir </> "main.lask"))
         ds <- checkText (uriPath docUri) "import { a } from \"./a.lask\"\nx = a"
         ds `shouldBe` []
+
+  describe "completion" $ do
+    it "offers the parameters of the enclosing function" $ do
+      -- Cursor on `a` in the body of `add`.
+      ls <- labels "test.lask" "add(a: Number, b: Number) = a + b" 0 28
+      ls `shouldSatisfy` elem "a"
+      ls `shouldSatisfy` elem "b"
+    it "does not offer parameters of other declarations" $ do
+      ls <- labels "test.lask" "f(only: Number) = 1\ng() = 2" 1 6
+      ls `shouldSatisfy` notElem "only"
+    it "offers do-block bindings made before the cursor" $ do
+      let src = "f() = do {\n  x = 1\n  y = 2\n}\n"
+      ls <- labels "test.lask" src 2 6
+      ls `shouldSatisfy` elem "x"
+      ls `shouldSatisfy` notElem "y"
+    it "offers builtins with their type as detail" $ do
+      items <- completionAt "test.lask" "x = to" (Position 0 6)
+      map (^. L.label) items `shouldSatisfy` elem "to_lower"
+      [i ^. L.detail | i <- items, i ^. L.label == "to_lower"]
+        `shouldBe` [Just "Function<String, String>"]
+    it "leaves narrowing to the client" $ do
+      -- The client matches case-insensitively and fuzzily, so a
+      -- candidate must not be dropped just because the typed word is
+      -- not a literal prefix of it.
+      ls <- labels "test.lask" "x = cA" 0 6
+      ls `shouldSatisfy` elem "concat_array"
+    it "offers reserved words" $ do
+      ls <- labels "test.lask" "im" 0 2
+      ls `shouldSatisfy` elem "import"
+    it "ranks module top-level names above builtins and reserved words" $ do
+      items <- completionAt "test.lask" "inc(x: Number) = x + 1\ny = i" (Position 1 5)
+      let sortTextOf n = [i ^. L.sortText | i <- items, i ^. L.label == n]
+      sortTextOf "inc" `shouldBe` [Just "2-inc"]
+      sortTextOf "import" `shouldBe` [Just "6-import"]
+    it "offers keyword parameters of the call being written" $ do
+      let src = "greet(--name: String = \"World\") = name\ny = greet()"
+      items <- completionAt "test.lask" src (Position 1 10)
+      [i ^. L.insertText | i <- items, i ^. L.label == "name"]
+        `shouldBe` [Just "name = "]
+    it "offers the public members of a namespace after a dot" $
+      withSystemTempDirectory "lask-completion" $ \dir -> do
+        writeFile (dir </> "lib.lask") "double(n: Number): Number = n * 2\nhidden = 1\n"
+        let src = "import * as m from \"./lib.lask\"\nf() = m."
+        ls <- labels (dir </> "main.lask") src 1 8
+        ls `shouldMatchList` ["double", "hidden"]
+    it "still offers builtins and reserved words when the buffer does not parse" $ do
+      ls <- labels "test.lask" "y = }\nz = to" 1 6
+      ls `shouldSatisfy` elem "to_json"
+
+  describe "completion resilience" $ do
+    it "offers top-level names while a new declaration is being named" $ do
+      -- The name being typed is the whole line, so nothing parses.
+      ls <- labels "test.lask" "inc(x: Number) = x + 1\ni" 1 1
+      ls `shouldSatisfy` elem "inc"
+    it "offers top-level names when another declaration is broken" $ do
+      ls <- labels "test.lask" "inc(x: Number) = x + 1\nbroken(\ny = i" 2 5
+      ls `shouldSatisfy` elem "inc"
+    it "offers top-level names inside an unclosed block" $ do
+      ls <- labels "test.lask" "f() = do {\n  x = 1\ngg = g" 2 6
+      ls `shouldSatisfy` elem "gg"
+    it "offers names bound by an import when the buffer does not parse" $ do
+      let src = "import * as m from \"./x.lask\"\nbroken(\ny = m"
+      ls <- labels "test.lask" src 2 5
+      ls `shouldSatisfy` elem "m"
+    it "never offers the healing placeholder" $ do
+      ls <- labels "test.lask" "" 0 0
+      ls `shouldSatisfy` notElem "_"
+
+  describe "completion after a dot" $ do
+    it "offers the fields of a record" $ do
+      items <- completionAt "test.lask" "a = {x: 2, y: \"s\"}\nb = a." (Position 1 6)
+      map (^. L.label) items `shouldMatchList` ["x", "y"]
+      [i ^. L.detail | i <- items, i ^. L.label == "y"] `shouldBe` [Just "String"]
+    it "offers the fields of a command result" $ do
+      let src = "f() = do {\n  r = $* echo hi\n  return r.\n}"
+      ls <- labels "test.lask" src 2 11
+      ls `shouldMatchList` ["code", "stderr", "stdout"]
+    it "offers nothing for a receiver it cannot resolve" $ do
+      ls <- labels "test.lask" "b = zzz." 0 8
+      ls `shouldBe` []
+    it "offers nothing for a chained receiver" $ do
+      ls <- labels "test.lask" "a = {x: {y: 1}}\nb = a.x." 1 8
+      ls `shouldBe` []
+
+  describe "completion edge cases" $ do
+    it "offers builtins in an empty document" $ do
+      ls <- labels "test.lask" "" 0 0
+      ls `shouldSatisfy` elem "to_lower"
+    it "handles a column past the end of the line" $ do
+      ls <- labels "test.lask" "y = 1\nz = " 1 99
+      ls `shouldSatisfy` elem "to_lower"
+    it "handles CRLF line endings" $ do
+      ls <- labels "test.lask" "inc(x: Number) = x + 1\r\ny = i" 1 5
+      ls `shouldSatisfy` elem "inc"
+    it "offers locals inside a command interpolation" $ do
+      ls <- labels "test.lask" "greet(name: String) = $ echo #{na}" 0 33
+      ls `shouldSatisfy` elem "name"
+
+  describe "completion invariants" $
+    forM_ corpora $ \(name, src, _) ->
+      it ("hold at every position of " <> name) $
+        forM_ (positions src) $ \(l, c) -> do
+          items <- completionAt "test.lask" src (Position l c)
+          let ls = map (^. L.label) items
+              context = name <> " at " <> show (l, c) <> ": "
+          -- Comparing the whole list forces the result, so a crash in
+          -- the analysis surfaces at the position that caused it.
+          assert (context <> "duplicate labels in " <> show ls) (nub ls == ls)
+          forM_ items $ \i ->
+            assert
+              (context <> "bad sortText " <> show (i ^. L.sortText) <> " on " <> show (i ^. L.label))
+              (sortTextOk i)
+
+  describe "completion while typing" $
+    forM_ corpora $ \(name, src, names) -> do
+      it ("offers every top-level name of " <> name <> " from a fresh line") $
+        forM_ names $ \n ->
+          forM_ [1 .. T.length n] $ \k -> do
+            let typed = T.take k n
+                src' = src <> "\nscratch = " <> typed
+                l = fromIntegral (length (T.splitOn "\n" src') - 1)
+                c = fromIntegral (10 + k)
+            ls <- labels "test.lask" src' l c
+            assert
+              (name <> ": " <> show n <> " missing after typing " <> show typed)
+              (n `elem` ls)
+      it ("answers independently of the typed prefix in " <> name) $ do
+        -- The client reuses one answer for the rest of the word, so
+        -- the answer must not change as the word grows.
+        let scratch typed = src <> "\nscratch = " <> typed
+            posOf typed =
+              ( fromIntegral (length (T.splitOn "\n" (scratch typed)) - 1),
+                fromIntegral (10 + T.length typed)
+              )
+        base <- uncurry (labels "test.lask" (scratch "")) (posOf "")
+        forM_ names $ \n ->
+          forM_ [1 .. T.length n] $ \k -> do
+            let typed = T.take k n
+            ls <- uncurry (labels "test.lask" (scratch typed)) (posOf typed)
+            assert
+              (name <> ": candidates changed after typing " <> show typed)
+              (sort ls == sort base)
+      it ("survives every truncation of " <> name) $
+        forM_ [0, 3 .. T.length src] $ \k -> do
+          let typed = T.take k src
+              typedLines = T.splitOn "\n" typed
+              l = fromIntegral (length typedLines - 1)
+              c = fromIntegral (T.length (lastLine typedLines))
+          ls <- labels "test.lask" typed l c
+          assert
+            (name <> " truncated to " <> show k <> ": duplicate labels in " <> show ls)
+            (nub ls == ls)
+
+  describe "completion on the repository's own sources" $
+    forM_ realSources $ \(file, name) ->
+      it ("offers " <> show name <> " while typing in " <> file) $ do
+        src <- TIO.readFile file
+        forM_ [1 .. T.length name] $ \k -> do
+          let typed = T.take k name
+              src' = src <> "\nscratch = " <> typed
+              l = fromIntegral (length (T.splitOn "\n" src') - 1)
+              c = fromIntegral (10 + k)
+          ls <- labels file src' l c
+          assert
+            (file <> ": " <> show name <> " missing after typing " <> show typed)
+            (name `elem` ls)
+
+-- | Real sources from the repository, each with a name it declares.
+-- The terraform example does not resolve its dependency unless it has
+-- been fetched, which is exactly the degraded state to cover.
+realSources :: [(FilePath, Text)]
+realSources =
+  [ ("main.lask", "doctest"),
+    ("example/01-basic/main.lask", "cowsay"),
+    ("example/03-terraform/main.lask", "as_string")
+  ]
+
+-- | Sources exercising the states a buffer passes through while it is
+-- being edited. Each carries the top-level names it defines.
+corpora :: [(String, Text, [Text])]
+corpora =
+  [ ( "a valid module",
+      "inc(x: Number): Number = x + 1\ntotal = inc(1)\n",
+      ["inc", "total"]
+    ),
+    ( "a do block",
+      "run() = do {\n  a = 1\n  b = a + 1\n  return b\n}\n",
+      ["run"]
+    ),
+    ( "a module with a syntax error",
+      "inc(x: Number) = x + 1\nbroken(\ntotal = 2\n",
+      ["inc", "total"]
+    ),
+    ( "an unclosed block",
+      "inc(x: Number) = x + 1\nrun() = do {\n  a = 1\n",
+      ["inc", "run"]
+    ),
+    ( "CRLF line endings",
+      "inc(x: Number) = x + 1\r\ntotal = inc(1)\r\n",
+      ["inc", "total"]
+    ),
+    ( "Japanese comments and strings",
+      "// 日本語のコメント\ngreet() = \"こんにちは\"\n",
+      ["greet"]
+    ),
+    ( "an unresolved import",
+      "import * as m from \"./missing.lask\"\ninc(x: Number) = x + 1\n",
+      ["inc"]
+    )
+  ]
+
+-- | Every cursor position in a source, including one past each line.
+positions :: Text -> [(UInt, UInt)]
+positions src =
+  [ (fromIntegral l, fromIntegral c)
+  | (l, line) <- zip [0 :: Int ..] (T.splitOn "\n" src),
+    c <- [0 .. T.length line]
+  ]
+
+-- | Sort text is always @\<rank\>-\<label\>@, which is what makes the
+-- client show the candidates in resolution order.
+sortTextOk :: CompletionItem -> Bool
+sortTextOk i = case i ^. L.sortText of
+  Nothing -> False
+  Just s ->
+    let (rank, rest) = T.breakOn "-" s
+     in not (T.null rank) && T.all isDigit rank && rest == "-" <> (i ^. L.label)
+
+lastLine :: [Text] -> Text
+lastLine ts = case reverse ts of
+  (x : _) -> x
+  [] -> ""
+
+-- | An assertion that names the failing case, so a sweep reports the
+-- position that broke rather than just which check it was.
+assert :: String -> Bool -> Expectation
+assert context ok = unless ok (expectationFailure context)
+
+labels :: FilePath -> Text -> UInt -> UInt -> IO [Text]
+labels path src l c = map (^. L.label) <$> completionAt path src (Position l c)
