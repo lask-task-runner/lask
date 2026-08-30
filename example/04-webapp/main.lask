@@ -1,5 +1,5 @@
 // Runs the API's Python unit tests (api/).
-test_api() = $[#python:3.10.21-alpine3.24] pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
+test_api() = $[#python:3.12.14-alpine3.24] pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
 
 // Runs the frontend's unit tests (web/).
 test_web() = $[#node:20.20.2-alpine3.23] cd web && npm ci --no-audit --no-fund && npm test
