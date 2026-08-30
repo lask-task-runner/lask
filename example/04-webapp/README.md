@@ -19,13 +19,27 @@ thrown away afterwards; nothing lands on your machine.
 Everything lives in [main.lask](main.lask). A few excerpts, to give you the
 shape of it.
 
-A task is a name, an environment, and a command. The `$[#...]` part picks
-the Docker image it runs in — which is why you didn't need Python
-installed:
+Execution environments are values, so they're declared once at the top of
+the file and referred to by name:
 
 ```lask
-test_api() = $[#python:3.10.21-alpine3.24] pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
+python = #python:3.12.14-alpine3.24
+node = #node:20.20.2-alpine3.23
+terraform = #terraform-aws-cli
+playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
+curl = #curlimages/curl:8.21.0
 ```
+
+A task is then a name, one of those environments, and a command. The
+`$[...]` part is what picks the container it runs in — which is why you
+didn't need Python installed:
+
+```lask
+test_api() = $[python] pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
+```
+
+Pinning the versions in one place means a task can't quietly drift onto a
+different toolchain than its neighbours.
 
 Tasks call other tasks, so you compose them instead of repeating yourself.
 That's all `lask run test` was:
@@ -44,14 +58,14 @@ next one with `#{...}`, and a task can declare what it returns:
 type Healthcheck = Record<status: String>
 
 healthcheck_web(): Healthcheck = do {
-  url = $[#terraform-aws-cli] terraform -chdir="infra" output -raw website_url
-  status = $[#curlimages/curl:8.21.0] curl -s -o /dev/null -w "%{http_code}" "#{url}"
+  url = $[terraform] terraform -chdir="infra" output -raw website_url
+  status = $[curl] curl -s -o /dev/null -w "%{http_code}" "#{url}"
   return { status: status }
 }
 ```
 
-Note the two different images in one task: Terraform and curl each run in
-their own container, and neither is installed on your machine.
+Note the two different environments in one task: Terraform and curl each
+run in their own container, and neither is installed on your machine.
 
 Parameters can default to an environment variable, and marking one `!!`
 keeps it out of the logs — `deploy` prints `AWS_SECRET_ACCESS_KEY="***"`
