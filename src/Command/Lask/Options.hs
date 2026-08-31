@@ -8,6 +8,9 @@ module Command.Lask.Options
     EnvsOpts (..),
     DepsAddSource (..),
     pRootCommand,
+    runOptionsHelp,
+    argSeparator,
+    protectArgSeparator,
   )
 where
 
@@ -31,7 +34,13 @@ data RunOpts = RunOpts
     runSshKnownHosts :: Maybe FilePath,
     runSshStrictHostKey :: Maybe Text,
     runSshConnectTimeout :: Maybe Int,
-    runFunction :: Text,
+    -- | @--help@ / @-h@ before the function name. After the function
+    -- name it reaches 'runArgs' instead and is handled there
+    -- (spec 11.2).
+    runHelp :: Bool,
+    -- | Absent for @lask run --help@, which lists the module's
+    -- functions instead of calling one.
+    runFunction :: Maybe Text,
     runArgs :: [Text]
   }
 
@@ -59,6 +68,19 @@ data RootCommand
 
 -- | The source of a @deps add@ entry (spec 11.5).
 data DepsAddSource = AddGit Text Text | AddUrl Text
+
+-- | optparse-applicative consumes a bare @--@ itself, which would
+-- erase the boundary spec 11.2 gives it (everything after @--@ is an
+-- argument of the function, @--help@ included). The first one is
+-- swapped for this marker before parsing, so the argument scan in
+-- @run@ \/ @eval@ can still see where it was.
+argSeparator :: Text
+argSeparator = "\SOH--"
+
+protectArgSeparator :: [String] -> [String]
+protectArgSeparator args = case break (== "--") args of
+  (before, _ : after) -> before <> [T.unpack argSeparator] <> after
+  _ -> args
 
 pCommon :: Parser CommonOpts
 pCommon =
@@ -103,7 +125,12 @@ pRunOpts =
     <*> optional (strOption (long "ssh-known-hosts" <> metavar "PATH"))
     <*> optional (T.pack <$> strOption (long "ssh-strict-host-key-checking" <> metavar "yes|accept-new|no"))
     <*> optional (option auto (long "ssh-connect-timeout" <> metavar "SECONDS"))
-    <*> (T.pack <$> argument str (metavar "FUNCTION"))
+    <*> switch
+      ( long "help"
+          <> short 'h'
+          <> help "Show the help of FUNCTION, or list the module's functions"
+      )
+    <*> optional (T.pack <$> argument str (metavar "FUNCTION"))
     <*> many (T.pack <$> argument str (metavar "ARGS..."))
 
 pEnvsOpts :: Parser EnvsOpts
@@ -117,34 +144,65 @@ pEnvsOpts =
     <*> optional (T.pack <$> strOption (long "ssh-strict-host-key-checking" <> metavar "yes|accept-new|no"))
     <*> optional (option auto (long "ssh-connect-timeout" <> metavar "SECONDS"))
 
+-- | Two deviations from the obvious parser for @run@ \/ @eval@.
+--
+-- @subparser@ rather than @hsubparser@: the latter installs its own
+-- @--help@ in every subcommand, which would swallow the @--help@ that
+-- spec 11.6 gives to @run@ \/ @eval@. Every other subcommand gets one
+-- explicitly.
+--
+-- @noIntersperse@ rather than @forwardOptions@: both set the same
+-- policy and the last one wins, and @forwardOptions@ keeps parsing
+-- /known/ options after the function name, so @lask run f --module x@
+-- bound @--module@ to @lask@ instead of to @f@. @noIntersperse@ turns
+-- everything after the first positional into an argument, which is
+-- the boundary rule of spec 11.2.
 pRootCommand :: Parser RootCommand
 pRootCommand =
-  hsubparser
-    ( command "serve" (info (pure CmdServe) (progDesc "Start the language server"))
-        <> command "check" (info (CmdCheck <$> pCommon) (progDesc "Statically validate the module"))
+  subparser
+    ( command "serve" (withHelp (pure CmdServe) (progDesc "Start the language server"))
+        <> command "check" (withHelp (CmdCheck <$> pCommon) (progDesc "Statically validate the module"))
         <> command
           "run"
           ( info
               (CmdRun <$> pRunOpts)
-              (progDesc "Run a function (result is not printed)" <> noIntersperse <> forwardOptions)
+              (progDesc "Run a function (result is not printed)" <> noIntersperse)
           )
         <> command
           "eval"
           ( info
               (CmdEval <$> pRunOpts)
-              (progDesc "Run a function and print its result" <> noIntersperse <> forwardOptions)
+              (progDesc "Run a function and print its result" <> noIntersperse)
           )
         <> command
           "infer"
-          ( info
+          ( withHelp
               (CmdInfer <$> pCommon <*> optional (T.pack <$> strOption (long "symbol" <> metavar "NAME")))
               (progDesc "Print inferred types")
           )
-        <> command "repl" (info (CmdRepl <$> pCommon) (progDesc "Interactive session"))
-        <> command "envs" (info (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))
-        <> command "deps" (info pDepsCommand (progDesc "Manage external dependencies"))
-        <> command "version" (info (pure CmdVersion) (progDesc "Print the lask version"))
+        <> command "repl" (withHelp (CmdRepl <$> pCommon) (progDesc "Interactive session"))
+        <> command "envs" (withHelp (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))
+        <> command "deps" (withHelp pDepsCommand (progDesc "Manage external dependencies"))
+        <> command "version" (withHelp (pure CmdVersion) (progDesc "Print the lask version"))
     )
+  where
+    withHelp p = info (p <**> helper)
+
+-- | The option help of @run@ / @eval@, printed by @lask run --help@
+-- before the module's function list (spec 11.6).
+runOptionsHelp :: String -> String
+runOptionsHelp subcommand =
+  fst (renderFailure failure ("lask " <> subcommand))
+  where
+    failure =
+      parserFailure
+        defaultPrefs
+        (info (CmdRun <$> pRunOpts) (progDesc desc <> noIntersperse))
+        (ShowHelpText Nothing)
+        []
+    desc
+      | subcommand == "eval" = "Run a function and print its result"
+      | otherwise = "Run a function (result is not printed)"
 
 pDepsCommand :: Parser RootCommand
 pDepsCommand =

@@ -2,10 +2,21 @@ install_path = "$HOME/.local/bin"
 
 envs: Map<Environment> = { "local": #local, "docker": #haskell:9.6.5 }
 
+// Run the unit test suite.
+//
+// @param env  Environment to build and test in ("local" or "docker").
 unittest(--env: String = "docker") = $[envs[env]] stack install --test && stack test
 
+// Run the doctests of app/ and src/.
+//
+// @param env  Environment to build and test in ("local" or "docker").
 doctest(--env: String = "docker") = $[envs[env]] stack install --test && stack exec doctest app/** src/**
 
+// Run the unit tests and the doctests in parallel.
+//
+// @param env  Environment to build and test in ("local" or "docker").
+// @return The output of each suite, keyed by its name.
+// @example lask run test --env local
 test(--env: String = "docker") = do {
   t1 = async unittest(env = env)
   t2 = async doctest(env = env)
@@ -15,6 +26,10 @@ test(--env: String = "docker") = do {
   }
 }
 
+// Build lask and install the binary.
+//
+// @param output  Directory the binary is installed into.
+// @param env     Environment to build in ("local" or "docker").
 install(--output = install_path, --env: String = "local") = do {
   if (env == "local") {
     $ stack --local-bin-path #{output} install
@@ -23,6 +38,12 @@ install(--output = install_path, --env: String = "local") = do {
   }
 }
 
+// Build in the docker environment and move the binary into place.
+//
+// Only supported on Linux hosts, because the container build shares
+// the host's work directory.
+//
+// @param output  Directory the binary is moved into.
 build_on_docker(--output = install_path) = do {
   host_os = $ uname -s
   if (host_os != "Linux\n") {
@@ -33,4 +54,7 @@ build_on_docker(--output = install_path) = do {
   }
 }
 
+// Remove the installed binary.
+//
+// @param output  Directory the binary was installed into.
 uninstall(--output = install_path) = $ rm #{output}/lask

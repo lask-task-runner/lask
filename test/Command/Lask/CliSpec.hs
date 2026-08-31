@@ -401,3 +401,122 @@ spec = beforeAll findLask $ do
         $ \dir -> do
           r <- runLask lask dir ["deps", "sync"] ""
           resExit r `shouldBe` 1
+
+  describe "spec 11.6: help display" $ do
+    let src =
+          "// Build the project.\n\
+          \//\n\
+          \// The long form of the description.\n\
+          \//\n\
+          \// @param target   Build target name.\n\
+          \// @param out_dir  Where the artifact goes.\n\
+          \// @return The artifact path.\n\
+          \// @example lask run build release\n\
+          \build(target: String, --out_dir: String = \"dist\"): String =\n\
+          \  concat(target, out_dir)\n\
+          \\n\
+          \// Run the tests.\n\
+          \test(): String = \"ok\"\n\
+          \\n\
+          \// Internal.\n\
+          \//\n\
+          \// @hidden\n\
+          \scratch(): String = \"x\"\n\
+          \\n\
+          \deploy(host: String, --token!!: String = \"s3cret\"): String = concat(host, token)\n"
+
+    it "prints the signature, docs and defaults on stdout with exit 0" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "build", "--help"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldBe` ""
+        resOut r `shouldContain` "build - Build the project."
+        resOut r `shouldContain` "lask run build <target> [--out_dir <String>]"
+        resOut r `shouldContain` "The long form of the description."
+        resOut r `shouldContain` "--out_dir : String = \"dist\""
+        resOut r `shouldContain` "Build target name."
+        resOut r `shouldContain` "The artifact path."
+        resOut r `shouldContain` "lask run build release"
+        resOut r `shouldContain` "Defined at main.lask:9"
+
+    it "names the invoked subcommand in the usage line" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "build", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "lask eval build <target>"
+
+    it "never reveals the default of a secret parameter (spec 12.8)" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "deploy", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "--token : String = <secret>"
+        resOut r `shouldNotContain` "s3cret"
+
+    it "lists the module's functions, excluding @hidden ones" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "Functions in main.lask:"
+        resOut r `shouldContain` "build   Build the project."
+        resOut r `shouldContain` "test    Run the tests."
+        resOut r `shouldNotContain` "scratch"
+
+    it "lists functions only, but still helps on a plain value binding" $ \lask ->
+      withProject [("main.lask", "out_dir = \"dist\"\n" <> src)] $ \dir -> do
+        l <- runLask lask dir ["run", "--help"] ""
+        l `shouldSatisfy` (not . isInfixOf "out_dir " . resOut)
+        v <- runLask lask dir ["run", "out_dir", "--help"] ""
+        resExit v `shouldBe` 0
+        resOut v `shouldContain` "out_dir"
+        resOut v `shouldContain` "Returns:"
+
+    it "wins over argument binding errors (spec 11.6)" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "build", "--nosuch", "1", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "lask run build <target>"
+
+    it "passes a literal --help to the function after -- (spec 11.2)" $ \lask ->
+      withProject [("main.lask", "id1(a: String): String = a\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "id1", "--", "--help"] ""
+        resOut r `shouldNotContain` "Usage:"
+        resExit r `shouldBe` 4
+
+    it "reports an unknown function as a usage error (exit 4)" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "buidl", "--help"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldContain` "E-CLI-USAGE"
+        resErr r `shouldContain` "did you mean 'build'?"
+
+    it "still prints help when the module does not type check" $ \lask ->
+      withProject [("main.lask", src <> "\nbroken(): Number = \"not a number\"\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "build", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "lask run build <target>"
+        resErr r `shouldContain` "E-TYPE"
+
+    it "exits 1 when the module cannot be parsed" $ \lask ->
+      withProject [("main.lask", "build( = \n")] $ \dir -> do
+        r <- runLask lask dir ["run", "build", "--help"] ""
+        resExit r `shouldBe` 1
+        resOut r `shouldBe` ""
+
+    it "still shows the option help when the module cannot be parsed" $ \lask ->
+      withProject [("main.lask", "build( = \n")] $ \dir -> do
+        r <- runLask lask dir ["run", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "Usage: lask run"
+        resOut r `shouldNotContain` "Functions in"
+
+    it "reports the same information as JSON under --format json" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "--format", "json", "build", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "\"kind\":\"function-help\""
+        resOut r `shouldContain` "\"name\":\"out_dir\""
+        resOut r `shouldContain` "\"kind\":\"keyword\""
+        resOut r `shouldContain` "\"returns\":{\"doc\":\"The artifact path.\",\"type\":\"String\"}"
+        l <- runLask lask dir ["run", "--format", "json", "--help"] ""
+        resOut l `shouldContain` "\"kind\":\"function-list\""
+        resOut l `shouldContain` "\"signature\":\"test(): String\""
