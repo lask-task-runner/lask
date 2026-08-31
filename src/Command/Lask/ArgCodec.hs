@@ -8,7 +8,6 @@ module Command.Lask.ArgCodec
   ( ArgDecodeMode (..),
     StdoutEncode (..),
     CliArg (..),
-    kebabToSnake,
     parseArgDecodeMode,
     parseStdoutEncode,
     parseCliArgs,
@@ -28,6 +27,7 @@ import Language.Lask.Runtime.Eval (castValue)
 import Language.Lask.Runtime.Value (LaskFailure, Value (VString))
 import Language.Lask.Serialize (valueFromJson)
 import Language.Lask.Types (Type (TyEnvironment))
+import Language.Lask.Utils (kebabToSnake)
 
 data ArgDecodeMode = DecodeText | DecodeJson | DecodeAuto
   deriving (Show, Eq)
@@ -48,12 +48,6 @@ parseStdoutEncode s = case s of
   "json" -> Just EncodeJson
   "pretty-json" -> Just EncodePrettyJson
   _ -> Nothing
-
--- | @-@ maps to @_@ in function names and keyword argument names
--- (spec 11.2); identifiers cannot contain @-@, so the mapping never
--- collides.
-kebabToSnake :: Text -> Text
-kebabToSnake = T.map (\c -> if c == '-' then '_' else c)
 
 data CliArg = CliPos Text | CliKw Text Text
   deriving (Show, Eq)

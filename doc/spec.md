@@ -242,6 +242,23 @@ Rules:
 - Permitting nesting allows temporarily commenting out a large region without breaking existing internal `/* ... */` comments.
 - Implementations must track the comment depth and must determine comment termination only at the outermost `*/`.
 
+Documentation comments:
+
+The contiguous block of comments directly above a declaration (Chapter 5) is the documentation comment of that declaration. No dedicated syntax is introduced; both line comments and block comments participate.
+
+- The block is the run of comments that ends on the line immediately above the declaration and continues upward without a gap. A blank line or any other token terminates the block.
+- The comment markers (`//`, `/*`, `*/`) are stripped and the remaining lines are joined with newlines.
+- The first paragraph (up to the first blank line) is the **summary**. It is used wherever a single line is required, such as the function list of 11.6.
+- The paragraphs that follow, up to the first tag line, are the **description**.
+- A line whose first non-space character is `@` is a **tag line**. The following tags are defined.
+  - `@param <name> <text>`: documentation for the parameter `<name>`. `<name>` is matched after the name mapping of 11.2, so both `out_dir` and `out-dir` designate the same parameter.
+  - `@return <text>`: documentation for the return value.
+  - `@example <text>`: a usage example. Multiple occurrences are permitted and are displayed in order of appearance.
+  - `@hidden`: excludes the declaration from listings (11.6). Help requested by name is still displayed.
+- Unknown tags are not errors; they are carried through into the description as written (forward compatibility).
+- An `@param` that names a parameter the declaration does not have is not an error either. It may be reported as the advisory diagnostic `W-DOC-PARAM-UNKNOWN` (14.2).
+- Documentation comments have no effect on static or dynamic semantics. They are consumed by editor integration (`serve`) and by help display (11.6).
+
 ### 3.2 Identifiers
 
 ```ebnf
@@ -2097,6 +2114,7 @@ Common options:
 - `--format <text|json>`: specifies the display format of CLI responses.
 - `--trace-id <id>`: specifies the execution trace identifier.
 - `--no-color`: disables decorative colors in the output.
+- `--help` / `-h`: displays usage. For `run` / `eval`, when a function name is given, the help of that function is displayed (11.6).
 
 Minimal syntax per subcommand:
 
@@ -2105,6 +2123,8 @@ lask serve [--stdio | --tcp --port <n>]
 lask check [--module <path>]
 lask run [--module <path>] <function> [args ...]
 lask eval [--module <path>] <function> [args ...]
+lask run [--module <path>] [<function>] --help
+lask eval [--module <path>] [<function>] --help
 lask infer [--module <path>] [--symbol <name>]
 lask repl [--module <path>]
 lask envs [--module <path>] [--env-file <path>] [<function>] [--check]
@@ -2148,6 +2168,9 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 - The invocation syntax of `run` and `eval` is identical. The rules of this section (function-name mapping, keyword arguments, binding, decoding) apply equally to both.
 - When `--module` is unspecified, `main.lask` is the target. Therefore the minimal form is `lask run <function> [args ...]` / `lask eval <function> [args ...]`.
 - Options of `lask` itself (`--module`, `--arg-decode`, `--ssh-*`, `--format`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
+- The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
+- `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
+- `--` after the function name ends the scan for `--help`: all following tokens are passed to the function verbatim. `--help=<value>` is likewise not intercepted and binds to the parameter `help` in the ordinary way.
 
 Function-name and parameter-name mapping rules:
 
@@ -2210,6 +2233,7 @@ Standard output contract:
 - `text` is human-readable display, `json` is machine-readable display, and `pretty-json` is formatted JSON display.
 - `eval` outputs the evaluation result to stdout with the specified encoding.
 - `run` does not output the evaluation result to stdout. `run` must not output anything to stdout.
+- The one exception is help display (11.6). When `--help` is given, no function is evaluated, so the contract for evaluation results does not apply and `run` writes the help to stdout.
 - `check` and `infer` output diagnostic results to stdout.
 - For both `run` / `eval`, the output destination for execution logs and diagnostics is stderr (9.6, Chapter 12).
 
@@ -2330,6 +2354,140 @@ Exit codes (common to `sync` and `add`):
 - `1`: the dependency definition file is missing (while dependencies are declared), malformed, or violates the schema (Chapter 5).
 - `3`: a fetch or verification failure (network failure, `E-MODULE-HASH-MISMATCH`).
 - `4`: CLI usage error.
+
+### 11.6 Help Display (`--help`)
+
+`--help` displays the usage of the functions defined in a module. Its purpose is to make the tasks a repository provides discoverable without reading the module source.
+
+Syntax:
+
+```text
+lask run  [--module <path>] [lask options ...] <function> --help
+lask eval [--module <path>] [lask options ...] <function> --help
+lask run  [--module <path>] [lask options ...] --help
+lask eval [--module <path>] [lask options ...] --help
+```
+
+- Only `run` and `eval` provide function help. As in 11.2, the two are identical in this respect.
+- When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module.
+- Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
+- The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
+- If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. An implementation may report the advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2).
+- Help display takes precedence over argument binding. Binding errors (11.2) are not reported when `--help` is present: `lask run build --out_dir 1 --help` displays the help and exits `0`.
+
+Sources of help information:
+
+- The documentation comment of the declaration (3.1) supplies the summary, the description, and the `@param` / `@return` / `@example` texts.
+- The signature (the kind of each parameter, its type, and its default value) is taken from the result of static verification (7.5).
+- Default values are displayed as their source text and **must not be evaluated**, since evaluating them may have side effects.
+- The default value of a parameter marked `!!` (6.10) is displayed as `<secret>` and must never be displayed in plaintext (12.8).
+- The environments used are enumerated by the reachability analysis of 11.4. When the enumeration yields only `#local`, the section is omitted.
+
+Rendering rules:
+
+- Parameter names are displayed as declared (3.2). The kebab-case invocation form of 11.2 remains accepted but is not displayed.
+- In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`.
+- A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
+- The function list holds the module's functions — declarations written as functions, and bindings whose value is a function. Plain value bindings are callable (11.2) and have help of their own, but are not listed.
+- The function list omits declarations marked `@hidden` (3.1), and shows only the name for functions that have no summary.
+
+Text output (`--format text`, the default). For the declaration:
+
+```lask
+// Build the project and publish the artifact.
+//
+// The build runs in the `builder` environment; the artifact is
+// uploaded only when `--publish` is set.
+//
+// @param target   Build target name.
+// @param out_dir  Directory the artifact is written to.
+// @param publish  Whether to upload the artifact.
+// @return The path of the produced artifact.
+// @example lask run build release --out-dir dist --publish true
+build(target: String, --out_dir: String = "dist", --publish: Bool = false): String =
+  $[#env("builder")] make #{target} OUT=#{out_dir}
+```
+
+`lask run --module ci.lask build --help` outputs:
+
+```text
+build - Build the project and publish the artifact.
+
+Usage:
+  lask run build <target> [--out_dir <String>] [--publish <Bool>]
+
+The build runs in the `builder` environment; the artifact is
+uploaded only when `--publish` is set.
+
+Parameters:
+  target : String
+      Build target name.
+  --out_dir : String = "dist"
+      Directory the artifact is written to.
+  --publish : Bool = false
+      Whether to upload the artifact.
+
+Returns:
+  String
+      The path of the produced artifact.
+
+Environments:
+  builder  docker  golang:1.22
+
+Examples:
+  lask run build release --out-dir dist --publish true
+
+Defined at ci.lask:12
+```
+
+`lask run --help` appends the function list to the CLI option help:
+
+```text
+Functions in main.lask:
+  unittest         Run the unit test suite.
+  doctest          Run the doctests.
+  test             Run the unit tests and the doctests in parallel.
+  install          Install the lask binary.
+  uninstall
+```
+
+JSON output (`--format json`) is the structured form of the same information, intended for reuse by editor integration.
+
+```json
+{
+  "kind": "function-help",
+  "module": "ci.lask",
+  "function": "build",
+  "location": {"line": 12, "column": 1},
+  "summary": "Build the project and publish the artifact.",
+  "description": "The build runs in the `builder` environment; the artifact is\nuploaded only when `--publish` is set.",
+  "params": [
+    {"name": "target", "kind": "positional", "type": "String",
+     "default": null, "secret": false, "doc": "Build target name."},
+    {"name": "out_dir", "kind": "keyword", "type": "String",
+     "default": "\"dist\"", "secret": false, "doc": "Directory the artifact is written to."},
+    {"name": "publish", "kind": "keyword", "type": "Bool",
+     "default": "false", "secret": false, "doc": "Whether to upload the artifact."}
+  ],
+  "returns": {"type": "String", "doc": "The path of the produced artifact."},
+  "environments": [{"name": "builder", "kind": "docker", "target": "golang:1.22"}],
+  "examples": ["lask run build release --out-dir dist --publish true"]
+}
+```
+
+- `kind` is `function-help` for the help of a single function, and `function-list` for the function list. The latter holds `functions`, an array of objects with `name`, `summary`, and `signature`.
+- `kind` for a parameter is one of `positional` / `variadic` / `keyword`.
+- `default` is `null` for a parameter that has no default value, and `"<secret>"` for a parameter marked `!!`.
+- A field whose information is unavailable is `null`; a section that is omitted in text output is an empty array.
+
+Output destination and exit codes:
+
+- Help is written to stdout (the exception in 11.3). Diagnostics are written to stderr as usual.
+- `0`: the help was displayed.
+- `4`: the specified name is not a top-level declaration of the module. The usage and, where possible, candidate names are written to stderr as `E-CLI-USAGE`. A declaration that is not a function is not an error: a plain value binding is callable with no arguments (11.2), so its help is displayed with an empty parameter list.
+- `1`: the target module could not be parsed. Diagnostics are written to stderr and no help is displayed.
+- Static errors (14.4) do **not** prevent help display. The help is rendered from the information that is available, a type that could not be determined is displayed as `?`, the diagnostics are written to stderr, and the exit code is `0`. Help is most needed while a module is broken, so this is a deliberate exception to the rule of 14.4 that static errors stop `run` / `eval`; no function is evaluated in this case either.
+- For `lask run --help` / `lask eval --help` without a function name, the CLI option help must always be displayed with exit code `0`. If the target module cannot be loaded, the function list is omitted.
 
 ## 12. Observability
 
@@ -2719,6 +2877,15 @@ Representative codes:
 - `E-IO-ENV-RESOLVE`
 - `E-IO-DATA-DECODE`
 - `E-CLI-USAGE`
+
+Advisory codes:
+
+- Codes of the form `W-<CATEGORY>-<DETAIL>` are advisory diagnostics. They report a probable mistake that is not an error: analysis continues, evaluation is not prevented, and the exit code is unaffected.
+- Advisory diagnostics follow the output requirements of 14.3 and additionally carry `severity: "warning"`. A diagnostic without a `severity` field is an error.
+- Representative codes:
+  - `W-DOC-PARAM-UNKNOWN`: an `@param` in a documentation comment (3.1) names a parameter the declaration does not have.
+  - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
+- Reporting advisory diagnostics is optional. `check` and `serve` are the expected places to report them.
 
 ### 14.3 Minimum Requirements for Diagnostic Information
 

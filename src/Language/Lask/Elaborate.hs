@@ -10,6 +10,7 @@
 module Language.Lask.Elaborate
   ( CoreProgram (..),
     CoreDecl (..),
+    Key,
     StaticParams (..),
     HoverInfo (..),
     elaborateProgram,

@@ -8,6 +8,8 @@ module Command.Lask.Entry
 where
 
 import Command.Lask.ArgCodec
+import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom)
+import Command.Lask.Help
 import Command.Lask.Options
 import Control.Exception (try)
 import Control.Monad (unless, when)
@@ -17,6 +19,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.List (nub, sort)
+import Data.Maybe (isNothing)
 import qualified Data.Map.Strict as Map
 import Data.Scientific (toRealFloat)
 import Data.Text (Text)
@@ -25,15 +28,16 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Version (showVersion)
 import qualified Language.LSP.Lask as LSP
-import Language.Lask (Compiled (..), compileFile)
-import Language.Lask.Core.AST
+import Language.Lask (Compiled (..), Partial (..), compileFile, compileFilePartial)
 import Language.Lask.Deps.Cache (defaultCacheDir)
 import Language.Lask.Deps.Fetch (DepSource (..), fetchAndStore, syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Diagnostic (Diagnostic (..))
+import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
 import Language.Lask.EnvFile
 import Language.Lask.ErrorCode
+import Language.Lask.Lexer (lexTokensWithComments)
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
@@ -42,8 +46,9 @@ import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
+import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..), renderType)
-import Language.Lask.Utils (Pretty (pretty))
+import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
 import Paths_lask (version)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.FilePath (takeDirectory, (</>))
@@ -105,6 +110,11 @@ cmdInfer opts symbol = do
 -- run / eval -----------------------------------------------------------------
 
 cmdRunEval :: Bool -> RunOpts -> IO ()
+cmdRunEval printResult runOpts
+  -- Help never evaluates anything, so it is decided before the module
+  -- is compiled for execution (spec 11.6).
+  | runHelp runOpts || helpAfterFunction (runArgs runOpts) =
+      cmdHelp (if printResult then "eval" else "run") runOpts
 cmdRunEval printResult runOpts = do
   let opts = runCommon runOpts
   compiled <- compileOrExit opts
@@ -114,12 +124,15 @@ cmdRunEval printResult runOpts = do
   envFile <- loadEnvFileOrExit opts (envFilePathOf baseDir (runEnvFile runOpts))
   validateEnvNamesOrExit opts core envFile
 
-  let fnName = kebabToSnake (runFunction runOpts)
+  rawName <- case runFunction runOpts of
+    Just n -> pure n
+    Nothing -> usageError opts "no function specified (use --help to list the module's functions)"
+  let fnName = kebabToSnake rawName
   cd <- case Map.lookup (entry, fnName) (cpDecls core) of
     Just cd -> pure cd
-    Nothing -> usageError opts ("no such function: '" <> runFunction runOpts <> "'")
+    Nothing -> usageError opts ("no such function: '" <> rawName <> "'")
 
-  cliArgs <- case parseCliArgs (runArgs runOpts) of
+  cliArgs <- case parseCliArgs (dropArgSeparator (runArgs runOpts)) of
     Right as -> pure as
     Left e -> usageError opts e
 
@@ -177,6 +190,110 @@ cmdRunEval printResult runOpts = do
         _ -> TIO.putStrLn (encodeResult (runStdoutEncode runOpts) v)
       exitSuccess
 
+-- help (spec 11.6) -------------------------------------------------------------
+
+-- | @--help@ after the function name is the one exception to the
+-- argument boundary rule (spec 11.2). Only a standalone token counts,
+-- and the scan stops at @--@ so that a literal @--help@ can still be
+-- passed to the function.
+helpAfterFunction :: [Text] -> Bool
+helpAfterFunction = elem "--help" . takeWhile (/= argSeparator)
+
+-- | Remove the @--@ marker; everything after it is a plain argument
+-- (spec 11.2).
+dropArgSeparator :: [Text] -> [Text]
+dropArgSeparator args = case break (== argSeparator) args of
+  (before, _ : after) -> before <> after
+  _ -> args
+
+cmdHelp :: Text -> RunOpts -> IO ()
+cmdHelp subcommand runOpts = do
+  let opts = runCommon runOpts
+  (diags, partial) <- compileFilePartial (optModule opts)
+  -- Static errors do not hide the help; a module that does not
+  -- compile is exactly when its usage is wanted (spec 11.6).
+  unless (null diags) $
+    TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) diags)
+  src <- either (const "") id <$> try' (TIO.readFile (optModule opts))
+  let core = partialCore partial
+      path = optModule opts
+      entry = maybe path cpEntry core
+      comments = either (const []) snd (lexTokensWithComments path src)
+      declsByName =
+        [ (n, d)
+        | m <- maybe [] pure (partialModule partial),
+          d <- AST.moduleDecls m,
+          Just n <- [declaredName d]
+        ]
+      coreOf n = core >>= Map.lookup (entry, n) . cpDecls
+      helpOf envs (n, d) = buildFunctionHelp path src d (coreOf n) (docFor src comments d) envs
+
+  case runFunction runOpts of
+    -- The option help is always available, whatever state the module
+    -- is in; only the function list depends on it (spec 11.6).
+    Nothing -> do
+      putStrLn (runOptionsHelp (T.unpack subcommand))
+      let listing = map (helpOf []) declsByName
+      case (optJsonFormat opts, listing) of
+        (True, _) -> TIO.putStrLn (encodeJsonText (renderListJson path listing))
+        (False, []) -> pure ()
+        (False, _) -> do
+          let rendered = renderListText path listing
+          unless (T.null rendered) $ TIO.putStrLn ("\n" <> rendered)
+      exitSuccess
+    Just rawName -> do
+      -- Without a parse there are no declarations to describe.
+      when (isNothing (partialModule partial)) $ exitWith (ExitFailure 1)
+      let fnName = kebabToSnake rawName
+      decl <- case lookup fnName declsByName of
+        Just d -> pure d
+        Nothing -> usageError opts (noSuchFunction rawName (map fst declsByName))
+      envFile <- loadEnvFile' (maybe (takeDirectory path) cpBaseDir core)
+      let envs = case core of
+            Just c -> nub (sort (collectEnvRefsFrom c envFile (entry, fnName)))
+            Nothing -> []
+          fh = helpOf envs (fnName, decl)
+      if optJsonFormat opts
+        then TIO.putStrLn (encodeJsonText (renderHelpJson fh))
+        else TIO.putStr (renderHelpText subcommand fh)
+      exitSuccess
+  where
+    try' :: IO Text -> IO (Either IOError Text)
+    try' = try
+
+    -- Help is read-only: an unreadable or malformed environment file
+    -- costs the environment targets, not the help.
+    loadEnvFile' baseDir = do
+      r <- loadEnvFile (envFilePathOf baseDir (runEnvFile runOpts))
+      pure (either (const Nothing) id r)
+
+declaredName :: AST.Decl -> Maybe Text
+declaredName d = case AST.declF d of
+  AST.DValue n _ _ _ -> Just n
+  AST.DFunction n _ _ _ -> Just n
+  _ -> Nothing
+
+-- | The documentation comment directly above a declaration (spec 3.1).
+docFor :: Text -> [Span] -> AST.Decl -> DocComment
+docFor src comments decl = case AST.declSpan decl of
+  Span (Position _ l _) _ -> maybe emptyDoc parseDoc (docBlockAbove src comments l)
+  NoSpan -> emptyDoc
+
+noSuchFunction :: Text -> [Text] -> Text
+noSuchFunction wanted names =
+  "no such function: '"
+    <> wanted
+    <> "'"
+    <> case near of
+      [] -> ""
+      (n : _) -> "; did you mean '" <> n <> "'?"
+  where
+    target = kebabToSnake wanted
+    near = [n | n <- names, T.isPrefixOf (T.take 2 target) n || T.isInfixOf target n]
+
+encodeJsonText :: A.Value -> Text
+encodeJsonText = TE.decodeUtf8 . BL.toStrict . A.encode
+
 encodeResult :: StdoutEncode -> Value -> Text
 encodeResult enc v = case enc of
   EncodeJson -> encodeValue v
@@ -233,13 +350,6 @@ cmdRepl opts = runRepl (optModule opts)
 
 -- envs -----------------------------------------------------------------------
 
-data EnvRef = EnvRef
-  { refLabel :: Text,
-    refKind :: Text,
-    refTarget :: Text
-  }
-  deriving (Show, Eq, Ord)
-
 cmdEnvs :: EnvsOpts -> IO ()
 cmdEnvs envsOpts = do
   let opts = envsCommon envsOpts
@@ -248,13 +358,15 @@ cmdEnvs envsOpts = do
       baseDir = cpBaseDir core
   envFile <- loadEnvFileOrExit opts (envFilePathOf baseDir (envsEnvFile envsOpts))
   validateEnvNamesOrExit opts core envFile
-  -- With a function filter, listing every referenced environment is a
-  -- permitted over-approximation of reachability (spec 11.4).
-  case envsFunction envsOpts of
-    Just fn ->
-      unless (Map.member (cpEntry core, kebabToSnake fn) (cpDecls core)) $
+  -- Without a function, the whole module; with one, only what its call
+  -- graph can reach (spec 11.4).
+  scope <- case envsFunction envsOpts of
+    Nothing -> pure Nothing
+    Just fn -> do
+      let key = (cpEntry core, kebabToSnake fn)
+      unless (Map.member key (cpDecls core)) $
         usageError opts ("no such function: '" <> fn <> "'")
-    Nothing -> pure ()
+      pure (Just key)
   traceId <- maybe newTraceId pure (optTraceId opts)
   writeErr <- newLineWriter stderr
   -- Probe processes get execution numbers too (spec 12.3).
@@ -263,7 +375,10 @@ cmdEnvs envsOpts = do
         | optJsonFormat opts = jsonCommandLog traceId writeErr
         | otherwise = textCommandLog writeErr
       nextExec = atomicModifyIORef' execCounter (\n -> (n + 1, n + 1))
-      refs = nub (sort (collectEnvRefs core envFile))
+      refs =
+        nub . sort $ case scope of
+          Nothing -> collectEnvRefs core envFile
+          Just key -> collectEnvRefsFrom core envFile key
   results <-
     mapM
       ( \ref -> do
@@ -300,63 +415,6 @@ cmdEnvs envsOpts = do
         results
   let failed = [() | (_, Just (Left _)) <- results]
   exitWith (if null failed then ExitSuccess else ExitFailure 3)
-
--- | All environment constructions in the core program.
-collectEnvRefs :: CoreProgram -> Maybe EnvFile -> [EnvRef]
-collectEnvRefs core envFile =
-  concatMap (fromCore . cdCore) (Map.elems (cpDecls core))
-    <> concatMap (fromCore . snd) (concatMap (lamKeywords' . cdCore) (Map.elems (cpDecls core)))
-  where
-    lamKeywords' c = case coreF c of
-      CLam lam -> lamKeywords lam
-      _ -> []
-
-    fromCore c = case coreF c of
-      CEnv kind args -> mkRef kind args : concatMap (fromCore . snd) args
-      _ -> concatMap fromCore (children c)
-
-    mkRef kind args = case kind of
-      "docker" -> case lookup "image" args of
-        Just (Core _ (CStrLit img)) -> EnvRef img "docker" img
-        _ -> EnvRef "<dynamic>" "docker" "<dynamic image>"
-      "env" -> case lookup "name" args of
-        Just (Core _ (CStrLit name)) ->
-          case envFile >>= Map.lookup name . envFileEntries of
-            Just (EnvEntry k ps) -> EnvRef name k (entryTarget k ps)
-            Nothing -> EnvRef name "env" "<undefined>"
-        _ -> EnvRef "<env>" "env" "<unknown>"
-      _ -> EnvRef kind kind kind
-
-    entryTarget k ps = case k of
-      "remote" -> case Map.lookup "host" ps of
-        Just (VString h) -> h
-        _ -> "<unknown host>"
-      "docker" -> case Map.lookup "image" ps of
-        Just (VString i) -> i
-        _ -> "<unknown image>"
-      _ -> k
-
-    children c = case coreF c of
-      CStr ps -> [e | CPExpr e <- ps]
-      CArray es -> es
-      CMapLit kvs -> map snd kvs
-      CRecordLit kvs -> map snd kvs
-      CLam lam -> map snd (lamKeywords lam) <> [lamBody lam]
-      CApp fn pos kw -> fn : pos <> map snd kw
-      CDot e _ -> [e]
-      CIndex _ a b -> [a, b]
-      CIf a b c' -> [a, b, c']
-      CAnd a b -> [a, b]
-      COr a b -> [a, b]
-      CNot a -> [a]
-      CBin _ a b -> [a, b]
-      CDo stmts -> concatMap stmtExpr stmts
-      CAwait a -> [a]
-      CCast a _ -> [a]
-      CEnv _ args -> map snd args
-      _ -> []
-    stmtExpr (CSBind _ e) = [e]
-    stmtExpr (CSExpr e) = [e]
 
 -- | Probe accessibility (spec 11.4): no command execution, no side
 -- effects; docker checks daemon connectivity, remote checks SSH

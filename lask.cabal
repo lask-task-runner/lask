@@ -25,6 +25,8 @@ library
   exposed-modules:
       Command.Lask.ArgCodec
       Command.Lask.Entry
+      Command.Lask.Envs
+      Command.Lask.Help
       Command.Lask.Options
       Language.Lask
       Language.Lask.Builtins.Impl
@@ -37,6 +39,7 @@ library
       Language.Lask.Deps.Hash
       Language.Lask.Desugar.Return
       Language.Lask.Diagnostic
+      Language.Lask.Doc
       Language.Lask.Elaborate
       Language.Lask.EnvFile
       Language.Lask.ErrorCode
@@ -142,6 +145,7 @@ test-suite lask-test
   other-modules:
       Command.Lask.CliSpec
       Language.Lask.Deps.DepsSpec
+      Language.Lask.DocSpec
       Language.Lask.ElaborateSpec
       Language.Lask.LexerSpec
       Language.Lask.Module.LoaderSpec
