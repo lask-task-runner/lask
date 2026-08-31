@@ -215,6 +215,21 @@ spec = beforeAll findLask $ do
           resExit r `shouldBe` 0
           resOut r `shouldSatisfy` isInfixOf "builder"
           resOut r `shouldSatisfy` isInfixOf "alpine:3.20"
+    it "limits envs to the call graph of the given function (spec 11.4)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "build_go() = $[#golang:1.22] go build ./...\n\
+            \build_node() = $[#node:20] npm run build\n\
+            \backend() = build_go()\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["envs", "backend"] ""
+          resExit r `shouldBe` 0
+          resOut r `shouldSatisfy` isInfixOf "golang:1.22"
+          resOut r `shouldNotContain` "node:20"
+          whole <- runLask lask dir ["envs"] ""
+          resOut whole `shouldSatisfy` isInfixOf "node:20"
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""

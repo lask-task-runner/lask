@@ -358,13 +358,15 @@ cmdEnvs envsOpts = do
       baseDir = cpBaseDir core
   envFile <- loadEnvFileOrExit opts (envFilePathOf baseDir (envsEnvFile envsOpts))
   validateEnvNamesOrExit opts core envFile
-  -- With a function filter, listing every referenced environment is a
-  -- permitted over-approximation of reachability (spec 11.4).
-  case envsFunction envsOpts of
-    Just fn ->
-      unless (Map.member (cpEntry core, kebabToSnake fn) (cpDecls core)) $
+  -- Without a function, the whole module; with one, only what its call
+  -- graph can reach (spec 11.4).
+  scope <- case envsFunction envsOpts of
+    Nothing -> pure Nothing
+    Just fn -> do
+      let key = (cpEntry core, kebabToSnake fn)
+      unless (Map.member key (cpDecls core)) $
         usageError opts ("no such function: '" <> fn <> "'")
-    Nothing -> pure ()
+      pure (Just key)
   traceId <- maybe newTraceId pure (optTraceId opts)
   writeErr <- newLineWriter stderr
   -- Probe processes get execution numbers too (spec 12.3).
@@ -373,7 +375,10 @@ cmdEnvs envsOpts = do
         | optJsonFormat opts = jsonCommandLog traceId writeErr
         | otherwise = textCommandLog writeErr
       nextExec = atomicModifyIORef' execCounter (\n -> (n + 1, n + 1))
-      refs = nub (sort (collectEnvRefs core envFile))
+      refs =
+        nub . sort $ case scope of
+          Nothing -> collectEnvRefs core envFile
+          Just key -> collectEnvRefsFrom core envFile key
   results <-
     mapM
       ( \ref -> do
