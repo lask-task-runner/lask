@@ -2,8 +2,11 @@ name: CI
 
 on:
   push:
+    # Every branch, so flaky or environment-dependent failures surface
+    # on the branch that introduced them rather than at merge time.
+    # '**' (not '*') is needed to match slashes, e.g. feature/foo.
     branches:
-      - main
+      - "**"
   pull_request:
 
 jobs:
