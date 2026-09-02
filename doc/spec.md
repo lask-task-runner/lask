@@ -2100,7 +2100,6 @@ The CLI must provide the following subcommands.
 - `check`: returns static validation results.
 - `run`: executes the specified function. The evaluation result is not output to stdout (11.3).
 - `eval`: executes the specified function and outputs the evaluation result to stdout. The syntax is identical to `run` (11.2).
-- `infer`: returns type inference results.
 - `repl`: provides an execution environment for interactively evaluating expressions and functions.
 - `envs`: enumerates the execution environments used by tasks and checks their accessibility (11.4).
 - `deps`: manages external dependencies — fetches and verifies them, records new entries, and reports on the dependency graph (11.5).
@@ -2129,7 +2128,6 @@ lask run [--module <path>] <function> [args ...]
 lask eval [--module <path>] <function> [args ...]
 lask run [--module <path>] [<function>] --help
 lask eval [--module <path>] [<function>] --help
-lask infer [--module <path>] [--symbol <name>]
 lask repl [--module <path>]
 lask envs [--module <path>] [<function>] [--check]
 lask deps sync [--module <path>] [--frozen]
@@ -2219,7 +2217,7 @@ Standard input contract:
 - Structuring such as line splitting or JSON interpretation is performed inside the function by applying `split` / `from_json` etc.
 - `run` / `eval` accept stdin.
 - `repl` uses stdin for interactive input, and therefore does not provide the `stdin` reference variable (9.2, 9.3).
-- `check` / `infer` / `serve` may accept stdin, but the meaning must be defined in the subcommand specification.
+- `check` / `serve` may accept stdin, but the meaning must be defined in the subcommand specification.
 
 Standard output contract:
 
@@ -2229,7 +2227,7 @@ Standard output contract:
 - `eval` outputs the evaluation result to stdout with the specified encoding.
 - `run` does not output the evaluation result to stdout. `run` must not output anything to stdout.
 - The one exception is help display (11.6). When `--help` is given, no function is evaluated, so the contract for evaluation results does not apply and `run` writes the help to stdout.
-- `check` and `infer` output diagnostic results to stdout.
+- `check` outputs diagnostic results to stdout.
 - For both `run` / `eval`, the output destination for execution logs and diagnostics is stderr (9.6, Chapter 12).
 
 Standard error contract:

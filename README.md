@@ -157,7 +157,6 @@ $ stack --local-bin-path /usr/local/bin/ install
 $ lask check                       # static validation
 $ lask run <function> [args...]    # execute (result not printed)
 $ lask eval <function> [args...]   # execute and print the result as JSON
-$ lask infer [--symbol <name>]     # show inferred types
 $ lask envs [--check]              # list/check referenced environments
 $ lask deps sync                   # fetch + verify external dependencies
 $ lask deps add <name> --git <url> --rev <rev>   # or --url <url>

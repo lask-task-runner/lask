@@ -49,7 +49,7 @@ import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
-import Language.Lask.Types (Type (..), renderType)
+import Language.Lask.Types (Type (..))
 import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
 import Paths_lask (version)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
@@ -63,7 +63,6 @@ runRootCommand cmd = case cmd of
   CmdCheck opts -> cmdCheck opts
   CmdRun runOpts -> cmdRunEval False runOpts
   CmdEval runOpts -> cmdRunEval True runOpts
-  CmdInfer opts symbol -> cmdInfer opts symbol
   CmdRepl opts -> cmdRepl opts
   CmdEnvs envsOpts -> cmdEnvs envsOpts
   CmdDepsSync opts frozen -> cmdDepsSync opts frozen
@@ -93,25 +92,6 @@ cmdCheck opts = do
         then TIO.putStrLn "[]"
         else putStrLn "the module is valid"
       exitSuccess
-
--- infer ---------------------------------------------------------------------
-
-cmdInfer :: CommonOpts -> Maybe Text -> IO ()
-cmdInfer opts symbol = do
-  compiled <- compileOrExit opts
-  let core = compiledCore compiled
-      entry = cpEntry core
-      entryDecls =
-        Map.toAscList (Map.filterWithKey (\(p, _) _ -> p == entry) (cpDecls core))
-  case symbol of
-    Just name ->
-      case Map.lookup (entry, kebabToSnake name) (cpDecls core) of
-        Just cd -> TIO.putStrLn (cdName cd <> ": " <> renderType (cdType cd))
-        Nothing -> usageError opts ("no such symbol: '" <> name <> "'")
-    Nothing ->
-      mapM_
-        (\(_, cd) -> TIO.putStrLn (cdName cd <> ": " <> renderType (cdType cd)))
-        entryDecls
 
 -- run / eval -----------------------------------------------------------------
 
