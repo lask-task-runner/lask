@@ -50,8 +50,8 @@ data DepSource = SrcGit Text Text | SrcUrl Text
   deriving (Show, Eq)
 
 sourceOf :: DepEntry -> DepSource
-sourceOf (DepGit u rev _) = SrcGit u rev
-sourceOf (DepUrl u _) = SrcUrl u
+sourceOf (DepGit u rev) = SrcGit u rev
+sourceOf (DepUrl u) = SrcUrl u
 
 -- | Ensure a declared entry is present and verified in the cache.
 -- Already-cached entries are skipped without network access
@@ -61,30 +61,34 @@ sourceOf (DepUrl u _) = SrcUrl u
 -- an unchanged @hash@ would silently keep the old content.
 -- A hash mismatch is @E-MODULE-HASH-MISMATCH@ and nothing is placed
 -- in the cache.
-ensureEntry :: FilePath -> Bool -> Text -> DepEntry -> IO (Either Diagnostic ())
-ensureEntry cacheDir recheck name entry = do
-  let target = cachePathFor cacheDir entry
-  present <- existsAny target
-  if present && not recheck
-    then pure (Right ())
-    else do
+ensureEntry :: FilePath -> Maybe Text -> Bool -> Text -> DepEntry -> IO (Either Diagnostic Text)
+ensureEntry cacheDir expected recheck name entry = do
+  let cached h = cachePathFor cacheDir h (entryIsSingleFile entry)
+  present <- maybe (pure False) (existsAny . cached) expected
+  case expected of
+    Just h | present && not recheck -> pure (Right h)
+    _ -> do
       r <- fetchToTemp cacheDir (sourceOf entry)
       case r of
         Left d -> pure (Left d)
         Right (tmpPath, computedHash)
-          | computedHash /= entryHash entry -> do
+          | Just h <- expected,
+            computedHash /= h -> do
               cleanup tmpPath
               pure . Left . mkDiagnostic EModuleHashMismatch StageIo NoSpan $
                 "dependency '"
                   <> name
-                  <> "': content hash mismatch (declared "
-                  <> entryHash entry
+                  <> "': content hash mismatch (locked "
+                  <> h
                   <> ", fetched "
                   <> computedHash
                   <> ")"
           | otherwise -> do
-              moveInto tmpPath target
-              pure (Right ())
+              alreadyThere <- existsAny (cached computedHash)
+              if alreadyThere
+                then cleanup tmpPath
+                else moveInto tmpPath (cached computedHash)
+              pure (Right computedHash)
 
 -- | Fetch a source, compute its content hash, and place it in the
 -- content-addressed cache (for @deps add@, 11.5: trust on first use).
@@ -94,10 +98,10 @@ fetchAndStore cacheDir source = do
   case r of
     Left d -> pure (Left d)
     Right (tmpPath, computedHash) -> do
-      let entry = case source of
-            SrcGit u rev -> DepGit u rev computedHash
-            SrcUrl u -> DepUrl u computedHash
-          target = cachePathFor cacheDir entry
+      let singleFile = case source of
+            SrcGit {} -> False
+            SrcUrl u -> ".lask" `T.isSuffixOf` u
+          target = cachePathFor cacheDir computedHash singleFile
       present <- existsAny target
       if present
         then cleanup tmpPath >> pure (Right computedHash)
@@ -108,31 +112,39 @@ fetchAndStore cacheDir source = do
 -- failure instead of stopping at the first. The dependency path of
 -- each entry (@name@, @parent>child@) is reported alongside its
 -- result so the caller can write the lock file.
-syncAll :: FilePath -> (Text -> DepEntry -> Bool) -> DepsFile -> IO [(Text, DepEntry, Either Diagnostic ())]
-syncAll cacheDir needsRecheck rootDeps =
+syncAll ::
+  FilePath ->
+  -- | The hash the lock pins for a dependency path, if any.
+  (Text -> Maybe Text) ->
+  -- | Whether the declared reference has moved since the lock.
+  (Text -> DepEntry -> Bool) ->
+  DepsFile ->
+  IO [(Text, DepEntry, Either Diagnostic Text)]
+syncAll cacheDir lockedHash needsRecheck rootDeps =
   go Set.empty [("" , name, entry) | (name, entry) <- Map.toList (depsEntries rootDeps)]
   where
     go _ [] = pure []
     go seen ((parent, name, entry) : rest)
-      | entryHash entry `Set.member` seen = go seen rest
+      | path `Set.member` seen = go seen rest
       | otherwise = do
-          let seen' = Set.insert (entryHash entry) seen
-              path = childPath parent name
-          r <- ensureEntry cacheDir (needsRecheck path entry) name entry
+          r <- ensureEntry cacheDir (lockedHash path) (needsRecheck path entry) name entry
           case r of
             Left d -> ((path, entry, Left d) :) <$> go seen' rest
-            Right () -> do
-              transitive <- transitiveEntries path entry
-              ((path, entry, Right ()) :) <$> go seen' (rest <> transitive)
+            Right h -> do
+              transitive <- transitiveEntries h entry
+              ((path, entry, Right h) :) <$> go seen' (rest <> transitive)
+      where
+        path = childPath parent name
+        seen' = Set.insert path seen
 
     transitiveEntries :: Text -> DepEntry -> IO [(Text, Text, DepEntry)]
-    transitiveEntries path entry
+    transitiveEntries hash entry
       | entryIsSingleFile entry = pure []
       | otherwise = do
-          let root = cachePathFor cacheDir entry
+          let root = cachePathFor cacheDir hash False
           sub <- loadDepsFile (root </> defaultDepsFileName)
           pure $ case sub of
-            Right (Just df) -> [(path, n, e) | (n, e) <- Map.toList (depsEntries df)]
+            Right (Just df) -> [("", n, e) | (n, e) <- Map.toList (depsEntries df)]
             _ -> []
 
 -- Fetch primitives -----------------------------------------------------------

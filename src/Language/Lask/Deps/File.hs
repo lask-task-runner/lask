@@ -9,7 +9,6 @@ module Language.Lask.Deps.File
     DepEntry (..),
     emptyDepsFile,
     defaultDepsFileName,
-    entryHash,
     entryIsSingleFile,
     loadDepsFile,
     parseDepsFile,
@@ -48,22 +47,20 @@ emptyDepsFile = DepsFile Map.empty
 -- | A dependency source: exactly one of @git@ (with a required @rev@)
 -- or @url@ (an archive or a single @.lask@ file). Every entry pins a
 -- content hash.
+-- | A declared source. The project file records intent only; the
+-- content hash that pins it lives in the lock file (spec chapter 5).
 data DepEntry
-  = -- | Repository URL, rev (tag or commit), content hash.
-    DepGit Text Text Text
-  | -- | Source URL, content hash.
-    DepUrl Text Text
+  = -- | Repository URL and rev (a tag or a commit).
+    DepGit Text Text
+  | -- | Source URL.
+    DepUrl Text
   deriving (Show, Eq)
-
-entryHash :: DepEntry -> Text
-entryHash (DepGit _ _ h) = h
-entryHash (DepUrl _ h) = h
 
 -- | A @url@ ending in @.lask@ is a single-file module; anything else
 -- (git repositories, archives) is a source tree (spec chapter 5).
 entryIsSingleFile :: DepEntry -> Bool
 entryIsSingleFile (DepGit {}) = False
-entryIsSingleFile (DepUrl u _) = ".lask" `T.isSuffixOf` u
+entryIsSingleFile (DepUrl u) = ".lask" `T.isSuffixOf` u
 
 -- | Load and validate the dependency definition file. @Nothing@ when
 -- the file does not exist (only an error if a bare import is used,
@@ -98,27 +95,24 @@ parseDepsFile bytes = do
     entry (name, v) = do
       validateName name
       o <- asObject ("dependency '" <> name <> "'") v
-      hash <- case KM.lookup "hash" o of
-        Just (A.String h)
-          | "sha256-" `T.isPrefixOf` h && T.length h > 7 -> Right h
-        Just _ -> Left (err ("dependency '" <> name <> "': 'hash' must be a sha256-... string"))
-        Nothing -> Left (err ("dependency '" <> name <> "': missing required 'hash'"))
       let str k = case KM.lookup k o of
             Just (A.String s) | not (T.null s) -> Just s
             _ -> Nothing
       parsed <- case (str "git", str "url") of
         (Just g, Nothing) -> case str "rev" of
-          Just rev -> Right (DepGit g rev hash)
+          Just rev -> Right (DepGit g rev)
           Nothing -> Left (err ("dependency '" <> name <> "': 'git' requires 'rev'"))
         (Nothing, Just u) -> do
           case KM.lookup "rev" o of
             Just _ -> Left (err ("dependency '" <> name <> "': 'rev' is only valid with 'git'"))
             Nothing -> Right ()
-          Right (DepUrl u hash)
+          Right (DepUrl u)
         (Just _, Just _) ->
           Left (err ("dependency '" <> name <> "': 'git' and 'url' are mutually exclusive"))
         (Nothing, Nothing) ->
           Left (err ("dependency '" <> name <> "': needs exactly one source ('git' or 'url')"))
+      -- `hash` used to live here; it is now the lock's (spec chapter 5).
+      -- The key is still tolerated so existing project files load.
       let known = ["git", "rev", "url", "hash"]
       case [AK.toText k | (k, _) <- KM.toList o, AK.toText k `notElem` known] of
         [] -> Right (name, parsed)
@@ -147,10 +141,8 @@ renderDepsFile df =
       ]
   where
     entryJson _ e = case e of
-      DepGit g rev h ->
-        A.object [("git", A.String g), ("rev", A.String rev), ("hash", A.String h)]
-      DepUrl u h ->
-        A.object [("url", A.String u), ("hash", A.String h)]
+      DepGit g rev -> A.object [("git", A.String g), ("rev", A.String rev)]
+      DepUrl u -> A.object [("url", A.String u)]
 
 err :: Text -> Diagnostic
 err = mkDiagnostic EModuleUnresolved StageStatic NoSpan

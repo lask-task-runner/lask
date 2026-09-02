@@ -17,7 +17,6 @@ where
 
 import Data.Text (Text)
 import qualified Data.Text as T
-import Language.Lask.Deps.File (DepEntry, entryHash, entryIsSingleFile)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 
@@ -31,13 +30,14 @@ cacheDirFor baseDir = do
     Just dir | not (null dir) -> pure dir
     _ -> pure (baseDir </> ".lask" </> "deps")
 
--- | Content-addressed location of an entry: a @.lask@ file for
--- single-file dependencies, a directory for source trees.
-cachePathFor :: FilePath -> DepEntry -> FilePath
-cachePathFor cacheDir entry
-  | entryIsSingleFile entry = cacheDir </> hashKey <> ".lask"
+-- | Content-addressed location of a fetched source: a @.lask@ file for
+-- single-file dependencies, a directory for source trees. The key is
+-- the content hash, which the lock file supplies (spec chapter 5).
+cachePathFor :: FilePath -> Text -> Bool -> FilePath
+cachePathFor cacheDir hash singleFile
+  | singleFile = cacheDir </> hashKey <> ".lask"
   | otherwise = cacheDir </> hashKey
   where
-    hashKey = T.unpack (sanitize (entryHash entry))
+    hashKey = T.unpack (sanitize hash)
     sanitize :: Text -> Text
     sanitize = T.map (\c -> if c == '/' || c == '\\' then '_' else c)

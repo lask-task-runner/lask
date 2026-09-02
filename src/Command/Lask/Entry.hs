@@ -455,16 +455,17 @@ cmdDepsSync opts frozen = do
       -- be fetched again, so that changing `rev` without changing
       -- `hash` is caught as E-MODULE-HASH-MISMATCH (spec 11.5).
       let declaredRef e = case e of
-            DepGit _ r _ -> Just r
+            DepGit _ r -> Just r
             DepUrl {} -> Nothing
           needsRecheck path e =
             case Map.lookup path (maybe Map.empty lockModules prior) of
               Nothing -> False
               Just locked -> lkRequested locked /= declaredRef e
-      results <- syncAll cacheDir needsRecheck df
+          lockedHash path = lkHash <$> Map.lookup path (maybe Map.empty lockModules prior)
+      results <- syncAll cacheDir lockedHash needsRecheck df
       mapM_
         ( \(path, _, status) -> case status of
-            Right () -> TIO.putStrLn (path <> " ok")
+            Right _ -> TIO.putStrLn (path <> " ok")
             Left d -> do
               TIO.putStrLn (path <> " NG")
               TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
@@ -475,7 +476,7 @@ cmdDepsSync opts frozen = do
       existing0 <- either (const Nothing) id <$> loadLockFile lockPath
       -- Resolve each reference to the commit it currently names, so a
       -- tag that has been repointed is detected (spec 11.5).
-      entries <- mapM (resolveEntry existing0) [(p, e) | (p, e, Right ()) <- results]
+      entries <- mapM (resolveEntry existing0) [(p, e, h) | (p, e, Right h) <- results]
       let moved = [m | Left m <- entries]
           newLock = LockFile (Map.fromList [ok | Right ok <- entries]) Map.empty
       unless (null moved) $ do
@@ -501,13 +502,13 @@ cmdDepsSync opts frozen = do
 -- a different commit than before is @E-MODULE-REV-MOVED@.
 resolveEntry ::
   Maybe LockFile ->
-  (Text, DepEntry) ->
+  (Text, DepEntry, Text) ->
   IO (Either Text (Text, LockEntry))
-resolveEntry existing (path, entry) = case entry of
-  DepUrl {} -> pure (Right (path, lockEntryOf entry))
-  DepGit url rev _ -> do
+resolveEntry existing (path, entry, hash) = case entry of
+  DepUrl {} -> pure (Right (path, lockEntryOf entry hash))
+  DepGit url rev -> do
     resolved <- resolveGitRev url rev
-    let base = lockEntryOf entry
+    let base = lockEntryOf entry hash
         wasRev = Map.lookup path (maybe Map.empty lockModules existing) >>= lkRev
     pure $ case (resolved, wasRev) of
       (Just sha, Just old)
@@ -529,10 +530,10 @@ resolveEntry existing (path, entry) = case entry of
 -- | The lock record of a declared entry (spec chapter 5). @requested@
 -- keeps the reference that was written; @rev@ is filled in only when
 -- that reference is already a full commit SHA.
-lockEntryOf :: DepEntry -> LockEntry
-lockEntryOf (DepGit u r h) =
+lockEntryOf :: DepEntry -> Text -> LockEntry
+lockEntryOf (DepGit u r) h =
   LockEntry (Just u) Nothing (Just r) (if isFullSha r then Just r else Nothing) h
-lockEntryOf (DepUrl u h) = LockEntry Nothing (Just u) Nothing Nothing h
+lockEntryOf (DepUrl u) h = LockEntry Nothing (Just u) Nothing Nothing h
 
 isFullSha :: Text -> Bool
 isFullSha r = T.length r == 40 && T.all (\c -> c `elem` ("0123456789abcdef" :: String)) r
@@ -563,17 +564,17 @@ cmdDepsAdd opts name source = do
       exitWith (ExitFailure 3)
     Right hash -> do
       let entry = case depSource of
-            SrcGit url rev -> DepGit url rev hash
-            SrcUrl url -> DepUrl url hash
+            SrcGit url rev -> DepGit url rev
+            SrcUrl url -> DepUrl url
           updated = existing {depsEntries = Map.insert name entry (depsEntries existing)}
       BL.writeFile depsPath (renderDepsFile updated)
       -- The resolution is recorded in the lock as well (spec 11.5), so
       -- the project is immediately resolvable without a second step.
-      results <- syncAll cacheDir (\_ _ -> False) updated
+      results <- syncAll cacheDir (const Nothing) (\_ _ -> False) updated
       BL.writeFile (baseDir </> defaultLockFileName)
         . renderLockFile
         . (\ms -> LockFile ms Map.empty)
-        $ Map.fromList [(p, lockEntryOf e) | (p, e, Right ()) <- results]
+        $ Map.fromList [(p, lockEntryOf e h) | (p, e, Right h) <- results]
       TIO.putStrLn (name <> " " <> hash)
       exitSuccess
   where
@@ -750,24 +751,18 @@ cmdDepsDiff opts name = do
     Just e -> pure e
     Nothing -> usageError opts ("dependency '" <> name <> "' is not in the lock file")
   let requested = case entry of
-        DepGit _ r _ -> Just r
-        DepUrl _ _ -> Nothing
+        DepGit _ r -> Just r
+        DepUrl _ -> Nothing
       line l r
         | l == r = "  = " <> maybe "-" id l
         | otherwise = "  - " <> maybe "-" id l <> "\n  + " <> maybe "-" id r
   TIO.putStrLn "revision:"
   TIO.putStrLn (line (lkRequested locked) requested)
   TIO.putStrLn "content hash:"
-  TIO.putStrLn
-    ( if Just (lkHash locked) == entryHashMaybe entry
-        then "  = " <> lkHash locked
-        else "  - " <> lkHash locked <> "\n  + (unresolved; run 'lask deps sync')"
-    )
+  TIO.putStrLn ("  = " <> lkHash locked)
   when (lkRequested locked /= requested) $
     TIO.putStrLn "run 'lask deps sync' to resolve and review the new revision"
 
-entryHashMaybe :: DepEntry -> Maybe Text
-entryHashMaybe = Just . entryHash
 
 loadLockOrExit :: CommonOpts -> IO LockFile
 loadLockOrExit opts = do
