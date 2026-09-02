@@ -33,11 +33,15 @@ fakeEnv files depsFiles =
   where
     paths = map fst files
     lockOf Nothing = Map.empty
+    -- The lock must agree with the deps file, not merely cover it.
     lockOf (Just df) =
       Map.fromList
-        [ (n, LockEntry Nothing Nothing Nothing Nothing (entryHash e))
+        [ (n, lockEntryOf e)
         | (n, e) <- Map.toList (depsEntries df)
         ]
+    lockEntryOf e = case e of
+      DepGit u r h -> LockEntry (Just u) Nothing (Just r) (Just r) h
+      DepUrl u h -> LockEntry Nothing (Just u) Nothing Nothing h
 
 load :: [(FilePath, Text)] -> [(FilePath, DepsFile)] -> FilePath -> IO (Either [ErrorCode] [FilePath])
 load files depsFiles entry = do
@@ -61,10 +65,10 @@ failsWith files depsFiles code = do
     other -> expectationFailure ("expected " <> show code <> ", got " <> show other)
 
 singleDep :: Text -> DepsFile
-singleDep hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask" hash)]) Map.empty defaultGrants
+singleDep hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask" hash)])
 
 treeDep :: Text -> DepsFile
-treeDep hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" hash)]) Map.empty defaultGrants
+treeDep hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" hash)])
 
 spec :: Spec
 spec = do
@@ -160,7 +164,7 @@ spec = do
           ("/cache/sha256-abc.lask", "send(x: String): String = x")
         ]
         [ (".", treeDep "sha256-t"),
-          ("/cache/sha256-t", DepsFile (Map.fromList [("notify", notifyEntry)]) Map.empty defaultGrants)
+          ("/cache/sha256-t", DepsFile (Map.fromList [("notify", notifyEntry)]))
         ]
     it "does not leak the root scope into external trees" $
       failsWith
@@ -170,7 +174,7 @@ spec = do
         ]
         -- notify is declared at the ROOT only; the tree has no
         -- dependency file, so its bare import must not resolve.
-        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" "sha256-t"), ("notify", notifyEntry)]) Map.empty defaultGrants)]
+        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" "sha256-t"), ("notify", notifyEntry)]))]
         EModuleUnresolved
     it "detects cycles inside external trees" $
       failsWith

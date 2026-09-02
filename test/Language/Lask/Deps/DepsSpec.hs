@@ -24,7 +24,7 @@ spec = do
             \\"notify\": {\"url\": \"https://example.com/notify.lask\", \"hash\": \"sha256-bb\"}}}"
       parseDepsFile (BL8.pack json)
         `shouldBe` Right
-          ( (\m -> DepsFile m Map.empty defaultGrants) . Map.fromList $
+          ( DepsFile . Map.fromList $
               [ ("deploy_kit", DepGit "https://example.com/kit" "v1.2.0" "sha256-aa"),
                 ("notify", DepUrl "https://example.com/notify.lask" "sha256-bb")
               ]
@@ -56,7 +56,7 @@ spec = do
         `shouldSatisfy` isLeft
     it "round-trips through render" $ do
       let df =
-            (\m -> DepsFile m Map.empty defaultGrants) . Map.fromList $
+            DepsFile . Map.fromList $
               [ ("kit", DepGit "https://example.com/kit" "abc123" "sha256-aa"),
                 ("notify", DepUrl "https://example.com/notify.lask" "sha256-bb")
               ]

@@ -1031,11 +1031,7 @@ elabCommand ctx path locals sp stream mEnv parts = do
         abort . withExpectedActual "Environment" (renderType t) $
           diag ETypeCommandEnv (exprSpan envExpr) "command environment must be an Environment"
       pure [("env", c)]
-  -- The owning module of the command expression (spec 16.1) travels
-  -- with the call, so the runtime can check it against that module's
-  -- grants even when the environment value came from elsewhere.
-  let ownerArg = [("__owner", Core sp (CStrLit (T.pack path)))]
-      call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore] (envArg <> ownerArg))
+  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore] envArg)
   case stream of
     StreamAll -> pure (call, commandResultType)
     StreamOut -> pure (streamSelect call "stdout", TyString)

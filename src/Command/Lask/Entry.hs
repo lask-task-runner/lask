@@ -8,7 +8,7 @@ module Command.Lask.Entry
 where
 
 import Command.Lask.ArgCodec
-import Command.Lask.Envs (DomainCaps (..), EnvRef (..), collectDomainCaps, collectEnvRefs, collectEnvRefsFrom, collectRecipes)
+import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom, collectRecipes)
 import Command.Lask.Help
 import Command.Lask.Options
 import Control.Exception (try)
@@ -44,7 +44,6 @@ import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
 import Language.Lask.Runtime.Image (buildRecipe, imageExists, recipeTag)
-import Language.Lask.Builtins.Impl (EnvPermit)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, renderValueText)
@@ -90,7 +89,6 @@ cmdCheck opts = do
       TIO.putStrLn (renderDiags (optJsonFormat opts) ds)
       exitWith (ExitFailure 1)
     Right compiled -> do
-      checkGrantsOrExit opts (compiledCore compiled)
       if optJsonFormat opts
         then TIO.putStrLn "[]"
         else putStrLn "the module is valid"
@@ -129,7 +127,6 @@ cmdRunEval printResult runOpts = do
   let core = compiledCore compiled
       entry = cpEntry core
       baseDir = cpBaseDir core
-  checkGrantsOrExit opts core
 
   rawName <- case runFunction runOpts of
     Just n -> pure n
@@ -172,12 +169,11 @@ cmdRunEval printResult runOpts = do
         | optJsonFormat opts = jsonCommandLog traceId writeErr
         | otherwise = textCommandLog writeErr
   runner <- mkCommandRunner baseDir cmdLogSink
-  permit <- mkEnvPermit core
   ctx0 <- mkRtCtx core stdinText runner
   let sink
         | optJsonFormat opts = writeErr . encodeEvent
         | otherwise = noSink
-      ctx = ctx0 {rtTraceId = traceId, rtEmit = sink, rtEnvPermit = permit}
+      ctx = ctx0 {rtTraceId = traceId, rtEmit = sink}
   result <- try $ do
     fv <- topValue ctx (entry, fnName)
     case fv of
@@ -454,7 +450,18 @@ cmdDepsSync opts frozen = do
       putStrLn "no dependencies declared"
       exitSuccess
     Right (Just df) -> do
-      results <- syncAll cacheDir df
+      prior <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
+      -- A declared reference that no longer matches the locked one must
+      -- be fetched again, so that changing `rev` without changing
+      -- `hash` is caught as E-MODULE-HASH-MISMATCH (spec 11.5).
+      let declaredRef e = case e of
+            DepGit _ r _ -> Just r
+            DepUrl {} -> Nothing
+          needsRecheck path e =
+            case Map.lookup path (maybe Map.empty lockModules prior) of
+              Nothing -> False
+              Just locked -> lkRequested locked /= declaredRef e
+      results <- syncAll cacheDir needsRecheck df
       mapM_
         ( \(path, _, status) -> case status of
             Right () -> TIO.putStrLn (path <> " ok")
@@ -562,7 +569,7 @@ cmdDepsAdd opts name source = do
       BL.writeFile depsPath (renderDepsFile updated)
       -- The resolution is recorded in the lock as well (spec 11.5), so
       -- the project is immediately resolvable without a second step.
-      results <- syncAll cacheDir updated
+      results <- syncAll cacheDir (\_ _ -> False) updated
       BL.writeFile (baseDir </> defaultLockFileName)
         . renderLockFile
         . (\ms -> LockFile ms Map.empty)
@@ -775,98 +782,3 @@ loadLockOrExit opts = do
       exitWith (ExitFailure 1)
     Right (Just lf) -> pure lf
 
--- | Check every dependency domain's computed capabilities against the
--- grants the project gives it (spec 16.3). Reported before anything is
--- evaluated; the runtime enforces the same grants independently.
--- | Map a module path to the dependency domain it belongs to
--- (spec 16.1): a module under the cache directory named by a locked
--- content hash belongs to that dependency; anything else is the root
--- domain, which this chapter does not restrict.
-domainResolver :: CoreProgram -> IO (Maybe DepsFile, FilePath -> Maybe Text)
-domainResolver core = do
-  let baseDir = cpBaseDir core
-  df <- either (const Nothing) id <$> loadDepsFile (baseDir </> defaultDepsFileName)
-  lock <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
-  cacheDir <- cacheDirFor baseDir
-  let byHash =
-        Map.fromList
-          [(lkHash e, path) | (path, e) <- Map.toList (maybe Map.empty lockModules lock)]
-      domainOf p =
-        listToMaybe
-          [ dep
-          | (h, dep) <- Map.toList byHash,
-            (cacheDir </> T.unpack h) `isPrefixOf` p
-              || (cacheDir </> T.unpack h <> ".lask") == p
-          ]
-  pure (df, domainOf)
-
--- | The runtime environment check (spec 16.4). The owning module of a
--- command execution expression must hold a grant for the resolved
--- environment kind; the root domain is unrestricted.
-mkEnvPermit :: CoreProgram -> IO EnvPermit
-mkEnvPermit core = do
-  (df, domainOf) <- domainResolver core
-  pure $ \owner kind -> case df of
-    Nothing -> Nothing
-    Just deps -> case domainOf (T.unpack owner) of
-      Nothing -> Nothing
-      Just dep ->
-        let g = grantsFor deps (T.takeWhile (/= '>') dep)
-         in if kind `elem` grantEnvironments g
-              then Nothing
-              else
-                Just $
-                  "dependency '"
-                    <> dep
-                    <> "' is not granted the '"
-                    <> kind
-                    <> "' execution environment"
-
-checkGrantsOrExit :: CommonOpts -> CoreProgram -> IO ()
-checkGrantsOrExit opts core = do
-  (df, domainOf) <- domainResolver core
-  case df of
-    Nothing -> pure ()
-    Just deps -> do
-      let perDomain =
-            Map.fromListWith (<>)
-              [ (dep, caps)
-              | (p, caps) <- Map.toList (collectDomainCaps core),
-                Just dep <- [domainOf p]
-              ]
-          diags =
-            [ mkDiag dep exceeded
-            | (dep, caps) <- Map.toList perDomain,
-              let g = grantsFor deps (T.takeWhile (/= '>') dep),
-              let exceeded = excess g caps,
-              not (null exceeded)
-            ]
-      unless (null diags) $ do
-        TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) diags)
-        exitWith (ExitFailure 1)
-  where
-    excess g caps =
-      [ "environment '" <> k <> "'"
-      | k <- Set.toList (capEnvironments caps),
-        k `notElem` grantEnvironments g
-      ]
-        <> [ "environment variable '" <> v <> "'"
-           | v <- Set.toList (capEnvVars caps),
-             not (any (`globMatch` v) (grantEnvVars g))
-           ]
-
-    mkDiag dep xs =
-      mkDiagnostic EPermDeniedStatic StageStatic NoSpan $
-        "dependency '"
-          <> dep
-          <> "' uses "
-          <> T.intercalate ", " xs
-          <> " but is not granted it; add it to 'grants' in "
-          <> T.pack defaultDepsFileName
-
--- | Glob match supporting a single trailing @*@ (spec 16.2).
-globMatch :: Text -> Text -> Bool
-globMatch pat v
-  | pat == "*" = True
-  | Just p <- T.stripSuffix "*" pat = p `T.isPrefixOf` v
-  | otherwise = pat == v

@@ -55,14 +55,17 @@ sourceOf (DepUrl u _) = SrcUrl u
 
 -- | Ensure a declared entry is present and verified in the cache.
 -- Already-cached entries are skipped without network access
--- (content-addressed store: presence implies verification, 11.5).
+-- (content-addressed store: presence implies verification, 11.5),
+-- unless @recheck@ is set: a declared reference that differs from the
+-- one the lock recorded must be fetched again, or a changed @rev@ over
+-- an unchanged @hash@ would silently keep the old content.
 -- A hash mismatch is @E-MODULE-HASH-MISMATCH@ and nothing is placed
 -- in the cache.
-ensureEntry :: FilePath -> Text -> DepEntry -> IO (Either Diagnostic ())
-ensureEntry cacheDir name entry = do
+ensureEntry :: FilePath -> Bool -> Text -> DepEntry -> IO (Either Diagnostic ())
+ensureEntry cacheDir recheck name entry = do
   let target = cachePathFor cacheDir entry
   present <- existsAny target
-  if present
+  if present && not recheck
     then pure (Right ())
     else do
       r <- fetchToTemp cacheDir (sourceOf entry)
@@ -105,8 +108,8 @@ fetchAndStore cacheDir source = do
 -- failure instead of stopping at the first. The dependency path of
 -- each entry (@name@, @parent>child@) is reported alongside its
 -- result so the caller can write the lock file.
-syncAll :: FilePath -> DepsFile -> IO [(Text, DepEntry, Either Diagnostic ())]
-syncAll cacheDir rootDeps =
+syncAll :: FilePath -> (Text -> DepEntry -> Bool) -> DepsFile -> IO [(Text, DepEntry, Either Diagnostic ())]
+syncAll cacheDir needsRecheck rootDeps =
   go Set.empty [("" , name, entry) | (name, entry) <- Map.toList (depsEntries rootDeps)]
   where
     go _ [] = pure []
@@ -115,7 +118,7 @@ syncAll cacheDir rootDeps =
       | otherwise = do
           let seen' = Set.insert (entryHash entry) seen
               path = childPath parent name
-          r <- ensureEntry cacheDir name entry
+          r <- ensureEntry cacheDir (needsRecheck path entry) name entry
           case r of
             Left d -> ((path, entry, Left d) :) <$> go seen' rest
             Right () -> do

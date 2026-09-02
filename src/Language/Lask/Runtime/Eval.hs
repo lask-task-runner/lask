@@ -21,7 +21,7 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
-import Language.Lask.Builtins.Impl (CommandRunner, EnvPermit, callBuiltin, permitAll)
+import Language.Lask.Builtins.Impl (CommandRunner, callBuiltin)
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
 import Language.Lask.ErrorCode
@@ -35,9 +35,6 @@ data RtCtx = RtCtx
     rtTopCache :: IORef (Map (FilePath, Text) Value),
     rtStdin :: Text,
     rtRunCommand :: CommandRunner,
-    -- | Whether the module that wrote a command may run it in the
-    -- resolved environment (spec 16.4).
-    rtEnvPermit :: EnvPermit,
     rtTraceId :: TraceId,
     rtEmit :: EventSink
   }
@@ -46,7 +43,7 @@ mkRtCtx :: CoreProgram -> Text -> CommandRunner -> IO RtCtx
 mkRtCtx prog stdinText runner = do
   cache <- newIORef Map.empty
   traceId <- newTraceId
-  pure (RtCtx prog cache stdinText runner permitAll traceId noSink)
+  pure (RtCtx prog cache stdinText runner traceId noSink)
 
 -- | Top-level values are evaluated once, on first reference.
 topValue :: RtCtx -> (FilePath, Text) -> IO Value
@@ -201,7 +198,7 @@ applyValue ctx fv pos kw = case fv of
         scope2
         (lamKeywords lam)
     evalCore ctx scope3 (lamBody lam)
-  VBuiltin name -> callBuiltin (applyValue ctx) (rtRunCommand ctx) (rtEnvPermit ctx) name pos kw
+  VBuiltin name -> callBuiltin (applyValue ctx) (rtRunCommand ctx) name pos kw
   other ->
     throwIO . runtimeFailure ERuntimeAccess $
       "cannot call a value of type " <> typeNameOf other

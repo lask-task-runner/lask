@@ -3,8 +3,8 @@
 -- | The lock file @lask.lock.json@ (spec chapter 5): the resolution of
 -- the whole dependency graph, including transitive dependencies.
 --
--- The project file records intent (where a dependency comes from and
--- what it is granted); the lock records what that intent resolved to.
+-- The project file records intent (where a dependency comes from);
+-- the lock records what that intent resolved to.
 -- Keys are dependency paths: a direct dependency is its name, a
 -- transitive one is @parent>child@, so the graph a project executes can
 -- be read from the project itself.

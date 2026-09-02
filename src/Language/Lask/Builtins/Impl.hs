@@ -10,8 +10,6 @@ module Language.Lask.Builtins.Impl
   ( Apply,
     CommandRunner,
     callBuiltin,
-    EnvPermit,
-    permitAll,
   )
 where
 
@@ -38,16 +36,8 @@ type Apply = Value -> [Value] -> [(Text, Value)] -> IO Value
 -- returns (exit code, stdout, stderr) or an infrastructure failure.
 type CommandRunner = EnvValue -> Text -> IO (Either LaskFailure (Int, Text, Text))
 
--- | Whether the module that wrote a command execution expression may
--- run it in the resolved environment (spec 16.4). @Nothing@ permits;
--- @Just reason@ denies.
-type EnvPermit = Text -> Text -> Maybe Text
-
-permitAll :: EnvPermit
-permitAll _ _ = Nothing
-
-callBuiltin :: Apply -> CommandRunner -> EnvPermit -> Text -> [Value] -> [(Text, Value)] -> IO Value
-callBuiltin apply runCmd permit name args kwArgs = case (name, args) of
+callBuiltin :: Apply -> CommandRunner -> Text -> [Value] -> [(Text, Value)] -> IO Value
+callBuiltin apply runCmd name args kwArgs = case (name, args) of
   -- 15.2 numeric ---------------------------------------------------------
   ("add", [VNumber a, VNumber b]) -> num (a + b)
   ("sub", [VNumber a, VNumber b]) -> num (a - b)
@@ -95,13 +85,6 @@ callBuiltin apply runCmd permit name args kwArgs = case (name, args) of
     let env = case lookup "env" kwArgs of
           Just (VEnv e) -> e
           _ -> EnvValue "local" Map.empty
-        owner = case lookup "__owner" kwArgs of
-          Just (VString o) -> o
-          _ -> ""
-        EnvValue kind _ = env
-    case permit owner kind of
-      Just reason -> throwIO (ioFailure EPermEnv reason)
-      Nothing -> pure ()
     r <- runCmd env cmd
     case r of
       Left failure -> throwIO failure

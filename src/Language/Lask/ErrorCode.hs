@@ -33,9 +33,6 @@ data ErrorCode
   | EModuleDeepImport
   | EModuleLockStale
   | EModuleRevMoved
-  | EPermDeniedStatic
-  | EPermEnv
-  | EPermEnvVar
   | EModuleHashMismatch
   | ERuntimeDivByZero
   | ERuntimeCommandNonzero
@@ -82,9 +79,6 @@ codeText c = case c of
   EModuleDeepImport -> "E-MODULE-DEEP-IMPORT"
   EModuleLockStale -> "E-MODULE-LOCK-STALE"
   EModuleRevMoved -> "E-MODULE-REV-MOVED"
-  EPermDeniedStatic -> "E-PERM-DENIED-STATIC"
-  EPermEnv -> "E-PERM-ENV"
-  EPermEnvVar -> "E-PERM-ENV-VAR"
   EModuleHashMismatch -> "E-MODULE-HASH-MISMATCH"
   ERuntimeDivByZero -> "E-RUNTIME-DIV-BY-ZERO"
   ERuntimeCommandNonzero -> "E-RUNTIME-COMMAND-NONZERO"

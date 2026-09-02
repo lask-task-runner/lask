@@ -8,8 +8,6 @@ module Command.Lask.Envs
     collectEnvRefs,
     collectEnvRefsFrom,
     collectRecipes,
-    DomainCaps (..),
-    collectDomainCaps,
   )
 where
 
@@ -126,43 +124,3 @@ collectRecipes core = concatMap fromDecl (Map.elems (cpDecls core))
       let parts = T.splitOn "/" df
        in if length parts <= 1 then "." else T.intercalate "/" (init parts)
 
--- | The capabilities a module's code uses (spec 16.3): the execution
--- environment kinds it constructs, and the environment variables it
--- reads. A non-literal `get_env` argument widens the set to @*@, so
--- imprecision is charged to the module being analysed.
-data DomainCaps = DomainCaps
-  { capEnvironments :: Set Text,
-    capEnvVars :: Set Text
-  }
-  deriving (Show, Eq)
-
-instance Semigroup DomainCaps where
-  DomainCaps a b <> DomainCaps c d = DomainCaps (a <> c) (b <> d)
-
-instance Monoid DomainCaps where
-  mempty = DomainCaps Set.empty Set.empty
-
--- | The computed capabilities of every module of the program, keyed by
--- module path. The caller groups them into trust domains (spec 16.1).
-collectDomainCaps :: CoreProgram -> Map FilePath DomainCaps
-collectDomainCaps core =
-  Map.fromListWith (<>) [(fst k, declCaps cd) | (k, cd) <- Map.toList (cpDecls core)]
-  where
-    declCaps cd = go (cdCore cd)
-    go c = node c <> foldMap go (children c) <> foldMap (go . snd) (keywordDefaults c)
-
-    keywordDefaults c = case coreF c of
-      CLam lam -> lamKeywords lam
-      _ -> []
-
-    node c = case coreF c of
-      CEnv kind _ -> DomainCaps (Set.singleton kind) Set.empty
-      CApp fn args _ -> case coreF fn of
-        CVar (BuiltinRef "get_env") -> DomainCaps Set.empty (Set.singleton (envVarName args))
-        _ -> mempty
-      _ -> mempty
-
-    envVarName (a : _) = case coreF a of
-      CStrLit k -> k
-      _ -> "*"
-    envVarName [] = "*"

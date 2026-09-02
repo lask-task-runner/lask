@@ -113,23 +113,16 @@ This specification is intended to serve as the reference for implementation, ver
   - [15.8 Serialization and Type-Migration Helper Functions](#158-serialization-and-type-migration-helper-functions)
   - [15.9 Environment Access and Secret Marking Functions](#159-environment-access-and-secret-marking-functions)
   - [15.10 Error Contract](#1510-error-contract)
-- [16. Trust and Capabilities](#16-trust-and-capabilities)
-  - [16.1 Trust Domains](#161-trust-domains)
-  - [16.2 Capability Vocabulary](#162-capability-vocabulary)
-  - [16.3 Computation of Required Capabilities](#163-computation-of-required-capabilities)
-  - [16.4 Enforcement](#164-enforcement)
-  - [16.5 The Effective Grant Set](#165-the-effective-grant-set)
-  - [16.6 Non-Goals](#166-non-goals)
-- [17. Examples](#17-examples)
-  - [17.1 Minimal Program](#171-minimal-program)
-  - [17.2 Functions with Type Annotations](#172-functions-with-type-annotations)
-  - [17.3 Higher-Order Functions and Composition](#173-higher-order-functions-and-composition)
-  - [17.4 Arrays, Maps, and Records](#174-arrays-maps-and-records)
-  - [17.5 Procedural Notation and Command Execution with Environments](#175-procedural-notation-and-command-execution-with-environments)
-  - [17.6 Asynchronous Execution](#176-asynchronous-execution)
-  - [17.7 CLI Execution Examples](#177-cli-execution-examples)
-  - [17.8 Execution Event Example](#178-execution-event-example)
-  - [17.9 Error Handling and Exit Codes](#179-error-handling-and-exit-codes)
+- [16. Examples](#16-examples)
+  - [16.1 Minimal Program](#161-minimal-program)
+  - [16.2 Functions with Type Annotations](#162-functions-with-type-annotations)
+  - [16.3 Higher-Order Functions and Composition](#163-higher-order-functions-and-composition)
+  - [16.4 Arrays, Maps, and Records](#164-arrays-maps-and-records)
+  - [16.5 Procedural Notation and Command Execution with Environments](#165-procedural-notation-and-command-execution-with-environments)
+  - [16.6 Asynchronous Execution](#166-asynchronous-execution)
+  - [16.7 CLI Execution Examples](#167-cli-execution-examples)
+  - [16.8 Execution Event Example](#168-execution-event-example)
+  - [16.9 Error Handling and Exit Codes](#169-error-handling-and-exit-codes)
 
 ## 1. Introduction
 
@@ -187,9 +180,8 @@ This section defines the principal terms used in this specification.
 - Task: A colloquial term used in practice; in Lask, an execution target expressed as a function.
 - Module: A source-file unit consisting of a set of declarations and imports.
 - Execution environment: The target context in which commands are executed. Specified by environment expressions `#local` / `#docker(...)` (and the container sugar `#image-name`).
-- Project file: `lask.json` (Chapter 5), which declares external Lask source code fetched over the internet and the capabilities granted to it.
+- Project file: `lask.json` (Chapter 5), which declares external Lask source code fetched over the internet.
 - Lock file: `lask.lock.json` (Chapter 5), which records the resolution of the whole dependency graph and of the container images it requires.
-- Trust domain: A module tree together with the modules reachable from it by local import (Chapter 16). The root domain is the one the invocation targets; every external dependency tree is a domain of its own.
 - Execution event: A time-series record unit representing calls, return values, and failures.
 - Serialization: The process of converting a value into an external representation so that it can be stored and transferred.
 - Core expression: An expression remaining after static expansion of syntactic sugar (7.6). The evaluation target of the dynamic semantics (Chapter 8).
@@ -601,7 +593,7 @@ Re-export (`ExportDecl`):
 - Because the names are bound as declarations and not as values, a re-exported function retains its parameter list: keyword parameters, defaults, variadics, and arity are preserved, and calls through the re-exported name follow 7.5 exactly as calls through the original declaration do. (A value binding such as `f = m.f` produces a function value instead, and calls through function values cannot supply keyword arguments (6.1).)
 - Type aliases may be re-exported.
 - A name that is not a public symbol of the target module is an error before type checking.
-- `ImportPath` may be a local path or a dependency name. Re-exporting from a dependency republishes that dependency's symbols as part of the current module's public API; the trust domain of the re-exported code is unchanged (Chapter 16).
+- `ImportPath` may be a local path or a dependency name. Re-exporting from a dependency republishes that dependency's symbols as part of the current module's public API.
 - No wildcard form is provided: neither `export * from` nor `export * as ns from`. The names to be published are made explicit in the declaration, for the same reason that no bulk import form is provided.
 - Same-name collision rules are those of named imports. `ExportDecl` edges participate in the acyclicity requirement of the module dependency graph.
 
@@ -624,7 +616,7 @@ Handling of circular imports:
 
 External dependencies:
 
-External Lask source code fetched over the internet is declared in the project file and imported by name. Code contains only the dependency name (intent); the source location, version, integrity information, and the capabilities granted to the dependency are bound outside the code.
+External Lask source code fetched over the internet is declared in the project file and imported by name. Code contains only the dependency name (intent); the source location, version, and integrity information are bound outside the code.
 
 Project file:
 
@@ -633,14 +625,10 @@ Project file:
 
 ```json
 {
-  "policy": {
-    "default_grants": {"environments": ["docker"], "env_vars": []}
-  },
   "dependencies": {
     "deploy-kit": {
       "git": "https://github.com/example/lask-deploy-kit",
-      "rev": "v1.2.0",
-      "grants": {"environments": ["docker"], "env_vars": ["DEPLOY_*"]}
+      "rev": "v1.2.0"
     },
     "notify": {"url": "https://example.com/tasks/notify.lask"}
   }
@@ -649,8 +637,6 @@ Project file:
 
 - The top-level `dependencies` map associates a dependency name (a string conforming to `lower_id`; 3.2) with an entry.
 - An entry has exactly one source: `git` (a repository URL; `rev` — a tag or a full commit SHA — is required) or `url` (an archive or a single `.lask` file). A branch must not be given as `rev`.
-- `grants` is the capability grant for that dependency (Chapter 16). When omitted, `policy.default_grants` applies.
-- `policy` is defined in Chapter 16.
 - Secrets (credentials, tokens) must not be written in this file.
 - Entries are typically recorded with `lask deps add` (11.5).
 
@@ -695,10 +681,6 @@ Fetching and verification:
 - If a tag recorded as `requested` later resolves to a different commit, `deps sync` reports `E-MODULE-REV-MOVED`. This is distinguished from `E-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
 - `check`, `run`, `eval`, and `envs` must not access the network for module resolution. If a declared dependency is not present in the cache, or fails verification, it is a static error (`E-MODULE-UNRESOLVED`).
 - An external module may itself have a `lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted) and are recorded in the root project's lock file.
-
-Capabilities of external modules:
-
-- What an external module may do — which execution environments it may run commands in, and which environment variables it may read — is determined by the grants the root project gives it (Chapter 16), not by anything the module itself declares.
 
 Examples:
 
@@ -1591,7 +1573,6 @@ The error kinds reported by static verification include at least the following.
 - `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
 - `E-MODULE-DEEP-IMPORT`: an external import naming a path inside a dependency tree rather than its entry module (Chapter 5)
 - `E-MODULE-LOCK-STALE`: the lock file is missing, incomplete, or inconsistent with the project file (Chapter 5)
-- `E-PERM-DENIED-STATIC`: a dependency's computed capabilities exceed the grants given to it (Chapter 16)
 
 Error diagnostics include at least the following.
 
@@ -1997,7 +1978,7 @@ Timing:
 
 Dynamic references:
 
-- If the `image` argument of `#docker(...)` is a runtime value rather than a literal, the reference cannot be enumerated or pinned ahead of execution. Such an expression is permitted in the root domain (Chapter 16) and is a static error in a dependency domain (`E-TYPE-ENV-CONSTRUCT`), because a consumer cannot otherwise know what will run.
+- If the `image` argument of `#docker(...)` is a runtime value rather than a literal, the reference cannot be enumerated or pinned ahead of execution. Such an expression is permitted, but `envs` (11.4) reports it as a dynamic image and `deps sync` cannot materialize it in advance.
 
 ### 10.4 Environment Resolution Rules
 
@@ -2052,10 +2033,6 @@ Construction rules:
 2. Apply override variables from implementation settings or CLI specification.
 3. Exclude variables prohibited by security policy.
 
-Rules for dependency domains:
-
-- For a module loaded as a dependency (Chapter 16), the base set is **empty**, and only variables matching that dependency's `env_vars` grant are added. This is an allow list, not a deny list: variables that are not granted never reach the environment.
-
 Conflict rules:
 
 - If the same key is supplied by multiple sources, resolve with the precedence: explicit specification > implementation settings > environment defaults.
@@ -2076,7 +2053,6 @@ Rules:
 
 - `local` is bounded above by the calling process's privileges.
 - `docker` is bounded above by the privileges within the container isolation boundary.
-- For a module loaded as a dependency, both are further bounded by the capability grants of Chapter 16.
 - If execution is impossible due to insufficient privileges, it is a runtime error, and the cause must be reported in a diagnosable form.
 
 Security requirements:
@@ -2157,7 +2133,7 @@ lask infer [--module <path>] [--symbol <name>]
 lask repl [--module <path>]
 lask envs [--module <path>] [<function>] [--check]
 lask deps sync [--module <path>] [--frozen]
-lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--grant <capability>]... [--module <path>]
+lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--module <path>]
 lask deps diff <name> [<from>..<to>] [--module <path>]
 lask deps why <name> [--module <path>]
 lask env build [--module <path>]
@@ -2326,7 +2302,7 @@ Check rules (`--check`):
 
 Output and exit codes:
 
-- For each environment, the environment kind, a summary of the target, whether the effective grant set (Chapter 16) permits it, and the check result (with `--check`) are output. Structured output is available with `--format json`.
+- For each environment, the environment kind, a summary of the target, and the check result (with `--check`) are output. Structured output is available with `--format json`.
 - For environments that failed the check, an error code (`E-IO-ENV-RESOLVE`, `E-IO-IMAGE-MISSING`, etc.; Chapter 14) and a summary are included.
 - Exit codes: `0` if enumeration and checks all succeed; `3` if one or more environments are inaccessible; `1` for static errors (undefined environment names, invalid environment definition file, etc.); `4` for CLI usage errors (nonexistent function name, etc.) (following the classification in 11.3).
 
@@ -2334,8 +2310,8 @@ Execution example:
 
 ```text
 $ lask envs provision --check
-docker  golang:1.22@sha256:6f3c...    granted  ok
-docker  lask//sha256-71bc... (recipe) granted  ok
+docker  golang:1.22@sha256:6f3c...     ok
+docker  lask//sha256-71bc... (recipe)  ok
 ```
 
 ### 11.5 Dependency Management (`deps`)
@@ -2346,7 +2322,7 @@ Syntax:
 
 ```text
 lask deps sync [--module <path>] [--frozen]
-lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--grant <capability>]... [--module <path>]
+lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--module <path>]
 lask deps diff <name> [<from>..<to>] [--module <path>]
 lask deps why <name> [--module <path>]
 ```
@@ -2364,14 +2340,13 @@ Rules (`add`):
 
 - `add` resolves the specified source, computes its content hash, verifies the policy, records the entry under `<name>` in `lask.json` (creating the file if it does not exist), records the resolution in `lask.lock.json`, and places the verified source in the cache.
 - `<name>` must conform to `lower_id` (3.2). If an entry with the same name already exists, it is replaced.
-- Before recording, `add` presents the capabilities computed from the dependency's code (Chapter 16) and the images it uses. In an interactive session it requires confirmation; on confirmation the computed capabilities are written as that dependency's `grants`.
-- `--grant` supplies grants non-interactively, and may narrow the computed set.
+- Before recording, `add` presents the images the dependency uses. In an interactive session it requires confirmation.
 - The recorded hash follows the trust-on-first-use model: the content trusted at recording time is pinned, and any subsequent change to the published source is detected by `sync`.
 - `--git` accepts `--rev` (a tag or a full commit SHA); when omitted, the repository's default branch head is resolved once and pinned. `--url` accepts an archive or a single `.lask` file (Chapter 5).
 
 Rules (`diff`):
 
-- `diff` reports what changes between two revisions of a dependency, in the following order: capability changes (Chapter 16), image digest and recipe changes, the list of changed files, and the source diff.
+- `diff` reports what changes between two revisions of a dependency, in the following order: image digest and recipe changes, the list of changed files, and the source diff.
 - With no revision range, the locked revision is compared against the revision the project file currently requests.
 
 Rules (`why`):
@@ -2931,8 +2906,6 @@ Representative codes:
 - `E-RUNTIME-COMMAND-NONZERO`
 - `E-RUNTIME-AWAIT-FAILED`
 - `E-RUNTIME-ACCESS`
-- `E-PERM-ENV`
-- `E-PERM-ENV-VAR`
 - `E-RUNTIME-CAST`
 - `E-IO-STDIN-READ`
 - `E-IO-ENV-RESOLVE`
@@ -3000,7 +2973,6 @@ Minimum targets:
 - `E-MODULE-UNRESOLVED`
 - `E-MODULE-DEEP-IMPORT`
 - `E-MODULE-LOCK-STALE`
-- `E-PERM-DENIED-STATIC`
 
 Rules:
 
@@ -3018,8 +2990,6 @@ Representative examples:
 - `E-RUNTIME-AWAIT-FAILED`: `await` re-raises a failed state
 - `E-RUNTIME-ACCESS`: index out of range or missing key (8.9)
 - `E-RUNTIME-CAST`: failure of the runtime type check of `cast` (15.8)
-- `E-PERM-ENV`: a command was executed in an environment kind outside the effective grant set (16.4)
-- `E-PERM-ENV-VAR`: `get_env` requested a name outside the calling domain's `env_vars` grants (16.4)
 
 Rules:
 
@@ -3270,7 +3240,7 @@ Contract:
 
 The built-in library provides at least the following functions.
 
-- `get_env`: `Function<String, String>` (subject to the `env_vars` grant of the calling module's trust domain; Chapter 16)
+- `get_env`: `Function<String, String>`
 - `mark_secret`: `Function<String, String>`
 
 Semantics:
@@ -3291,93 +3261,11 @@ Minimum requirements:
 - Attach `location` and `traceId` where possible.
 - Maintain determinism, returning the same error code for the same condition.
 
-## 16. Trust and Capabilities
-
-This chapter defines what a module loaded as an external dependency is permitted to do, and how the permission is expressed, checked, and enforced.
-
-### 16.1 Trust Domains
-
-- A **trust domain** is a module tree together with all modules reachable from it by local import (`./`, `../`; Chapter 5). The module the invocation targets (`--module`, default `main.lask`) and its local modules form the **root domain**; each external dependency tree forms a domain of its own.
-- The root domain is not restricted by this chapter. Restrictions apply at domain boundaries: what a dependency may do is determined solely by the grants the root project gives it.
-- A dependency cannot grant capabilities, to itself or to its own dependencies. Every domain in the graph is granted by the root project, and a domain with no explicit grant receives the default grants (16.5).
-- Whether a module is a root or a dependency is a property of the resolution graph, not of the file. The same tree is a dependency for its consumer and the root for its publisher, and it is validated identically in both roles.
-- The **owning module** of a command execution expression (6.6) is the module in which the expression is written. This is a lexical property, determined statically, and unaffected by the call stack and by where the `Environment` value came from.
-
-### 16.2 Capability Vocabulary
-
-A grant is a pair of the following capabilities. The absence of a capability is a denial, not an unspecified state.
-
-| Capability | Value | Meaning |
-|---|---|---|
-| `environments` | array of `"local"` / `"docker"` | The execution environment kinds in which the module may run commands |
-| `env_vars` | array of glob patterns | The environment variable names the module may read with `get_env` (15.9), and the allow list applied when constructing the environment variable set for its containers (10.6) |
-
-Grants are written per dependency in `lask.json` (Chapter 5), with `policy.default_grants` supplying the value for dependencies that declare none.
-
-```json
-{
-  "policy": { "default_grants": {"environments": ["docker"], "env_vars": []} },
-  "dependencies": {
-    "terraform": {
-      "git": "https://github.com/example/lask-terraform",
-      "rev": "v0.2.0",
-      "grants": {"environments": ["docker"], "env_vars": ["TF_VAR_*", "AWS_*"]}
-    }
-  }
-}
-```
-
-### 16.3 Computation of Required Capabilities
-
-`check` computes, for each dependency domain, an over-approximation of the capabilities its code uses. The computation is the traversal specified for `envs` (11.4), collecting:
-
-- every environment expression, mapped to its kind;
-- every `get_env` call, contributing its literal argument; a non-literal argument contributes `*`.
-
-Rules:
-
-- Where the analysis cannot be precise it must widen. A widened result is presented to the consumer as such, so imprecision in a module is visible to the people deciding whether to grant it.
-- The computation is the only source of the required set. A module does not declare its own capabilities: a declaration could disagree with the code, and could request more than the code needs.
-- If the computed set for a dependency exceeds the grants given to it, it is a static error (`E-PERM-DENIED-STATIC`), reported before any command executes.
-
-### 16.4 Enforcement
-
-Static computation is an over-approximation and `Environment` values flow through parameters, so the runtime is the boundary. Enforcement occurs at two points.
-
-- **`run_command` (8.7).** The resolved environment kind must be in the effective grant set (16.5); otherwise the call fails with `E-PERM-ENV`. The environment variable set (10.6) is constructed from the empty set plus the variables matching the effective `env_vars` patterns.
-- **`get_env` (15.9).** The requested name must match a pattern in the grants of the calling module's domain; otherwise `E-PERM-ENV-VAR`.
-
-Permission denials are runtime errors (14.5) and are recoverable by `try`/`catch` in the same way as other runtime errors. They must appear in the execution event stream (12.6) with the owning module and the denied capability.
-
-### 16.5 The Effective Grant Set
-
-The grants that apply to a command execution are those of the domain of its owning module (16.1). An `Environment` value carries no authority of its own: which module produced it, and which modules it was passed through, do not affect what may be done with it.
-
-A module that accepts an `Environment` parameter therefore runs commands under its own grants, whatever the caller supplies. A project that wants a dependency to execute on the host grants it `local` in `lask.json`, where the decision is written down, rather than implying it at a call site.
-
-Default grants:
-
-| | Root domain | Dependency domain |
-|---|---|---|
-| `local` | permitted | denied |
-| `docker` | permitted | permitted |
-| `get_env` | unrestricted | none |
-
-The root project is not isolated from itself. The boundary is the dependency edge, and it is deny-by-default there.
-
-### 16.6 Non-Goals
-
-- This chapter does not isolate the root project from itself.
-- It does not constrain what a command does once started, beyond the environment's own boundary (10.7) and the environment-variable allow list. A granted `local` execution is bounded only by the calling process's privileges, and a container has access to whatever the working directory rules (10.5) make available to it.
-- It provides no vulnerability database, no advisory feed, and no revocation channel.
-- It defines no source-acceptance policy beyond the grants of this chapter: no provenance attestation, and no minimum age before a newly published revision may be adopted. Integrity rests on the content hash and the lock file (Chapter 5) — a source is trusted at the moment it is recorded, and any later change to it is detected — but verifying *who* published a source, and *when*, is out of scope for this revision.
-- An image build (10.3) executes publisher-authored instructions inside a container. The build constraints of 10.3 apply, and a build never occurs implicitly, but this remains the widest exposure the model leaves open.
-
-## 17. Examples
+## 16. Examples
 
 This chapter presents representative examples spanning the whole specification. Each example lists the command and expected behavior, assuming the code is placed in `main.lask` in the execution directory. Since `run` does not output the evaluation result to stdout (11.3), use `eval` to confirm values. Output examples use the default `json` display.
 
-### 17.1 Minimal Program
+### 16.1 Minimal Program
 
 A minimally structured module example is shown.
 
@@ -3399,7 +3287,7 @@ $ lask run hello
 - `eval` outputs the evaluation result to stdout and exits with exit code `0`.
 - `run` executes the function but does not output the evaluation result to stdout (execution logs go to stderr). It exits with exit code `0`.
 
-### 17.2 Functions with Type Annotations
+### 16.2 Functions with Type Annotations
 
 An example of functions with type annotations and default arguments is shown.
 
@@ -3434,7 +3322,7 @@ $ lask run greet alice --prefix hi
 - The last `run` example executes with the same syntax and binding as `eval`, but the evaluation result is not output to stdout, and it exits with exit code `0`.
 - `lask run greet` without the positional parameter `name` is a pre-execution error and the function is not evaluated (CLI usage error; exit code `4`; 11.3).
 
-### 17.3 Higher-Order Functions and Composition
+### 16.3 Higher-Order Functions and Composition
 
 Examples of higher-order functions, the pipe operator, and the composition operator are shown.
 
@@ -3469,7 +3357,7 @@ $ lask eval incThenDouble 3
 - `incThenDouble` is a top-level declaration of a function value, and can be invoked from the CLI just like a function declaration. Since this is application of a value of function type, binding is by positional arguments only (7.5).
 - `applyTwice` has a parameter of function type, so it cannot be invoked directly from the CLI (no decoding scheme can construct a function value, so it becomes a pre-execution error due to type mismatch). Calling `applyTwice(inc, 3)` from within the language returns `5`.
 
-### 17.4 Arrays, Maps, and Records
+### 16.4 Arrays, Maps, and Records
 
 Examples of array, map, and record values, and the use of built-in library functions and accessor expressions (6.8) are shown.
 
@@ -3527,7 +3415,7 @@ $ lask eval region
 - `envMap["APP_ENV"]` is map index access, and has the same failure contract as `get(envMap, "APP_ENV")` (a missing key is `E-RUNTIME-ACCESS`). `region` performs the same retrieval using the built-in library's `get`.
 - `user`, `cfg`, and `envMap` are value declarations that are not functions, and are not targets of direct invocation from the CLI.
 
-### 17.5 Procedural Notation and Command Execution with Environments
+### 16.5 Procedural Notation and Command Execution with Environments
 
 Examples of `do`, `if`, `for`, and `$[env] ...` are shown.
 
@@ -3575,7 +3463,7 @@ During execution, a command execution log like the following flows to stderr in 
 2026-07-23T10:15:04.373Z [#alpine:3.20:2] exit 0
 ```
 
-### 17.6 Asynchronous Execution
+### 16.6 Asynchronous Execution
 
 Corresponding examples of `async` (sugar) and `spawn`/`await` (core functions) are shown.
 
@@ -3602,7 +3490,7 @@ $ lask eval mergeAB
 - `fetchA` and `fetchB` are started concurrently by `async`, and both completions are awaited via `await` before concatenation. Regardless of the completion order of the 2 commands, the result is always `"AB"`.
 - If either asynchronous task fails, the failure is re-raised at the corresponding `await` (8.6).
 
-### 17.7 CLI Execution Examples
+### 16.7 CLI Execution Examples
 
 ```text
 # Type checking
@@ -3639,7 +3527,7 @@ Expected behavior:
 - `provision`: executes commands in a container built from the declared recipe. If the image has not been materialized, an `E-IO-IMAGE-MISSING` diagnostic is output to stderr and it exits with exit code `3`.
 - `lask envs provision --check`: enumerates the environments used by `provision` and checks reachability. Exit code `0` if all are reachable, `3` if any environment is unreachable (11.4).
 
-### 17.8 Execution Event Example
+### 16.8 Execution Event Example
 
 An event output example on failure involving command execution with environments (`run_command`) is shown. The following is the `FailEvent` emitted when a required image has not been materialized during execution of `lask run deploy prod`.
 
@@ -3670,7 +3558,7 @@ Expected behavior:
 - If this failure is not caught by `try`/`catch`, the failure is mapped to an `Error` value (`code: 3`), and the `lask` process exits with exit code `3`. An `E-IO-IMAGE-MISSING` diagnostic is output to stderr (8.10, 11.3).
 - The `FailEvent` is emitted regardless of whether the failure is caught (12.6).
 
-### 17.9 Error Handling and Exit Codes
+### 16.9 Error Handling and Exit Codes
 
 An example of `try` / `catch` / `finally` and the pass-through of exit codes and standard error is shown.
 

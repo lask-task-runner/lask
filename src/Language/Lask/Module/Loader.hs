@@ -33,7 +33,7 @@ import qualified Data.Text.IO as TIO
 import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.File (DepsFile (..), defaultDepsFileName, entryIsSingleFile, loadDepsFile)
-import Language.Lask.Deps.Lock (LockFile (..), defaultLockFileName, loadLockFile)
+import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..), defaultLockFileName, loadLockFile)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
 import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, EModuleDeepImport, EModuleLockStale, EModuleUnresolved, ENameUndefined), Stage (StageStatic))
 import Language.Lask.Span (Span (NoSpan))
@@ -142,16 +142,37 @@ loadProgramEnv env entryPath = do
     lockGap rootDeps lock = case rootDeps of
       Nothing -> Nothing
       Just df ->
-        let declared = Map.keys (depsEntries df)
-            covered = maybe Map.empty lockModules lock
-            missing = [n | n <- declared, not (Map.member n covered)]
-         in case (lock, missing) of
-              (Nothing, (_ : _)) ->
+        let covered = maybe Map.empty lockModules lock
+            missing = [n | n <- Map.keys (depsEntries df), not (Map.member n covered)]
+            -- The lock must agree with the project file, not merely
+            -- cover it (spec chapter 5): a source or a reference edited
+            -- in place leaves the pinned content behind.
+            disagreeing =
+              [ (n, why)
+              | (n, e) <- Map.toList (depsEntries df),
+                Just locked <- [Map.lookup n covered],
+                Just why <- [entryDisagreement e locked]
+              ]
+         in case (lock, missing, disagreeing) of
+              (Nothing, (_ : _), _) ->
                 Just . stale $ "no lock file; run 'lask deps sync'"
-              (_, (n : _)) ->
+              (_, (n : _), _) ->
                 Just . stale $
                   "the lock file does not cover dependency '" <> n <> "'; run 'lask deps sync'"
+              (_, _, ((n, why) : _)) ->
+                Just . stale $
+                  "the lock file disagrees with " <> T.pack defaultDepsFileName
+                    <> " for dependency '" <> n <> "' (" <> why <> "); run 'lask deps sync'"
               _ -> Nothing
+
+    entryDisagreement e locked = case e of
+      DepGit url rev _
+        | lkGit locked /= Just url -> Just "different source"
+        | lkRequested locked /= Just rev -> Just ("locked " <> maybe "-" id (lkRequested locked) <> ", declared " <> rev)
+        | otherwise -> Nothing
+      DepUrl url _
+        | lkUrl locked /= Just url -> Just "different source"
+        | otherwise -> Nothing
 
     stale = mkDiagnostic EModuleLockStale StageStatic NoSpan
 
