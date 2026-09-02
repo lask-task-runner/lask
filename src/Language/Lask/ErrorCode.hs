@@ -30,6 +30,12 @@ data ErrorCode
   | ETypeSecretNonString
   | EModuleCycle
   | EModuleUnresolved
+  | EModuleDeepImport
+  | EModuleLockStale
+  | EModuleRevMoved
+  | EPermDeniedStatic
+  | EPermEnv
+  | EPermEnvVar
   | EModuleHashMismatch
   | ERuntimeDivByZero
   | ERuntimeCommandNonzero
@@ -37,9 +43,9 @@ data ErrorCode
   | ERuntimeAccess
   | ERuntimeCast
   | EIoStdinRead
-  | EIoSshConnect
-  | EIoSshAuth
   | EIoEnvResolve
+  | EIoImageMissing
+  | EIoImageDigest
   | EIoFs
   | EIoDataDecode
   | ECliUsage
@@ -73,6 +79,12 @@ codeText c = case c of
   ETypeSecretNonString -> "E-TYPE-SECRET-NON-STRING"
   EModuleCycle -> "E-MODULE-CYCLE"
   EModuleUnresolved -> "E-MODULE-UNRESOLVED"
+  EModuleDeepImport -> "E-MODULE-DEEP-IMPORT"
+  EModuleLockStale -> "E-MODULE-LOCK-STALE"
+  EModuleRevMoved -> "E-MODULE-REV-MOVED"
+  EPermDeniedStatic -> "E-PERM-DENIED-STATIC"
+  EPermEnv -> "E-PERM-ENV"
+  EPermEnvVar -> "E-PERM-ENV-VAR"
   EModuleHashMismatch -> "E-MODULE-HASH-MISMATCH"
   ERuntimeDivByZero -> "E-RUNTIME-DIV-BY-ZERO"
   ERuntimeCommandNonzero -> "E-RUNTIME-COMMAND-NONZERO"
@@ -80,9 +92,9 @@ codeText c = case c of
   ERuntimeAccess -> "E-RUNTIME-ACCESS"
   ERuntimeCast -> "E-RUNTIME-CAST"
   EIoStdinRead -> "E-IO-STDIN-READ"
-  EIoSshConnect -> "E-IO-SSH-CONNECT"
-  EIoSshAuth -> "E-IO-SSH-AUTH"
   EIoEnvResolve -> "E-IO-ENV-RESOLVE"
+  EIoImageMissing -> "E-IO-IMAGE-MISSING"
+  EIoImageDigest -> "E-IO-IMAGE-DIGEST"
   EIoFs -> "E-IO-FS"
   EIoDataDecode -> "E-IO-DATA-DECODE"
   ECliUsage -> "E-CLI-USAGE"

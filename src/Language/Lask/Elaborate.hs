@@ -36,6 +36,7 @@ import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTar
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST
 import Language.Lask.Types
+import System.FilePath (isAbsolute, normalise, splitDirectories)
 
 -- Program-level results ------------------------------------------------------
 
@@ -66,6 +67,9 @@ data CoreProgram = CoreProgram
   { cpEntry :: FilePath,
     cpBaseDir :: FilePath,
     cpDecls :: Map Key CoreDecl,
+    -- | Names of the entry module marked @internal@ (spec 5): not
+    -- reachable from the CLI or from help listings.
+    cpInternal :: Set Text,
     -- | Name references with their types, recorded during
     -- elaboration for editor tooling (hover).
     cpHover :: [HoverInfo]
@@ -141,6 +145,9 @@ elaborateProgram prog scopes =
           { cpEntry = progEntry prog,
             cpBaseDir = progBaseDir prog,
             cpDecls = decls,
+            cpInternal =
+              maybe Set.empty (moduleInternal . lmModule) $
+                Map.lookup (progEntry prog) (progModules prog),
             cpHover = hover
           }
   where
@@ -1024,7 +1031,11 @@ elabCommand ctx path locals sp stream mEnv parts = do
         abort . withExpectedActual "Environment" (renderType t) $
           diag ETypeCommandEnv (exprSpan envExpr) "command environment must be an Environment"
       pure [("env", c)]
-  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore] envArg)
+  -- The owning module of the command expression (spec 16.1) travels
+  -- with the call, so the runtime can check it against that module's
+  -- grants even when the environment value came from elsewhere.
+  let ownerArg = [("__owner", Core sp (CStrLit (T.pack path)))]
+      call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore] (envArg <> ownerArg))
   case stream of
     StreamAll -> pure (call, commandResultType)
     StreamOut -> pure (streamSelect call "stdout", TyString)
@@ -1060,18 +1071,21 @@ elabEnv ctx path locals sp h mArgs = do
         _ -> pure ()
       pure (Core sp (CEnv "local" []), TyEnvironment)
     "docker" -> do
-      args <- maybe (envErr "docker(...) requires an image argument") pure argsOrdered
-      named <- bindEnvArgs "docker" [("image", TyString)] [("memory", TyString), ("cpus", TyNumber)] args
+      args <- maybe (envErr "docker(...) requires an image reference or a recipe") pure argsOrdered
+      let hasPositional = any (\(Arg _ af) -> case af of APos _ -> True; _ -> False) args
+          optionals =
+            [ ("image", TyString),
+              ("dockerfile", TyString),
+              ("context", TyString),
+              ("memory", TyString),
+              ("cpus", TyNumber)
+            ]
+      named <-
+        if hasPositional
+          then bindEnvArgs "docker" [("image", TyString)] optionals args
+          else bindEnvArgs "docker" [] optionals args
+      validateDockerEnv named
       pure (Core sp (CEnv "docker" named), TyEnvironment)
-    "env" -> do
-      args <- maybe (envErr "env(...) requires a name argument") pure argsOrdered
-      case args of
-        [Arg _ (APos nameExpr)] -> case literalString nameExpr of
-          Just name ->
-            pure (Core sp (CEnv "env" [("name", Core (exprSpan nameExpr) (CStrLit name))]), TyEnvironment)
-          Nothing -> envErr "the environment name must be a string literal without interpolation"
-        _ -> envErr "env(...) takes exactly one name argument"
-    "remote" -> envErr "remote environments can only be defined in the environment definition file"
     imageName -> case mArgs of
       -- #image-name sugar: docker("image-name") (spec 6.7).
       Nothing ->
@@ -1079,9 +1093,8 @@ elabEnv ctx path locals sp h mArgs = do
           ( Core sp (CEnv "docker" [("image", Core sp (CStrLit imageName))]),
             TyEnvironment
           )
-      Just _ ->
-        abort . mkDiagnostic ESyntaxUnexpectedToken StageSyntax sp $
-          "an environment argument list requires a kind name (local/docker/env)"
+      -- An unknown environment kind is a static error (spec 10.4).
+      Just _ -> envErr ("unknown environment kind: '" <> imageName <> "'")
   where
     envErr :: Text -> TC a
     envErr = abort . diag ETypeEnvConstruct sp
@@ -1143,6 +1156,58 @@ elabEnv ctx path locals sp h mArgs = do
       pure bound
 
     checkEnvArg e ty = check ctx path locals e ty
+
+    coreStrLit (Core _ (CStrLit t)) = Just t
+    coreStrLit _ = Nothing
+
+    -- The image is given either as a registry reference or as a recipe
+    -- (spec 10.2). Exactly one form; a registry reference carries a tag
+    -- or digest; a recipe is a literal path inside the module tree.
+    validateDockerEnv :: [(Text, Core)] -> TC ()
+    validateDockerEnv named = do
+      let present k = maybe False (const True) (lookup k named)
+      case (present "image", present "dockerfile") of
+        (True, True) ->
+          () <$ envErr "docker(...) takes either an image reference or a 'dockerfile' recipe, not both"
+        (False, False) ->
+          () <$ envErr "docker(...) requires an image reference or a 'dockerfile' recipe"
+        (True, False) -> do
+          when (present "context") $
+            () <$ envErr "'context' is only valid together with 'dockerfile'"
+          case lookup "image" named >>= coreStrLit of
+            -- A runtime image value stays permitted here; whether the
+            -- owning module may use one is a trust-domain rule (16.1).
+            Nothing -> pure ()
+            Just img
+              | T.null img -> () <$ envErr "the image reference must not be empty"
+              | not (hasTagOrDigest img) ->
+                  () <$ envErr ("the image reference must carry a tag or a digest: '" <> img <> "'")
+              | otherwise -> pure ()
+        (False, True) -> do
+          _ <- requireTreePath named "dockerfile"
+          _ <- requireTreePath named "context"
+          pure ()
+
+    hasTagOrDigest ref =
+      T.isInfixOf "@" ref || maybe False (T.isInfixOf ":") (lastSegment ref)
+      where
+        lastSegment r = case reverse (T.splitOn "/" r) of
+          (x : _) -> Just x
+          [] -> Nothing
+
+    requireTreePath :: [(Text, Core)] -> Text -> TC (Maybe Text)
+    requireTreePath named key = case lookup key named of
+      Nothing -> pure Nothing
+      Just c -> case coreStrLit c of
+        Nothing ->
+          envErr ("'" <> key <> "' must be a string literal without interpolation")
+        Just p
+          | T.null p -> envErr ("'" <> key <> "' must not be empty")
+          | isAbsolute (T.unpack p) ->
+              envErr ("'" <> key <> "' must be a relative path inside the module tree")
+          | ".." `elem` splitDirectories (normalise (T.unpack p)) ->
+              envErr ("'" <> key <> "' must not escape the module tree")
+          | otherwise -> pure (Just p)
 
 -- Calls (spec 7.5) ------------------------------------------------------------------------
 

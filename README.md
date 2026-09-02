@@ -59,7 +59,7 @@ build(--version: String = "latest"): String = do {
 - Procedural sugar (`do`, `if`/`else`, `for`, `return`, `try`/`catch`/`finally`, `async`/`await`) normalized onto a small functional core.
 - Command execution with environment selection: `$ cmd` (stdout), `$2 cmd` (stderr), `$* cmd` (whole result), `$[#alpine:3.20] cmd` (Docker), `$[#env("name")] cmd` (named environments from `environments.lask.json`, including SSH remotes).
 - Modules with named/namespace imports (`./`-relative paths); stdin bound as the `stdin` string; JSON I/O.
-- External dependencies fetched over the internet, pinned by content hash in `dependencies.lask.json` (`lask deps add` / `lask deps sync`); execution never touches the network — modules resolve from a verified local cache.
+- External dependencies fetched over the internet, pinned by content hash in `lask.json` (`lask deps add` / `lask deps sync`); execution never touches the network — modules resolve from a verified local cache.
 - Observability: trace IDs, `call`/`return`/`fail` execution events (`--format json`), stack traces, spec-defined exit codes.
 
 ### Comparison

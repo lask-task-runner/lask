@@ -13,6 +13,7 @@ module Language.Lask.Deps.Fetch
     ensureEntry,
     fetchAndStore,
     syncAll,
+    resolveGitRev,
   )
 where
 
@@ -23,6 +24,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Deps.Cache (cachePathFor)
+import Language.Lask.Deps.Lock (childPath)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Hash (hashFile, hashTree)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
@@ -100,30 +102,34 @@ fetchAndStore cacheDir source = do
 
 -- | Sync all entries of a definition file, following the transitive
 -- dependency files of fetched trees (spec chapter 5). Reports every
--- failure instead of stopping at the first.
-syncAll :: FilePath -> DepsFile -> IO [(Text, Either Diagnostic ())]
-syncAll cacheDir rootDeps = go Set.empty (Map.toList (depsEntries rootDeps))
+-- failure instead of stopping at the first. The dependency path of
+-- each entry (@name@, @parent>child@) is reported alongside its
+-- result so the caller can write the lock file.
+syncAll :: FilePath -> DepsFile -> IO [(Text, DepEntry, Either Diagnostic ())]
+syncAll cacheDir rootDeps =
+  go Set.empty [("" , name, entry) | (name, entry) <- Map.toList (depsEntries rootDeps)]
   where
     go _ [] = pure []
-    go seen ((name, entry) : rest)
+    go seen ((parent, name, entry) : rest)
       | entryHash entry `Set.member` seen = go seen rest
       | otherwise = do
           let seen' = Set.insert (entryHash entry) seen
+              path = childPath parent name
           r <- ensureEntry cacheDir name entry
           case r of
-            Left d -> ((name, Left d) :) <$> go seen' rest
+            Left d -> ((path, entry, Left d) :) <$> go seen' rest
             Right () -> do
-              transitive <- transitiveEntries entry
-              ((name, Right ()) :) <$> go seen' (rest <> transitive)
+              transitive <- transitiveEntries path entry
+              ((path, entry, Right ()) :) <$> go seen' (rest <> transitive)
 
-    transitiveEntries :: DepEntry -> IO [(Text, DepEntry)]
-    transitiveEntries entry
+    transitiveEntries :: Text -> DepEntry -> IO [(Text, Text, DepEntry)]
+    transitiveEntries path entry
       | entryIsSingleFile entry = pure []
       | otherwise = do
           let root = cachePathFor cacheDir entry
           sub <- loadDepsFile (root </> defaultDepsFileName)
           pure $ case sub of
-            Right (Just df) -> Map.toList (depsEntries df)
+            Right (Just df) -> [(path, n, e) | (n, e) <- Map.toList (depsEntries df)]
             _ -> []
 
 -- Fetch primitives -----------------------------------------------------------
@@ -226,3 +232,20 @@ runTool tool args = do
     Right (ExitSuccess, _, _) -> Right ()
     Right (ExitFailure n, _, err) ->
       Left (T.pack (show n) <> ": " <> T.strip (T.pack err))
+
+-- | Resolve a git reference to the commit SHA it currently names
+-- (spec 11.5). A reference that is already a full SHA resolves to
+-- itself; anything the remote does not know resolves to @Nothing@.
+resolveGitRev :: Text -> Text -> IO (Maybe Text)
+resolveGitRev url rev
+  | isFullSha rev = pure (Just rev)
+  | otherwise = do
+      r <- try (readCreateProcessWithExitCode (proc "git" ["ls-remote", T.unpack url, T.unpack rev]) "")
+      pure $ case r of
+        Left e -> const Nothing (e :: IOException)
+        Right (ExitSuccess, out, _) -> case T.words (T.pack out) of
+          (sha : _) | isFullSha sha -> Just sha
+          _ -> Nothing
+        Right _ -> Nothing
+  where
+    isFullSha t = T.length t == 40 && T.all (`elem` ("0123456789abcdef" :: String)) t

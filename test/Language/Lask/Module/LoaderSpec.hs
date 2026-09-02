@@ -7,7 +7,9 @@ module Language.Lask.Module.LoaderSpec (spec) where
 import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import Language.Lask.Deps.File (DepEntry (..), DepsFile (..))
+import Language.Lask.Deps.File
+import Language.Lask.Deps.File (DepEntry (..), DepsFile (..), entryHash)
+import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..))
 import Language.Lask.Diagnostic (diagCode)
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader
@@ -19,6 +21,10 @@ fakeEnv files depsFiles =
   LoaderEnv
     { leReader = \p -> pure (maybe (Left "not found") Right (lookup p files)),
       leLoadDeps = \dir -> pure (Right (lookup dir depsFiles)),
+      -- The fixtures pin hashes directly, so the lock covers whatever
+      -- the deps file declares.
+      leLoadLock = \dir ->
+        pure . Right . Just . LockFile (lockOf (lookup dir depsFiles)) $ Map.empty,
       leCacheDir = "/cache",
       -- A path exists if it is a known file or a directory prefix of
       -- one (cache tree roots).
@@ -26,6 +32,12 @@ fakeEnv files depsFiles =
     }
   where
     paths = map fst files
+    lockOf Nothing = Map.empty
+    lockOf (Just df) =
+      Map.fromList
+        [ (n, LockEntry Nothing Nothing Nothing Nothing (entryHash e))
+        | (n, e) <- Map.toList (depsEntries df)
+        ]
 
 load :: [(FilePath, Text)] -> [(FilePath, DepsFile)] -> FilePath -> IO (Either [ErrorCode] [FilePath])
 load files depsFiles entry = do
@@ -49,10 +61,10 @@ failsWith files depsFiles code = do
     other -> expectationFailure ("expected " <> show code <> ", got " <> show other)
 
 singleDep :: Text -> DepsFile
-singleDep hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask" hash)])
+singleDep hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask" hash)]) Map.empty defaultGrants
 
 treeDep :: Text -> DepsFile
-treeDep hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" hash)])
+treeDep hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" hash)]) Map.empty defaultGrants
 
 spec :: Spec
 spec = do
@@ -100,12 +112,14 @@ spec = do
         ]
         [(".", singleDep "sha256-abc")]
         EModuleUnresolved
-    it "resolves tree dependencies with a path remainder" $
-      loadsOk
+    it "rejects a path inside a tree dependency (entry module only)" $
+      failsWith
         [ ("main.lask", "import { rollout } from \"kit/deploy.lask\"\nf() = rollout()"),
+          ("/cache/sha256-t/main.lask", "rollout(): String = \"ok\""),
           ("/cache/sha256-t/deploy.lask", "rollout(): String = \"ok\"")
         ]
         [(".", treeDep "sha256-t")]
+        EModuleDeepImport
     it "resolves a bare tree name to main.lask (entry-point convention)" $
       loadsOk
         [ ("main.lask", "import { hello } from \"kit\"\nf() = hello()"),
@@ -146,7 +160,7 @@ spec = do
           ("/cache/sha256-abc.lask", "send(x: String): String = x")
         ]
         [ (".", treeDep "sha256-t"),
-          ("/cache/sha256-t", DepsFile (Map.fromList [("notify", notifyEntry)]))
+          ("/cache/sha256-t", DepsFile (Map.fromList [("notify", notifyEntry)]) Map.empty defaultGrants)
         ]
     it "does not leak the root scope into external trees" $
       failsWith
@@ -156,7 +170,7 @@ spec = do
         ]
         -- notify is declared at the ROOT only; the tree has no
         -- dependency file, so its bare import must not resolve.
-        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" "sha256-t"), ("notify", notifyEntry)]))]
+        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" "sha256-t"), ("notify", notifyEntry)]) Map.empty defaultGrants)]
         EModuleUnresolved
     it "detects cycles inside external trees" $
       failsWith

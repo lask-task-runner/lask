@@ -19,7 +19,7 @@ import System.FilePath (normalise)
 -- and lambda parameters, @do@ bindings preceding the position, and
 -- @for@\/@catch@ variables.
 localsAt :: FilePath -> Module -> Position -> [Text]
-localsAt path (Module ds) pos = nub (concat (reverse (concatMap goDecl ds)))
+localsAt path (Module ds _) pos = nub (concat (reverse (concatMap goDecl ds)))
   where
     at :: Span -> Bool
     at = spanContains path pos
@@ -89,7 +89,7 @@ enclosingCall path m pos =
 
 -- | Expressions containing the position, outermost first.
 enclosingExprs :: FilePath -> Module -> Position -> [Expr]
-enclosingExprs path (Module ds) pos = concatMap goDecl ds
+enclosingExprs path (Module ds _) pos = concatMap goDecl ds
   where
     at = spanContains path pos
 

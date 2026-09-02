@@ -7,7 +7,7 @@
 -- Import paths starting with @./@ or @..\/@ are local imports,
 -- resolved relative to the directory of the importing module. Any
 -- other path is an external import: its first segment must be a
--- dependency name declared in @dependencies.lask.json@ and present in
+-- dependency name declared in @lask.json@ and present in
 -- the cache (@E-MODULE-UNRESOLVED@ otherwise). Module resolution
 -- never accesses the network; fetching is done by @lask deps sync@.
 module Language.Lask.Module.Loader
@@ -30,10 +30,12 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.Lask.Deps.Cache (cachePathFor, defaultCacheDir)
+import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor)
+import Language.Lask.Deps.File
 import Language.Lask.Deps.File (DepsFile (..), defaultDepsFileName, entryIsSingleFile, loadDepsFile)
+import Language.Lask.Deps.Lock (LockFile (..), defaultLockFileName, loadLockFile)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
-import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, EModuleUnresolved, ENameUndefined), Stage (StageStatic))
+import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, EModuleDeepImport, EModuleLockStale, EModuleUnresolved, ENameUndefined), Stage (StageStatic))
 import Language.Lask.Span (Span (NoSpan))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.Parser (parseModule)
@@ -48,6 +50,9 @@ data LoaderEnv = LoaderEnv
   { leReader :: ModuleReader,
     -- | Load the dependency definition file of a tree root directory.
     leLoadDeps :: FilePath -> IO (Either Diagnostic (Maybe DepsFile)),
+    -- | The lock file of the project (spec chapter 5). Resolution
+    -- requires it to cover every declared dependency.
+    leLoadLock :: FilePath -> IO (Either Diagnostic (Maybe LockFile)),
     leCacheDir :: FilePath,
     -- | Existence check for cache entries (files and directories).
     leExists :: FilePath -> IO Bool
@@ -86,13 +91,16 @@ fileReader path = do
     Left e -> Left (T.pack (show (e :: IOException)))
     Right src -> Right src
 
-defaultLoaderEnv :: ModuleReader -> IO LoaderEnv
-defaultLoaderEnv reader = do
-  cacheDir <- defaultCacheDir
+-- | The entry path determines the project's base directory, and with
+-- it the per-project dependency cache.
+defaultLoaderEnv :: ModuleReader -> FilePath -> IO LoaderEnv
+defaultLoaderEnv reader entryPath = do
+  cacheDir <- cacheDirFor (takeDirectory entryPath)
   pure
     LoaderEnv
       { leReader = reader,
         leLoadDeps = \dir -> loadDepsFile (dir </> defaultDepsFileName),
+        leLoadLock = \dir -> loadLockFile (dir </> defaultLockFileName),
         leCacheDir = cacheDir,
         leExists = \p -> (||) <$> doesFileExist p <*> doesDirectoryExist p
       }
@@ -102,29 +110,51 @@ loadProgram = loadProgramWith fileReader
 
 loadProgramWith :: ModuleReader -> FilePath -> IO (Either [Diagnostic] Program)
 loadProgramWith reader entryPath = do
-  env <- defaultLoaderEnv reader
+  env <- defaultLoaderEnv reader entryPath
   loadProgramEnv env entryPath
 
 loadProgramEnv :: LoaderEnv -> FilePath -> IO (Either [Diagnostic] Program)
 loadProgramEnv env entryPath = do
   let entry = collapseDots (normalise entryPath)
       baseDir = takeDirectory entry
+  lockE <- leLoadLock env baseDir
   rootDepsE <- leLoadDeps env baseDir
-  case rootDepsE of
-    Left d -> pure (Left [d])
-    Right rootDeps -> do
-      result <- go (ModCtx baseDir rootDeps) [] Map.empty [] entry
-      pure $ case result of
-        Left ds -> Left ds
-        Right (mods, order) ->
-          Right
-            Program
-              { progEntry = entry,
-                progBaseDir = baseDir,
-                progModules = mods,
-                progOrder = reverse order
-              }
+  case (rootDepsE, lockE) of
+    (Left d, _) -> pure (Left [d])
+    (_, Left d) -> pure (Left [d])
+    (Right rootDeps, Right lock) -> case lockGap rootDeps lock of
+      Just d -> pure (Left [d])
+      Nothing -> do
+        result <- go (ModCtx baseDir rootDeps) [] Map.empty [] entry
+        pure $ case result of
+          Left ds -> Left ds
+          Right (mods, order) ->
+            Right
+              Program
+                { progEntry = entry,
+                  progBaseDir = baseDir,
+                  progModules = mods,
+                  progOrder = reverse order
+                }
   where
+    -- Every declared dependency must be covered by the lock file
+    -- (spec chapter 5); resolution never falls back to resolving one.
+    lockGap rootDeps lock = case rootDeps of
+      Nothing -> Nothing
+      Just df ->
+        let declared = Map.keys (depsEntries df)
+            covered = maybe Map.empty lockModules lock
+            missing = [n | n <- declared, not (Map.member n covered)]
+         in case (lock, missing) of
+              (Nothing, (_ : _)) ->
+                Just . stale $ "no lock file; run 'lask deps sync'"
+              (_, (n : _)) ->
+                Just . stale $
+                  "the lock file does not cover dependency '" <> n <> "'; run 'lask deps sync'"
+              _ -> Nothing
+
+    stale = mkDiagnostic EModuleLockStale StageStatic NoSpan
+
     -- DFS with an explicit visiting stack for cycle detection.
     -- The accumulated order is reversed topological order.
     go ::
@@ -218,16 +248,22 @@ resolveImport env ctx pathText
                     else
                       pure . Left . unresolved $
                         "dependency '" <> depName <> "' is a single file and has no submodules"
-                else do
-                  let relPath = if T.null rest then "main.lask" else T.unpack (T.drop 1 rest)
+                else
+                  -- Only the entry module of a tree is reachable from
+                  -- outside it (spec 5): a public API spanning several
+                  -- files is re-exported from main.lask.
+                  if not (T.null rest)
+                    then
+                      pure . Left . deepImport $
+                        "'" <> pathText <> "' names a path inside dependency '"
+                          <> depName
+                          <> "'; only its entry module is importable"
+                    else do
+                  let relPath = "main.lask"
                       file = collapseDots (normalise (base </> relPath))
                   fileOk <- leExists env file
                   if not fileOk
-                    then
-                      pure . Left . unresolved $
-                        if T.null rest
-                          then "dependency '" <> depName <> "' has no main.lask"
-                          else "no such module in dependency '" <> depName <> "': " <> T.pack relPath
+                    then pure . Left . unresolved $ "dependency '" <> depName <> "' has no main.lask"
                     else do
                       treeDepsE <- leLoadDeps env base
                       case treeDepsE of
@@ -236,6 +272,7 @@ resolveImport env ctx pathText
   where
     isLocal = "./" `T.isPrefixOf` pathText || "../" `T.isPrefixOf` pathText
     unresolved = mkDiagnostic EModuleUnresolved StageStatic NoSpan
+    deepImport = mkDiagnostic EModuleDeepImport StageStatic NoSpan
 
 -- | Collapse @.@ and @..@ segments so module identities are stable
 -- for cycle detection and caching.
@@ -259,4 +296,5 @@ collapseDots p =
 declImportPath :: DeclF -> [Text]
 declImportPath (DImportNamed _ p) = [p]
 declImportPath (DImportNamespace _ p) = [p]
+declImportPath (DExportFrom _ p) = [p]
 declImportPath _ = []

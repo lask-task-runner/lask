@@ -22,10 +22,9 @@ import qualified Data.Text.IO as TIO
 import Language.Lask (Compiled (..), compileWith)
 import Language.Lask.Diagnostic (Diagnostic)
 import Language.Lask.Elaborate (CoreProgram (..))
-import Language.Lask.EnvFile (defaultEnvFileName, loadEnvFile)
 import Language.Lask.Module.Loader (fileReader)
 import Language.Lask.Obs.CommandLog (newLineWriter, textCommandLog)
-import Language.Lask.Runtime.Environment (defaultSshSettings, mkCommandRunner)
+import Language.Lask.Runtime.Environment (mkCommandRunner)
 import Language.Lask.Runtime.Eval (mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue)
@@ -97,9 +96,8 @@ evalSession modulePath source = do
     Right compiled -> do
       let core = compiledCore compiled
           baseDir = takeDirectory (normalise modulePath)
-      envFile <- either (const Nothing) id <$> loadEnvFile (baseDir </> defaultEnvFileName)
       writeErr <- newLineWriter stderr
-      runner <- mkCommandRunner baseDir envFile defaultSshSettings (textCommandLog writeErr)
+      runner <- mkCommandRunner baseDir (textCommandLog writeErr)
       ctx <- mkRtCtx core "" runner
       result <- try (topValue ctx (cpEntry core, resultName))
       pure (Right result)

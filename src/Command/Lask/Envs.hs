@@ -7,17 +7,20 @@ module Command.Lask.Envs
   ( EnvRef (..),
     collectEnvRefs,
     collectEnvRefsFrom,
+    collectRecipes,
+    DomainCaps (..),
+    collectDomainCaps,
   )
 where
 
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as T
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key)
-import Language.Lask.EnvFile
-import Language.Lask.Runtime.Value (Value (..))
 
 data EnvRef = EnvRef
   { refLabel :: Text,
@@ -27,17 +30,17 @@ data EnvRef = EnvRef
   deriving (Show, Eq, Ord)
 
 -- | All environment constructions in the core program.
-collectEnvRefs :: CoreProgram -> Maybe EnvFile -> [EnvRef]
-collectEnvRefs core envFile =
-  concatMap (declEnvRefs envFile) (Map.elems (cpDecls core))
+collectEnvRefs :: CoreProgram -> [EnvRef]
+collectEnvRefs core =
+  concatMap declEnvRefs (Map.elems (cpDecls core))
 
 -- | The environments reachable from one declaration: its own
 -- environment expressions plus those of every top-level declaration
 -- it can reach. Reachability is an over-approximation (spec 11.4) —
 -- every referenced declaration counts, whether or not it is actually
 -- called.
-collectEnvRefsFrom :: CoreProgram -> Maybe EnvFile -> Key -> [EnvRef]
-collectEnvRefsFrom core envFile start = go Set.empty [start]
+collectEnvRefsFrom :: CoreProgram -> Key -> [EnvRef]
+collectEnvRefsFrom core start = go Set.empty [start]
   where
     go :: Set Key -> [Key] -> [EnvRef]
     go _ [] = []
@@ -46,14 +49,14 @@ collectEnvRefsFrom core envFile start = go Set.empty [start]
       | otherwise = case Map.lookup k (cpDecls core) of
           Nothing -> go (Set.insert k seen) rest
           Just cd ->
-            declEnvRefs envFile cd
+            declEnvRefs cd
               <> go (Set.insert k seen) (topRefs (cdCore cd) <> rest)
 
     topRefs c =
       [(p, n) | CVar (TopRef p n) <- map coreF (c : descendants c)]
 
-declEnvRefs :: Maybe EnvFile -> CoreDecl -> [EnvRef]
-declEnvRefs envFile cd = concatMap fromCore (cdCore cd : keywordDefaults (cdCore cd))
+declEnvRefs :: CoreDecl -> [EnvRef]
+declEnvRefs cd = concatMap fromCore (cdCore cd : keywordDefaults (cdCore cd))
   where
     -- A lambda's keyword defaults are not part of its body, so they
     -- have to be walked separately.
@@ -62,30 +65,16 @@ declEnvRefs envFile cd = concatMap fromCore (cdCore cd : keywordDefaults (cdCore
       _ -> []
 
     fromCore c = case coreF c of
-      CEnv kind args -> mkRef envFile kind args : concatMap (fromCore . snd) args
+      CEnv kind args -> mkRef kind args : concatMap (fromCore . snd) args
       _ -> concatMap fromCore (children c)
 
-mkRef :: Maybe EnvFile -> Text -> [(Text, Core)] -> EnvRef
-mkRef envFile kind args = case kind of
-  "docker" -> case lookup "image" args of
-    Just (Core _ (CStrLit img)) -> EnvRef img "docker" img
+mkRef :: Text -> [(Text, Core)] -> EnvRef
+mkRef kind args = case kind of
+  "docker" -> case (lookup "image" args, lookup "dockerfile" args) of
+    (Just (Core _ (CStrLit img)), _) -> EnvRef img "docker" img
+    (_, Just (Core _ (CStrLit df))) -> EnvRef df "docker" ("recipe " <> df)
     _ -> EnvRef "<dynamic>" "docker" "<dynamic image>"
-  "env" -> case lookup "name" args of
-    Just (Core _ (CStrLit name)) ->
-      case envFile >>= Map.lookup name . envFileEntries of
-        Just (EnvEntry k ps) -> EnvRef name k (entryTarget k ps)
-        Nothing -> EnvRef name "env" "<undefined>"
-    _ -> EnvRef "<env>" "env" "<unknown>"
   _ -> EnvRef kind kind kind
-  where
-    entryTarget k ps = case k of
-      "remote" -> case Map.lookup "host" ps of
-        Just (VString h) -> h
-        _ -> "<unknown host>"
-      "docker" -> case Map.lookup "image" ps of
-        Just (VString i) -> i
-        _ -> "<unknown image>"
-      _ -> k
 
 -- | Every sub-expression of a core node, transitively.
 descendants :: Core -> [Core]
@@ -114,3 +103,66 @@ children c = case coreF c of
   where
     stmtExpr (CSBind _ e) = [e]
     stmtExpr (CSExpr e) = [e]
+
+-- | Every recipe environment the program constructs, as
+-- (dockerfile, context) pairs (spec 10.2). The context defaults to the
+-- Dockerfile's directory.
+collectRecipes :: CoreProgram -> [(Text, Text)]
+collectRecipes core = concatMap fromDecl (Map.elems (cpDecls core))
+  where
+    fromDecl cd = go (cdCore cd)
+    go c = case coreF c of
+      CEnv "docker" args -> case lookup "dockerfile" args of
+        Just (Core _ (CStrLit df)) ->
+          let ctx = case lookup "context" args of
+                Just (Core _ (CStrLit x)) -> x
+                _ -> defaultContext df
+           in [(df, ctx)]
+        _ -> []
+      CLam lam -> concatMap (go . snd) (lamKeywords lam) <> concatMap go (children c)
+      _ -> concatMap go (children c)
+
+    defaultContext df =
+      let parts = T.splitOn "/" df
+       in if length parts <= 1 then "." else T.intercalate "/" (init parts)
+
+-- | The capabilities a module's code uses (spec 16.3): the execution
+-- environment kinds it constructs, and the environment variables it
+-- reads. A non-literal `get_env` argument widens the set to @*@, so
+-- imprecision is charged to the module being analysed.
+data DomainCaps = DomainCaps
+  { capEnvironments :: Set Text,
+    capEnvVars :: Set Text
+  }
+  deriving (Show, Eq)
+
+instance Semigroup DomainCaps where
+  DomainCaps a b <> DomainCaps c d = DomainCaps (a <> c) (b <> d)
+
+instance Monoid DomainCaps where
+  mempty = DomainCaps Set.empty Set.empty
+
+-- | The computed capabilities of every module of the program, keyed by
+-- module path. The caller groups them into trust domains (spec 16.1).
+collectDomainCaps :: CoreProgram -> Map FilePath DomainCaps
+collectDomainCaps core =
+  Map.fromListWith (<>) [(fst k, declCaps cd) | (k, cd) <- Map.toList (cpDecls core)]
+  where
+    declCaps cd = go (cdCore cd)
+    go c = node c <> foldMap go (children c) <> foldMap (go . snd) (keywordDefaults c)
+
+    keywordDefaults c = case coreF c of
+      CLam lam -> lamKeywords lam
+      _ -> []
+
+    node c = case coreF c of
+      CEnv kind _ -> DomainCaps (Set.singleton kind) Set.empty
+      CApp fn args _ -> case coreF fn of
+        CVar (BuiltinRef "get_env") -> DomainCaps Set.empty (Set.singleton (envVarName args))
+        _ -> mempty
+      _ -> mempty
+
+    envVarName (a : _) = case coreF a of
+      CStrLit k -> k
+      _ -> "*"
+    envVarName [] = "*"

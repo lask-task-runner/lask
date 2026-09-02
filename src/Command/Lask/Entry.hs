@@ -8,18 +8,19 @@ module Command.Lask.Entry
 where
 
 import Command.Lask.ArgCodec
-import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom)
+import Command.Lask.Envs (DomainCaps (..), EnvRef (..), collectDomainCaps, collectEnvRefs, collectEnvRefsFrom, collectRecipes)
 import Command.Lask.Help
 import Command.Lask.Options
 import Control.Exception (try)
-import Control.Monad (unless, when)
+import Control.Monad (forM_, unless, when)
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (atomicModifyIORef', newIORef)
-import Data.List (nub, sort)
-import Data.Maybe (isNothing)
+import Data.List (isPrefixOf, nub, sort)
+import Data.Maybe (isNothing, listToMaybe)
+import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
 import Data.Scientific (toRealFloat)
 import Data.Text (Text)
@@ -29,19 +30,21 @@ import qualified Data.Text.IO as TIO
 import Data.Version (showVersion)
 import qualified Language.LSP.Lask as LSP
 import Language.Lask (Compiled (..), Partial (..), compileFile, compileFilePartial)
-import Language.Lask.Deps.Cache (defaultCacheDir)
-import Language.Lask.Deps.Fetch (DepSource (..), fetchAndStore, syncAll)
+import Language.Lask.Deps.Cache (cacheDirFor)
+import Language.Lask.Deps.Fetch (DepSource (..), fetchAndStore, resolveGitRev, syncAll)
 import Language.Lask.Deps.File
-import Language.Lask.Diagnostic (Diagnostic (..))
+import Language.Lask.Deps.Lock
+import Language.Lask.Diagnostic (Diagnostic (..), mkDiagnostic)
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
-import Language.Lask.EnvFile
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer (lexTokensWithComments)
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
+import Language.Lask.Runtime.Image (buildRecipe, imageExists, recipeTag)
+import Language.Lask.Builtins.Impl (EnvPermit)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, renderValueText)
@@ -64,8 +67,12 @@ runRootCommand cmd = case cmd of
   CmdInfer opts symbol -> cmdInfer opts symbol
   CmdRepl opts -> cmdRepl opts
   CmdEnvs envsOpts -> cmdEnvs envsOpts
-  CmdDepsSync opts -> cmdDepsSync opts
+  CmdDepsSync opts frozen -> cmdDepsSync opts frozen
   CmdDepsAdd opts name source -> cmdDepsAdd opts name source
+  CmdDepsWhy opts name -> cmdDepsWhy opts name
+  CmdDepsDiff opts name -> cmdDepsDiff opts name
+  CmdEnvBuild opts -> cmdEnvBuild opts
+  CmdEnvList opts -> cmdEnvList opts
   CmdVersion -> cmdVersion
 
 -- version ---------------------------------------------------------------------
@@ -82,7 +89,8 @@ cmdCheck opts = do
     Left ds -> do
       TIO.putStrLn (renderDiags (optJsonFormat opts) ds)
       exitWith (ExitFailure 1)
-    Right _ -> do
+    Right compiled -> do
+      checkGrantsOrExit opts (compiledCore compiled)
       if optJsonFormat opts
         then TIO.putStrLn "[]"
         else putStrLn "the module is valid"
@@ -121,16 +129,17 @@ cmdRunEval printResult runOpts = do
   let core = compiledCore compiled
       entry = cpEntry core
       baseDir = cpBaseDir core
-  envFile <- loadEnvFileOrExit opts (envFilePathOf baseDir (runEnvFile runOpts))
-  validateEnvNamesOrExit opts core envFile
+  checkGrantsOrExit opts core
 
   rawName <- case runFunction runOpts of
     Just n -> pure n
     Nothing -> usageError opts "no function specified (use --help to list the module's functions)"
   let fnName = kebabToSnake rawName
+  -- A declaration marked `internal` is not part of any surface
+  -- (spec 5), so it is not callable from the CLI either.
   cd <- case Map.lookup (entry, fnName) (cpDecls core) of
-    Just cd -> pure cd
-    Nothing -> usageError opts ("no such function: '" <> rawName <> "'")
+    Just cd | not (fnName `Set.member` cpInternal core) -> pure cd
+    _ -> usageError opts ("no such function: '" <> rawName <> "'")
 
   cliArgs <- case parseCliArgs (dropArgSeparator (runArgs runOpts)) of
     Right as -> pure as
@@ -157,23 +166,18 @@ cmdRunEval printResult runOpts = do
   -- One serialized stderr line writer shared by command logs and
   -- execution events, so concurrent emitters never interleave.
   writeErr <- newLineWriter stderr
-  let sshSettings =
-        SshSettings
-          { sshKnownHosts = runSshKnownHosts runOpts,
-            sshStrictHostKeyChecking = runSshStrictHostKey runOpts,
-            sshConnectTimeout = runSshConnectTimeout runOpts
-          }
-      -- Command execution logs relay to stderr in real time
+  let -- Command execution logs relay to stderr in real time
       -- (spec 12.3); JSON Lines under --format json (12.2).
       cmdLogSink
         | optJsonFormat opts = jsonCommandLog traceId writeErr
         | otherwise = textCommandLog writeErr
-  runner <- mkCommandRunner baseDir envFile sshSettings cmdLogSink
+  runner <- mkCommandRunner baseDir cmdLogSink
+  permit <- mkEnvPermit core
   ctx0 <- mkRtCtx core stdinText runner
   let sink
         | optJsonFormat opts = writeErr . encodeEvent
         | otherwise = noSink
-      ctx = ctx0 {rtTraceId = traceId, rtEmit = sink}
+      ctx = ctx0 {rtTraceId = traceId, rtEmit = sink, rtEnvPermit = permit}
   result <- try $ do
     fv <- topValue ctx (entry, fnName)
     case fv of
@@ -223,7 +227,8 @@ cmdHelp subcommand runOpts = do
         [ (n, d)
         | m <- maybe [] pure (partialModule partial),
           d <- AST.moduleDecls m,
-          Just n <- [declaredName d]
+          Just n <- [declaredName d],
+          not (n `Set.member` maybe Set.empty cpInternal core)
         ]
       coreOf n = core >>= Map.lookup (entry, n) . cpDecls
       helpOf envs (n, d) = buildFunctionHelp path src d (coreOf n) (docFor src comments d) envs
@@ -248,9 +253,8 @@ cmdHelp subcommand runOpts = do
       decl <- case lookup fnName declsByName of
         Just d -> pure d
         Nothing -> usageError opts (noSuchFunction rawName (map fst declsByName))
-      envFile <- loadEnvFile' (maybe (takeDirectory path) cpBaseDir core)
       let envs = case core of
-            Just c -> nub (sort (collectEnvRefsFrom c envFile (entry, fnName)))
+            Just c -> nub (sort (collectEnvRefsFrom c (entry, fnName)))
             Nothing -> []
           fh = helpOf envs (fnName, decl)
       if optJsonFormat opts
@@ -263,9 +267,6 @@ cmdHelp subcommand runOpts = do
 
     -- Help is read-only: an unreadable or malformed environment file
     -- costs the environment targets, not the help.
-    loadEnvFile' baseDir = do
-      r <- loadEnvFile (envFilePathOf baseDir (runEnvFile runOpts))
-      pure (either (const Nothing) id r)
 
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
@@ -310,7 +311,7 @@ failureExit opts traceId lf = do
       -- stream (spec 12.2: code + stage).
       stage = case lfCode lf of
         Just c
-          | c `elem` [EIoStdinRead, EIoSshConnect, EIoSshAuth, EIoEnvResolve, EIoFs, EIoDataDecode] ->
+          | c `elem` [EIoStdinRead, EIoEnvResolve, EIoImageMissing, EIoImageDigest, EIoFs, EIoDataDecode] ->
               StageIo
         _ -> StageRuntime
       msg = case lfError lf of
@@ -356,8 +357,6 @@ cmdEnvs envsOpts = do
   compiled <- compileOrExit opts
   let core = compiledCore compiled
       baseDir = cpBaseDir core
-  envFile <- loadEnvFileOrExit opts (envFilePathOf baseDir (envsEnvFile envsOpts))
-  validateEnvNamesOrExit opts core envFile
   -- Without a function, the whole module; with one, only what its call
   -- graph can reach (spec 11.4).
   scope <- case envsFunction envsOpts of
@@ -377,14 +376,14 @@ cmdEnvs envsOpts = do
       nextExec = atomicModifyIORef' execCounter (\n -> (n + 1, n + 1))
       refs =
         nub . sort $ case scope of
-          Nothing -> collectEnvRefs core envFile
-          Just key -> collectEnvRefsFrom core envFile key
+          Nothing -> collectEnvRefs core
+          Just key -> collectEnvRefsFrom core key
   results <-
     mapM
       ( \ref -> do
           status <-
             if envsCheck envsOpts
-              then Just <$> checkEnvRef envsOpts cmdLogSink nextExec envFile ref
+              then Just <$> checkEnvRef cmdLogSink nextExec ref
               else pure Nothing
           pure (ref, status)
       )
@@ -420,8 +419,8 @@ cmdEnvs envsOpts = do
 -- effects; docker checks daemon connectivity, remote checks SSH
 -- session establishment. Probe processes relay through the command
 -- execution log (spec 12.3: @envs --check@ is a relay target).
-checkEnvRef :: EnvsOpts -> CommandLogSink -> IO Int -> Maybe EnvFile -> EnvRef -> IO (Either Text ())
-checkEnvRef envsOpts sink nextExec envFile ref = case refKind ref of
+checkEnvRef :: CommandLogSink -> IO Int -> EnvRef -> IO (Either Text ())
+checkEnvRef sink nextExec ref = case refKind ref of
   "local" -> pure (Right ())
   "docker" -> do
     let probeCmd = "docker version"
@@ -434,51 +433,18 @@ checkEnvRef envsOpts sink nextExec envFile ref = case refKind ref of
       Right (0, _, _) -> Right ()
       Right (_, _, errOut) -> Left (codeText EIoEnvResolve <> ": " <> T.strip errOut)
       Left e -> Left (codeText EIoEnvResolve <> ": " <> T.pack (show (e :: IOError)))
-  "remote" -> do
-    let entry = envFile >>= Map.lookup (refLabel ref) . envFileEntries
-    case entry of
-      Just (EnvEntry _ ps) -> do
-        let host = case Map.lookup "host" ps of
-              Just (VString h) -> h
-              _ -> ""
-            user = case Map.lookup "user" ps of
-              Just (VString u) -> Just u
-              _ -> Nothing
-            port = case Map.lookup "port" ps of
-              Just (VNumber n) -> Just (round (toRealFloat n :: Double))
-              _ -> Nothing
-            settings =
-              SshSettings
-                { sshKnownHosts = envsSshKnownHosts envsOpts,
-                  sshStrictHostKeyChecking = envsSshStrictHostKey envsOpts,
-                  sshConnectTimeout = envsSshConnectTimeout envsOpts
-                }
-            envJson =
-              A.object
-                [ ("$type", A.String "Environment"),
-                  ("kind", A.String "remote"),
-                  ("name", A.String (refLabel ref))
-                ]
-        execNo <- nextExec
-        r <-
-          try . runLoggedProcess sink ("#env(\"" <> refLabel ref <> "\")") envJson execNo "ssh true" $
-            proc "ssh" (sshArgs settings host user port "true")
-        pure $ case r of
-          Right (0, _, _) -> Right ()
-          Right (_, _, errOut) -> Left (codeText EIoSshConnect <> ": " <> T.strip errOut)
-          Left e -> Left (codeText EIoSshConnect <> ": " <> T.pack (show (e :: IOError)))
-      Nothing -> pure (Left (codeText EIoEnvResolve <> ": undefined environment"))
-  _ -> pure (Left (codeText EIoEnvResolve <> ": " <> refTarget ref))
+  _ -> pure (Right ())
 
 -- deps (spec 11.5) ------------------------------------------------------------
 
 -- | @lask deps sync@: fetch and verify every declared dependency
 -- (including transitive ones) into the cache. This is the only
 -- subcommand allowed to access the network for module resolution.
-cmdDepsSync :: CommonOpts -> IO ()
-cmdDepsSync opts = do
-  cacheDir <- defaultCacheDir
-  let depsPath = takeDirectory (optModule opts) </> defaultDepsFileName
+cmdDepsSync :: CommonOpts -> Bool -> IO ()
+cmdDepsSync opts frozen = do
+  let baseDir = takeDirectory (optModule opts)
+      depsPath = baseDir </> defaultDepsFileName
+  cacheDir <- cacheDirFor baseDir
   r <- loadDepsFile depsPath
   case r of
     Left d -> do
@@ -490,15 +456,79 @@ cmdDepsSync opts = do
     Right (Just df) -> do
       results <- syncAll cacheDir df
       mapM_
-        ( \(name, status) -> case status of
-            Right () -> TIO.putStrLn (name <> " ok")
+        ( \(path, _, status) -> case status of
+            Right () -> TIO.putStrLn (path <> " ok")
             Left d -> do
-              TIO.putStrLn (name <> " NG")
+              TIO.putStrLn (path <> " NG")
               TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
         )
         results
-      let failed = [() | (_, Left _) <- results]
-      exitWith (if null failed then ExitSuccess else ExitFailure 3)
+      let failed = [() | (_, _, Left _) <- results]
+          lockPath = baseDir </> defaultLockFileName
+      existing0 <- either (const Nothing) id <$> loadLockFile lockPath
+      -- Resolve each reference to the commit it currently names, so a
+      -- tag that has been repointed is detected (spec 11.5).
+      entries <- mapM (resolveEntry existing0) [(p, e) | (p, e, Right ()) <- results]
+      let moved = [m | Left m <- entries]
+          newLock = LockFile (Map.fromList [ok | Right ok <- entries]) Map.empty
+      unless (null moved) $ do
+        mapM_ (TIO.hPutStrLn stderr) moved
+        exitWith (ExitFailure 3)
+      if null failed
+        then do
+          -- --frozen (spec 11.5): CI asserts that the committed lock is
+          -- what resolution produces, rather than updating it.
+          let existing = existing0
+          if frozen && Just (lockModules newLock) /= fmap lockModules existing
+            then do
+              TIO.hPutStrLn stderr
+                (codeText EModuleLockStale <> ": the lock file is out of date (--frozen)")
+              exitWith (ExitFailure 1)
+            else do
+              BL.writeFile lockPath (renderLockFile newLock)
+              exitSuccess
+        else exitWith (ExitFailure 3)
+
+-- | Resolve a git reference to the commit it names and compare it with
+-- what the lock already pins (spec 11.5). A reference that resolves to
+-- a different commit than before is @E-MODULE-REV-MOVED@.
+resolveEntry ::
+  Maybe LockFile ->
+  (Text, DepEntry) ->
+  IO (Either Text (Text, LockEntry))
+resolveEntry existing (path, entry) = case entry of
+  DepUrl {} -> pure (Right (path, lockEntryOf entry))
+  DepGit url rev _ -> do
+    resolved <- resolveGitRev url rev
+    let base = lockEntryOf entry
+        wasRev = Map.lookup path (maybe Map.empty lockModules existing) >>= lkRev
+    pure $ case (resolved, wasRev) of
+      (Just sha, Just old)
+        | sha /= old ->
+            Left $
+              codeText EModuleRevMoved
+                <> ": '"
+                <> path
+                <> "': "
+                <> rev
+                <> " now resolves to "
+                <> sha
+                <> " (locked: "
+                <> old
+                <> ")"
+      (Just sha, _) -> Right (path, base {lkRev = Just sha})
+      (Nothing, _) -> Right (path, base)
+
+-- | The lock record of a declared entry (spec chapter 5). @requested@
+-- keeps the reference that was written; @rev@ is filled in only when
+-- that reference is already a full commit SHA.
+lockEntryOf :: DepEntry -> LockEntry
+lockEntryOf (DepGit u r h) =
+  LockEntry (Just u) Nothing (Just r) (if isFullSha r then Just r else Nothing) h
+lockEntryOf (DepUrl u h) = LockEntry Nothing (Just u) Nothing Nothing h
+
+isFullSha :: Text -> Bool
+isFullSha r = T.length r == 40 && T.all (\c -> c `elem` ("0123456789abcdef" :: String)) r
 
 -- | @lask deps add@: fetch the source, pin its content hash (trust on
 -- first use), record the entry and place the verified source in the
@@ -507,17 +537,18 @@ cmdDepsAdd :: CommonOpts -> Text -> DepsAddSource -> IO ()
 cmdDepsAdd opts name source = do
   unless (isLowerIdent name) $
     usageError opts ("dependency name must be a lower-case identifier: '" <> name <> "'")
-  cacheDir <- defaultCacheDir
-  let depsPath = takeDirectory (optModule opts) </> defaultDepsFileName
+  let baseDir = takeDirectory (optModule opts)
+      depsPath = baseDir </> defaultDepsFileName
       depSource = case source of
         AddGit url rev -> SrcGit url rev
         AddUrl url -> SrcUrl url
+  cacheDir <- cacheDirFor baseDir
   existingE <- loadDepsFile depsPath
   existing <- case existingE of
     Left d -> do
       TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
       exitWith (ExitFailure 1)
-    Right mDf -> pure (maybe (DepsFile Map.empty) id mDf)
+    Right mDf -> pure (maybe emptyDepsFile id mDf)
   fetched <- fetchAndStore cacheDir depSource
   case fetched of
     Left d -> do
@@ -527,8 +558,15 @@ cmdDepsAdd opts name source = do
       let entry = case depSource of
             SrcGit url rev -> DepGit url rev hash
             SrcUrl url -> DepUrl url hash
-          updated = DepsFile (Map.insert name entry (depsEntries existing))
+          updated = existing {depsEntries = Map.insert name entry (depsEntries existing)}
       BL.writeFile depsPath (renderDepsFile updated)
+      -- The resolution is recorded in the lock as well (spec 11.5), so
+      -- the project is immediately resolvable without a second step.
+      results <- syncAll cacheDir updated
+      BL.writeFile (baseDir </> defaultLockFileName)
+        . renderLockFile
+        . (\ms -> LockFile ms Map.empty)
+        $ Map.fromList [(p, lockEntryOf e) | (p, e, Right ()) <- results]
       TIO.putStrLn (name <> " " <> hash)
       exitSuccess
   where
@@ -550,36 +588,6 @@ compileOrExit opts = do
       TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
       exitWith (ExitFailure 1)
 
-envFilePathOf :: FilePath -> Maybe FilePath -> FilePath
-envFilePathOf baseDir = maybe (baseDir </> defaultEnvFileName) id
-
-loadEnvFileOrExit :: CommonOpts -> FilePath -> IO (Maybe EnvFile)
-loadEnvFileOrExit opts path = do
-  r <- loadEnvFile path
-  case r of
-    Right mFile -> pure mFile
-    Left d -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-      exitWith (ExitFailure 1)
-
--- | Static cross-check of @#env("name")@ references against the
--- environment definition file (spec 10.3).
-validateEnvNamesOrExit :: CommonOpts -> CoreProgram -> Maybe EnvFile -> IO ()
-validateEnvNamesOrExit opts core envFile = do
-  let names = nub [n | EnvRef n "env" "<undefined>" <- collectEnvRefs core envFile]
-  unless (null names) $ do
-    TIO.hPutStrLn stderr . renderDiagsLines (optJsonFormat opts) $
-      [ Diagnostic
-          ETypeEnvConstruct
-          StageStatic
-          NoSpan
-          ("environment '" <> n <> "' is not defined in the environment definition file")
-          Nothing
-          Nothing
-          []
-      | n <- names
-      ]
-    exitWith (ExitFailure 1)
 
 usageError :: CommonOpts -> Text -> IO a
 usageError opts msg = do
@@ -645,3 +653,220 @@ diagJson d =
         )
       ]
     location NoSpan = []
+
+-- | @lask env build@ (spec 11.7): materialize every recipe image the
+-- program requires. With @deps sync@, the only subcommand permitted to
+-- start a build.
+cmdEnvBuild :: CommonOpts -> IO ()
+cmdEnvBuild opts = withRecipes opts $ \baseDir recipes -> do
+  results <- mapM (buildOne baseDir) recipes
+  let failures = [e | Left e <- results]
+      built = [(df, tag) | Right (df, tag) <- results]
+  mapM_ (\(df, tag) -> TIO.putStrLn (df <> " -> " <> tag)) built
+  -- Record what was materialized, so `lask.lock.json` names the images
+  -- the resolved graph requires (spec chapter 5, 10.3).
+  let lockPath = baseDir </> defaultLockFileName
+  existing <- either (const Nothing) id <$> loadLockFile lockPath
+  BL.writeFile lockPath . renderLockFile $
+    (maybe emptyLock id existing)
+      { lockImages =
+          Map.fromList [("#" <> df, LockImage "recipe" Nothing (Just tag)) | (df, tag) <- built]
+      }
+  unless (null failures) $ do
+    mapM_ (TIO.hPutStrLn stderr) failures
+    exitWith (ExitFailure 3)
+  where
+    buildOne baseDir (df, ctx) = do
+      tagE <- recipeTag baseDir df ctx
+      case tagE of
+        Left e -> pure (Left e)
+        Right tag -> do
+          r <- buildRecipe baseDir df ctx tag
+          pure $ case r of
+            Left e -> Left (df <> ": " <> e)
+            Right () -> Right (df, tag)
+
+-- | @lask env list@ (spec 11.7): report every recipe image and whether
+-- it is present. Performs no network access and no build.
+cmdEnvList :: CommonOpts -> IO ()
+cmdEnvList opts = withRecipes opts $ \baseDir recipes ->
+  forM_ recipes $ \(df, ctx) -> do
+    tagE <- recipeTag baseDir df ctx
+    case tagE of
+      Left e -> TIO.hPutStrLn stderr e
+      Right tag -> do
+        ok <- imageExists tag
+        TIO.putStrLn (df <> "  recipe  " <> tag <> (if ok then "  present" else "  MISSING"))
+
+-- | Load the target module and hand its recipe environments to the
+-- action, exiting on static errors.
+withRecipes :: CommonOpts -> (FilePath -> [(Text, Text)] -> IO ()) -> IO ()
+withRecipes opts action = do
+  compiled <- compileOrExit opts
+  let core = compiledCore compiled
+      baseDir = cpBaseDir core
+      recipes = nubOrd (collectRecipes core)
+  action baseDir recipes
+  where
+    nubOrd = Set.toList . Set.fromList
+
+-- | @lask deps why@ (spec 11.5): the graph paths through which a
+-- dependency is reached. A name may appear in the lock without
+-- appearing in the project file, because a dependency can pull it in
+-- or re-export it (chapter 5).
+cmdDepsWhy :: CommonOpts -> Text -> IO ()
+cmdDepsWhy opts name = do
+  lock <- loadLockOrExit opts
+  let paths = [p | p <- Map.keys (lockModules lock), name `elem` T.splitOn ">" p]
+  if null paths
+    then usageError opts ("no such dependency in the lock file: '" <> name <> "'")
+    else mapM_ (TIO.putStrLn . T.replace ">" " -> ") paths
+
+-- | @lask deps diff@ (spec 11.5): what changes between the locked
+-- revision and the one the project file currently requests. The
+-- capability delta comes first, because that is the part a reviewer
+-- can check quickly.
+cmdDepsDiff :: CommonOpts -> Text -> IO ()
+cmdDepsDiff opts name = do
+  let baseDir = takeDirectory (optModule opts)
+  lock <- loadLockOrExit opts
+  dfE <- loadDepsFile (baseDir </> defaultDepsFileName)
+  df <- case dfE of
+    Left d -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+      exitWith (ExitFailure 1)
+    Right mDf -> pure (maybe emptyDepsFile id mDf)
+  entry <- case Map.lookup name (depsEntries df) of
+    Just e -> pure e
+    Nothing -> usageError opts ("no such dependency: '" <> name <> "'")
+  locked <- case Map.lookup name (lockModules lock) of
+    Just e -> pure e
+    Nothing -> usageError opts ("dependency '" <> name <> "' is not in the lock file")
+  let requested = case entry of
+        DepGit _ r _ -> Just r
+        DepUrl _ _ -> Nothing
+      line l r
+        | l == r = "  = " <> maybe "-" id l
+        | otherwise = "  - " <> maybe "-" id l <> "\n  + " <> maybe "-" id r
+  TIO.putStrLn "revision:"
+  TIO.putStrLn (line (lkRequested locked) requested)
+  TIO.putStrLn "content hash:"
+  TIO.putStrLn
+    ( if Just (lkHash locked) == entryHashMaybe entry
+        then "  = " <> lkHash locked
+        else "  - " <> lkHash locked <> "\n  + (unresolved; run 'lask deps sync')"
+    )
+  when (lkRequested locked /= requested) $
+    TIO.putStrLn "run 'lask deps sync' to resolve and review the new revision"
+
+entryHashMaybe :: DepEntry -> Maybe Text
+entryHashMaybe = Just . entryHash
+
+loadLockOrExit :: CommonOpts -> IO LockFile
+loadLockOrExit opts = do
+  let baseDir = takeDirectory (optModule opts)
+  r <- loadLockFile (baseDir </> defaultLockFileName)
+  case r of
+    Left d -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+      exitWith (ExitFailure 1)
+    Right Nothing -> do
+      TIO.hPutStrLn stderr (codeText EModuleLockStale <> ": no lock file; run 'lask deps sync'")
+      exitWith (ExitFailure 1)
+    Right (Just lf) -> pure lf
+
+-- | Check every dependency domain's computed capabilities against the
+-- grants the project gives it (spec 16.3). Reported before anything is
+-- evaluated; the runtime enforces the same grants independently.
+-- | Map a module path to the dependency domain it belongs to
+-- (spec 16.1): a module under the cache directory named by a locked
+-- content hash belongs to that dependency; anything else is the root
+-- domain, which this chapter does not restrict.
+domainResolver :: CoreProgram -> IO (Maybe DepsFile, FilePath -> Maybe Text)
+domainResolver core = do
+  let baseDir = cpBaseDir core
+  df <- either (const Nothing) id <$> loadDepsFile (baseDir </> defaultDepsFileName)
+  lock <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
+  cacheDir <- cacheDirFor baseDir
+  let byHash =
+        Map.fromList
+          [(lkHash e, path) | (path, e) <- Map.toList (maybe Map.empty lockModules lock)]
+      domainOf p =
+        listToMaybe
+          [ dep
+          | (h, dep) <- Map.toList byHash,
+            (cacheDir </> T.unpack h) `isPrefixOf` p
+              || (cacheDir </> T.unpack h <> ".lask") == p
+          ]
+  pure (df, domainOf)
+
+-- | The runtime environment check (spec 16.4). The owning module of a
+-- command execution expression must hold a grant for the resolved
+-- environment kind; the root domain is unrestricted.
+mkEnvPermit :: CoreProgram -> IO EnvPermit
+mkEnvPermit core = do
+  (df, domainOf) <- domainResolver core
+  pure $ \owner kind -> case df of
+    Nothing -> Nothing
+    Just deps -> case domainOf (T.unpack owner) of
+      Nothing -> Nothing
+      Just dep ->
+        let g = grantsFor deps (T.takeWhile (/= '>') dep)
+         in if kind `elem` grantEnvironments g
+              then Nothing
+              else
+                Just $
+                  "dependency '"
+                    <> dep
+                    <> "' is not granted the '"
+                    <> kind
+                    <> "' execution environment"
+
+checkGrantsOrExit :: CommonOpts -> CoreProgram -> IO ()
+checkGrantsOrExit opts core = do
+  (df, domainOf) <- domainResolver core
+  case df of
+    Nothing -> pure ()
+    Just deps -> do
+      let perDomain =
+            Map.fromListWith (<>)
+              [ (dep, caps)
+              | (p, caps) <- Map.toList (collectDomainCaps core),
+                Just dep <- [domainOf p]
+              ]
+          diags =
+            [ mkDiag dep exceeded
+            | (dep, caps) <- Map.toList perDomain,
+              let g = grantsFor deps (T.takeWhile (/= '>') dep),
+              let exceeded = excess g caps,
+              not (null exceeded)
+            ]
+      unless (null diags) $ do
+        TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) diags)
+        exitWith (ExitFailure 1)
+  where
+    excess g caps =
+      [ "environment '" <> k <> "'"
+      | k <- Set.toList (capEnvironments caps),
+        k `notElem` grantEnvironments g
+      ]
+        <> [ "environment variable '" <> v <> "'"
+           | v <- Set.toList (capEnvVars caps),
+             not (any (`globMatch` v) (grantEnvVars g))
+           ]
+
+    mkDiag dep xs =
+      mkDiagnostic EPermDeniedStatic StageStatic NoSpan $
+        "dependency '"
+          <> dep
+          <> "' uses "
+          <> T.intercalate ", " xs
+          <> " but is not granted it; add it to 'grants' in "
+          <> T.pack defaultDepsFileName
+
+-- | Glob match supporting a single trailing @*@ (spec 16.2).
+globMatch :: Text -> Text -> Bool
+globMatch pat v
+  | pat == "*" = True
+  | Just p <- T.stripSuffix "*" pat = p `T.isPrefixOf` v
+  | otherwise = pat == v

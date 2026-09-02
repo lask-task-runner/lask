@@ -30,10 +30,6 @@ data RunOpts = RunOpts
   { runCommon :: CommonOpts,
     runArgDecode :: ArgDecodeMode,
     runStdoutEncode :: StdoutEncode,
-    runEnvFile :: Maybe FilePath,
-    runSshKnownHosts :: Maybe FilePath,
-    runSshStrictHostKey :: Maybe Text,
-    runSshConnectTimeout :: Maybe Int,
     -- | @--help@ / @-h@ before the function name. After the function
     -- name it reaches 'runArgs' instead and is handled there
     -- (spec 11.2).
@@ -46,12 +42,8 @@ data RunOpts = RunOpts
 
 data EnvsOpts = EnvsOpts
   { envsCommon :: CommonOpts,
-    envsEnvFile :: Maybe FilePath,
     envsFunction :: Maybe Text,
-    envsCheck :: Bool,
-    envsSshKnownHosts :: Maybe FilePath,
-    envsSshStrictHostKey :: Maybe Text,
-    envsSshConnectTimeout :: Maybe Int
+    envsCheck :: Bool
   }
 
 data RootCommand
@@ -62,8 +54,12 @@ data RootCommand
   | CmdInfer CommonOpts (Maybe Text)
   | CmdRepl CommonOpts
   | CmdEnvs EnvsOpts
-  | CmdDepsSync CommonOpts
+  | CmdDepsSync CommonOpts Bool
   | CmdDepsAdd CommonOpts Text DepsAddSource
+  | CmdDepsWhy CommonOpts Text
+  | CmdDepsDiff CommonOpts Text
+  | CmdEnvBuild CommonOpts
+  | CmdEnvList CommonOpts
   | CmdVersion
 
 -- | The source of a @deps add@ entry (spec 11.5).
@@ -121,10 +117,6 @@ pRunOpts =
           <> value EncodeJson
           <> help "How to encode the eval result (default: json)"
       )
-    <*> optional (strOption (long "env-file" <> metavar "PATH" <> help "Environment definition file"))
-    <*> optional (strOption (long "ssh-known-hosts" <> metavar "PATH"))
-    <*> optional (T.pack <$> strOption (long "ssh-strict-host-key-checking" <> metavar "yes|accept-new|no"))
-    <*> optional (option auto (long "ssh-connect-timeout" <> metavar "SECONDS"))
     <*> switch
       ( long "help"
           <> short 'h'
@@ -137,12 +129,8 @@ pEnvsOpts :: Parser EnvsOpts
 pEnvsOpts =
   EnvsOpts
     <$> pCommon
-    <*> optional (strOption (long "env-file" <> metavar "PATH" <> help "Environment definition file"))
     <*> optional (T.pack <$> argument str (metavar "FUNCTION"))
     <*> switch (long "check" <> help "Check accessibility of each environment")
-    <*> optional (strOption (long "ssh-known-hosts" <> metavar "PATH"))
-    <*> optional (T.pack <$> strOption (long "ssh-strict-host-key-checking" <> metavar "yes|accept-new|no"))
-    <*> optional (option auto (long "ssh-connect-timeout" <> metavar "SECONDS"))
 
 -- | Two deviations from the obvious parser for @run@ \/ @eval@.
 --
@@ -183,6 +171,7 @@ pRootCommand =
         <> command "repl" (withHelp (CmdRepl <$> pCommon) (progDesc "Interactive session"))
         <> command "envs" (withHelp (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))
         <> command "deps" (withHelp pDepsCommand (progDesc "Manage external dependencies"))
+        <> command "env" (withHelp pEnvCommand (progDesc "Materialize and inspect container images"))
         <> command "version" (withHelp (pure CmdVersion) (progDesc "Print the lask version"))
     )
   where
@@ -204,12 +193,29 @@ runOptionsHelp subcommand =
       | subcommand == "eval" = "Run a function and print its result"
       | otherwise = "Run a function (result is not printed)"
 
+pEnvCommand :: Parser RootCommand
+pEnvCommand =
+  hsubparser
+    ( command
+        "build"
+        (info (CmdEnvBuild <$> pCommon) (progDesc "Materialize every image the program requires"))
+        <> command
+          "list"
+          (info (CmdEnvList <$> pCommon) (progDesc "Report every image reference and whether it is present"))
+    )
+
 pDepsCommand :: Parser RootCommand
 pDepsCommand =
   hsubparser
     ( command
         "sync"
-        (info (CmdDepsSync <$> pCommon) (progDesc "Fetch and verify all declared dependencies"))
+        ( info
+            ( CmdDepsSync
+                <$> pCommon
+                <*> switch (long "frozen" <> help "Fail instead of updating the lock file")
+            )
+            (progDesc "Fetch and verify all declared dependencies")
+        )
         <> command
           "add"
           ( info
@@ -219,6 +225,18 @@ pDepsCommand =
                   <*> pAddSource
               )
               (progDesc "Fetch a source, record it with its content hash, and cache it")
+          )
+        <> command
+          "why"
+          ( info
+              (CmdDepsWhy <$> pCommon <*> (T.pack <$> argument str (metavar "NAME")))
+              (progDesc "Report the graph paths through which a dependency is reached")
+          )
+        <> command
+          "diff"
+          ( info
+              (CmdDepsDiff <$> pCommon <*> (T.pack <$> argument str (metavar "NAME")))
+              (progDesc "Report what a dependency bump would change")
           )
     )
   where

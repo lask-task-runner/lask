@@ -1,6 +1,6 @@
 // Example 03: driving Terraform through the external lask-terraform module.
 //
-// The dependency is declared in dependencies.lask.json, pinned by content
+// The dependency is declared in lask.json, pinned by content
 // hash (spec ch. 5). Fetch it once (the only network-touching step):
 //   lask deps sync
 // Then, from this directory:
