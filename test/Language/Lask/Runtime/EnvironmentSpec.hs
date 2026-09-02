@@ -3,7 +3,7 @@
 module Language.Lask.Runtime.EnvironmentSpec (spec) where
 
 import Data.Either (isLeft)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -70,7 +70,10 @@ spec = do
   describe "command execution log relay (spec 12.3)" $ do
     let mkLoggedRunner = do
           logRef <- newIORef []
-          let sink cl = modifyIORef' logRef (<> [cl])
+          -- The runner relays stdout and stderr from two concurrent
+          -- threads, so a sink must be atomic: a plain read-modify-write
+          -- here loses entries.
+          let sink cl = atomicModifyIORef' logRef (\ls -> (ls <> [cl], ()))
           runner <- mkCommandRunner "/tmp" sink
           pure (runner, readIORef logRef)
         runWithLog cmd = do
