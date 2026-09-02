@@ -37,11 +37,11 @@ library
       Language.Lask.Deps.Fetch
       Language.Lask.Deps.File
       Language.Lask.Deps.Hash
+      Language.Lask.Deps.Lock
       Language.Lask.Desugar.Return
       Language.Lask.Diagnostic
       Language.Lask.Doc
       Language.Lask.Elaborate
-      Language.Lask.EnvFile
       Language.Lask.ErrorCode
       Language.Lask.Lexer
       Language.Lask.Lexer.Layout
@@ -52,6 +52,7 @@ library
       Language.Lask.Obs.Events
       Language.Lask.Repl
       Language.Lask.Runtime.Environment
+      Language.Lask.Runtime.Image
       Language.Lask.Runtime.Eval
       Language.Lask.Runtime.Secrets
       Language.Lask.Runtime.Value

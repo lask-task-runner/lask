@@ -207,13 +207,12 @@ spec = beforeAll findLask $ do
         resOut r `shouldBe` "\"hello world\\n\"\n"
     it "envs lists referenced environments" $ \lask ->
       withProject
-        [ ("main.lask", "f() = $[#env(\"builder\")] make\ng() = $[#alpine:3.20] ls\n"),
-          ("environments.lask.json", "{\"environments\": {\"builder\": {\"kind\": \"docker\", \"params\": {\"image\": \"golang:1.22\"}}}}")
+        [ ("main.lask", "f() = $[#docker(dockerfile = \"infra/Dockerfile\")] make\ng() = $[#alpine:3.20] ls\n")
         ]
         $ \dir -> do
           r <- runLask lask dir ["envs"] ""
           resExit r `shouldBe` 0
-          resOut r `shouldSatisfy` isInfixOf "builder"
+          resOut r `shouldSatisfy` isInfixOf "infra/Dockerfile"
           resOut r `shouldSatisfy` isInfixOf "alpine:3.20"
     it "limits envs to the call graph of the given function (spec 11.4)" $ \lask ->
       withProject
@@ -351,7 +350,7 @@ spec = beforeAll findLask $ do
         -- deps add fetches (file:// URL, no network), records and caches.
         r1 <- runLaskEnv lask proj extraEnv ["deps", "add", "notify", "--url", "file://" <> srcDir </> "notify.lask"] ""
         resExit r1 `shouldBe` 0
-        doesFileExist (proj </> "dependencies.lask.json") `shouldReturn` True
+        doesFileExist (proj </> "lask.json") `shouldReturn` True
 
         r2 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
         r2 `shouldBe` Result 0 "\"sent:a\"\n" ""
@@ -379,7 +378,7 @@ spec = beforeAll findLask $ do
         r7 <- runLaskEnv lask proj extraEnv ["check"] ""
         resExit r7 `shouldBe` 1
 
-    it "adds and imports a git tree dependency (main.lask convention and subpaths)" $ \lask ->
+    it "adds and imports a git tree dependency through its entry module" $ \lask ->
       withSystemTempDirectory "lask-deps-git" $ \root -> do
         let cache = root </> "cache"
             repo = root </> "repo"
@@ -387,16 +386,20 @@ spec = beforeAll findLask $ do
             extraEnv = [("LASK_CACHE_DIR", cache)]
         createDirectoryIfMissing True repo
         createDirectoryIfMissing True proj
-        writeFile (repo </> "main.lask") "import { u } from \"./util.lask\"\nhello(): String = u\n"
+        -- The re-export binds `u` locally as well as publishing it.
+        writeFile (repo </> "main.lask") $
+          "export { u } from \"./util.lask\"\n"
+            <> "hello(): String = u\n"
         writeFile (repo </> "util.lask") "u: String = \"from-kit\"\n"
         let git args = readCreateProcessWithExitCode ((proc "git" args) {cwd = Just repo}) ""
         _ <- git ["init", "--quiet"]
         _ <- git ["add", "."]
         _ <- git ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "-m", "init"]
         _ <- git ["tag", "v1"]
+        -- Only the entry module is importable; `u` reaches the
+        -- consumer through the re-export in main.lask (spec 5).
         writeFile (proj </> "main.lask") $
-          "import { hello } from \"kit\"\n"
-            <> "import { u } from \"kit/util.lask\"\n"
+          "import { hello, u } from \"kit\"\n"
             <> "f(): String = concat(hello(), u)\n"
         r1 <- runLaskEnv lask proj extraEnv ["deps", "add", "kit", "--git", "file://" <> repo, "--rev", "v1"] ""
         resExit r1 `shouldBe` 0
@@ -411,7 +414,7 @@ spec = beforeAll findLask $ do
     it "reports malformed dependency files with exit 1" $ \lask ->
       withProject
         [ ("main.lask", "a = 1\n"),
-          ("dependencies.lask.json", "{\"dependencies\": {\"kit\": {\"git\": \"https://x\"}}}")
+          ("lask.json", "{\"dependencies\": {\"kit\": {\"git\": \"https://x\"}}}")
         ]
         $ \dir -> do
           r <- runLask lask dir ["deps", "sync"] ""

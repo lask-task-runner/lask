@@ -152,9 +152,60 @@ terminator = void (sym TNewline) <|> void (sym TSemi)
 pModule :: P Module
 pModule = do
   skipMany terminator
-  decls <- sepEndBy pDecl (skipSome terminator)
+  items <- sepEndBy pTopLevel (skipSome terminator)
   pEnd
-  pure (Module decls)
+  pure
+    ( Module
+        (map fst items)
+        (Set.fromList [n | (d, True) <- items, Just n <- [declaredName d]])
+    )
+  where
+    declaredName d = case declF d of
+      DValue n _ _ _ -> Just n
+      DFunction n _ _ _ -> Just n
+      DTypeAlias n _ -> Just n
+      _ -> Nothing
+
+-- | One top-level declaration and whether it carries @internal@.
+-- @export@ and @internal@ are contextual keywords (spec 5): they are
+-- markers only at the start of a declaration and only when the next
+-- token cannot continue a value or function binding. A leading word
+-- that turns out to be an ordinary identifier is pushed back.
+pTopLevel :: P (Decl, Bool)
+pTopLevel = do
+  lead <- peekTok
+  case lead of
+    Just t@(Spanned s (TLowerId w))
+      | w == "export" || w == "internal" -> do
+          _ <- lowerId
+          nxt <- peekTok
+          case nxt of
+            -- @export { a, b } from "path"@ (spec 5).
+            Just (Spanned _ TLBrace) | w == "export" -> do
+              _ <- sym TLBrace
+              specs <- sepBy1 pImportSpec (sym TComma)
+              _ <- sym TRBrace
+              Spanned e path <- kw KFrom *> stringLit "export path"
+              pure (Decl (s <> e) (DExportFrom specs path), False)
+            -- An ordinary declaration whose name happens to be
+            -- @export@ or @internal@.
+            Just (Spanned _ nt)
+              | nt `elem` [TAssign, TLParen, TColon] -> do
+                  pushBack t
+                  plain
+            _ -> do
+              d <- pDecl
+              pure (d, w == "internal")
+    _ -> plain
+  where
+    plain = (\d -> (d, False)) <$> pDecl
+
+-- | Return a token to the push-back buffer, undoing a lookahead that
+-- consumed it.
+pushBack :: Spanned Token -> P ()
+pushBack t = do
+  pb <- lift get
+  lift (put (t : pb))
 
 pDecl :: P Decl
 pDecl = choice [pImport, pTypeAliasDecl, pValueOrFunction]

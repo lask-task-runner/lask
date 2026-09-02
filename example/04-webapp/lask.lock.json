@@ -1,0 +1,10 @@
+{
+    "images": {
+        "#infra/Dockerfile": {
+            "kind": "recipe",
+            "tag": "lask/ec2d070931dadbd41f4980da6d6fb73b43abe0695469a783de5525e4b7eabbd8"
+        }
+    },
+    "lock_version": 1,
+    "modules": {}
+}

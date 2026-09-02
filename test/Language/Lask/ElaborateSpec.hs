@@ -200,15 +200,23 @@ spec = do
     it "rejects non-Environment command environments" $
       rejects "b(e: Number) = $[e] ls" ETypeCommandEnv
     it "accepts environment constructors" $
-      accepts "e1 = #local\ne2 = #docker(\"alpine:3.12\", memory = \"4g\")\ne3 = #env(\"ansible\")\ne4 = #alpine:3.12"
-    it "rejects docker without an image" $
+      accepts "e1 = #local\ne2 = #docker(\"alpine:3.12\", memory = \"4g\")\ne3 = #docker(dockerfile = \"infra/Dockerfile\", context = \".\")\ne4 = #alpine:3.12"
+    it "rejects docker without an image or a recipe" $
       rejects "e = #docker()" ETypeEnvConstruct
     it "rejects unknown docker options" $
       rejects "e = #docker(\"a\", nope = 1)" ETypeEnvConstruct
     it "rejects interpolated env names" $
       rejects "n = \"x\"\ne = #env(\"a#{n}\")" ETypeEnvConstruct
-    it "rejects remote constructors in code" $
+    it "rejects unknown environment kinds" $
       rejects "e = #remote(\"h\")" ETypeEnvConstruct
+    it "rejects a docker image reference without a tag or digest" $
+      rejects "e = #docker(\"alpine\")" ETypeEnvConstruct
+    it "rejects giving both an image reference and a recipe" $
+      rejects "e = #docker(\"alpine:3.20\", dockerfile = \"D\")" ETypeEnvConstruct
+    it "rejects a recipe path escaping the module tree" $
+      rejects "e = #docker(dockerfile = \"../D\")" ETypeEnvConstruct
+    it "rejects a non-literal recipe path" $
+      rejects "p = \"D\"\ne = #docker(dockerfile = \"#{p}\")" ETypeEnvConstruct
     it "rejects interpolating non-stringifiable values" $
       rejects "u = {a: 1}\ns = \"v=#{u}\"" ETypeMismatch
 
