@@ -51,7 +51,6 @@ data RootCommand
   | CmdCheck CommonOpts
   | CmdRun RunOpts
   | CmdEval RunOpts
-  | CmdInfer CommonOpts (Maybe Text)
   | CmdRepl CommonOpts
   | CmdEnvs EnvsOpts
   | CmdDepsSync CommonOpts Bool
@@ -161,12 +160,6 @@ pRootCommand =
           ( info
               (CmdEval <$> pRunOpts)
               (progDesc "Run a function and print its result" <> noIntersperse)
-          )
-        <> command
-          "infer"
-          ( withHelp
-              (CmdInfer <$> pCommon <*> optional (T.pack <$> strOption (long "symbol" <> metavar "NAME")))
-              (progDesc "Print inferred types")
           )
         <> command "repl" (withHelp (CmdRepl <$> pCommon) (progDesc "Interactive session"))
         <> command "envs" (withHelp (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))

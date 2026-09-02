@@ -184,7 +184,7 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["eval", "f"] ""
         r `shouldBe` Result 0 "" ""
 
-  describe "check and infer (spec 11.1)" $ do
+  describe "check (spec 11.1)" $ do
     it "check reports validity" $ \lask ->
       withProject [("main.lask", "a = 1\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""
@@ -194,10 +194,6 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["check", "--format", "json"] ""
         resExit r `shouldBe` 1
         resOut r `shouldSatisfy` isInfixOf "E-TYPE-MISMATCH"
-    it "infer prints declaration types" $ \lask ->
-      withProject [("main.lask", "add(x: Number, y: Number): Number = x + y\n")] $ \dir -> do
-        r <- runLask lask dir ["infer", "--symbol", "add"] ""
-        r `shouldBe` Result 0 "add: Function<Number, Number, Number>\n" ""
 
   describe "commands and environments (spec 16.5, 16.7)" $ do
     it "runs local commands with interpolation" $ \lask ->
