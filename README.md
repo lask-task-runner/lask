@@ -6,10 +6,12 @@ Instead of sprawling shell scripts or YAML pipelines, tasks in Lask are plain fu
 
 The language, CLI, execution environments, and observability are defined by the specification in [doc/spec.md](doc/spec.md).
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="doc/assets/main-dark.svg">
-  <img alt="Lask task definitions: a Docker-pinned cowsay command, an inferred-type pure function, and one task calling another" src="doc/assets/main-light.svg" width="628">
-</picture>
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="doc/assets/main-dark.svg">
+    <img alt="Lask task definitions: a Docker-pinned cowsay command, an inferred-type pure function, and one task calling another" src="doc/assets/main-light.svg" width="628">
+  </picture>
+</div>
 
 <details>
 <summary>Copy the source of this example</summary>
@@ -35,10 +37,12 @@ cowsay_hello(name: String) = do {
 
 Running it:
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="doc/assets/session-dark.svg">
-  <img alt="Terminal session: lask check reports the module is valid, then lask run cowsay-hello Lask traces the cowsay command in its Docker environment and prints the cow" src="doc/assets/session-light.svg" width="660">
-</picture>
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="doc/assets/session-dark.svg">
+    <img alt="Terminal session: lask check reports the module is valid, then lask run cowsay-hello Lask traces the cowsay command in its Docker environment and prints the cow" src="doc/assets/session-light.svg" width="660">
+  </picture>
+</div>
 
 ### Why Lask
 
