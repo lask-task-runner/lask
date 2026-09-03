@@ -6,46 +6,39 @@ Instead of sprawling shell scripts or YAML pipelines, tasks in Lask are plain fu
 
 The language, CLI, execution environments, and observability are defined by the specification in [doc/spec.md](doc/spec.md).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/assets/main-dark.svg">
+  <img alt="Lask task definitions: a Docker-pinned cowsay command, an inferred-type pure function, and one task calling another" src="doc/assets/main-light.svg" width="628">
+</picture>
+
+<details>
+<summary>Copy the source of this example</summary>
+
 ```lask
-// Sample function to greet using `echo`.
-// example:
-// >>> lask run hello --name Lask
-hello(--name: String = "World"): String = $ echo "Hello, #{name}!"
+// Environments are values: this task runs inside a Docker image, so
+// nothing has to be installed locally.
+cowsay(message: String): String = $[#rancher/cowsay] cowsay "#{message}"
 
-// Sample function to run Go tests in the Docker environment.
-// example:
-// >>> lask run test_backend
-test_backend(): String = $[#golang:1.22] go test ./...
+// Types are inferred, so annotations are optional — and a task that
+// runs no command at all is just a pure function.
+hello(--name = "World") = "Hello, #{name}!"
 
-// Sample function to run Node.js tests in the Docker environment.
-// example:
-// >>> lask run test_frontend
-test_frontend(): String = $[#node:20] npm test
-
-// Sample function to run both backend and frontend tests concurrently.
-// example:
-// >>> lask run test_all
-test_all(): String = do {
-  test1 = async test_backend()
-  test2 = async test_frontend()
-  await test1
-  await test2
-  return "successfully ran all tests"
-}
-
-// Sample function to build a Go binary with version info.
-// example:
-// >>> lask run build --version 1.0.0
-build(--version: String = "latest"): String = do {
-  build1 = async $[#golang:1.22] go build -o my-api --ldflags "-X main.version=#{version}" ./cmd/my-api
-  build2 = async $[#node:20] npm run build
-  await build1
-  $ docker build -t my-api:#{version} ./api
-  await build2
-  $ docker build -t my-gui:#{version} ./gui
-  return "successfully built my-api:#{version} and my-gui:#{version}"
+// Tasks compose: call another task exactly like an ordinary function.
+// >>> lask run cowsay-hello Lask
+cowsay_hello(name: String) = do {
+  message = hello(name = name)
+  cowsay(message)
 }
 ```
+
+</details>
+
+Running it:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/assets/session-dark.svg">
+  <img alt="Terminal session: lask check reports the module is valid, then lask run cowsay-hello Lask traces the cowsay command in its Docker environment and prints the cow" src="doc/assets/session-light.svg" width="660">
+</picture>
 
 ### Why Lask
 

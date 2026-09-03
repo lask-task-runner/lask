@@ -1,0 +1,15 @@
+{
+  "name": "lask-highlight",
+  "private": true,
+  "type": "module",
+  "description": "Renders Lask sources and captured terminal sessions to SVG cards for the README.",
+  "scripts": {
+    "render": "npm run render:code && npm run render:session",
+    "render:code": "node render.mjs ../../doc/assets/main.lask ../../doc/assets main.lask",
+    "render:session": "node render-session.mjs ../../doc/assets/session.txt ../../doc/assets 'zsh \u2014 lask'",
+    "capture": "cd ../../doc/assets && { echo '$ lask check'; lask check; echo; echo '$ lask run cowsay-hello Lask'; lask run cowsay-hello Lask; } 2>&1 | grep -v 'WARNING: The requested image' > session.txt"
+  },
+  "dependencies": {
+    "shiki": "^4.4.3"
+  }
+}
