@@ -172,11 +172,26 @@ Function and keyword-argument names map from kebab-case on the CLI
 $ cd ./example/01-basic
 $ lask eval hello --name Lask
 "Hello, Lask!"
-$ lask run cowsay-hello Lask     # needs Docker
+$ lask run cowsay-hello Lask
+2026-09-04T15:43:40.248Z [#rancher/cowsay:1] $ cowsay "Hello, Lask!"
+2026-09-04T15:43:40.541Z [#rancher/cowsay:1] 1|  ______________
+2026-09-04T15:43:40.541Z [#rancher/cowsay:1] 1| < Hello, Lask! >
+2026-09-04T15:43:40.542Z [#rancher/cowsay:1] 1|  --------------
+2026-09-04T15:43:40.542Z [#rancher/cowsay:1] 1|         \   ^__^
+2026-09-04T15:43:40.542Z [#rancher/cowsay:1] 1|          \  (oo)\_______
+2026-09-04T15:43:40.543Z [#rancher/cowsay:1] 1|             (__)\       )\/\
+2026-09-04T15:43:40.543Z [#rancher/cowsay:1] 1|                 ||----w |
+2026-09-04T15:43:40.544Z [#rancher/cowsay:1] 1|                 ||     ||
+2026-09-04T15:43:40.858Z [#rancher/cowsay:1] exit 0
 ```
+
+`hello` is a pure function and needs nothing installed; `cowsay_hello` calls it and
+runs the result in a container, so the second command needs Docker. Every command Lask
+runs is logged with its environment, its stream (`1|` stdout, `2|` stderr) and its exit
+status.
 
 ### Development
 
 ```bash
-$ stack test
+$ lask run test
 ```
