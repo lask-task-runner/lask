@@ -1,14 +1,23 @@
-// Environments are values: this task runs inside a Docker image, so
-// nothing has to be installed locally.
-cowsay(message: String): String = $[#rancher/cowsay] cowsay "#{message}"
+// Environments are values: pin an image once, reuse it everywhere.
+go    = #golang:1.22
+node  = #node:20
+// A custom image builds from a Dockerfile and is used the same way.
+infra = #docker(dockerfile = "Dockerfile", context = ".")
 
-// Types are inferred, so annotations are optional — and a task that
-// runs no command at all is just a pure function.
-hello(--name = "World") = "Hello, #{name}!"
+test_api(): String = $[go] go test ./...
+test_web(): String = $[node] npm test
 
-// Tasks compose: call another task exactly like an ordinary function.
-// >>> lask run cowsay-hello Lask
-cowsay_hello(name: String) = do {
-  message = hello(name = name)
-  cowsay(message)
+// Both suites run concurrently; the build and deploy follow in order.
+// >>> lask run release --dry-run true
+release(--dry_run = false) = do {
+  api = async test_api()
+  web = async test_web()
+  await api
+  await web
+  $[go] go build
+  if (dry_run) {
+    $[infra] terraform plan
+  } else {
+    $[infra] terraform apply -auto-approve
+  }
 }

@@ -41,6 +41,9 @@ function tokenize(text, theme) {
     if (line === '') return []
     if (line.startsWith('$ ')) return promptLine(line.slice(2), p)
 
+    const err = /^(E-[A-Z0-9-]+:)(.*)$/.exec(line)
+    if (err) return [{ content: err[1], color: p.red }, { content: err[2], color: p.fg }]
+
     const m = TIMESTAMP.exec(line)
     if (!m) return [{ content: line, color: p.fg }]
 

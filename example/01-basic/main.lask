@@ -1,17 +1,14 @@
-// Sample function to greet using `echo`.
-// example:
-// >>> lask run hello
-// >>> lask eval hello --name Lask
-hello(--name: String = "World"): String = $ echo "Hello, #{name}!"
+// Environments are values: this task runs inside a Docker image, so
+// nothing has to be installed locally.
+cowsay(message: String): String = $[#rancher/cowsay] cowsay "#{message}"
 
-// Sample of a function that adds two numbers together,
-// using the eval command to print the function's return value
-// in JSON format on the stdout.
-// example:
-// >>> lask eval add 1 2
-add(a: Number, b: Number) = {result: a + b}
+// Types are inferred, so annotations are optional — and a task that
+// runs no command at all is just a pure function.
+hello(--name = "World") = "Hello, #{name}!"
 
-// This is a sample of running a cowsay in Docker.
-// example:
-// >>> lask run cowsay
-cowsay(--text: String = "Hello, Lask!") = $[#rancher/cowsay] #{text}
+// Tasks compose: call another task exactly like an ordinary function.
+// >>> lask run cowsay-hello Lask
+cowsay_hello(name: String) = do {
+  message = hello(name = name)
+  cowsay(message)
+}

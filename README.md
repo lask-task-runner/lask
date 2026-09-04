@@ -9,7 +9,7 @@ The language, CLI, execution environments, and observability are defined by the 
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="doc/assets/main-dark.svg">
-    <img alt="Lask task definitions: a Docker-pinned cowsay command, an inferred-type pure function, and one task calling another" src="doc/assets/main-light.svg" width="628">
+    <img alt="Lask task definitions: three pinned environments as values, two test suites running concurrently in separate containers, then a build and either a terraform plan or apply" src="doc/assets/main-light.svg" width="611">
   </picture>
 </div>
 
@@ -17,32 +17,32 @@ The language, CLI, execution environments, and observability are defined by the 
 <summary>Copy the source of this example</summary>
 
 ```lask
-// Environments are values: this task runs inside a Docker image, so
-// nothing has to be installed locally.
-cowsay(message: String): String = $[#rancher/cowsay] cowsay "#{message}"
+// Environments are values: pin an image once, reuse it everywhere.
+go    = #golang:1.22
+node  = #node:20
+// A custom image builds from a Dockerfile and is used the same way.
+infra = #docker(dockerfile = "Dockerfile", context = ".")
 
-// Types are inferred, so annotations are optional — and a task that
-// runs no command at all is just a pure function.
-hello(--name = "World") = "Hello, #{name}!"
+test_api(): String = $[go] go test ./...
+test_web(): String = $[node] npm test
 
-// Tasks compose: call another task exactly like an ordinary function.
-// >>> lask run cowsay-hello Lask
-cowsay_hello(name: String) = do {
-  message = hello(name = name)
-  cowsay(message)
+// Both suites run concurrently; the build and deploy follow in order.
+// >>> lask run release --dry-run true
+release(--dry_run = false) = do {
+  api = async test_api()
+  web = async test_web()
+  await api
+  await web
+  $[go] go build
+  if (dry_run) {
+    $[infra] terraform plan
+  } else {
+    $[infra] terraform apply -auto-approve
+  }
 }
 ```
 
 </details>
-
-Running it:
-
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="doc/assets/session-dark.svg">
-    <img alt="Terminal session: lask check reports the module is valid, then lask run cowsay-hello Lask traces the cowsay command in its Docker environment and prints the cow" src="doc/assets/session-light.svg" width="660">
-  </picture>
-</div>
 
 ### Install
 
@@ -167,11 +167,12 @@ Function and keyword-argument names map from kebab-case on the CLI
 `lask run show-version --out-dir /tmp` calls `show_version(--out_dir ...)`).
 
 ### Example
- ```bash
+
+```bash
 $ cd ./example/01-basic
-$ lask run hello
-$ lask eval add 1 2
-{"result":3}
+$ lask eval hello --name Lask
+"Hello, Lask!"
+$ lask run cowsay-hello Lask     # needs Docker
 ```
 
 ### Development
