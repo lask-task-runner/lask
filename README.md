@@ -44,6 +44,64 @@ Running it:
   </picture>
 </div>
 
+### Install
+
+<details open>
+<summary><b>macOS</b> &middot; Homebrew</summary>
+
+```bash
+$ brew tap lask-task-runner/tap
+$ brew trust lask-task-runner/tap
+$ brew install lask
+```
+
+</details>
+
+<details>
+<summary><b>macOS / Linux</b> &middot; download the binary</summary>
+
+```bash
+$ VERSION=$(curl -fsSL https://api.github.com/repos/lask-task-runner/lask/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f4)
+$ TARGET=linux-amd64 # or macos-amd64, macos-arm64
+$ curl -fsSL -o lask.tar.gz "https://github.com/lask-task-runner/lask/releases/download/${VERSION}/lask-${VERSION}-${TARGET}.tar.gz"
+$ tar -xzf lask.tar.gz
+$ sudo mv ./lask /usr/local/bin
+```
+
+Uninstall with `sudo rm /usr/local/bin/lask`.
+
+</details>
+
+<details>
+<summary><b>Windows</b> &middot; PowerShell</summary>
+
+```powershell
+> $version = (Invoke-RestMethod https://api.github.com/repos/lask-task-runner/lask/releases/latest).tag_name
+> Invoke-WebRequest -Uri "https://github.com/lask-task-runner/lask/releases/download/$version/lask-$version-windows-amd64.zip" -OutFile lask.zip
+> Expand-Archive -Path lask.zip -DestinationPath "$env:LOCALAPPDATA\Programs\lask" -Force
+> setx PATH "$env:PATH;$env:LOCALAPPDATA\Programs\lask"
+```
+
+Restart your terminal for the updated `PATH` to take effect. Uninstall with
+`Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\lask"`.
+
+</details>
+
+<details>
+<summary><b>From source</b> &middot; Haskell toolchain</summary>
+
+Needs [GHCup](https://www.haskell.org/ghcup/) or `brew install haskell-stack`.
+
+```bash
+$ stack --local-bin-path /usr/local/bin/ install
+```
+
+</details>
+
+Verify with `lask --help`. Archives for every platform are on the
+[latest release](https://github.com/lask-task-runner/lask/releases/latest); APT and
+Chocolatey support is planned.
+
 ### Why Lask
 
 - **Locally Verifiable**: The exact same task definitions run locally and in CI. Static analysis (`lask check`) guarantees your arguments and types are correct before execution starts, ending the "push and pray" cycle.
@@ -90,63 +148,6 @@ Lask is pre-1.0: features are `experimental` until the first tagged release, and
 Lask provides a VS Code extension for a rich editing experience, including syntax highlighting, type checking, go-to-definition, and autocomplete powered by the built-in language server.
 
 You can install the [Lask extension from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ToruIkeda.vscode-lask) or search for "Lask" within VS Code.
-
-### Installation
-
-#### Homebrew (macOS)
-
-```bash
-$ brew tap lask-task-runner/tap
-$ brew trust lask-task-runner/tap
-$ brew install lask
-```
-
-#### Manual install (download binary)
-
-Download the archive for your platform from the [latest release](https://github.com/lask-task-runner/lask/releases/latest) and put the `lask` binary on your `PATH`.
-
-macOS / Linux:
-
-```bash
-$ VERSION=$(curl -fsSL https://api.github.com/repos/lask-task-runner/lask/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f4)
-$ TARGET=linux-amd64 # or macos-amd64, macos-arm64
-$ curl -fsSL -o lask.tar.gz "https://github.com/lask-task-runner/lask/releases/download/${VERSION}/lask-${VERSION}-${TARGET}.tar.gz"
-$ tar -xzf lask.tar.gz
-$ sudo mv ./lask /usr/local/bin
-```
-
-Make sure `~/.local/bin` is on your `PATH` (add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if it isn't), then verify with `lask --help`.
-
-Windows (PowerShell):
-
-```powershell
-> $version = (Invoke-RestMethod https://api.github.com/repos/lask-task-runner/lask/releases/latest).tag_name
-> Invoke-WebRequest -Uri "https://github.com/lask-task-runner/lask/releases/download/$version/lask-$version-windows-amd64.zip" -OutFile lask.zip
-> Expand-Archive -Path lask.zip -DestinationPath "$env:LOCALAPPDATA\Programs\lask" -Force
-> setx PATH "$env:PATH;$env:LOCALAPPDATA\Programs\lask"
-```
-
-Restart your terminal for the updated `PATH` to take effect, then verify with `lask --help`.
-
-To uninstall, remove the installed binary:
-
-```bash
-$ rm ~/.local/bin/lask
-```
-
-```powershell
-> Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\lask"
-```
-
-> **Note**: Package manager support beyond Homebrew (APT, Chocolatey) is planned for a future release.
-
-#### Build from source
-
-To build Lask, you need the Haskell toolchain ([GHCup](https://www.haskell.org/ghcup/) or `brew install haskell-stack`).
-
-```bash
-$ stack --local-bin-path /usr/local/bin/ install
-```
 
 ### Usage
 
