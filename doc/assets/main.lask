@@ -8,7 +8,9 @@ test_api(): String = $[go] go test ./...
 test_web(): String = $[node] npm test
 
 // Both suites run concurrently; the build and deploy follow in order.
-// >>> lask run release --dry-run true
+//
+// @param dry_run  Run `terraform plan` instead of `terraform apply`.
+// @example lask run release --dry-run true
 release(--dry_run = false) = do {
   api = async test_api()
   web = async test_web()

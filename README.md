@@ -31,7 +31,9 @@ test_api(): String = $[go] go test ./...
 test_web(): String = $[node] npm test
 
 // Both suites run concurrently; the build and deploy follow in order.
-// >>> lask run release --dry-run true
+//
+// @param dry_run  Run `terraform plan` instead of `terraform apply`.
+// @example lask run release --dry-run true
 release(--dry_run = false) = do {
   api = async test_api()
   web = async test_web()
@@ -193,9 +195,36 @@ $ lask serve                       # language server (LSP)
 $ lask version                     # print the lask version
 ```
 
-Function and keyword-argument names map from kebab-case on the CLI
+Function and keyword-argument names map from kebab-case on the CLI: `lask run show-version --out-dir /tmp` calls `show_version(--out_dir ...)`.
 
-`lask run show-version --out-dir /tmp` calls `show_version(--out_dir ...)`).
+#### Every task documents itself
+
+Types are already in the source, so `--help` does not need a hand-written usage string. It reports the signature, the return type it inferred, and — because environments are values rather than strings — every image the task will need, before you run it:
+
+```bash
+$ lask run release --help
+Usage:
+  lask run release [--dry_run <Bool>]
+
+Parameters:
+  --dry_run : Bool = false
+      Run `terraform plan` instead of `terraform apply`.
+
+Returns:
+  String
+
+Environments:
+  Dockerfile  docker       recipe Dockerfile
+  docker      golang:1.22
+  docker      node:20
+
+Examples:
+  lask run release --dry-run true
+
+Defined at main.lask:14
+```
+
+The prose comes from the documentation comment above the declaration: its first paragraph is the summary, and `@param`, `@return`, and `@example` lines fill in the rest ([spec 3.1](doc/spec.md)). The same text is what the editor shows on hover.
 
 ### Status
 
