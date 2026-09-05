@@ -1,10 +1,14 @@
 # Lask
 
-Lask (lambda + task) is a locally verifiable, type-safe task runner. It brings the composability of functional programming to your daily automation and CI/CD pipelines.
+[![test](https://github.com/lask-task-runner/lask/actions/workflows/test.yml/badge.svg)](https://github.com/lask-task-runner/lask/actions/workflows/test.yml)
+[![release](https://img.shields.io/github/v/release/lask-task-runner/lask?sort=semver)](https://github.com/lask-task-runner/lask/releases/latest)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Instead of sprawling shell scripts or YAML pipelines, tasks in Lask are plain functions with real types and arguments. This allows `lask check` to catch typos, missing arguments, and type mismatches before execution begins. Whether it runs on your laptop or inside a pinned container, the workflow stays reproducible.
+Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
 
-The language, CLI, execution environments, and observability are defined by the specification in [doc/spec.md](doc/spec.md).
+A `deploy.sh` grows until nobody wants to touch it: no real arguments, no types, no way to exercise one step without running all of them, and a typo three functions down that surfaces only in production. It also only truly works on the machine of whoever wrote it, since it silently inherits their `jq`, their GNU `sed`, their Python. Pipeline YAML you cannot run on your laptop at all, so changing one character means push, wait, read a red log, guess again.
+
+Lask answers each of those in the file itself. A task is an ordinary function — typed keyword arguments, a return value, callable on its own — and the image it runs in is a value written beside the command, so one definition reproduces on any machine. `lask check` resolves every name, argument, and type across the whole file before a single command runs.
 
 <div align="center">
   <picture>
@@ -104,18 +108,9 @@ Chocolatey support is planned.
 
 ### Why Lask
 
-- **Locally Verifiable**: The exact same task definitions run locally and in CI. Static analysis (`lask check`) guarantees your arguments and types are correct before execution starts, ending the "push and pray" cycle.
-- **First-Class Environments**: Execution environments (`#local`, `#docker(...)`) are treated as normal language values. Pinning the exact execution environment directly in code—alongside your functions and types—ensures strict reproducibility anywhere, without forcing you to migrate to a heavy framework.
-- **Composable & Modular**: Unlike Makefiles or shell scripts where passing arguments safely and reusing code is difficult, Lask uses structured function arguments (keyword, variadic, defaults) and standard module imports.
-
-### Features
-
-- Statically checked before execution: syntax, name resolution, and a structural type system (`Number`, `String`, `Bool`, `Array<T>`, `Map<T>`, `Record<...>`, `Function<...>`, `AsyncHandle<T>`, `Environment`).
-- Procedural sugar (`do`, `if`/`else`, `for`, `return`, `try`/`catch`/`finally`, `async`/`await`) normalized onto a small functional core.
-- Command execution with environment selection: `$ cmd` (stdout), `$2 cmd` (stderr), `$* cmd` (whole result), `$[#alpine:3.20] cmd` (a Docker image), `$[#docker(dockerfile = "...", context = ".")] cmd` (an image built from a Dockerfile, with optional `memory` / `cpus` limits).
-- Modules with named/namespace imports (`./`-relative paths); stdin bound as the `stdin` string; JSON I/O.
-- External dependencies declared in `lask.json` and pinned by content hash in the committed `lask.lock.json` (`lask deps add` / `lask deps sync` / `lask deps why`); `check`, `run`, and `eval` refuse to proceed against a stale lock, and never resolve anything the lock does not already pin — execution touches no network, only a verified local cache.
-- Observability: trace IDs, `call`/`return`/`fail` execution events (`--format json`), stack traces, spec-defined exit codes.
+- **The feedback loop stays on your laptop.** The typo that used to cost a push and eight minutes of CI now underlines itself as you type: the VS Code extension talks to a language server built into the same binary, raising the same errors, with the same codes, that `lask check` would. In the terminal that check resolves names, arities, and types across every task in milliseconds — over the very definitions CI will run, with no second copy in YAML to drift out of sync.
+- **The environment belongs to the task, not to the machine or the runner's config.** A shell script inherits whatever happens to be installed, which is how `sed -i` works for its author and breaks for everyone on the other OS. A CI job pins its image in a file your laptop never reads, which is why "works in CI" and "works here" stay separate questions. In Lask `#golang:1.22` is a value written next to the command, and that same pin applies on every machine that runs the task.
+- **Arguments and reuse without the shell tax.** Instead of `"$1"` and `set -u` discipline, tasks take keyword arguments with defaults and declared types. Instead of copying a helper script between repos, you import a module pinned by content hash.
 
 ### Comparison
 
@@ -138,36 +133,6 @@ Lask is a task runner, not a build system. Here is how it compares to the tools 
 - If all you need is a flat list of one-line command aliases, `just` is simpler and that simplicity is a feature.
 
 **When Lask pays off:** tasks that take arguments, call each other, run in pinned Docker environments, or run concurrently — the point where Makefiles and YAML pipelines usually turn into untestable shell scripts. `lask check` verifies all of it before anything executes.
-
-### Status
-
-Lask is pre-1.0: features are `experimental` until the first tagged release, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released.
-
-### Supported Editors
-
-Lask provides a VS Code extension for a rich editing experience, including syntax highlighting, type checking, go-to-definition, and autocomplete powered by the built-in language server.
-
-You can install the [Lask extension from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ToruIkeda.vscode-lask) or search for "Lask" within VS Code.
-
-### Usage
-
-```bash
-$ lask check                       # static validation
-$ lask run <function> [args...]    # execute (result not printed)
-$ lask eval <function> [args...]   # execute and print the result as JSON
-$ lask envs [--check]              # list/check referenced environments
-$ lask env build | list            # materialize / inspect container images
-$ lask deps sync                   # fetch + verify external dependencies
-$ lask deps add <name> --git <url> --rev <rev>   # or --url <url>
-$ lask deps why <name>             # show why a dependency is in the graph
-$ lask repl                        # interactive session
-$ lask serve                       # language server (LSP)
-$ lask version                     # print the lask version
-```
-
-Function and keyword-argument names map from kebab-case on the CLI
-
-`lask run show-version --out-dir /tmp` calls `show_version(--out_dir ...)`).
 
 ### Example
 
@@ -192,6 +157,49 @@ $ lask run cowsay-hello Lask
 runs the result in a container, so the second command needs Docker. Every command Lask
 runs is logged with its environment, its stream (`1|` stdout, `2|` stderr) and its exit
 status.
+
+### Editor Support
+
+Because tasks are typed, the editor can help in ways it cannot with a shell script. `lask serve` is a language server built into the same binary, so the VS Code extension gives you the errors `lask check` would report as you type, plus go-to-definition, autocomplete, hover types, and inlay hints for inferred ones.
+
+Install the [Lask extension from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ToruIkeda.vscode-lask), or search for "Lask" in VS Code.
+
+### Features
+
+What is in the box, for the reader who is already convinced:
+
+- **Types** — a structural system over `Number`, `String`, `Bool`, `Array<T>`, `Map<T>`, `Record<...>`, `Function<...>`, `AsyncHandle<T>` and `Environment`, checked along with syntax and name resolution before anything executes.
+- **Control flow** — `do`, `if`/`else`, `for`, `return`, `try`/`catch`/`finally` and `async`/`await`, all normalized onto a small functional core.
+- **Commands** — `$ cmd` captures stdout, `$2 cmd` stderr, `$* cmd` the whole result. Prefix with an environment to choose where it runs: `$[#alpine:3.20] cmd` for an image, or `$[#docker(dockerfile = "...", context = ".")] cmd` to build one, with optional `memory` and `cpus` limits.
+- **Modules** — named and namespace imports over `./`-relative paths, `stdin` bound as a string, JSON in and out.
+- **Dependencies** — declared in `lask.json`, pinned by content hash in a committed `lask.lock.json` (`lask deps add` / `sync` / `why`). `check`, `run` and `eval` refuse a stale lock and resolve nothing it does not already pin, so execution touches no network — only a verified local cache.
+- **Observability** — trace IDs, `call`/`return`/`fail` events (`--format json`), stack traces, and exit codes fixed by the spec.
+
+Every one of these is defined normatively in [doc/spec.md](doc/spec.md).
+
+### Usage
+
+```bash
+$ lask check                       # static validation
+$ lask run <function> [args...]    # execute (result not printed)
+$ lask eval <function> [args...]   # execute and print the result as JSON
+$ lask envs [--check]              # list/check referenced environments
+$ lask env build | list            # materialize / inspect container images
+$ lask deps sync                   # fetch + verify external dependencies
+$ lask deps add <name> --git <url> --rev <rev>   # or --url <url>
+$ lask deps why <name>             # show why a dependency is in the graph
+$ lask repl                        # interactive session
+$ lask serve                       # language server (LSP)
+$ lask version                     # print the lask version
+```
+
+Function and keyword-argument names map from kebab-case on the CLI
+
+`lask run show-version --out-dir /tmp` calls `show_version(--out_dir ...)`).
+
+### Status
+
+Lask is pre-1.0: features are `experimental` until the first tagged release, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released.
 
 ### Development
 
