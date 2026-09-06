@@ -184,7 +184,7 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["eval", "f"] ""
         r `shouldBe` Result 0 "" ""
 
-  describe "check and infer (spec 11.1)" $ do
+  describe "check (spec 11.1)" $ do
     it "check reports validity" $ \lask ->
       withProject [("main.lask", "a = 1\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""
@@ -194,10 +194,6 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["check", "--format", "json"] ""
         resExit r `shouldBe` 1
         resOut r `shouldSatisfy` isInfixOf "E-TYPE-MISMATCH"
-    it "infer prints declaration types" $ \lask ->
-      withProject [("main.lask", "add(x: Number, y: Number): Number = x + y\n")] $ \dir -> do
-        r <- runLask lask dir ["infer", "--symbol", "add"] ""
-        r `shouldBe` Result 0 "add: Function<Number, Number, Number>\n" ""
 
   describe "commands and environments (spec 16.5, 16.7)" $ do
     it "runs local commands with interpolation" $ \lask ->
@@ -207,14 +203,28 @@ spec = beforeAll findLask $ do
         resOut r `shouldBe` "\"hello world\\n\"\n"
     it "envs lists referenced environments" $ \lask ->
       withProject
-        [ ("main.lask", "f() = $[#env(\"builder\")] make\ng() = $[#alpine:3.20] ls\n"),
-          ("environments.lask.json", "{\"environments\": {\"builder\": {\"kind\": \"docker\", \"params\": {\"image\": \"golang:1.22\"}}}}")
+        [ ("main.lask", "f() = $[#docker(dockerfile = \"infra/Dockerfile\")] make\ng() = $[#alpine:3.20] ls\n")
         ]
         $ \dir -> do
           r <- runLask lask dir ["envs"] ""
           resExit r `shouldBe` 0
-          resOut r `shouldSatisfy` isInfixOf "builder"
+          resOut r `shouldSatisfy` isInfixOf "infra/Dockerfile"
           resOut r `shouldSatisfy` isInfixOf "alpine:3.20"
+    it "limits envs to the call graph of the given function (spec 11.4)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "build_go() = $[#golang:1.22] go build ./...\n\
+            \build_node() = $[#node:20] npm run build\n\
+            \backend() = build_go()\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["envs", "backend"] ""
+          resExit r `shouldBe` 0
+          resOut r `shouldSatisfy` isInfixOf "golang:1.22"
+          resOut r `shouldNotContain` "node:20"
+          whole <- runLask lask dir ["envs"] ""
+          resOut whole `shouldSatisfy` isInfixOf "node:20"
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""
@@ -336,7 +346,7 @@ spec = beforeAll findLask $ do
         -- deps add fetches (file:// URL, no network), records and caches.
         r1 <- runLaskEnv lask proj extraEnv ["deps", "add", "notify", "--url", "file://" <> srcDir </> "notify.lask"] ""
         resExit r1 `shouldBe` 0
-        doesFileExist (proj </> "dependencies.lask.json") `shouldReturn` True
+        doesFileExist (proj </> "lask.json") `shouldReturn` True
 
         r2 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
         r2 `shouldBe` Result 0 "\"sent:a\"\n" ""
@@ -364,7 +374,7 @@ spec = beforeAll findLask $ do
         r7 <- runLaskEnv lask proj extraEnv ["check"] ""
         resExit r7 `shouldBe` 1
 
-    it "adds and imports a git tree dependency (main.lask convention and subpaths)" $ \lask ->
+    it "adds and imports a git tree dependency through its entry module" $ \lask ->
       withSystemTempDirectory "lask-deps-git" $ \root -> do
         let cache = root </> "cache"
             repo = root </> "repo"
@@ -372,16 +382,20 @@ spec = beforeAll findLask $ do
             extraEnv = [("LASK_CACHE_DIR", cache)]
         createDirectoryIfMissing True repo
         createDirectoryIfMissing True proj
-        writeFile (repo </> "main.lask") "import { u } from \"./util.lask\"\nhello(): String = u\n"
+        -- The re-export binds `u` locally as well as publishing it.
+        writeFile (repo </> "main.lask") $
+          "export { u } from \"./util.lask\"\n"
+            <> "hello(): String = u\n"
         writeFile (repo </> "util.lask") "u: String = \"from-kit\"\n"
         let git args = readCreateProcessWithExitCode ((proc "git" args) {cwd = Just repo}) ""
         _ <- git ["init", "--quiet"]
         _ <- git ["add", "."]
         _ <- git ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "-m", "init"]
         _ <- git ["tag", "v1"]
+        -- Only the entry module is importable; `u` reaches the
+        -- consumer through the re-export in main.lask (spec 5).
         writeFile (proj </> "main.lask") $
-          "import { hello } from \"kit\"\n"
-            <> "import { u } from \"kit/util.lask\"\n"
+          "import { hello, u } from \"kit\"\n"
             <> "f(): String = concat(hello(), u)\n"
         r1 <- runLaskEnv lask proj extraEnv ["deps", "add", "kit", "--git", "file://" <> repo, "--rev", "v1"] ""
         resExit r1 `shouldBe` 0
@@ -396,8 +410,127 @@ spec = beforeAll findLask $ do
     it "reports malformed dependency files with exit 1" $ \lask ->
       withProject
         [ ("main.lask", "a = 1\n"),
-          ("dependencies.lask.json", "{\"dependencies\": {\"kit\": {\"git\": \"https://x\"}}}")
+          ("lask.json", "{\"dependencies\": {\"kit\": {\"git\": \"https://x\"}}}")
         ]
         $ \dir -> do
           r <- runLask lask dir ["deps", "sync"] ""
           resExit r `shouldBe` 1
+
+  describe "spec 11.6: help display" $ do
+    let src =
+          "// Build the project.\n\
+          \//\n\
+          \// The long form of the description.\n\
+          \//\n\
+          \// @param target   Build target name.\n\
+          \// @param out_dir  Where the artifact goes.\n\
+          \// @return The artifact path.\n\
+          \// @example lask run build release\n\
+          \build(target: String, --out_dir: String = \"dist\"): String =\n\
+          \  concat(target, out_dir)\n\
+          \\n\
+          \// Run the tests.\n\
+          \test(): String = \"ok\"\n\
+          \\n\
+          \// Internal.\n\
+          \//\n\
+          \// @hidden\n\
+          \scratch(): String = \"x\"\n\
+          \\n\
+          \deploy(host: String, --token!!: String = \"s3cret\"): String = concat(host, token)\n"
+
+    it "prints the signature, docs and defaults on stdout with exit 0" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "build", "--help"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldBe` ""
+        resOut r `shouldContain` "build - Build the project."
+        resOut r `shouldContain` "lask run build <target> [--out_dir <String>]"
+        resOut r `shouldContain` "The long form of the description."
+        resOut r `shouldContain` "--out_dir : String = \"dist\""
+        resOut r `shouldContain` "Build target name."
+        resOut r `shouldContain` "The artifact path."
+        resOut r `shouldContain` "lask run build release"
+        resOut r `shouldContain` "Defined at main.lask:9"
+
+    it "names the invoked subcommand in the usage line" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "build", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "lask eval build <target>"
+
+    it "never reveals the default of a secret parameter (spec 12.8)" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "deploy", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "--token : String = <secret>"
+        resOut r `shouldNotContain` "s3cret"
+
+    it "lists the module's functions, excluding @hidden ones" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "Functions in main.lask:"
+        resOut r `shouldContain` "build   Build the project."
+        resOut r `shouldContain` "test    Run the tests."
+        resOut r `shouldNotContain` "scratch"
+
+    it "lists functions only, but still helps on a plain value binding" $ \lask ->
+      withProject [("main.lask", "out_dir = \"dist\"\n" <> src)] $ \dir -> do
+        l <- runLask lask dir ["run", "--help"] ""
+        l `shouldSatisfy` (not . isInfixOf "out_dir " . resOut)
+        v <- runLask lask dir ["run", "out_dir", "--help"] ""
+        resExit v `shouldBe` 0
+        resOut v `shouldContain` "out_dir"
+        resOut v `shouldContain` "Returns:"
+
+    it "wins over argument binding errors (spec 11.6)" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "build", "--nosuch", "1", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "lask run build <target>"
+
+    it "passes a literal --help to the function after -- (spec 11.2)" $ \lask ->
+      withProject [("main.lask", "id1(a: String): String = a\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "id1", "--", "--help"] ""
+        resOut r `shouldNotContain` "Usage:"
+        resExit r `shouldBe` 4
+
+    it "reports an unknown function as a usage error (exit 4)" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "buidl", "--help"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldContain` "E-CLI-USAGE"
+        resErr r `shouldContain` "did you mean 'build'?"
+
+    it "still prints help when the module does not type check" $ \lask ->
+      withProject [("main.lask", src <> "\nbroken(): Number = \"not a number\"\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "build", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "lask run build <target>"
+        resErr r `shouldContain` "E-TYPE"
+
+    it "exits 1 when the module cannot be parsed" $ \lask ->
+      withProject [("main.lask", "build( = \n")] $ \dir -> do
+        r <- runLask lask dir ["run", "build", "--help"] ""
+        resExit r `shouldBe` 1
+        resOut r `shouldBe` ""
+
+    it "still shows the option help when the module cannot be parsed" $ \lask ->
+      withProject [("main.lask", "build( = \n")] $ \dir -> do
+        r <- runLask lask dir ["run", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "Usage: lask run"
+        resOut r `shouldNotContain` "Functions in"
+
+    it "reports the same information as JSON under --format json" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "--format", "json", "build", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "\"kind\":\"function-help\""
+        resOut r `shouldContain` "\"name\":\"out_dir\""
+        resOut r `shouldContain` "\"kind\":\"keyword\""
+        resOut r `shouldContain` "\"returns\":{\"doc\":\"The artifact path.\",\"type\":\"String\"}"
+        l <- runLask lask dir ["run", "--format", "json", "--help"] ""
+        resOut l `shouldContain` "\"kind\":\"function-list\""
+        resOut l `shouldContain` "\"signature\":\"test(): String\""

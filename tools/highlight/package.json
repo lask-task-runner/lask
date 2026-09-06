@@ -1,0 +1,12 @@
+{
+  "name": "lask-highlight",
+  "private": true,
+  "type": "module",
+  "description": "Renders Lask sources and captured terminal sessions to SVG cards for the README.",
+  "scripts": {
+    "render": "node render.mjs ../../doc/assets/main.lask ../../doc/assets main.lask"
+  },
+  "dependencies": {
+    "shiki": "^4.4.3"
+  }
+}

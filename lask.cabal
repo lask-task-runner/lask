@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           lask
-version:        0.2.0
+version:        0.3.0
 description:    Please see the README on GitHub at <https://github.com/lask-task-runner/lask#readme>
 homepage:       https://github.com/lask-task-runner/lask#readme
 bug-reports:    https://github.com/lask-task-runner/lask/issues
@@ -25,6 +25,8 @@ library
   exposed-modules:
       Command.Lask.ArgCodec
       Command.Lask.Entry
+      Command.Lask.Envs
+      Command.Lask.Help
       Command.Lask.Options
       Language.Lask
       Language.Lask.Builtins.Impl
@@ -35,10 +37,11 @@ library
       Language.Lask.Deps.Fetch
       Language.Lask.Deps.File
       Language.Lask.Deps.Hash
+      Language.Lask.Deps.Lock
       Language.Lask.Desugar.Return
       Language.Lask.Diagnostic
+      Language.Lask.Doc
       Language.Lask.Elaborate
-      Language.Lask.EnvFile
       Language.Lask.ErrorCode
       Language.Lask.Lexer
       Language.Lask.Lexer.Layout
@@ -49,6 +52,7 @@ library
       Language.Lask.Obs.Events
       Language.Lask.Repl
       Language.Lask.Runtime.Environment
+      Language.Lask.Runtime.Image
       Language.Lask.Runtime.Eval
       Language.Lask.Runtime.Secrets
       Language.Lask.Runtime.Value
@@ -142,6 +146,7 @@ test-suite lask-test
   other-modules:
       Command.Lask.CliSpec
       Language.Lask.Deps.DepsSpec
+      Language.Lask.DocSpec
       Language.Lask.ElaborateSpec
       Language.Lask.LexerSpec
       Language.Lask.Module.LoaderSpec

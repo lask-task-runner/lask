@@ -66,19 +66,20 @@ This specification is intended to serve as the reference for implementation, ver
 - [10. Execution Environments](#10-execution-environments)
   - [10.1 The `Environment` Type and Environment Expressions](#101-the-environment-type-and-environment-expressions)
   - [10.2 Target Environment Profiles and Environment Constructor Signatures](#102-target-environment-profiles-and-environment-constructor-signatures)
-  - [10.3 Environment Definition File](#103-environment-definition-file)
+  - [10.3 Container Image Resolution and Materialization](#103-container-image-resolution-and-materialization)
   - [10.4 Environment Resolution Rules](#104-environment-resolution-rules)
   - [10.5 Working Directory Rules](#105-working-directory-rules)
   - [10.6 Environment Variable Rules](#106-environment-variable-rules)
   - [10.7 Permission Boundary](#107-permission-boundary)
   - [10.8 Responsibilities for Absorbing Environment Differences](#108-responsibilities-for-absorbing-environment-differences)
-  - [10.9 The SSH Execution Model for `remote`](#109-the-ssh-execution-model-for-remote)
 - [11. CLI Specification](#11-cli-specification)
   - [11.1 Subcommands](#111-subcommands)
   - [11.2 Function Invocation](#112-function-invocation)
   - [11.3 Input/Output Contract](#113-inputoutput-contract)
   - [11.4 Environment Check (`envs`)](#114-environment-check-envs)
   - [11.5 Dependency Management (`deps`)](#115-dependency-management-deps)
+  - [11.6 Help Display (`--help`)](#116-help-display---help)
+  - [11.7 Environment Materialization (`env`)](#117-environment-materialization-env)
 - [12. Observability](#12-observability)
   - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
   - [12.2 Execution Log](#122-execution-log)
@@ -178,9 +179,9 @@ This section defines the principal terms used in this specification.
 - Function: An evaluation unit that receives input and returns a value. The basic unit of execution in this specification.
 - Task: A colloquial term used in practice; in Lask, an execution target expressed as a function.
 - Module: A source-file unit consisting of a set of declarations and imports.
-- Execution environment: The target context in which commands are executed. Specified by environment expressions `#local` / `#docker(...)` / `#env(...)` (and the Docker sugar `#image-name`).
-- Environment definition file: `environments.lask.json` (10.3), which defines named environments (remote connection targets, etc.).
-- Dependency definition file: `dependencies.lask.json` (Chapter 5), which declares external Lask source code fetched over the internet (source location, version, and content hash).
+- Execution environment: The target context in which commands are executed. Specified by environment expressions `#local` / `#docker(...)` (and the container sugar `#image-name`).
+- Project file: `lask.json` (Chapter 5), which declares external Lask source code fetched over the internet.
+- Lock file: `lask.lock.json` (Chapter 5), which records the resolution of the whole dependency graph and of the container images it requires.
 - Execution event: A time-series record unit representing calls, return values, and failures.
 - Serialization: The process of converting a value into an external representation so that it can be stored and transferred.
 - Core expression: An expression remaining after static expansion of syntactic sugar (7.6). The evaluation target of the dynamic semantics (Chapter 8).
@@ -238,6 +239,23 @@ Rules:
 - By including `block_comment` itself in the definition of `block_comment`, nesting of block comments is permitted.
 - Permitting nesting allows temporarily commenting out a large region without breaking existing internal `/* ... */` comments.
 - Implementations must track the comment depth and must determine comment termination only at the outermost `*/`.
+
+Documentation comments:
+
+The contiguous block of comments directly above a declaration (Chapter 5) is the documentation comment of that declaration. No dedicated syntax is introduced; both line comments and block comments participate.
+
+- The block is the run of comments that ends on the line immediately above the declaration and continues upward without a gap. A blank line or any other token terminates the block.
+- The comment markers (`//`, `/*`, `*/`) are stripped and the remaining lines are joined with newlines.
+- The first paragraph (up to the first blank line) is the **summary**. It is used wherever a single line is required, such as the function list of 11.6.
+- The paragraphs that follow, up to the first tag line, are the **description**.
+- A line whose first non-space character is `@` is a **tag line**. The following tags are defined.
+  - `@param <name> <text>`: documentation for the parameter `<name>`. `<name>` is matched after the name mapping of 11.2, so both `out_dir` and `out-dir` designate the same parameter.
+  - `@return <text>`: documentation for the return value.
+  - `@example <text>`: a usage example. Multiple occurrences are permitted and are displayed in order of appearance.
+  - `@hidden`: excludes the declaration from listings (11.6). Help requested by name is still displayed.
+- Unknown tags are not errors; they are carried through into the description as written (forward compatibility).
+- An `@param` that names a parameter the declaration does not have is not an error either. It may be reported as the advisory diagnostic `W-DOC-PARAM-UNKNOWN` (14.2).
+- Documentation comments have no effect on static or dynamic semantics. They are consumed by editor integration (`serve`) and by help display (11.6).
 
 ### 3.2 Identifiers
 
@@ -510,14 +528,17 @@ This chapter defines modules, declarations, public symbols, and imports.
 
 ```ebnf
 Module        = { TopLevelDecl } .
-TopLevelDecl  = ( ImportDecl | TypeAliasDecl | Declaration ) decl_end .
+TopLevelDecl  = ( ImportDecl | ExportDecl
+                | [ Visibility ] ( TypeAliasDecl | Declaration ) ) decl_end .
 decl_end      = newline | ";" .
+Visibility    = "export" | "internal" .
 TypeAliasDecl = "type" upper_id "=" Type .
 Declaration = ValueDecl | FunctionDecl .
 ValueDecl   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 FunctionDecl = lower_id "(" [ FunctionParameterList ] ")" [ ":" Type ] "=" Expression .
 
 ImportDecl      = "import" ( NamedImports | NamespaceImport ) "from" ImportPath .
+ExportDecl      = "export" NamedImports "from" ImportPath .
 NamedImports    = "{" ImportSpecifier { "," ImportSpecifier } "}" .
 ImportSpecifier = ( lower_id | upper_id ) [ "as" ( lower_id | upper_id ) ] .
 NamespaceImport = "*" "as" lower_id .
@@ -532,6 +553,8 @@ Declaration termination rules:
 - `as` and `from` are not continuation tokens (6.5). An `import` declaration must be written on one line, except inside the braces of `NamedImports` (which may span multiple lines by the open-bracket continuation rule). The closing `}` and the `from` clause must be placed on the same line.
 - A line-leading `(` or `[` does not continue the preceding declaration and is interpreted as the start of a new declaration. Since a top-level declaration begins with `import`, `type`, or an identifier, this case results in a syntax error.
 - The optional `!!` marker on a `ValueDecl` name declares a secret binding (6.10); it does not affect parsing of the rest of the declaration.
+- `export` and `internal` are contextual keywords, not reserved words (3.2). They are recognized only at the start of a top-level declaration: if the following token is `=`, `(`, or `:`, the word is an ordinary identifier; otherwise it is a visibility marker. For `export`, a following `{` begins an `ExportDecl`, while a following identifier or `type` marks a declaration.
+- `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
 
 Module loading unit:
 
@@ -541,14 +564,18 @@ Module loading unit:
 Import path resolution:
 
 - An `ImportPath` starting with `./` or `../` is a local import. It is resolved relative to the directory of the importing module.
-- Any other `ImportPath` (a bare path) is an external import. Its first path segment must be a dependency name declared in the dependency definition file (see "External dependencies" below); otherwise it is a static error (`E-MODULE-UNRESOLVED`).
-- If the dependency is a single `.lask` file, the dependency name itself is the module path (e.g. `import { send } from "notify"`).
-- For a dependency fetched as a source tree (`git`, or an archive `url`), the remainder of the path is resolved within the fetched tree (e.g. `import { rollout } from "deploy-kit/deploy.lask"`).
-- A bare dependency name with no path remainder resolves to `main.lask` at the root of the fetched tree (the entry-point convention). Publishers should expose the public API of a tree dependency from its `main.lask`. If the tree has no `main.lask`, the bare-name import is a static error (`E-MODULE-UNRESOLVED`).
+- Any other `ImportPath` (a bare path) is an external import. It must consist of exactly one path segment, which must be a dependency name declared in the project file (see "External dependencies" below); otherwise it is a static error (`E-MODULE-UNRESOLVED`).
+- If the dependency is a single `.lask` file, the dependency name is the module path (e.g. `import { send } from "notify"`).
+- For a dependency fetched as a source tree (`git`, or an archive `url`), the dependency name resolves to `main.lask` at the root of the fetched tree. This is the tree's **entry module**, and it is the only file of the tree that an external import may reach.
+- A path with a remainder (e.g. `"deploy-kit/deploy.lask"`) is a static error (`E-MODULE-DEEP-IMPORT`), even when the named file exists in the fetched tree. A publisher whose public API spans several files re-exports it from the entry module (`ExportDecl`, below).
+- If the tree has no `main.lask`, the import is a static error (`E-MODULE-UNRESOLVED`).
 
 Public scope and visibility:
 
-- A `Declaration` or `TypeAliasDecl` declared at the top level is a public symbol of that module.
+- A `Declaration` or `TypeAliasDecl` declared at the top level is a public symbol of that module, unless it carries the `internal` marker.
+- Omitting the visibility marker is equivalent to `export`. The explicit form changes nothing about the meaning of the declaration; it exists so that a module can state its public surface where the surface matters.
+- A declaration marked `internal` is not a public symbol. It is therefore unreachable by external import, by local import from another file of the same tree, by `ExportDecl`, by CLI invocation (11.2), and from the function listing of help display (11.6). References from within the same module are unaffected.
+- An implementation may report the advisory diagnostic `W-EXPORT-INCONSISTENT` (14.2) when one file mixes explicit and omitted markers, because an omitted marker may then be misread as non-public. The meaning is unambiguous in either case, so this is never an error.
 - Local bindings defined inside a module (function parameters, bindings inside `do`, etc.) are not public.
 - The same top-level symbol name must not be declared more than once within the same module.
 
@@ -559,6 +586,16 @@ Import forms:
 - A namespace import `import * as m from "path"` refers to the target module through the namespace `m`. Public symbols are not brought in implicitly and are referenced in the form `m.symbol`.
 - Type aliases (`upper_id`) can be brought in by named import. Because a type reference in a type annotation is limited to a `NamedType` (4.2) consisting of a single `upper_id`, type references via a namespace (`m.TypeName`) are not possible. To use a type, use a named import.
 - No form is provided that unconditionally brings in all public symbols (the names to be brought in are made explicit in the declaration).
+
+Re-export (`ExportDecl`):
+
+- `export { a, b } from "path"` is a named import whose bound names are, in addition, public symbols of the current module. The `ImportSpecifier` rules, including `as` renaming, are those of a named import.
+- Because the names are bound as declarations and not as values, a re-exported function retains its parameter list: keyword parameters, defaults, variadics, and arity are preserved, and calls through the re-exported name follow 7.5 exactly as calls through the original declaration do. (A value binding such as `f = m.f` produces a function value instead, and calls through function values cannot supply keyword arguments (6.1).)
+- Type aliases may be re-exported.
+- A name that is not a public symbol of the target module is an error before type checking.
+- `ImportPath` may be a local path or a dependency name. Re-exporting from a dependency republishes that dependency's symbols as part of the current module's public API.
+- No wildcard form is provided: neither `export * from` nor `export * as ns from`. The names to be published are made explicit in the declaration, for the same reason that no bulk import form is provided.
+- Same-name collision rules are those of named imports. `ExportDecl` edges participate in the acyclicity requirement of the module dependency graph.
 
 Evaluation timing of top-level declarations:
 
@@ -579,37 +616,71 @@ Handling of circular imports:
 
 External dependencies:
 
-External Lask source code fetched over the internet is declared in the dependency definition file and imported by name. Code contains only the dependency name (intent); the source location, version, and integrity information are bound in the project file.
+External Lask source code fetched over the internet is declared in the project file and imported by name. Code contains only the dependency name (intent); the source location, version, and integrity information are bound outside the code.
 
-Dependency definition file:
+Project file:
 
-- The default file name is `dependencies.lask.json`, loaded from the base directory for module resolution (the same location as `main.lask`). No per-invocation override of this file is provided (dependencies must be identical for every invocation).
+- The default file name is `lask.json`, loaded from the base directory for module resolution. No per-invocation override of this file is provided (dependencies must be identical for every invocation).
 - Schema:
 
 ```json
 {
   "dependencies": {
-    "deploy-kit": {"git": "https://github.com/example/lask-deploy-kit", "rev": "v1.2.0", "hash": "sha256-..."},
-    "notify": {"url": "https://example.com/tasks/notify.lask", "hash": "sha256-..."}
+    "deploy-kit": {
+      "git": "https://github.com/example/lask-deploy-kit",
+      "rev": "v1.2.0"
+    },
+    "notify": {"url": "https://example.com/tasks/notify.lask"}
   }
 }
 ```
 
 - The top-level `dependencies` map associates a dependency name (a string conforming to `lower_id`; 3.2) with an entry.
-- An entry has exactly one source: `git` (a repository URL; `rev` — a tag or commit — is required) or `url` (an archive or a single `.lask` file).
-- `hash` (a content hash of the fetched source) is required for every entry. The same dependency definition must always yield identical source code.
-- Entries are typically recorded with `lask deps add` (11.5), which fetches the source and computes the content hash on first use.
+- An entry has exactly one source: `git` (a repository URL; `rev` — a tag or a full commit SHA — is required) or `url` (an archive or a single `.lask` file). A branch must not be given as `rev`.
 - Secrets (credentials, tokens) must not be written in this file.
+- Entries are typically recorded with `lask deps add` (11.5).
+
+Lock file:
+
+- The default file name is `lask.lock.json`, in the same directory. It records the resolution of the whole dependency graph, including transitive dependencies, and is intended to be committed.
+- Schema:
+
+```json
+{
+  "lock_version": 1,
+  "modules": {
+    "deploy-kit": {
+      "git": "https://github.com/example/lask-deploy-kit",
+      "requested": "v1.2.0",
+      "rev": "171d51a6d4d004ea5ae4de6034f0d3c659e44221",
+      "hash": "sha256-..."
+    },
+    "deploy-kit>notify": {"url": "https://example.com/tasks/notify.lask", "hash": "sha256-..."}
+  },
+  "images": {
+    "deploy-kit#sha256-71bc...": {"kind": "recipe", "tag": "lask/deploy-kit/sha256-71bc..."},
+    "#alpine:3.20": {"kind": "registry", "ref": "alpine:3.20", "digest": "sha256:..."}
+  }
+}
+```
+
+- Keys of `modules` are dependency paths: a direct dependency is its name; a transitive dependency is `parent>child`. Duplicate fetches of the same content are permitted and each occurrence is recorded (no version unification is performed).
+- `rev` in the lock must be a full 40-hexadecimal-digit commit SHA. `requested` preserves the reference that was resolved.
+- `hash` (a content hash of the fetched source) is required for every entry. The same entry must always yield identical source code.
+- `images` records the container images the resolved graph requires (10.3). Keys are `<dependency path>#<image key>`, where the dependency path is empty for the root project.
+
+Consistency:
+
+- `check`, `run`, `eval`, and `envs` require a lock file that covers every declared dependency and agrees with the project file. Otherwise it is a static error (`E-MODULE-LOCK-STALE`).
+- These subcommands must not write the lock file and must not resolve a dependency the lock does not already pin.
 
 Fetching and verification:
 
-- Dependencies are fetched into an implementation-defined cache and verified against `hash` by the CLI (`lask deps sync`; 11.5). A verification failure is `E-MODULE-HASH-MISMATCH`.
+- Dependencies are fetched into a per-project, content-addressed cache and verified against `hash` by the CLI (`lask deps sync`; 11.5). A verification failure is `E-MODULE-HASH-MISMATCH`.
+- The cache is located at `.lask/deps` under the base directory for module resolution. Because the store is keyed by content hash and is written only after verification, the presence of an entry implies a verified source; a full re-hash is performed by `deps sync` and is not required of other subcommands. A project may therefore be copied, cache included, to a machine without network access.
+- If a tag recorded as `requested` later resolves to a different commit, `deps sync` reports `E-MODULE-REV-MOVED`. This is distinguished from `E-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
 - `check`, `run`, `eval`, and `envs` must not access the network for module resolution. If a declared dependency is not present in the cache, or fails verification, it is a static error (`E-MODULE-UNRESOLVED`).
-- An external module may itself have a `dependencies.lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted).
-
-Execution environments in external modules:
-
-- Only the environment definition file of the root project is in effect (10.3). `#env(name)` in an external module resolves against the root project's environment definitions; an undefined name is a static error. Environment definition files carried by external modules have no effect.
+- An external module may itself have a `lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted) and are recorded in the root project's lock file.
 
 Examples:
 
@@ -630,13 +701,25 @@ import { add } from "./lib/math.lask"
 import * as types from "./lib/types.lask"
 import { send } from "notify"
 
-sum2(a: Number, b: Number) = add(a, b)
+export sum2(a: Number, b: Number) = add(a, b)
 labels = ["a", "b", "c"]
-csv = types.joinWithComma(labels)
+internal csv = types.joinWithComma(labels)
 notify_all(): Void = for_each(labels, \(x) -> send(x))
 ```
 
-Here `notify` is an external dependency declared in `dependencies.lask.json` as a single-file source.
+Here `notify` is an external dependency declared in `lask.json` as a single-file source. `sum2` and `notify_all` are public symbols (the marker on `notify_all` is omitted, which is equivalent to `export`); `csv` is not.
+
+```lask
+// module: lib/deploy.lask
+export rollout(--target: String = "staging"): String = $[#alpine:3.20] echo "#{target}"
+```
+
+```lask
+// module: main.lask
+export { rollout } from "./lib/deploy.lask"
+```
+
+`rollout` is a public symbol of `main.lask` with its parameter list intact, so a consumer may call `rollout(target = "prod")` through it.
 
 ## 6. Expressions
 
@@ -1064,7 +1147,7 @@ Here `run_command` is a core function and must not be directly declared or overr
 Environment specification rules:
 
 - `Environment` is a basic type defined in 4.1, and the responsibilities of execution environments are defined in Chapter 10.
-- `env` is an expression of type `Environment`. It is usually constructed with an environment expression (6.7) — `#local`, `#docker(...)` (including the sugar `#image-name`), or `#env(...)` — but any expression that returns an `Environment` value (a variable reference, etc.) can be placed there.
+- `env` is an expression of type `Environment`. It is usually constructed with an environment expression (6.7) — `#local` or `#docker(...)` (including the sugar `#image-name`) — but any expression that returns an `Environment` value (a variable reference, etc.) can be placed there.
 - If resolution of `env` fails, it is a pre-execution error.
 - The default execution environment (the environment used by `$ ...` / `run_command`) is always `#local` (10.1).
 - Detailed environment resolution rules and responsibilities follow Chapter 10.
@@ -1135,7 +1218,7 @@ Desugaring rules:
 - When there are no arguments, the `EnvArgList` can be omitted. `#name` (whose body matches an environment kind name of 10.2) is syntactic sugar for `#name()`. Example: `#local` is equivalent to `#local()`.
 - A `#image-name` whose body does not match an environment kind name is syntactic sugar for `#docker("image-name")` (Docker sugar). Example: `#alpine:3.12` is equivalent to `#docker("alpine:3.12")`.
 - Therefore, to specify a Docker image with the same name as an environment kind name (e.g. `local`), the explicit form `#docker("local")` must be used.
-- Environment kind names such as `local` / `docker` / `remote` are not reserved words. In positions without `#`, they can be used as ordinary identifiers.
+- Environment kind names such as `local` / `docker` are not reserved words. In positions without `#`, they can be used as ordinary identifiers.
 
 Typing rules:
 
@@ -1156,7 +1239,7 @@ e1 = #local
 e2 = #alpine:3.12
 e3 = #docker("alpine:3.12", memory="4g")
 e4 = #ubuntu@sha256:9cee2b382fe2412cd77d5d437d15a93da8de373813621f2e4d406e3df0cf0e7c
-e5 = #env("ansible")
+e5 = #docker(dockerfile = "infra/Dockerfile", context = ".")
 
 run_in(env: Environment): String =
   $[env] uname -a
@@ -1481,13 +1564,15 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-KEYWORD`: invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5)
 - `E-TYPE-CALL`: invalid call (calling a non-function value, etc.)
 - `E-TYPE-COMMAND-ENV`: invalid command execution environment type
-- `E-TYPE-ENV-CONSTRUCT`: invalid environment expression or environment definition (unknown environment kind, missing positional argument, unknown or duplicate named argument, non-literal argument to `env`, invalid environment definition file, or undefined environment name; 10.3)
+- `E-TYPE-ENV-CONSTRUCT`: invalid environment expression (unknown environment kind, neither or both of a registry reference and a recipe, a registry reference without a tag or digest, a non-literal `dockerfile`/`context`, a recipe path escaping the module tree, a dynamic image reference in a dependency domain, or an unknown or duplicate named argument; 10.2, 10.3)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
 - `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, invalid target type of `cast`; 4.2, 15.8)
 - `E-TYPE-SECRET-NON-STRING`: `!!` applied to a binding whose type is not `String` (6.10)
 - `E-MODULE-CYCLE`: module circular dependency
 - `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
+- `E-MODULE-DEEP-IMPORT`: an external import naming a path inside a dependency tree rather than its entry module (Chapter 5)
+- `E-MODULE-LOCK-STALE`: the lock file is missing, incomplete, or inconsistent with the project file (Chapter 5)
 
 Error diagnostics include at least the following.
 
@@ -1835,10 +1920,9 @@ This chapter defines the execution environments that can be specified when invok
 Rules:
 
 - `Environment` must not be overridden by user-defined type aliases or value declarations.
-- `Environment` values must be resolvable to at least the following 3 families.
+- `Environment` values must be resolvable to at least the following 2 families.
   - `#local` (local execution)
-  - `#docker(...)` (Docker execution environment, including the sugar `#image-name`)
-  - `#env(...)` (reference to a named environment; resolved to `remote` etc. defined in the environment definition file (10.3))
+  - `#docker(...)` (container execution, including the sugar `#image-name`)
 - The `env` argument of `run_command` must be normalized to an `Environment` value at evaluation time.
 - The default execution environment (the environment used by `$ cmd` / `run_command`; 6.6, 8.7) is always `#local`. The default execution environment must not be changed by CLI options or other external configuration. Commands to be executed anywhere other than locally must always specify the environment explicitly with `$[env]` (or the `env` argument of `run_command`).
 
@@ -1851,22 +1935,21 @@ Type conformance:
 
 The execution environment profiles specified by this specification are defined as pairs of an environment kind name and an environment constructor signature. The parameter rules of the signature (positional binding, default values, type annotations) are identical to those of function parameters (6.1), and the caller supplies positional and named arguments via an environment expression (6.7).
 
-The environment kinds that can be used in environment expressions are the 3 kinds `local`, `docker`, and `env`. Only environments that are self-contained on the host running Lask (`local`, `docker`) may be written directly in code. Environments that span hosts (`remote`) impair the reusability of functions due to differences in connection targets, so they are defined as named environments in the environment definition file (10.3) and referenced via `env`.
+The environment kinds that can be used in environment expressions are the 2 kinds `local` and `docker`. Both are self-contained on the host running Lask. Environments that span hosts are not provided: their contents cannot be pinned, they carry state between runs, and no boundary can be placed around what they may do. A remote host is reached by running a client for it inside a container (`$[#alpine:3.20] ssh ...`), which keeps the tool that reaches it pinned.
 
 - `local`: local process execution on the calling host
   - Signature: `local()` (no parameters)
   - Notation example: `#local` (sugar for `#local()`)
-- `docker`: execution inside a container specified by a Docker image
-  - Signature: `docker(image: String, ...)`. `image` is required and must not be an empty string.
-  - Implementations may extend the signature with keyword parameters (e.g. `--memory: String = implementation default`, `--cpus: Number = implementation default`). Unknown parameter names must be static errors (7.7).
-  - Notation examples: `#docker("alpine:3.12", memory="4g")`, sugar `#alpine:3.12`
-- `remote`: remote host execution via SSH
-  - Signature: `remote(host: String, --user: String = implementation default, --port: Number = 22)`. `host` is required, and the implementation default for `user` is the current user.
-  - `remote` cannot be used in environment expressions. It can only be constructed as an entry in the environment definition file (10.3), and the signature is used to validate the entry's `params`.
-- `env`: reference to a named environment defined in the environment definition file (10.3)
-  - Signature: `env(name: String)`. `name` is required.
-  - The actual argument for `name` must be a string literal containing no interpolation. Any other expression is a static error (`E-TYPE-ENV-CONSTRUCT`). This makes the set of named environments referenced by a module statically determinable.
-  - Notation example: `#env("ansible")`
+- `docker`: execution inside a container
+  - Signature: `docker(image: String, --dockerfile: String = "", --context: String = "", ...)`.
+  - The image is given in exactly one of two forms. Giving both, or neither, is a static error (`E-TYPE-ENV-CONSTRUCT`).
+    - **Registry reference**: the positional `image`, a reference to an image in a registry. It must not be an empty string, and it must carry a tag or a digest; a bare repository name (which would mean `:latest`) is a static error (`E-TYPE-ENV-CONSTRUCT`).
+    - **Recipe**: the keyword parameters `dockerfile` and `context`, naming a Dockerfile and its build context. `context` defaults to the directory containing the Dockerfile.
+  - `dockerfile` and `context` must be string literals containing no interpolation, so that the set of images a module uses is statically determinable. Any other expression is a static error (`E-TYPE-ENV-CONSTRUCT`).
+  - `dockerfile` and `context` must resolve inside the tree of the module in which the expression is written. A path escaping that tree is a static error (`E-TYPE-ENV-CONSTRUCT`). A recipe is therefore covered by the module's content hash (Chapter 5) and cannot be altered without invalidating the pin.
+  - Implementations may extend the signature with further keyword parameters (e.g. `--memory: String = implementation default`, `--cpus: Number = implementation default`). Unknown parameter names must be static errors (7.7).
+  - Notation examples: `#docker("alpine:3.12", memory="4g")`, `#docker(dockerfile = "infra/Dockerfile", context = ".")`, sugar `#alpine:3.12`
+  - The sugar `#image-name` expands to `#docker("image-name")` (7.6) and is therefore the registry-reference form; the tag-or-digest requirement applies to it unchanged. There is no sugar for the recipe form.
 
 Each profile has at least the following execution attributes.
 
@@ -1875,47 +1958,27 @@ Each profile has at least the following execution attributes.
 - Environment variable injection rules
 - Permission boundary and access constraints
 
-Implementations may extend with additional profiles (pairs of environment kind and signature), but must not break compatible behavior with the above 3 profiles.
+Implementations may extend with additional profiles (pairs of environment kind and signature), but must not break compatible behavior with the above 2 profiles.
 
-### 10.3 Environment Definition File
+### 10.3 Container Image Resolution and Materialization
 
-Connection information for execution environments that span hosts (`remote`) is not written in Lask code; it is defined as named environments in the environment definition file. Code references only the name via the environment kind `env` (10.2). This ensures that differences in connection targets do not affect the reusability of task functions.
+A `docker` environment names its image either as a registry reference or as a recipe (10.2). Both forms are resolved to a concrete, immutable image ahead of execution and recorded in the lock file (Chapter 5).
 
-File resolution:
+Materialization:
 
-- The default file name is `environments.lask.json`, loaded from the base directory for module resolution (the same location as `main.lask`).
-- The file to load can be replaced with the CLI's `--env-file <path>` (11.1). Replacement is a full substitution at the file level; merging of multiple files is not performed.
-- When external dependencies (Chapter 5) are used, only the root project's environment definition file is in effect. Environment definition files carried by external modules have no effect.
+- A registry reference is pulled and resolved to a digest. The digest is recorded in the lock and verified on subsequent pulls; a mismatch is `E-IO-IMAGE-DIGEST`.
+- A recipe is built. The resulting image is tagged `lask/<dependency path>/<recipe hash>`, where the recipe hash covers the Dockerfile, the build context, and the declared build arguments. A changed recipe therefore yields a different image and cannot reuse a cached one.
+- Builds are performed with no host mount other than the declared context, without privileged mode, and without host networking.
 
-Schema:
+Timing:
 
-```json
-{
-  "environments": {
-    "ansible": {"kind": "remote", "params": {"host": "203.0.113.10", "user": "automation"}},
-    "builder": {"kind": "docker", "params": {"image": "golang:1.22"}}
-  }
-}
-```
+- `check`, `run`, `eval`, and `envs` must not build or pull an image. A build instruction is arbitrary code execution, and making it reachable from an implicit path would reintroduce the load-time execution that Chapter 5 otherwise excludes.
+- Images are materialized only by `lask deps sync` and `lask env build` (11.5, 11.7).
+- If a required image is absent when a command is to be executed, it is an external I/O error (`E-IO-IMAGE-MISSING`). The diagnostic must name the command that materializes it.
 
-- The top-level `environments` is a map from environment names to entries. Environment names must be strings conforming to `lower_id` (3.2).
-- Each entry has a `kind` (environment kind name) and `params` (parameter set). This is the same form as the `Environment` metadata representation in 13.1.
-- Only concrete kinds (`local`, `docker`, `remote`) may be specified for `kind`. Specifying `env` (chained indirect references) is a static error.
-- Each key of `params` binds by parameter name (because this is a data representation, positional parameters are also given by name). Satisfaction of positional parameters, prohibition of unknown key names, and default-value completion of keyword parameters are checked in accordance with 7.5.
-- Credentials (passwords, private keys) must not be written in this file. Credentials are supplied from execution settings or a credential store, following the rules in 10.9.
+Dynamic references:
 
-Static validation:
-
-- If a module contains one or more `#env(...)`, the environment definition file becomes an input to static validation (Chapter 7). Absence of the file, malformed syntax, schema violations, signature nonconformance of entries, and undefined referenced names are all static errors (`E-TYPE-ENV-CONSTRUCT`).
-- Because the argument of `#env` is limited to a string literal (10.2), the set of named environments referenced by a module is statically determined. All environments to be used can be enumerated and validated before execution (`envs` in 11.4).
-- For modules that do not contain `#env(...)`, the environment definition file is unnecessary.
-
-Example:
-
-```lask
-provision(): String =
-  $[#env("ansible")] ansible-playbook site.yml
-```
+- If the `image` argument of `#docker(...)` is a runtime value rather than a literal, the reference cannot be enumerated or pinned ahead of execution. Such an expression is permitted, but `envs` (11.4) reports it as a dynamic image and `deps sync` cannot materialize it in advance.
 
 ### 10.4 Environment Resolution Rules
 
@@ -1924,21 +1987,21 @@ Environment resolution is performed immediately before command launch by `run_co
 Resolution procedure:
 
 1. Evaluate the `env` expression to obtain an `Environment` value (environment kind and normalized parameters).
-2. Classify the value's environment kind. `env` is replaced with the entry from the environment definition file (per the kind determination rules) and then classified as one of `local` / `docker` / `remote`.
-3. Check satisfaction of positional parameters (`image` for `docker`, `host` for `remote`) and value constraints (non-empty `image`, etc.).
+2. Classify the value's environment kind as one of `local` / `docker`.
+3. Check satisfaction of the image specification for `docker` (exactly one of a registry reference or a recipe; 10.2) and resolve it to the image recorded in the lock file (10.3).
 4. Normalize into an executable concrete runtime configuration.
 
 Kind determination rules:
 
-- The environment kind name of the environment expression becomes the environment kind of the `Environment` value as is (`#local()` is `local`, `#docker(...)` is `docker`, `#env(...)` is `env`).
-- Values of environment kind `env` are resolved by substituting the kind and parameters of the corresponding entry in the environment definition file (10.3). Existence of the name and validity of the entry have already been statically validated (10.3). The subsequent rules are applied to the kind after substitution.
+- The environment kind name of the environment expression becomes the environment kind of the `Environment` value as is (`#local()` is `local`, `#docker(...)` is `docker`).
 - The sugar `#image-name` has already been expanded to `#docker("image-name")` by static expansion (7.6).
+- A `docker` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3). If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`.
 - An unknown environment kind is a static error (`E-TYPE-ENV-CONSTRUCT`) and must not reach runtime environment resolution.
 
 Failure rules:
 
 - Unknown kinds and missing parameters are static errors (`E-TYPE-ENV-CONSTRUCT`) and do not occur in the runtime resolution of this section. The only means of specifying an execution environment is the in-language environment expression (no means of supplying an execution environment from the CLI is provided; 11.1).
-- Violation of parameter value constraints (empty image name, etc.) or absence of the execution infrastructure (Docker daemon absent, SSH connection impossible, etc.) is a pre-execution error.
+- Violation of parameter value constraints (empty image name, etc.) or absence of the execution infrastructure (Docker daemon absent, image not materialized, etc.) is a pre-execution error.
 - Resolution failure must be classified as an external I/O or runtime error in Chapter 14.
 
 Determinism:
@@ -1953,7 +2016,6 @@ Rules:
 
 - The default cwd for `local` is the project base directory where execution started.
 - The default cwd for `docker` is the working directory determined by the implementation inside the container.
-- The default cwd for `remote` is the user's initial directory resolved at the connection target, or an implementation-configured value.
 - An explicit specification takes precedence over the default cwd.
 - If the cwd does not exist or is inaccessible, it is a pre-execution error.
 
@@ -1991,7 +2053,6 @@ Rules:
 
 - `local` is bounded above by the calling process's privileges.
 - `docker` is bounded above by the privileges within the container isolation boundary.
-- `remote` is bounded above by the privileges of the principal (user/role) at the connection target.
 - If execution is impossible due to insufficient privileges, it is a runtime error, and the cause must be reported in a diagnosable form.
 
 Security requirements:
@@ -2023,47 +2084,9 @@ showLocal() = $[#local] pwd
 showDocker() =
   $[#alpine:3.20] pwd
 
-showRemote() =
-  $[#env("ansible")] pwd
+showBuilt() =
+  $[#docker(dockerfile = "infra/Dockerfile", context = ".")] pwd
 ```
-
-### 10.9 The SSH Execution Model for `remote`
-
-The `remote` environment connects to a server via SSH and executes commands. It is constructed only as an entry in the environment definition file (10.3) (`kind: "remote"`), and is referenced from code via `#env(name)` (10.2).
-
-Forms of the entry's `params` (corresponding to the `remote` signature in 10.2):
-
-- `{"host": "..."}`
-- `{"host": "...", "user": "..."}`
-- `{"host": "...", "user": "...", "port": ...}`
-
-Here `host` and `user` are strings, and `port` is a number.
-Unspecified values use the defaults of the signature in 10.2 (current user, port 22).
-
-Execution procedure:
-
-1. Normalize the resolved `remote` parameters (10.4) into SSH connection parameters.
-2. Apply the host key verification policy and determine whether the connection is permitted.
-3. Establish the SSH session.
-4. Apply the cwd rules of 10.5 and the environment variable rules of 10.6 to the connection target.
-5. Execute the specified command in non-interactive mode.
-6. Collect the exit code, stdout, and stderr, and map them to the `run_command` contract of 8.7.
-
-Failure rules:
-
-- DNS resolution failure, connection refusal, authentication failure, host key mismatch, and timeout are runtime errors.
-- Non-zero command exit after SSH channel establishment is treated as an ordinary command failure.
-
-Security rules:
-
-- Implementations must enable host key verification by default.
-- Passwords and private key bodies must not be output to error messages or audit logs.
-- Credentials should be supplied from execution settings or a secure credential store, and it is preferable not to hold them in plaintext as expression values.
-
-Operational rules:
-
-- Implementations may reuse SSH connections (ControlMaster, etc.) as necessary.
-- Whether connections are reused must not affect the semantics, and the observable results (stdout/stderr/exit code) must be equivalent.
 
 ## 11. CLI Specification
 
@@ -2077,10 +2100,10 @@ The CLI must provide the following subcommands.
 - `check`: returns static validation results.
 - `run`: executes the specified function. The evaluation result is not output to stdout (11.3).
 - `eval`: executes the specified function and outputs the evaluation result to stdout. The syntax is identical to `run` (11.2).
-- `infer`: returns type inference results.
 - `repl`: provides an execution environment for interactively evaluating expressions and functions.
 - `envs`: enumerates the execution environments used by tasks and checks their accessibility (11.4).
-- `deps`: manages external dependencies — fetches and verifies them, and records new entries (11.5).
+- `deps`: manages external dependencies — fetches and verifies them, records new entries, and reports on the dependency graph (11.5).
+- `env`: materializes and inspects the container images the resolved graph requires (11.7).
 
 Basic invocation syntax:
 
@@ -2094,6 +2117,7 @@ Common options:
 - `--format <text|json>`: specifies the display format of CLI responses.
 - `--trace-id <id>`: specifies the execution trace identifier.
 - `--no-color`: disables decorative colors in the output.
+- `--help` / `-h`: displays usage. For `run` / `eval`, when a function name is given, the help of that function is displayed (11.6).
 
 Minimal syntax per subcommand:
 
@@ -2102,32 +2126,24 @@ lask serve [--stdio | --tcp --port <n>]
 lask check [--module <path>]
 lask run [--module <path>] <function> [args ...]
 lask eval [--module <path>] <function> [args ...]
-lask infer [--module <path>] [--symbol <name>]
+lask run [--module <path>] [<function>] --help
+lask eval [--module <path>] [<function>] --help
 lask repl [--module <path>]
-lask envs [--module <path>] [--env-file <path>] [<function>] [--check]
-lask deps sync [--module <path>]
-lask deps add <name> (--git <url> --rev <rev> | --url <url>) [--module <path>]
+lask envs [--module <path>] [<function>] [--check]
+lask deps sync [--module <path>] [--frozen]
+lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--module <path>]
+lask deps diff <name> [<from>..<to>] [--module <path>]
+lask deps why <name> [--module <path>]
+lask env build [--module <path>]
+lask env list [--module <path>]
 ```
 
 Policy on environment specification:
 
 - Specification of the execution environment is performed only via in-language environment expressions (6.7). No option (`--env` etc.) is provided for specifying or overriding the execution environment from the CLI.
 - Consequently, all execution environment specifications pass static validation (7.5, 7.7), and unknown environment kinds never reach runtime environment resolution (10.4).
-- To switch the execution environment per invocation, receive it via a function parameter (a serializable type such as `String`) and construct the environment expression inside the function (e.g. `build(image: String) = $[#docker(image)] ...`).
+- To switch the execution environment per invocation, receive it via a function parameter (of type `Environment`, supplied by a caller in the same project) and pass it through to the command. A dynamic image reference constructed from a `String` is permitted in the root domain only (10.3).
 - The default execution environment is always `#local` (10.1).
-- Definitions of named environments (`env` in 10.2) are loaded from the environment definition file (10.3) specified with `--env-file <path>`. When unspecified, `environments.lask.json` in the base directory for module resolution is used. Replacement is a full substitution at the file level; merging of multiple files is not performed.
-
-SSH execution settings options:
-
-- `--ssh-known-hosts <path>`: specifies the known hosts file.
-- `--ssh-strict-host-key-checking <yes|accept-new|no>`: specifies the host key verification policy.
-- `--ssh-connect-timeout <sec>`: specifies the SSH connection timeout in seconds.
-
-Rules:
-
-- The `--ssh-*` options are connection settings and apply when resolution of a `remote` environment (10.9) occurs during execution, and to the connection checks of `envs --check` (11.4).
-- If no `remote` environment is ever resolved, `--ssh-*` specifications may be ignored, but must not be treated as errors.
-- Connection settings are not part of an `Environment` value and are treated as the "execution settings" referred to in 10.9. They must not be included in expression values or execution events.
 
 ### 11.2 Function Invocation
 
@@ -2144,7 +2160,10 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 
 - The invocation syntax of `run` and `eval` is identical. The rules of this section (function-name mapping, keyword arguments, binding, decoding) apply equally to both.
 - When `--module` is unspecified, `main.lask` is the target. Therefore the minimal form is `lask run <function> [args ...]` / `lask eval <function> [args ...]`.
-- Options of `lask` itself (`--module`, `--arg-decode`, `--ssh-*`, `--format`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
+- Options of `lask` itself (`--module`, `--arg-decode`, `--format`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
+- The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
+- `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
+- `--` after the function name ends the scan for `--help`: all following tokens are passed to the function verbatim. `--help=<value>` is likewise not intercepted and binds to the parameter `help` in the ordinary way.
 
 Function-name and parameter-name mapping rules:
 
@@ -2198,7 +2217,7 @@ Standard input contract:
 - Structuring such as line splitting or JSON interpretation is performed inside the function by applying `split` / `from_json` etc.
 - `run` / `eval` accept stdin.
 - `repl` uses stdin for interactive input, and therefore does not provide the `stdin` reference variable (9.2, 9.3).
-- `check` / `infer` / `serve` may accept stdin, but the meaning must be defined in the subcommand specification.
+- `check` / `serve` may accept stdin, but the meaning must be defined in the subcommand specification.
 
 Standard output contract:
 
@@ -2207,7 +2226,8 @@ Standard output contract:
 - `text` is human-readable display, `json` is machine-readable display, and `pretty-json` is formatted JSON display.
 - `eval` outputs the evaluation result to stdout with the specified encoding.
 - `run` does not output the evaluation result to stdout. `run` must not output anything to stdout.
-- `check` and `infer` output diagnostic results to stdout.
+- The one exception is help display (11.6). When `--help` is given, no function is evaluated, so the contract for evaluation results does not apply and `run` writes the help to stdout.
+- `check` outputs diagnostic results to stdout.
 - For both `run` / `eval`, the output destination for execution logs and diagnostics is stderr (9.6, Chapter 12).
 
 Standard error contract:
@@ -2220,7 +2240,7 @@ Standard error contract:
 Exit code contract:
 
 - `0`: success
-- Uncaught failure: the `code` of the `Error` value (8.10). Command failure passes through that command's exit code; other runtime errors default to `2`; external I/O errors (including SSH connection failure and environment resolution failure) default to `3`; `fail` passes through the specified value. If `code` is not an integer in 1–255, it is normalized to `1`.
+- Uncaught failure: the `code` of the `Error` value (8.10). Command failure passes through that command's exit code; other runtime errors default to `2`; external I/O errors (including image materialization failure and environment resolution failure) default to `3`; `fail` passes through the specified value. If `code` is not an integer in 1–255, it is normalized to `1`.
 - `1`: syntax or static validation error (detected before evaluation; no `Error` value is generated)
 - `4`: CLI usage error (invalid option, missing argument, etc.)
 
@@ -2246,12 +2266,9 @@ lask run sum 1 2 3
 # Execution on a fixed image (in ci.lask: build() = $[#alpine:3.20] ...)
 lask run --module ci.lask build
 
-# Execution in a remote environment (in ops.lask: provision() = $[#env("ansible")] ...; environment definitions in environments.lask.json)
-lask run --module ops.lask \
-  --ssh-known-hosts ~/.ssh/known_hosts \
-  --ssh-strict-host-key-checking yes \
-  --ssh-connect-timeout 10 \
-  provision
+# Execution in a container built from a recipe (in ops.lask:
+# provision() = $[#docker(dockerfile = "infra/Dockerfile")] ...)
+lask run --module ops.lask provision
 
 # Enumeration of used environments and access checks
 lask envs provision --check
@@ -2264,68 +2281,246 @@ lask envs provision --check
 Syntax:
 
 ```text
-lask envs [--module <path>] [--env-file <path>] [<function>] [--check]
+lask envs [--module <path>] [<function>] [--check]
 ```
 
 Enumeration rules:
 
-- If no function is specified, the environments referenced by the entire module are enumerated (static scan of environment expressions, matched against the definitions in the environment definition file (10.3)).
+- If no function is specified, the environments referenced by the entire module are enumerated (static scan of environment expressions).
 - If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. Function-name mapping follows 11.2.
 - Reachability is an over-approximation. A superset of the environments that may be used must be reported; under-reporting is not permitted. Functions passed around as function values are included conservatively.
-- If the `image` of `#docker(image)` is a runtime value, it is enumerated as a `docker` environment with a dynamic image. `#env` names are statically determined (10.2), so they are always enumerated concretely.
+- If the `image` of `#docker(image)` is a runtime value, it is enumerated as a `docker` environment with a dynamic image (permitted in the root domain only; 10.3). Recipe forms are statically determined (10.2), so they are always enumerated concretely.
 
 Check rules (`--check`):
 
 - For each enumerated environment, only reachability is checked without executing any commands. The check must not have side effects on the target environment.
 - `local`: always succeeds. The check may include an existence check of the default cwd (10.5).
-- `docker`: checks connectivity to the Docker daemon. The depth of image reference resolution (local existence, registry query) is implementation-defined, and image retrieval (pull) is not performed.
-- `remote`: checks up to establishment of the SSH connection (including host key verification and authentication). The security rules of 10.9 apply, and the `--ssh-*` options (11.1) may be used.
+- `docker`: checks connectivity to the Docker daemon and the presence of the materialized image recorded in the lock file (10.3). Image retrieval (pull) and building are not performed; an absent image is reported as `E-IO-IMAGE-MISSING`.
 - The check does not abort on the failure of a single environment; all environments are checked and reported together.
 
 Output and exit codes:
 
-- For each environment, the reference name (for named environments), the environment kind, a summary of the target, and the check result (with `--check`) are output. Structured output is available with `--format json`.
-- For environments that failed the check, an error code (`E-IO-SSH-CONNECT`, `E-IO-ENV-RESOLVE`, etc.; Chapter 14) and a summary are included.
+- For each environment, the environment kind, a summary of the target, and the check result (with `--check`) are output. Structured output is available with `--format json`.
+- For environments that failed the check, an error code (`E-IO-ENV-RESOLVE`, `E-IO-IMAGE-MISSING`, etc.; Chapter 14) and a summary are included.
 - Exit codes: `0` if enumeration and checks all succeed; `3` if one or more environments are inaccessible; `1` for static errors (undefined environment names, invalid environment definition file, etc.); `4` for CLI usage errors (nonexistent function name, etc.) (following the classification in 11.3).
 
 Execution example:
 
 ```text
 $ lask envs provision --check
-ansible  remote  automation@203.0.113.10:22  ok
-builder  docker  golang:1.22                 ok
+docker  golang:1.22@sha256:6f3c...     ok
+docker  lask//sha256-71bc... (recipe)  ok
 ```
 
 ### 11.5 Dependency Management (`deps`)
 
-`deps` manages the external dependencies declared in the dependency definition file (Chapter 5).
+`deps` manages the external dependencies declared in the project file (Chapter 5).
 
 Syntax:
 
 ```text
-lask deps sync [--module <path>]
-lask deps add <name> (--git <url> --rev <rev> | --url <url>) [--module <path>]
+lask deps sync [--module <path>] [--frozen]
+lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--module <path>]
+lask deps diff <name> [<from>..<to>] [--module <path>]
+lask deps why <name> [--module <path>]
 ```
 
 Rules (`sync`):
 
-- `deps sync` fetches all dependencies declared in `dependencies.lask.json` — including transitive dependencies of external modules — into an implementation-defined cache, and verifies each against its `hash`.
-- `deps sync` is the only subcommand permitted to access the network for module resolution. All other subcommands resolve modules exclusively from the cache (Chapter 5).
-- Fetched sources are stored content-addressed; re-running `deps sync` with an unchanged definition file performs no network access for already-verified entries.
+- `sync` resolves every declared dependency — including transitive dependencies — fetches it into the per-project cache (Chapter 5), verifies it against its hash, materializes every image the resolved graph requires (10.3), and writes `lask.lock.json`.
+- `sync` and `env build` (11.7) are the only subcommands permitted to access the network or to start an image build. All other subcommands resolve modules and images exclusively from the cache and the lock file.
+- A reference recorded as `rev` is resolved to a full commit SHA once and pinned thereafter. A subsequent resolution of the same reference to a different SHA is `E-MODULE-REV-MOVED`.
+- Fetched sources are stored content-addressed; re-running `sync` with an unchanged project file performs no network access for already-verified entries.
 - A hash verification failure is reported as `E-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
+- `--frozen` fails instead of writing the lock file when resolution would change it. It is the intended form for continuous integration.
 
 Rules (`add`):
 
-- `deps add` fetches the specified source, computes its content hash, records the entry under `<name>` in `dependencies.lask.json` (creating the file if it does not exist), and places the verified source in the cache.
-- `<name>` must conform to `lower_id` (3.2). If an entry with the same name already exists, it is replaced (its source and hash are overwritten).
-- The recorded hash follows the trust-on-first-use model: the content trusted at recording time is pinned, and any subsequent change to the published source is detected by `deps sync` as `E-MODULE-HASH-MISMATCH`.
-- `--git` requires `--rev` (a tag or commit). `--url` accepts an archive or a single `.lask` file (Chapter 5).
+- `add` resolves the specified source, computes its content hash, verifies the policy, records the entry under `<name>` in `lask.json` (creating the file if it does not exist), records the resolution in `lask.lock.json`, and places the verified source in the cache.
+- `<name>` must conform to `lower_id` (3.2). If an entry with the same name already exists, it is replaced.
+- Before recording, `add` presents the images the dependency uses. In an interactive session it requires confirmation.
+- The recorded hash follows the trust-on-first-use model: the content trusted at recording time is pinned, and any subsequent change to the published source is detected by `sync`.
+- `--git` accepts `--rev` (a tag or a full commit SHA); when omitted, the repository's default branch head is resolved once and pinned. `--url` accepts an archive or a single `.lask` file (Chapter 5).
 
-Exit codes (common to `sync` and `add`):
+Rules (`diff`):
 
-- `0`: all dependencies fetched and verified.
-- `1`: the dependency definition file is missing (while dependencies are declared), malformed, or violates the schema (Chapter 5).
-- `3`: a fetch or verification failure (network failure, `E-MODULE-HASH-MISMATCH`).
+- `diff` reports what changes between two revisions of a dependency, in the following order: image digest and recipe changes, the list of changed files, and the source diff.
+- With no revision range, the locked revision is compared against the revision the project file currently requests.
+
+Rules (`why`):
+
+- `why` reports the paths in the dependency graph through which the named dependency is reached, including paths introduced by re-export from another dependency (Chapter 5).
+
+Exit codes (common to all forms):
+
+- `0`: the operation completed successfully.
+- `1`: the project file or the lock file is missing (while dependencies are declared), malformed, stale, or violates the schema (Chapter 5); or a policy violation was detected before fetching.
+- `3`: a fetch, verification, or image materialization failure (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`).
+- `4`: CLI usage error.
+
+### 11.6 Help Display (`--help`)
+
+`--help` displays the usage of the functions defined in a module. Its purpose is to make the tasks a repository provides discoverable without reading the module source.
+
+Syntax:
+
+```text
+lask run  [--module <path>] [lask options ...] <function> --help
+lask eval [--module <path>] [lask options ...] <function> --help
+lask run  [--module <path>] [lask options ...] --help
+lask eval [--module <path>] [lask options ...] --help
+```
+
+- Only `run` and `eval` provide function help. As in 11.2, the two are identical in this respect.
+- When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module.
+- Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
+- The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
+- If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. An implementation may report the advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2).
+- Help display takes precedence over argument binding. Binding errors (11.2) are not reported when `--help` is present: `lask run build --out_dir 1 --help` displays the help and exits `0`.
+
+Sources of help information:
+
+- The documentation comment of the declaration (3.1) supplies the summary, the description, and the `@param` / `@return` / `@example` texts.
+- The signature (the kind of each parameter, its type, and its default value) is taken from the result of static verification (7.5).
+- Default values are displayed as their source text and **must not be evaluated**, since evaluating them may have side effects.
+- The default value of a parameter marked `!!` (6.10) is displayed as `<secret>` and must never be displayed in plaintext (12.8).
+- The environments used are enumerated by the reachability analysis of 11.4. A recipe-form environment is shown by its Dockerfile path. When the enumeration yields only `#local`, the section is omitted.
+
+Rendering rules:
+
+- Parameter names are displayed as declared (3.2). The kebab-case invocation form of 11.2 remains accepted but is not displayed.
+- In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`.
+- A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
+- The function list holds the module's functions — declarations written as functions, and bindings whose value is a function. Plain value bindings are callable (11.2) and have help of their own, but are not listed.
+- The function list omits declarations marked `@hidden` (3.1), and shows only the name for functions that have no summary.
+
+Text output (`--format text`, the default). For the declaration:
+
+```lask
+// Build the project and publish the artifact.
+//
+// The build runs in the `builder` environment; the artifact is
+// uploaded only when `--publish` is set.
+//
+// @param target   Build target name.
+// @param out_dir  Directory the artifact is written to.
+// @param publish  Whether to upload the artifact.
+// @return The path of the produced artifact.
+// @example lask run build release --out-dir dist --publish true
+build(target: String, --out_dir: String = "dist", --publish: Bool = false): String =
+  $[#docker(dockerfile = "infra/builder.Dockerfile")] make #{target} OUT=#{out_dir}
+```
+
+`lask run --module ci.lask build --help` outputs:
+
+```text
+build - Build the project and publish the artifact.
+
+Usage:
+  lask run build <target> [--out_dir <String>] [--publish <Bool>]
+
+The build runs in the `builder` environment; the artifact is
+uploaded only when `--publish` is set.
+
+Parameters:
+  target : String
+      Build target name.
+  --out_dir : String = "dist"
+      Directory the artifact is written to.
+  --publish : Bool = false
+      Whether to upload the artifact.
+
+Returns:
+  String
+      The path of the produced artifact.
+
+Environments:
+  builder  docker  golang:1.22
+
+Examples:
+  lask run build release --out-dir dist --publish true
+
+Defined at ci.lask:12
+```
+
+`lask run --help` appends the function list to the CLI option help:
+
+```text
+Functions in main.lask:
+  unittest         Run the unit test suite.
+  doctest          Run the doctests.
+  test             Run the unit tests and the doctests in parallel.
+  install          Install the lask binary.
+  uninstall
+```
+
+JSON output (`--format json`) is the structured form of the same information, intended for reuse by editor integration.
+
+```json
+{
+  "kind": "function-help",
+  "module": "ci.lask",
+  "function": "build",
+  "location": {"line": 12, "column": 1},
+  "summary": "Build the project and publish the artifact.",
+  "description": "The build runs in the `builder` environment; the artifact is\nuploaded only when `--publish` is set.",
+  "params": [
+    {"name": "target", "kind": "positional", "type": "String",
+     "default": null, "secret": false, "doc": "Build target name."},
+    {"name": "out_dir", "kind": "keyword", "type": "String",
+     "default": "\"dist\"", "secret": false, "doc": "Directory the artifact is written to."},
+    {"name": "publish", "kind": "keyword", "type": "Bool",
+     "default": "false", "secret": false, "doc": "Whether to upload the artifact."}
+  ],
+  "returns": {"type": "String", "doc": "The path of the produced artifact."},
+  "environments": [{"name": "builder", "kind": "docker", "target": "golang:1.22"}],
+  "examples": ["lask run build release --out-dir dist --publish true"]
+}
+```
+
+- `kind` is `function-help` for the help of a single function, and `function-list` for the function list. The latter holds `functions`, an array of objects with `name`, `summary`, and `signature`.
+- `kind` for a parameter is one of `positional` / `variadic` / `keyword`.
+- `default` is `null` for a parameter that has no default value, and `"<secret>"` for a parameter marked `!!`.
+- A field whose information is unavailable is `null`; a section that is omitted in text output is an empty array.
+
+Output destination and exit codes:
+
+- Help is written to stdout (the exception in 11.3). Diagnostics are written to stderr as usual.
+- `0`: the help was displayed.
+- `4`: the specified name is not a top-level declaration of the module. The usage and, where possible, candidate names are written to stderr as `E-CLI-USAGE`. A declaration that is not a function is not an error: a plain value binding is callable with no arguments (11.2), so its help is displayed with an empty parameter list.
+- `1`: the target module could not be parsed. Diagnostics are written to stderr and no help is displayed.
+- Static errors (14.4) do **not** prevent help display. The help is rendered from the information that is available, a type that could not be determined is displayed as `?`, the diagnostics are written to stderr, and the exit code is `0`. Help is most needed while a module is broken, so this is a deliberate exception to the rule of 14.4 that static errors stop `run` / `eval`; no function is evaluated in this case either.
+- For `lask run --help` / `lask eval --help` without a function name, the CLI option help must always be displayed with exit code `0`. If the target module cannot be loaded, the function list is omitted.
+
+### 11.7 Environment Materialization (`env`)
+
+`env` materializes and inspects the container images that the resolved dependency graph requires (10.3).
+
+Syntax:
+
+```text
+lask env build [--module <path>]
+lask env list [--module <path>]
+```
+
+Rules (`build`):
+
+- `build` materializes every image referenced by the root project and by every dependency in the resolved graph: registry references are pulled and verified against their locked digest, and recipes are built (10.3).
+- `build` takes no selector. Images are content-addressed, so an image whose registry digest or recipe hash is unchanged is not re-materialized.
+- `build` and `deps sync` (11.5) are the only subcommands permitted to access the network or to start an image build.
+- `build` executes no command inside the resulting containers.
+
+Rules (`list`):
+
+- `list` reports, for every image reference in the resolved graph: the owning module, the source form (registry reference or recipe), the resolved digest or content-addressed local tag, and whether the image is present on the target Docker daemon.
+- `list` performs no network access and no build.
+- Structured output is available with `--format json`.
+
+Exit codes:
+
+- `0`: the operation completed successfully.
+- `1`: a static error, or a missing or stale lock file (Chapter 5).
+- `3`: a pull, digest verification, or build failure (`E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`).
 - `4`: CLI usage error.
 
 ## 12. Observability
@@ -2339,7 +2534,7 @@ Observability is the requirement to provide, in a consistent format, the informa
 Implementations must treat at least the following as observation targets.
 
 - Function call boundaries (start, end, failure)
-- Environment execution boundaries (`#local` / `#docker(...)` / `#env(...)`)
+- Environment execution boundaries (`#local` / `#docker(...)`)
 - External command execution (start, exit code, output summary)
 - Type validation and runtime diagnostics
 
@@ -2388,7 +2583,7 @@ Each line is output with the following structure.
 ```
 
 - `timestamp`: UTC ISO 8601 format.
-- Environment summary: follows the notation of environment expressions (6.7). `#local`, `#<image>` (docker), `#env(<name>)` (named environment).
+- Environment summary: follows the notation of environment expressions (6.7). `#local`, `#<image>` (registry reference), `#docker(dockerfile = <path>)` (recipe).
 - Execution number: the sequence number assigned by the relay rules.
 - Kind: `$` (start line; records the executed command string as the content), `1|` (child process's standard output), `2|` (child process's standard error), `exit <code>` (exit, with exit code). `1` and `2` are file descriptor numbers (the same scheme as the stream specifiers in 6.6).
 - The start line (`$`) and the `exit` line must be emitted for every command execution. The command string on the start line may be truncated to an implementation-defined length.
@@ -2437,7 +2632,6 @@ Generation and propagation rules:
 - When the CLI's `--trace-id` is specified, that value is adopted.
 - When unspecified, the implementation automatically generates an identifier unlikely to collide.
 - Logs, events, and errors belonging to the same top-level execution share the same `traceId`.
-- During execution in a `remote` environment, the `traceId` may be propagated to the connection target as necessary.
 
 Consistency rule:
 
@@ -2482,7 +2676,7 @@ Because sensitive information may be mixed into observation data, implementation
 
 - Values the program has declared sensitive — credentials, private keys, and tokens, marked as secret bindings (6.10) — are masked or removed.
 - Command arguments are summarized as necessary, avoiding full-text output.
-- Even on SSH authentication failure, the secrets themselves must not be output.
+- Even on authentication failure at an external boundary, the secrets themselves must not be output.
 
 Masking mechanism:
 
@@ -2604,7 +2798,7 @@ Execution events follow the emission rules in 12.6 and must include the followin
 - `args`: argument summary (required for `call`)
 - `result`: return value summary (required for `return`)
 - `error`: error information (required for `fail`)
-- `env`: execution environment summary (environment kind `kind` and normalized parameter summary `params`. For a named environment (10.3), the reference name may be included as `name`)
+- `env`: execution environment summary (environment kind `kind` and normalized parameter summary `params`. For a recipe-form environment (10.2), the Dockerfile path may be included as `dockerfile`)
 
 Minimum fields of `ErrorInfo`:
 
@@ -2641,10 +2835,10 @@ Example:
     "type": "Function<String, String>"
   },
   "args": {"summary": ["prod"]},
-  "env": {"kind": "remote", "params": {"host": "prod.example.com", "user": "deployer", "port": 22}},
+  "env": {"kind": "docker", "params": {"image": "alpine:3.20@sha256:6f3c..."}},
   "error": {
-    "code": "E-IO-SSH-CONNECT",
-    "message": "ssh connection timeout",
+    "code": "E-IO-IMAGE-MISSING",
+    "message": "image not materialized: run 'lask deps sync'",
     "detail": {"timeoutSec": 10}
   }
 }
@@ -2661,7 +2855,7 @@ Errors in this specification are classified into the following 4 categories by t
 - Syntax error: invalidity detected during lexical analysis and parsing
 - Static error: invalidity detected during name resolution, type checking, and module resolution
 - Runtime error: invalidity occurring during evaluation (division by zero, non-zero command exit, etc.)
-- External I/O error: failure at external boundaries such as files, networks, SSH, and environment resolution
+- External I/O error: failure at external boundaries such as files, networks, container images, and environment resolution
 
 Classification rules:
 
@@ -2712,10 +2906,18 @@ Representative codes:
 - `E-RUNTIME-ACCESS`
 - `E-RUNTIME-CAST`
 - `E-IO-STDIN-READ`
-- `E-IO-SSH-CONNECT`
 - `E-IO-ENV-RESOLVE`
 - `E-IO-DATA-DECODE`
 - `E-CLI-USAGE`
+
+Advisory codes:
+
+- Codes of the form `W-<CATEGORY>-<DETAIL>` are advisory diagnostics. They report a probable mistake that is not an error: analysis continues, evaluation is not prevented, and the exit code is unaffected.
+- Advisory diagnostics follow the output requirements of 14.3 and additionally carry `severity: "warning"`. A diagnostic without a `severity` field is an error.
+- Representative codes:
+  - `W-DOC-PARAM-UNKNOWN`: an `@param` in a documentation comment (3.1) names a parameter the declaration does not have.
+  - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
+- Reporting advisory diagnostics is optional. `check` and `serve` are the expected places to report them.
 
 ### 14.3 Minimum Requirements for Diagnostic Information
 
@@ -2767,6 +2969,8 @@ Minimum targets:
 - `E-TYPE-SECRET-NON-STRING`
 - `E-MODULE-CYCLE`
 - `E-MODULE-UNRESOLVED`
+- `E-MODULE-DEEP-IMPORT`
+- `E-MODULE-LOCK-STALE`
 
 Rules:
 
@@ -2798,8 +3002,9 @@ Representative examples:
 
 - `E-IO-STDIN-READ`: stdin read failure
 - `E-IO-ENV-RESOLVE`: execution environment resolution failure
-- `E-IO-SSH-CONNECT`: SSH connection failure
-- `E-IO-SSH-AUTH`: SSH authentication failure
+- `E-IO-IMAGE-MISSING`: a required container image has not been materialized (10.3)
+- `E-IO-IMAGE-DIGEST`: a pulled image's digest does not match the pinned digest (10.3)
+- `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
 - `E-IO-FS`: filesystem access failure
 - `E-IO-DATA-DECODE`: failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8)
 
@@ -3302,12 +3507,9 @@ lask run greet alice --prefix hi
 # Fixed-image execution (build specifies $[#alpine:3.20] inside the function)
 lask run --module ci/main.lask build
 
-# Execution in a remote environment (provision references #env("ansible"). Environment definitions are in environments.lask.json)
-lask run --module ops/main.lask \
-  --ssh-known-hosts ~/.ssh/known_hosts \
-  --ssh-strict-host-key-checking yes \
-  --ssh-connect-timeout 10 \
-  provision
+# Execution in a container built from a recipe (provision uses
+# #docker(dockerfile = "infra/Dockerfile"); images come from the lock file)
+lask run --module ops.lask provision
 
 # Enumerating available environments and checking access
 lask envs provision --check
@@ -3320,12 +3522,12 @@ Expected behavior:
 - `lask eval greet alice`: outputs `"hello, alice"` to stdout (the default `json` display).
 - `lask run greet alice --prefix hi`: executes with the positional argument `alice` and the keyword argument `--prefix hi` bound. The evaluation result is not output.
 - `build`: executes the build inside a container (the evaluation result is not output). If a connection to the Docker daemon cannot be made, a pre-execution error occurs and it exits with exit code `3`.
-- `provision`: resolves to the `ansible` entry in `environments.lask.json` and executes commands over an SSH connection. If the connection fails, an `E-IO-SSH-CONNECT` diagnostic is output to stderr and it exits with exit code `3`.
+- `provision`: executes commands in a container built from the declared recipe. If the image has not been materialized, an `E-IO-IMAGE-MISSING` diagnostic is output to stderr and it exits with exit code `3`.
 - `lask envs provision --check`: enumerates the environments used by `provision` and checks reachability. Exit code `0` if all are reachable, `3` if any environment is unreachable (11.4).
 
 ### 16.8 Execution Event Example
 
-An event output example on failure involving command execution with environments (`run_command`) is shown. The following is the `FailEvent` emitted when the SSH connection times out during execution of `lask run deploy prod`.
+An event output example on failure involving command execution with environments (`run_command`) is shown. The following is the `FailEvent` emitted when a required image has not been materialized during execution of `lask run deploy prod`.
 
 ```json
 {
@@ -3340,10 +3542,10 @@ An event output example on failure involving command execution with environments
     "type": "Function<String, String>"
   },
   "args": {"summary": ["prod"]},
-  "env": {"kind": "remote", "params": {"host": "prod.example.com", "user": "deployer", "port": 22}},
+  "env": {"kind": "docker", "params": {"image": "alpine:3.20@sha256:6f3c..."}},
   "error": {
-    "code": "E-IO-SSH-CONNECT",
-    "message": "ssh connection timeout",
+    "code": "E-IO-IMAGE-MISSING",
+    "message": "image not materialized: run 'lask deps sync'",
     "detail": {"timeoutSec": 10}
   }
 }
@@ -3351,7 +3553,7 @@ An event output example on failure involving command execution with environments
 
 Expected behavior:
 
-- If this failure is not caught by `try`/`catch`, the failure is mapped to an `Error` value (`code: 3`), and the `lask` process exits with exit code `3`. An `E-IO-SSH-CONNECT` diagnostic is output to stderr (8.10, 11.3).
+- If this failure is not caught by `try`/`catch`, the failure is mapped to an `Error` value (`code: 3`), and the `lask` process exits with exit code `3`. An `E-IO-IMAGE-MISSING` diagnostic is output to stderr (8.10, 11.3).
 - The `FailEvent` is emitted regardless of whether the failure is caught (12.6).
 
 ### 16.9 Error Handling and Exit Codes

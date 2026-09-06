@@ -1,6 +1,6 @@
 python = #python:3.12.14-alpine3.24
 node = #node:20.20.2-alpine3.23
-terraform = #terraform-aws-cli
+terraform = #docker(dockerfile = "infra/Dockerfile", context = ".")
 playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
 curl = #curlimages/curl:8.21.0
 
@@ -27,7 +27,6 @@ test_e2e(
   --email: String = get_env("E2E_EMAIL"),
   --password!!: String = get_env("E2E_PASSWORD")
 ) = do {
-  build_infra_image()
   website = $[terraform] terraform -chdir="infra" output -raw website_url
 
   $[playwright] cd e2e && \
@@ -67,7 +66,6 @@ deploy(
   --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
 ) = do {
   build_lambda_deps()
-  build_infra_image()
   $[terraform] terraform -chdir="infra" init
   $[terraform] terraform -chdir="infra" apply -auto-approve \
     -var "aws_region=#{region}" \
@@ -100,7 +98,6 @@ create_user(
   --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
   --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
 ) = do {
-  build_infra_image()
   pool = $[terraform] terraform -chdir="infra" output -raw user_pool_id
   $[terraform] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" \
     aws cognito-idp admin-create-user \
@@ -119,7 +116,6 @@ destroy(
   --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
   --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
 ) = do {
-  build_infra_image()
   $[terraform] terraform -chdir="infra" destroy -auto-approve \
     -var "aws_region=#{region}" \
     -var "aws_access_key_id=#{access_key_id}" \
@@ -148,6 +144,3 @@ healthcheck_web(): Healthcheck = do {
   return { status: status }
 }
 
-// Builds the Docker image with Terraform and the AWS CLI that the
-// `terraform` environment declared at the top of this file refers to.
-build_infra_image() = $ docker build -t terraform-aws-cli -f infra/Dockerfile .

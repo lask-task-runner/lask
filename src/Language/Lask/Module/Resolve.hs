@@ -85,17 +85,37 @@ scopedModules prog =
 
 data Publics = Publics
   { pubValues :: Set Text,
-    pubTypes :: Set Text
+    pubTypes :: Set Text,
+    -- | Public names that come from a re-export (spec 5), mapped to
+    -- the module and name they were re-exported from. A consumer must
+    -- bind them to that origin, not to the re-exporting module.
+    pubOrigins :: Map Text (FilePath, Text)
   }
 
 modulePublics :: LoadedModule -> Publics
 modulePublics lm =
   Publics
-    { pubValues = Set.fromList (mapMaybe valueName decls),
-      pubTypes = Set.fromList (mapMaybe typeName decls)
+    { pubValues = Set.difference (Set.fromList (mapMaybe valueName decls) <> reValues) internal,
+      pubTypes = Set.difference (Set.fromList (mapMaybe typeName decls) <> reTypes) internal,
+      pubOrigins =
+        Map.fromList
+          [ (maybe n id a, (reKey path, n))
+          | DExportFrom specs path <- decls,
+            ImportSpec _ n a <- specs,
+            not (maybe n id a `Set.member` internal)
+          ]
     }
   where
     decls = map declF (moduleDecls (lmModule lm))
+    -- Declarations marked `internal` are not public symbols (spec 5).
+    internal = moduleInternal (lmModule lm)
+    -- A re-export publishes the names it binds under their post-rename
+    -- form (spec 5).
+    reexported = [maybe n id a | DExportFrom specs _ <- decls, ImportSpec _ n a <- specs]
+    reKey path = Map.findWithDefault (T.unpack path) path (lmImportKeys lm)
+    reValues = Set.fromList (filter (not . startsUpper) reexported)
+    reTypes = Set.fromList (filter startsUpper reexported)
+    startsUpper t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
     valueName (DValue n _ _ _) = Just n
     valueName (DFunction n _ _ _) = Just n
     valueName _ = Nothing
@@ -130,6 +150,12 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
               ]
          in go gs {gsTypes = Map.insert n (TAlias (lmPath lm) n) (gsTypes gs)} (dups <> ds) rest
       DImportNamed specs path ->
+        let key = resolveKey path
+            (gs', newDs) = foldl (addImport key) (gs, []) specs
+         in go gs' (newDs <> ds) rest
+      -- A re-export binds the names locally exactly as a named import
+      -- does; being public as well is handled by 'modulePublics'.
+      DExportFrom specs path ->
         let key = resolveKey path
             (gs', newDs) = foldl (addImport key) (gs, []) specs
          in go gs' (newDs <> ds) rest
@@ -168,10 +194,20 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
             | otherwise =
                 [dupDiag sp visible | conflictsValue visible gs || Map.member visible (gsNamespaces gs)]
                   <> [coreDiag sp visible | isUnbindableName visible]
+          -- Follow re-export chains to the declaring module (spec 5).
+          (originKey, originName) = followOrigin (0 :: Int) key name
           gs'
-            | isType = gs {gsTypes = Map.insert visible (TAlias key name) (gsTypes gs)}
-            | otherwise = gs {gsValues = Map.insert visible (VTopLevel key name) (gsValues gs)}
+            | isType = gs {gsTypes = Map.insert visible (TAlias originKey originName) (gsTypes gs)}
+            | otherwise = gs {gsValues = Map.insert visible (VTopLevel originKey originName) (gsValues gs)}
        in (gs', existsDiag <> dups <> ds)
+
+    -- The module graph is acyclic, so the depth guard only bounds
+    -- pathological inputs.
+    followOrigin depth k n
+      | depth > 64 = (k, n)
+      | otherwise = case Map.lookup k publics >>= Map.lookup n . pubOrigins of
+          Just (k', n') -> followOrigin (depth + 1) k' n'
+          Nothing -> (k, n)
 
     -- A collision exists only against user-introduced names; builtins
     -- (rank 5) are shadowable.
@@ -210,6 +246,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
           <> checkExpr [paramNames ps] body
       DTypeAlias _ t -> checkType t
       DImportNamed {} -> []
+      DExportFrom {} -> []
       DImportNamespace {} -> []
 
     paramNames ps = Set.fromList [paramName p | p <- ps]

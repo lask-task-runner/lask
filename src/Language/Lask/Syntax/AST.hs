@@ -30,11 +30,17 @@ module Language.Lask.Syntax.AST
 where
 
 import Data.Scientific (Scientific)
+import Data.Set (Set)
 import Data.Text (Text)
 import Language.Lask.Lexer.Token (CmdStream, Op, Spanned (..))
 import Language.Lask.Span (Span (NoSpan))
 
-newtype Module = Module {moduleDecls :: [Decl]}
+data Module = Module
+  { moduleDecls :: [Decl],
+    -- | Top-level names carrying the @internal@ marker (spec 5). They
+    -- are not public symbols of the module.
+    moduleInternal :: Set Text
+  }
   deriving (Show, Eq)
 
 data Decl = Decl {declSpan :: Span, declF :: DeclF}
@@ -51,6 +57,9 @@ data DeclF
     DValue Text Secrecy (Maybe SType) Expr
   | -- | @name(params) [: Type] = expr@ (sugar for a lambda binding)
     DFunction Text [Param] (Maybe SType) Expr
+  | -- | @export { a, b as c } from "path"@ (spec 5): a named import
+    -- whose bound names are also public symbols of this module.
+    DExportFrom [ImportSpec] Text
   deriving (Show, Eq)
 
 -- | Whether a binding carries the @!!@ secret marker (spec 6.10).
@@ -158,7 +167,7 @@ data StmtF
 -- Span stripping (test helpers) -------------------------------------------
 
 stripSpansModule :: Module -> Module
-stripSpansModule (Module ds) = Module (map stripSpansDecl ds)
+stripSpansModule (Module ds ints) = Module (map stripSpansDecl ds) ints
 
 stripSpansDecl :: Decl -> Decl
 stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of

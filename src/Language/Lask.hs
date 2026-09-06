@@ -4,6 +4,7 @@ module Language.Lask
   ( Compiled (..),
     Partial (..),
     compileFile,
+    compileFilePartial,
     compileWith,
     compileText,
     compileTextPartial,
@@ -76,6 +77,47 @@ compileTextPartial path txt = do
               partialScopes = scopes,
               partialCore = either (const Nothing) Just (elaborateProgram prog scopes)
             }
+
+-- | Like 'compileFile' but keeps whatever the front end managed to
+-- produce, together with the diagnostics. CLI help is rendered from
+-- the surface syntax even when the module does not type check
+-- (spec 11.6), which is exactly when help is most needed.
+compileFilePartial :: FilePath -> IO ([Diagnostic], Partial)
+compileFilePartial path = do
+  loaded <- loadProgramWith fileReader path
+  case loaded of
+    -- The module graph did not load (syntax error, unresolved import):
+    -- parse the entry module on its own so its declarations are still
+    -- available.
+    Left ds -> do
+      src <- fileReader path
+      let m = case src of
+            Right txt -> either (const Nothing) Just (parseModule path txt)
+            Left _ -> Nothing
+      pure
+        ( ds,
+          Partial
+            { partialModule = m,
+              partialProgram = Nothing,
+              partialScopes = Map.empty,
+              partialCore = Nothing
+            }
+        )
+    Right prog -> do
+      let (ds, scopes, core) = case validateProgram prog of
+            Left vds -> (vds, buildScopes prog, Nothing)
+            Right sc -> case elaborateProgram prog sc of
+              Left eds -> (eds, sc, Nothing)
+              Right c -> ([], sc, Just c)
+      pure
+        ( ds,
+          Partial
+            { partialModule = lmModule <$> Map.lookup (progEntry prog) (progModules prog),
+              partialProgram = Just prog,
+              partialScopes = scopes,
+              partialCore = core
+            }
+        )
 
 -- | The loader keys modules by their collapsed, normalised path, so
 -- the buffer has to be matched the same way; otherwise a path such as

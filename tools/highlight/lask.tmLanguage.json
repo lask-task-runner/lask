@@ -1,0 +1,116 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Lask",
+  "scopeName": "source.lask",
+  "patterns": [{ "include": "#main" }],
+  "repository": {
+    "main": {
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#command" },
+        { "include": "#environment" },
+        { "include": "#string-interpreted" },
+        { "include": "#string-raw" },
+        { "include": "#keyword" },
+        { "include": "#constant" },
+        { "include": "#type" },
+        { "include": "#declaration" },
+        { "include": "#kwarg" },
+        { "include": "#number" },
+        { "include": "#call" },
+        { "include": "#operator" }
+      ]
+    },
+    "comment": {
+      "patterns": [
+        { "name": "comment.line.double-slash.lask", "match": "//.*$" },
+        { "name": "comment.block.lask", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "command": {
+      "name": "meta.command.lask",
+      "begin": "(\\$[2*]?)",
+      "beginCaptures": { "1": { "name": "keyword.operator.command.lask" } },
+      "end": "$",
+      "patterns": [
+        { "include": "#env-bracket" },
+        { "include": "#string-interpreted" },
+        { "include": "#string-raw" },
+        { "include": "#interpolation" },
+        { "match": "(?:[^\\s\\[\"'#]|#(?!\\{))+" }
+      ]
+    },
+    "env-bracket": {
+      "begin": "\\[",
+      "end": "\\]",
+      "beginCaptures": { "0": { "name": "punctuation.section.brackets.lask" } },
+      "endCaptures": { "0": { "name": "punctuation.section.brackets.lask" } },
+      "patterns": [
+        { "include": "#environment" },
+        { "include": "#string-interpreted" },
+        { "include": "#string-raw" }
+      ]
+    },
+    "environment": {
+      "name": "entity.name.tag.environment.lask",
+      "match": "#[A-Za-z0-9_][A-Za-z0-9_./:@-]*"
+    },
+    "string-interpreted": {
+      "name": "string.quoted.double.lask",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.lask", "match": "\\\\." },
+        { "include": "#interpolation" }
+      ]
+    },
+    "interpolation": {
+      "name": "meta.embedded.interpolation.lask",
+      "begin": "#\\{",
+      "end": "\\}",
+      "beginCaptures": { "0": { "name": "keyword.control.interpolation.begin.lask" } },
+      "endCaptures": { "0": { "name": "keyword.control.interpolation.end.lask" } },
+      "patterns": [
+        { "include": "#string-interpreted" },
+        { "include": "#string-raw" },
+        { "include": "#keyword" },
+        { "include": "#constant" },
+        { "include": "#number" },
+        { "include": "#call" },
+        { "name": "variable.other.interpolated.lask", "match": "[A-Za-z_][A-Za-z0-9_]*" },
+        { "include": "#operator" }
+      ]
+    },
+    "string-raw": { "name": "string.quoted.single.lask", "begin": "'", "end": "'" },
+    "keyword": {
+      "patterns": [
+        { "name": "keyword.control.flow.lask", "match": "\\b(do|if|else|for|return|try|catch|finally)\\b" },
+        { "name": "keyword.control.async.lask", "match": "\\b(async|await)\\b" },
+        { "name": "keyword.control.import.lask", "match": "\\b(import|from|as|type)\\b" },
+        { "name": "storage.modifier.lask", "match": "^\\s*(export|internal)\\b" }
+      ]
+    },
+    "constant": { "name": "constant.language.lask", "match": "\\b(true|false|null)\\b" },
+    "type": {
+      "name": "support.type.lask",
+      "match": "\\b(String|Number|Bool|Array|Map|Record|Function|AsyncHandle|Environment)\\b"
+    },
+    "declaration": {
+      "match": "^\\s*(?:(export|internal)\\s+)?([a-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "storage.modifier.lask" },
+        "2": { "name": "entity.name.function.lask" }
+      }
+    },
+    "kwarg": {
+      "match": "(--)([a-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.parameter.lask" },
+        "2": { "name": "variable.parameter.lask" }
+      }
+    },
+    "number": { "name": "constant.numeric.lask", "match": "\\b\\d+(\\.\\d+)?\\b" },
+    "call": { "name": "entity.name.function.call.lask", "match": "\\b[a-z_][A-Za-z0-9_]*(?=\\s*\\()" },
+    "operator": { "name": "keyword.operator.lask", "match": "(->|=>|\\|>|==|!=|<=|>=|&&|\\|\\||[=+\\-*/%<>!:,.])" }
+  }
+}

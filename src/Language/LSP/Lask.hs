@@ -53,6 +53,7 @@ import qualified Data.Text.IO as TIO
 import Language.Lask (Compiled (..), Partial (..), checkText, compileText, compileTextPartial)
 import Language.Lask.Builtins.Sig (builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
+import Language.Lask.Doc (docBlockAbove)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), HoverInfo (..))
 import Language.Lask.ErrorCode (codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
@@ -430,9 +431,7 @@ declDocs compiled docPath docSrc (Just (declPath, name)) = do
     comments <- case lexTokensWithComments declPath srcText of
       Right (_, cs) -> Just cs
       Left _ -> Nothing
-    let block = commentBlockEndingAt comments (declLine - 1)
-        texts = map (commentText srcText) block
-    if null block then Nothing else Just (T.intercalate "\n" texts)
+    docBlockAbove srcText comments declLine
   where
     declStartLine = do
       lm <- Map.lookup (normalisedKey declPath) modules
@@ -449,36 +448,6 @@ declDocs compiled docPath docSrc (Just (declPath, name)) = do
       case [k | k <- Map.keys modules, normalise k == normalise p] of
         (k : _) -> k
         [] -> p
-
-    -- The contiguous run of comments whose last line is `endLine`,
-    -- chaining upwards line by line.
-    commentBlockEndingAt comments endLine =
-      case [c | c@(S.Span _ (S.Position _ el _)) <- comments, el == endLine] of
-        (c@(S.Span (S.Position _ sl _) _) : _) ->
-          commentBlockEndingAt comments (sl - 1) <> [c]
-        _ -> []
-
-    commentText srcText (S.Span (S.Position _ l1 c1) (S.Position _ l2 c2)) =
-      let srcLines = T.splitOn "\n" srcText
-          lineAt l = case drop (l - 1) srcLines of
-            (x : _) -> x
-            [] -> ""
-          raw
-            | l1 == l2 = T.take (c2 - c1) (T.drop (c1 - 1) (lineAt l1))
-            | otherwise =
-                T.intercalate "\n" $
-                  [T.drop (c1 - 1) (lineAt l1)]
-                    <> [lineAt l | l <- [l1 + 1 .. l2 - 1]]
-                    <> [T.take (c2 - 1) (lineAt l2)]
-       in stripMarkers raw
-    commentText _ S.NoSpan = ""
-
-    stripMarkers t =
-      let noLine = maybe t T.stripStart (T.stripPrefix "//" t)
-          noBlock = case T.stripPrefix "/*" noLine of
-            Just rest -> T.strip (maybe rest id (T.stripSuffix "*/" rest))
-            Nothing -> noLine
-       in T.stripEnd noBlock
 
 -- Completion ------------------------------------------------------------------
 

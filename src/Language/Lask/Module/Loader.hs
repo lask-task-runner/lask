@@ -7,7 +7,7 @@
 -- Import paths starting with @./@ or @..\/@ are local imports,
 -- resolved relative to the directory of the importing module. Any
 -- other path is an external import: its first segment must be a
--- dependency name declared in @dependencies.lask.json@ and present in
+-- dependency name declared in @lask.json@ and present in
 -- the cache (@E-MODULE-UNRESOLVED@ otherwise). Module resolution
 -- never accesses the network; fetching is done by @lask deps sync@.
 module Language.Lask.Module.Loader
@@ -30,10 +30,12 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.Lask.Deps.Cache (cachePathFor, defaultCacheDir)
+import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor)
+import Language.Lask.Deps.File
 import Language.Lask.Deps.File (DepsFile (..), defaultDepsFileName, entryIsSingleFile, loadDepsFile)
+import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..), childPath, defaultLockFileName, loadLockFile, lookupHash)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
-import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, EModuleUnresolved, ENameUndefined), Stage (StageStatic))
+import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, EModuleDeepImport, EModuleLockStale, EModuleUnresolved, ENameUndefined), Stage (StageStatic))
 import Language.Lask.Span (Span (NoSpan))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.Parser (parseModule)
@@ -48,7 +50,12 @@ data LoaderEnv = LoaderEnv
   { leReader :: ModuleReader,
     -- | Load the dependency definition file of a tree root directory.
     leLoadDeps :: FilePath -> IO (Either Diagnostic (Maybe DepsFile)),
+    -- | The lock file of the project (spec chapter 5). Resolution
+    -- requires it to cover every declared dependency.
+    leLoadLock :: FilePath -> IO (Either Diagnostic (Maybe LockFile)),
     leCacheDir :: FilePath,
+    -- | The content hash the lock pins for a dependency path.
+    leLockedHash :: Text -> Maybe Text,
     -- | Existence check for cache entries (files and directories).
     leExists :: FilePath -> IO Bool
   }
@@ -59,7 +66,12 @@ data LoaderEnv = LoaderEnv
 -- dependencies resolve independently per dependency).
 data ModCtx = ModCtx
   { mcDir :: FilePath,
-    mcDeps :: Maybe DepsFile
+    mcDeps :: Maybe DepsFile,
+    -- | The dependency path of the tree this module belongs to (spec
+    -- chapter 5): empty for the root project, @kit@ for a direct
+    -- dependency, @kit>notify@ for one reached through it. The lock
+    -- file is keyed by it.
+    mcPath :: Text
   }
 
 data Program = Program
@@ -86,14 +98,22 @@ fileReader path = do
     Left e -> Left (T.pack (show (e :: IOException)))
     Right src -> Right src
 
-defaultLoaderEnv :: ModuleReader -> IO LoaderEnv
-defaultLoaderEnv reader = do
-  cacheDir <- defaultCacheDir
+-- | The entry path determines the project's base directory, and with
+-- it the per-project dependency cache.
+defaultLoaderEnv :: ModuleReader -> FilePath -> IO LoaderEnv
+defaultLoaderEnv reader entryPath = do
+  let baseDir = takeDirectory entryPath
+  cacheDir <- cacheDirFor baseDir
+  -- The content hash that pins each dependency comes from the lock
+  -- file (spec chapter 5); the project file records intent only.
+  lock <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
   pure
     LoaderEnv
       { leReader = reader,
         leLoadDeps = \dir -> loadDepsFile (dir </> defaultDepsFileName),
+        leLoadLock = \dir -> loadLockFile (dir </> defaultLockFileName),
         leCacheDir = cacheDir,
+        leLockedHash = \p -> lock >>= flip lookupHash p,
         leExists = \p -> (||) <$> doesFileExist p <*> doesDirectoryExist p
       }
 
@@ -102,29 +122,72 @@ loadProgram = loadProgramWith fileReader
 
 loadProgramWith :: ModuleReader -> FilePath -> IO (Either [Diagnostic] Program)
 loadProgramWith reader entryPath = do
-  env <- defaultLoaderEnv reader
+  env <- defaultLoaderEnv reader entryPath
   loadProgramEnv env entryPath
 
 loadProgramEnv :: LoaderEnv -> FilePath -> IO (Either [Diagnostic] Program)
 loadProgramEnv env entryPath = do
   let entry = collapseDots (normalise entryPath)
       baseDir = takeDirectory entry
+  lockE <- leLoadLock env baseDir
   rootDepsE <- leLoadDeps env baseDir
-  case rootDepsE of
-    Left d -> pure (Left [d])
-    Right rootDeps -> do
-      result <- go (ModCtx baseDir rootDeps) [] Map.empty [] entry
-      pure $ case result of
-        Left ds -> Left ds
-        Right (mods, order) ->
-          Right
-            Program
-              { progEntry = entry,
-                progBaseDir = baseDir,
-                progModules = mods,
-                progOrder = reverse order
-              }
+  case (rootDepsE, lockE) of
+    (Left d, _) -> pure (Left [d])
+    (_, Left d) -> pure (Left [d])
+    (Right rootDeps, Right lock) -> case lockGap rootDeps lock of
+      Just d -> pure (Left [d])
+      Nothing -> do
+        result <- go (ModCtx baseDir rootDeps "") [] Map.empty [] entry
+        pure $ case result of
+          Left ds -> Left ds
+          Right (mods, order) ->
+            Right
+              Program
+                { progEntry = entry,
+                  progBaseDir = baseDir,
+                  progModules = mods,
+                  progOrder = reverse order
+                }
   where
+    -- Every declared dependency must be covered by the lock file
+    -- (spec chapter 5); resolution never falls back to resolving one.
+    lockGap rootDeps lock = case rootDeps of
+      Nothing -> Nothing
+      Just df ->
+        let covered = maybe Map.empty lockModules lock
+            missing = [n | n <- Map.keys (depsEntries df), not (Map.member n covered)]
+            -- The lock must agree with the project file, not merely
+            -- cover it (spec chapter 5): a source or a reference edited
+            -- in place leaves the pinned content behind.
+            disagreeing =
+              [ (n, why)
+              | (n, e) <- Map.toList (depsEntries df),
+                Just locked <- [Map.lookup n covered],
+                Just why <- [entryDisagreement e locked]
+              ]
+         in case (lock, missing, disagreeing) of
+              (Nothing, (_ : _), _) ->
+                Just . stale $ "no lock file; run 'lask deps sync'"
+              (_, (n : _), _) ->
+                Just . stale $
+                  "the lock file does not cover dependency '" <> n <> "'; run 'lask deps sync'"
+              (_, _, ((n, why) : _)) ->
+                Just . stale $
+                  "the lock file disagrees with " <> T.pack defaultDepsFileName
+                    <> " for dependency '" <> n <> "' (" <> why <> "); run 'lask deps sync'"
+              _ -> Nothing
+
+    entryDisagreement e locked = case e of
+      DepGit url rev
+        | lkGit locked /= Just url -> Just "different source"
+        | lkRequested locked /= Just rev -> Just ("locked " <> maybe "-" id (lkRequested locked) <> ", declared " <> rev)
+        | otherwise -> Nothing
+      DepUrl url
+        | lkUrl locked /= Just url -> Just "different source"
+        | otherwise -> Nothing
+
+    stale = mkDiagnostic EModuleLockStale StageStatic NoSpan
+
     -- DFS with an explicit visiting stack for cycle detection.
     -- The accumulated order is reversed topological order.
     go ::
@@ -203,39 +266,57 @@ resolveImport env ctx pathText
         Nothing ->
           pure . Left . unresolved $
             "undeclared dependency: '" <> depName <> "' (declare it in " <> T.pack defaultDepsFileName <> ")"
-        Just entry -> do
-          let base = cachePathFor (leCacheDir env) entry
-          present <- leExists env base
-          if not present
-            then
-              pure . Left . unresolved $
-                "dependency '" <> depName <> "' is not in the cache; run 'lask deps sync'"
-            else
-              if entryIsSingleFile entry
-                then
-                  if T.null rest
-                    then pure (Right (base, ModCtx (takeDirectory base) Nothing))
-                    else
-                      pure . Left . unresolved $
-                        "dependency '" <> depName <> "' is a single file and has no submodules"
-                else do
-                  let relPath = if T.null rest then "main.lask" else T.unpack (T.drop 1 rest)
-                      file = collapseDots (normalise (base </> relPath))
-                  fileOk <- leExists env file
-                  if not fileOk
-                    then
-                      pure . Left . unresolved $
-                        if T.null rest
-                          then "dependency '" <> depName <> "' has no main.lask"
-                          else "no such module in dependency '" <> depName <> "': " <> T.pack relPath
-                    else do
-                      treeDepsE <- leLoadDeps env base
-                      case treeDepsE of
-                        Left d -> pure (Left d)
-                        Right treeDeps -> pure (Right (file, ModCtx (takeDirectory file) treeDeps))
+        Just entry -> case leLockedHash env (childPath (mcPath ctx) depName) of
+          -- The hash that pins a dependency lives in the lock file, not
+          -- in the project file (spec chapter 5).
+          Nothing ->
+            pure . Left . stale $
+              "the lock file does not pin dependency '"
+                <> childPath (mcPath ctx) depName
+                <> "'; run 'lask deps sync'"
+          Just hash -> do
+            let base = cachePathFor (leCacheDir env) hash (entryIsSingleFile entry)
+            present <- leExists env base
+            if not present
+              then
+                pure . Left . unresolved $
+                  "dependency '" <> depName <> "' is not in the cache; run 'lask deps sync'"
+              else if entryIsSingleFile entry
+                  then
+                    if T.null rest
+                        then pure (Right (base, ModCtx (takeDirectory base) Nothing depPath))
+                      else
+                        pure . Left . unresolved $
+                          "dependency '" <> depName <> "' is a single file and has no submodules"
+                  else
+                    -- Only the entry module of a tree is reachable from
+                    -- outside it (spec 5): a public API spanning several
+                    -- files is re-exported from main.lask.
+                    if not (T.null rest)
+                      then
+                        pure . Left . deepImport $
+                          "'" <> pathText <> "' names a path inside dependency '"
+                            <> depName
+                            <> "'; only its entry module is importable"
+                      else do
+                        let file = collapseDots (normalise (base </> "main.lask"))
+                        fileOk <- leExists env file
+                        if not fileOk
+                          then
+                            pure . Left . unresolved $
+                              "dependency '" <> depName <> "' has no main.lask"
+                          else do
+                            treeDepsE <- leLoadDeps env base
+                            case treeDepsE of
+                              Left d -> pure (Left d)
+                              Right treeDeps ->
+                                pure (Right (file, ModCtx (takeDirectory file) treeDeps depPath))
   where
+    depPath = childPath (mcPath ctx) (fst (T.breakOn "/" pathText))
     isLocal = "./" `T.isPrefixOf` pathText || "../" `T.isPrefixOf` pathText
     unresolved = mkDiagnostic EModuleUnresolved StageStatic NoSpan
+    deepImport = mkDiagnostic EModuleDeepImport StageStatic NoSpan
+    stale = mkDiagnostic EModuleLockStale StageStatic NoSpan
 
 -- | Collapse @.@ and @..@ segments so module identities are stable
 -- for cycle detection and caching.
@@ -259,4 +340,5 @@ collapseDots p =
 declImportPath :: DeclF -> [Text]
 declImportPath (DImportNamed _ p) = [p]
 declImportPath (DImportNamespace _ p) = [p]
+declImportPath (DExportFrom _ p) = [p]
 declImportPath _ = []

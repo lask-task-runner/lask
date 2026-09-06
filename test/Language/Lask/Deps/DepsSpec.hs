@@ -25,16 +25,18 @@ spec = do
       parseDepsFile (BL8.pack json)
         `shouldBe` Right
           ( DepsFile . Map.fromList $
-              [ ("deploy_kit", DepGit "https://example.com/kit" "v1.2.0" "sha256-aa"),
-                ("notify", DepUrl "https://example.com/notify.lask" "sha256-bb")
+              [ ("deploy_kit", DepGit "https://example.com/kit" "v1.2.0"),
+                ("notify", DepUrl "https://example.com/notify.lask")
               ]
           )
-    it "requires a hash on every entry" $
+    -- The project file records intent; the hash that pins it lives in
+    -- the lock (spec chapter 5).
+    it "does not require a hash" $
       parseDepsFile "{\"dependencies\": {\"a\": {\"url\": \"https://x/a.lask\"}}}"
-        `shouldSatisfy` isLeft
-    it "requires the sha256- hash format" $
-      parseDepsFile "{\"dependencies\": {\"a\": {\"url\": \"https://x/a.lask\", \"hash\": \"deadbeef\"}}}"
-        `shouldSatisfy` isLeft
+        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]))
+    it "still accepts a hash written by an older project file" $
+      parseDepsFile "{\"dependencies\": {\"a\": {\"url\": \"https://x/a.lask\", \"hash\": \"sha256-aa\"}}}"
+        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]))
     it "requires rev with git" $
       parseDepsFile "{\"dependencies\": {\"a\": {\"git\": \"https://x/r\", \"hash\": \"sha256-aa\"}}}"
         `shouldSatisfy` isLeft
@@ -57,14 +59,14 @@ spec = do
     it "round-trips through render" $ do
       let df =
             DepsFile . Map.fromList $
-              [ ("kit", DepGit "https://example.com/kit" "abc123" "sha256-aa"),
-                ("notify", DepUrl "https://example.com/notify.lask" "sha256-bb")
+              [ ("kit", DepGit "https://example.com/kit" "abc123"),
+                ("notify", DepUrl "https://example.com/notify.lask")
               ]
       parseDepsFile (renderDepsFile df) `shouldBe` Right df
     it "classifies single-file and tree sources" $ do
-      entryIsSingleFile (DepUrl "https://x/notify.lask" "h") `shouldBe` True
-      entryIsSingleFile (DepUrl "https://x/kit.tar.gz" "h") `shouldBe` False
-      entryIsSingleFile (DepGit "https://x/r" "v1" "h") `shouldBe` False
+      entryIsSingleFile (DepUrl "https://x/notify.lask") `shouldBe` True
+      entryIsSingleFile (DepUrl "https://x/kit.tar.gz") `shouldBe` False
+      entryIsSingleFile (DepGit "https://x/r" "v1") `shouldBe` False
 
   describe "content hashes (spec chapter 5)" $ do
     it "hashes bytes in the sha256-hex format" $ do

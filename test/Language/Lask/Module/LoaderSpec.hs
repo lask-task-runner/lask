@@ -6,8 +6,12 @@ module Language.Lask.Module.LoaderSpec (spec) where
 
 import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
+import qualified Data.Text as T
+import Language.Lask.Deps.File
 import Language.Lask.Deps.File (DepEntry (..), DepsFile (..))
+import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..))
 import Language.Lask.Diagnostic (diagCode)
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader
@@ -19,6 +23,11 @@ fakeEnv files depsFiles =
   LoaderEnv
     { leReader = \p -> pure (maybe (Left "not found") Right (lookup p files)),
       leLoadDeps = \dir -> pure (Right (lookup dir depsFiles)),
+      -- The fixtures pin hashes directly, so the lock covers whatever
+      -- the deps file declares.
+      leLoadLock = \dir ->
+        pure . Right . Just . LockFile (lockOf (lookup dir depsFiles)) $ Map.empty,
+      leLockedHash = lockedHash,
       leCacheDir = "/cache",
       -- A path exists if it is a known file or a directory prefix of
       -- one (cache tree roots).
@@ -26,6 +35,32 @@ fakeEnv files depsFiles =
     }
   where
     paths = map fst files
+    -- Fixtures name cache directories directly, so the lock pins the
+    -- hash those paths encode. The last segment of a dependency path
+    -- names the entry, whichever tree declared it.
+    lockedHash p =
+      let leaf = last (T.splitOn ">" p)
+       in listToMaybe
+            [ hashOf e
+            | (_, df) <- depsFiles,
+              Just e <- [Map.lookup leaf (depsEntries df)]
+            ]
+
+    lockOf Nothing = Map.empty
+    -- The lock must agree with the deps file, not merely cover it.
+    lockOf (Just df) =
+      Map.fromList
+        [ (n, lockEntryOf e)
+        | (n, e) <- Map.toList (depsEntries df)
+        ]
+    lockEntryOf e = case e of
+      DepGit u r -> LockEntry (Just u) Nothing (Just r) (Just r) (hashOf e)
+      DepUrl u -> LockEntry Nothing (Just u) Nothing Nothing (hashOf e)
+    -- The fixtures name cache directories directly, so the lock pins
+    -- the hash those paths encode.
+    hashOf e = case e of
+      DepGit {} -> "sha256-t"
+      DepUrl {} -> "sha256-abc"
 
 load :: [(FilePath, Text)] -> [(FilePath, DepsFile)] -> FilePath -> IO (Either [ErrorCode] [FilePath])
 load files depsFiles entry = do
@@ -49,10 +84,10 @@ failsWith files depsFiles code = do
     other -> expectationFailure ("expected " <> show code <> ", got " <> show other)
 
 singleDep :: Text -> DepsFile
-singleDep hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask" hash)])
+singleDep _hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask")])
 
 treeDep :: Text -> DepsFile
-treeDep hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" hash)])
+treeDep _hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1")])
 
 spec :: Spec
 spec = do
@@ -100,12 +135,14 @@ spec = do
         ]
         [(".", singleDep "sha256-abc")]
         EModuleUnresolved
-    it "resolves tree dependencies with a path remainder" $
-      loadsOk
+    it "rejects a path inside a tree dependency (entry module only)" $
+      failsWith
         [ ("main.lask", "import { rollout } from \"kit/deploy.lask\"\nf() = rollout()"),
+          ("/cache/sha256-t/main.lask", "rollout(): String = \"ok\""),
           ("/cache/sha256-t/deploy.lask", "rollout(): String = \"ok\"")
         ]
         [(".", treeDep "sha256-t")]
+        EModuleDeepImport
     it "resolves a bare tree name to main.lask (entry-point convention)" $
       loadsOk
         [ ("main.lask", "import { hello } from \"kit\"\nf() = hello()"),
@@ -138,7 +175,7 @@ spec = do
         [(".", treeDep "sha256-t")]
 
   describe "transitive dependencies (spec chapter 5)" $ do
-    let notifyEntry = DepUrl "https://x/notify.lask" "sha256-abc"
+    let notifyEntry = DepUrl "https://x/notify.lask"
     it "resolves bare imports of an external tree against its own dependency file" $
       loadsOk
         [ ("main.lask", "import { hello } from \"kit\"\nf() = hello()"),
@@ -156,7 +193,7 @@ spec = do
         ]
         -- notify is declared at the ROOT only; the tree has no
         -- dependency file, so its bare import must not resolve.
-        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1" "sha256-t"), ("notify", notifyEntry)]))]
+        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1"), ("notify", notifyEntry)]))]
         EModuleUnresolved
     it "detects cycles inside external trees" $
       failsWith

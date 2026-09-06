@@ -14,14 +14,11 @@
 -- not affect value semantics).
 module Language.Lask.Runtime.Environment
   ( ResolvedEnv (..),
-    SshSettings (..),
-    defaultSshSettings,
     resolveEnv,
     mkCommandRunner,
     runLoggedProcess,
     envLogInfo,
     dockerArgs,
-    sshArgs,
   )
 where
 
@@ -33,6 +30,9 @@ import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
 import Data.Map.Strict (Map)
+import Language.Lask.Runtime.Image (imageExists, recipeTag)
+import System.Directory (makeAbsolute)
+import System.FilePath (takeDirectory)
 import qualified Data.Map.Strict as Map
 import Data.Scientific (formatScientific, isInteger)
 import qualified Data.Scientific as Sci
@@ -41,7 +41,6 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Time.Clock (getCurrentTime)
 import Language.Lask.Builtins.Impl (CommandRunner)
-import Language.Lask.EnvFile (EnvEntry (..), EnvFile (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Runtime.Secrets (maskSecrets)
@@ -62,85 +61,44 @@ data ResolvedEnv
   = ResolvedLocal
   | -- | Image and remaining options.
     ResolvedDocker Text (Map Text Value)
-  | -- | Host, user, port.
-    ResolvedRemote Text (Maybe Text) (Maybe Int)
+  | -- | Dockerfile, context, and remaining options (spec 10.2 recipe form).
+    ResolvedRecipe Text Text (Map Text Value)
   deriving (Show, Eq)
-
-data SshSettings = SshSettings
-  { sshKnownHosts :: Maybe FilePath,
-    -- | @yes@ \/ @accept-new@ \/ @no@; host-key verification is on by
-    -- default (spec 10.9).
-    sshStrictHostKeyChecking :: Maybe Text,
-    sshConnectTimeout :: Maybe Int
-  }
-  deriving (Show, Eq)
-
-defaultSshSettings :: SshSettings
-defaultSshSettings = SshSettings Nothing Nothing Nothing
 
 -- | Resolve an environment value to a concrete configuration
--- (spec 10.4). @env@ kinds substitute the entry from the environment
--- file.
-resolveEnv :: Maybe EnvFile -> EnvValue -> Either LaskFailure ResolvedEnv
-resolveEnv mFile (EnvValue kind params) = case kind of
+-- (spec 10.4). The kinds are @local@ and @docker@; a @docker@ image is
+-- either a registry reference or a recipe (10.2).
+resolveEnv :: EnvValue -> Either LaskFailure ResolvedEnv
+resolveEnv (EnvValue kind params) = case kind of
   "local" -> Right ResolvedLocal
-  "docker" -> case Map.lookup "image" params of
-    Just (VString img)
+  "docker" -> case (Map.lookup "image" params, Map.lookup "dockerfile" params) of
+    (Just (VString img), _)
       | not (T.null img) -> Right (ResolvedDocker img (Map.delete "image" params))
-    _ -> Left (ioFailure EIoEnvResolve "docker environment requires a non-empty image")
-  "env" -> case Map.lookup "name" params of
-    Just (VString name) -> case mFile of
-      Nothing ->
-        Left . ioFailure EIoEnvResolve $
-          "environment '" <> name <> "' is not defined: no environment definition file"
-      Just file -> case Map.lookup name (envFileEntries file) of
-        Nothing ->
-          Left (ioFailure EIoEnvResolve ("environment '" <> name <> "' is not defined"))
-        Just (EnvEntry ekind eparams) ->
-          resolveEnv Nothing (EnvValue ekind eparams)
-    _ -> Left (ioFailure EIoEnvResolve "env environment requires a name")
-  "remote" -> do
-    host <- case Map.lookup "host" params of
-      Just (VString h) | not (T.null h) -> Right h
-      _ -> Left (ioFailure EIoEnvResolve "remote environment requires a host")
-    let user = case Map.lookup "user" params of
-          Just (VString u) -> Just u
-          _ -> Nothing
-        port = case Map.lookup "port" params of
-          Just (VNumber n) -> Just (round (Sci.toRealFloat n :: Double))
-          _ -> Nothing
-    Right (ResolvedRemote host user port)
+    (_, Just (VString df))
+      | not (T.null df) ->
+          let ctx = case Map.lookup "context" params of
+                Just (VString c) | not (T.null c) -> c
+                _ -> T.pack (takeDirectory (T.unpack df))
+           in Right (ResolvedRecipe df ctx (Map.delete "dockerfile" (Map.delete "context" params)))
+    _ -> Left (ioFailure EIoEnvResolve "docker environment requires an image reference or a recipe")
   other -> Left (ioFailure EIoEnvResolve ("unknown environment kind: '" <> other <> "'"))
 
 -- | The environment summary and 13.1 metadata JSON used by command
 -- execution logs (spec 12.3). The summary follows environment
--- expression notation: @#local@, @#\<image\>@ for docker, and
--- @#env("name")@ for named environments; the JSON carries the
--- resolved kind\/params plus @name@ for named environments.
+-- expression notation: @#local@, @#\<image\>@ for a registry
+-- reference, and @#docker(dockerfile = ...)@ for a recipe.
 envLogInfo :: EnvValue -> ResolvedEnv -> (Text, A.Value)
-envLogInfo original resolved = (summary, json)
+envLogInfo _ resolved = (summary, json)
   where
-    namedRef = case original of
-      EnvValue "env" ps | Just (VString n) <- Map.lookup "name" ps -> Just n
-      _ -> Nothing
-    summary = case (namedRef, resolved) of
-      (Just n, _) -> "#env(\"" <> n <> "\")"
-      (_, ResolvedLocal) -> "#local"
-      (_, ResolvedDocker img _) -> "#" <> img
-      (_, ResolvedRemote host _ _) -> "#remote:" <> host -- unreachable: remote only via named envs
+    summary = case resolved of
+      ResolvedLocal -> "#local"
+      ResolvedDocker img _ -> "#" <> img
+      ResolvedRecipe df _ _ -> "#docker(dockerfile = \"" <> df <> "\")"
     resolvedEnvValue = case resolved of
       ResolvedLocal -> EnvValue "local" Map.empty
       ResolvedDocker img opts -> EnvValue "docker" (Map.insert "image" (VString img) opts)
-      ResolvedRemote host user port ->
-        EnvValue "remote" . Map.fromList $
-          [("host", VString host)]
-            <> maybe [] (\u -> [("user", VString u)]) user
-            <> maybe [] (\p -> [("port", VNumber (fromIntegral p))]) port
-    json = case valueToJson (VEnv resolvedEnvValue) of
-      A.Object o -> case namedRef of
-        Just n -> A.Object (KM.insert (AK.fromText "name") (A.String n) o)
-        Nothing -> A.Object o
-      other -> other
+      ResolvedRecipe df _ opts -> EnvValue "docker" (Map.insert "dockerfile" (VString df) opts)
+    json = valueToJson (VEnv resolvedEnvValue)
 
 -- | Arguments for @docker run@ (spec 10.5: base directory mounted as
 -- the working directory inside the container).
@@ -162,19 +120,6 @@ dockerArgs baseDir image opts cmd =
       | isInteger n = formatScientific Sci.Fixed (Just 0) n
       | otherwise = formatScientific Sci.Fixed Nothing n
 
--- | Arguments for non-interactive @ssh@ (spec 10.9): host-key
--- verification on by default, credentials never passed on the
--- command line.
-sshArgs :: SshSettings -> Text -> Maybe Text -> Maybe Int -> Text -> [String]
-sshArgs settings host user port cmd =
-  ["-o", "BatchMode=yes"]
-    <> ["-o", "StrictHostKeyChecking=" <> maybe "yes" T.unpack (sshStrictHostKeyChecking settings)]
-    <> maybe [] (\p -> ["-o", "UserKnownHostsFile=" <> p]) (sshKnownHosts settings)
-    <> maybe [] (\t -> ["-o", "ConnectTimeout=" <> show t]) (sshConnectTimeout settings)
-    <> maybe [] (\p -> ["-p", show p]) port
-    <> [T.unpack (maybe host (\u -> u <> "@" <> host) user)]
-    <> [T.unpack cmd]
-
 -- | Real command runner over the three environment families
 -- (spec 10.2, 10.8): a unified result contract regardless of the
 -- environment, with infrastructure failures mapped to external I\/O
@@ -182,11 +127,14 @@ sshArgs settings host user port cmd =
 -- (spec 12.3). Allocated in IO: it carries the execution-number
 -- counter, unique within the top-level execution even across
 -- concurrent commands (12.3).
-mkCommandRunner :: FilePath -> Maybe EnvFile -> SshSettings -> CommandLogSink -> IO CommandRunner
-mkCommandRunner baseDir mFile settings sink = do
+mkCommandRunner :: FilePath -> CommandLogSink -> IO CommandRunner
+mkCommandRunner baseDir0 sink = do
+  -- The base directory is mounted into containers (spec 10.5), and a
+  -- bind mount requires an absolute path.
+  baseDir <- makeAbsolute baseDir0
   counter <- newIORef 0
   pure $ \envValue cmd ->
-    case resolveEnv mFile envValue of
+    case resolveEnv envValue of
       Left failure -> pure (Left failure)
       Right resolved -> do
         execNo <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
@@ -205,9 +153,19 @@ mkCommandRunner baseDir mFile settings sink = do
           ResolvedDocker image opts ->
             -- docker exit code 125 = daemon/run infrastructure error.
             run EIoEnvResolve (proc "docker" (dockerArgs baseDir image opts cmd)) (Just 125)
-          ResolvedRemote host user port ->
-            -- ssh exit code 255 = connection/authentication failure.
-            run EIoSshConnect (proc "ssh" (sshArgs settings host user port cmd)) (Just 255)
+          ResolvedRecipe df ctx opts -> do
+            -- A recipe resolves to its content-addressed tag; building
+            -- is never implicit (spec 10.3).
+            tagE <- recipeTag baseDir df ctx
+            case tagE of
+              Left e -> pure (Left (ioFailure EIoImageMissing e))
+              Right tag -> do
+                ok <- imageExists tag
+                if not ok
+                  then
+                    pure . Left . ioFailure EIoImageMissing $
+                      "image for recipe '" <> df <> "' is not materialized; run 'lask env build'"
+                  else run EIoEnvResolve (proc "docker" (dockerArgs baseDir tag opts cmd)) (Just 125)
 
 -- | Run a process, relaying its output line by line to the command
 -- execution log (spec 12.3) while capturing both streams verbatim.

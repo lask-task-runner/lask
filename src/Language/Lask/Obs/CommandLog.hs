@@ -58,6 +58,10 @@ data CommandLog = CommandLog
   }
   deriving (Show, Eq)
 
+-- | A sink must be thread-safe: it is called from the two concurrent
+-- stream-relay threads of a single command, and from concurrent
+-- command executions sharing one sink (spec 12.3). Serialize any
+-- accumulating state ('newLineWriter' does this for handle writes).
 type CommandLogSink = CommandLog -> IO ()
 
 noCommandLog :: CommandLogSink
