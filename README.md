@@ -139,10 +139,24 @@ Lask is a task runner, not a build system. Here is how it compares to the tools 
 
 ### Example
 
+<div align="center">
+  <img alt="Terminal recording: lask check reports the module is valid, then lask run cowsay-hello Lask pulls the cowsay image, traces the command it runs inside it, and prints the cow" src="doc/assets/lask-cowsay.gif" width="831">
+</div>
+
+Tasks are ordinary functions, so you can ask one for its return value instead of running it:
+
 ```bash
 $ cd ./example/01-basic
 $ lask eval hello --name Lask
 "Hello, Lask!"
+```
+
+`hello` is a pure function and needs nothing installed; `cowsay_hello` calls it and runs the result in a container, so that one needs Docker. Every command Lask runs is logged with the environment it ran in, which stream each line came from (`1|` stdout, `2|` stderr), and its exit status.
+
+<details>
+<summary>The recorded run, as text</summary>
+
+```bash
 $ lask run cowsay-hello Lask
 2026-09-04T15:43:40.248Z [#rancher/cowsay:1] $ cowsay "Hello, Lask!"
 2026-09-04T15:43:40.541Z [#rancher/cowsay:1] 1|  ______________
@@ -156,10 +170,7 @@ $ lask run cowsay-hello Lask
 2026-09-04T15:43:40.858Z [#rancher/cowsay:1] exit 0
 ```
 
-`hello` is a pure function and needs nothing installed; `cowsay_hello` calls it and
-runs the result in a container, so the second command needs Docker. Every command Lask
-runs is logged with its environment, its stream (`1|` stdout, `2|` stderr) and its exit
-status.
+</details>
 
 ### Editor Support
 
