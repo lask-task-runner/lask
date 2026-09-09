@@ -1,6 +1,7 @@
 python = #python:3.12.14-alpine3.24
 node = #node:20.20.2-alpine3.23
-terraform = #docker(dockerfile = "infra/Dockerfile", context = ".")
+terraform = #hashicorp/terraform:1.9.8
+awscli = #amazon/aws-cli:2.36.41
 playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
 curl = #curlimages/curl:8.21.0
 
@@ -82,11 +83,11 @@ deploy(
 
   build_web(api_url, authority, client_id, domain, "#{website}/")
 
-  $[terraform] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" aws s3 sync web/dist "s3://#{bucket}" --delete
+  $[awscli] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" aws s3 sync web/dist "s3://#{bucket}" --delete
 
   // Invalidates the cached index.html so the new build is served
   // immediately instead of the previous one.
-  $[terraform] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" aws cloudfront create-invalidation --distribution-id "#{dist_id}" --paths "/index.html" --output text
+  $[awscli] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" aws cloudfront create-invalidation --distribution-id "#{dist_id}" --paths "/index.html" --output text
 }
 
 // Creates a Cognito sign-in user with a permanent password (self sign-up
@@ -99,12 +100,12 @@ create_user(
   --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
 ) = do {
   pool = $[terraform] terraform -chdir="infra" output -raw user_pool_id
-  $[terraform] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" \
+  $[awscli] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" \
     aws cognito-idp admin-create-user \
       --user-pool-id "#{pool}" --username "#{email}" \
       --user-attributes Name=email,Value="#{email}" Name=email_verified,Value=true \
       --message-action SUPPRESS --output text
-  $[terraform] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" \
+  $[awscli] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" \
     aws cognito-idp admin-set-user-password \
       --user-pool-id "#{pool}" --username "#{email}" \
       --password "#{password}" --permanent

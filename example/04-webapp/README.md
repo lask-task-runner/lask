@@ -25,7 +25,8 @@ the file and referred to by name:
 ```lask
 python = #python:3.12.14-alpine3.24
 node = #node:20.20.2-alpine3.23
-terraform = #terraform-aws-cli
+terraform = #hashicorp/terraform:1.9.8
+awscli = #amazon/aws-cli:2.36.41
 playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
 curl = #curlimages/curl:8.21.0
 ```
