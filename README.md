@@ -113,11 +113,13 @@ Chocolatey support is planned.
 - **The feedback loop stays on your laptop.** The typo that used to cost a push and eight minutes of CI now underlines itself as you type: the VS Code extension talks to a language server built into the same binary, raising the same errors, with the same codes, that `lask check` would. In the terminal that check resolves names, arities, and types across every task in milliseconds — over the very definitions CI will run, with no second copy in YAML to drift out of sync.
 - **The environment belongs to the task, not to the machine or the runner's config.** A shell script inherits whatever happens to be installed, which is how `sed -i` works for its author and breaks for everyone on the other OS. A CI job pins its image in a file your laptop never reads, which is why "works in CI" and "works here" stay separate questions. In Lask `#golang:1.22` is a value written next to the command, and that same pin applies on every machine that runs the task.
 - **Nothing to install but Lask and Docker.** [example/04-webapp](example/04-webapp) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with no Python, no Node.js, no Terraform, and no AWS CLI on it. Each of those tools lives in an image its task names, so the whole interface is `lask run test`, `lask run deploy`, `lask run test-e2e`.
-- **Arguments and reuse without the shell tax.** Instead of `"$1"` and `set -u` discipline, tasks take keyword arguments with defaults and declared types. Instead of copying a helper script between repos, you import a module pinned by content hash.
+- **Arguments and reuse without the shell tax.** Instead of `"$1"` and `set -u` discipline, tasks take keyword arguments with defaults and declared types. Instead of copying a helper script between repos — or chasing a reusable workflow through someone else's YAML — you keep shared tasks in their own repository and import it, pinned by content hash in a committed lock file. [example/03-terraform](example/03-terraform) drives Terraform that way, and `lask deps sync` is the only step that touches the network.
 
 ### Comparison
 
-Lask is a task runner, not a build system. Here is how it compares to the tools it most often replaces:
+Lask is a task runner, not a build system — and not a CI platform. It does not replace GitHub Actions, GitLab CI, or Jenkins; it replaces what your jobs run, so one definition executes on your laptop and inside whatever runner you already have. Your provider's YAML keeps the part it is genuinely good at — triggers, permissions, secrets — wrapped around a step that calls `lask run`. Switching providers then means rewriting that step, not your pipeline.
+
+Here is how Lask compares to the tools it most often stands in for:
 
 |                                        | Lask | make | just | Task (go-task) |
 | -------------------------------------- | :--: | :--: | :--: | :------------: |
