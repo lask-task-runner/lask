@@ -274,10 +274,20 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
 
     checkType :: SType -> [Diagnostic]
     checkType (SType sp f) = case f of
-      SNamed n
+      SNamed Nothing n
         | Map.member n (gsTypes gs) -> []
         | otherwise ->
             [mkDiagnostic ENameUndefined StageStatic sp ("undefined type: '" <> n <> "'")]
+      SNamed (Just ns) n -> case Map.lookup ns (gsNamespaces gs) of
+        Just key -> case Map.lookup key publics of
+          Just pub
+            | n `Set.member` pubTypes pub -> []
+          _ ->
+            [ mkDiagnostic ENameUndefined StageStatic sp $
+                "namespace '" <> ns <> "' has no public type alias '" <> n <> "'"
+            ]
+        Nothing ->
+          [mkDiagnostic ENameUndefined StageStatic sp ("undefined namespace: '" <> ns <> "'")]
       SArray t -> checkType t
       SMap t -> checkType t
       SAsyncHandle t -> checkType t
@@ -389,16 +399,26 @@ aliasCycleDiags prog scopes =
           DTypeAlias n t <- [declF d]
         ]
 
-    targets path t = [tgt | n <- namedRefs t, Just tgt <- [resolveType path n]]
+    targets path t = [tgt | ref <- namedRefs t, Just tgt <- [resolveType path ref]]
 
-    resolveType path n = case Map.lookup path scopes of
-      Just gs -> case Map.lookup n (gsTypes gs) of
-        Just (TAlias p a) -> Just (p, a)
-        _ -> Nothing
-      Nothing -> Nothing
+    -- A qualified reference is resolved via the *referencing* module's
+    -- namespace binding, then the *target* module's own gsTypes — same
+    -- two-step lookup as 'elabDot's namespace member resolution. A
+    -- cross-module edge here can never close a cycle back to its origin,
+    -- because the module dependency graph is already required to be a
+    -- DAG (spec 5), so no extra guard is needed beyond the existing one.
+    resolveType path (Nothing, n) = Map.lookup path scopes >>= Map.lookup n . gsTypes >>= aliasOf
+    resolveType path (Just ns, n) = do
+      gs <- Map.lookup path scopes
+      key <- Map.lookup ns (gsNamespaces gs)
+      gs' <- Map.lookup key scopes
+      Map.lookup n (gsTypes gs') >>= aliasOf
+
+    aliasOf (TAlias p a) = Just (p, a)
+    aliasOf _ = Nothing
 
     namedRefs (SType _ f) = case f of
-      SNamed n -> [n]
+      SNamed q n -> [(q, n)]
       SArray t -> namedRefs t
       SMap t -> namedRefs t
       SAsyncHandle t -> namedRefs t

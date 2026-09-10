@@ -285,3 +285,15 @@ spec = do
       case r of
         Right _ -> pure ()
         Left cs -> expectationFailure (show cs)
+
+    it "expands a namespace-qualified type reference (spec 4.2 QualifiedNamedType)" $ do
+      r <-
+        elab
+          [ ("main.lask", "import * as m from \"./lib.lask\"\nxs: m.Strings = [\"a\"]"),
+            ("lib.lask", "type Strings = Array<String>")
+          ]
+      case r of
+        Right decls -> case Map.lookup ("main.lask", "xs") decls of
+          Just cd -> renderType (cdType cd) `shouldBe` "Array<String>"
+          Nothing -> expectationFailure "xs not found"
+        Left cs -> expectationFailure (show cs)
