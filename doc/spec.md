@@ -363,7 +363,8 @@ RecordType        = "Record" "<" [ RecordFieldType { "," RecordFieldType } ] ">"
 RecordFieldType   = ( lower_id | string_lit ) ":" Type .
 AsyncHandleType   = "AsyncHandle" "<" Type ">" .
 FunctionType      = "Function" "<" Type { "," Type } ">" .
-NamedType         = upper_id .
+NamedType         = upper_id | QualifiedNamedType .
+QualifiedNamedType = lower_id "." upper_id .
 TypeAliasDecl     = "type" upper_id "=" Type .
 ```
 
@@ -377,7 +378,9 @@ Definition of named types:
 
 - Named types are defined by the type alias declaration `type`.
 - The form is `type TypeName = Type`.
+- A type alias defined in another module is referenced either by its bare name (`upper_id`), after bringing it in with a named import, or, when the defining module is brought in with a namespace import (5), qualified as `namespace.TypeName` (`QualifiedNamedType`). The two forms name the same declaration; a module may use either, or both, for the same type. `namespace` must be a namespace bound by a `NamespaceImport` in the current module, and `TypeName` must be a public type alias of the module that namespace refers to (5, "Public scope and visibility"); otherwise it is an undefined reference error. `QualifiedNamedType` is recognized only in type-annotation position (wherever `Type` appears in this grammar) — it does not extend to a namespace chain (`m.n.TypeName`) and does not change how `namespace.symbol` is resolved as a value or function reference (7.2).
 - Example: `type Strings = Array<String>`
+- Example: given `import * as m from "./lib.lask"` and a public `type Config = Record<...>` in `lib.lask`, `m.Config` denotes that type.
 
 Record field names:
 
@@ -417,6 +420,7 @@ Examples:
   - `Strings` (`type Strings = Array<String>`)
   - `User`
   - `BuildConfig`
+  - `tf.TfOutputs` (qualified reference to a public type alias `TfOutputs` of the module bound to the namespace `tf`)
 
 ### 4.3 Type Annotations and Inference
 
@@ -503,7 +507,7 @@ The meaning of types is defined by the following rules.
 
 Polymorphic types of built-in symbols (built-in polymorphism):
 
-- The type syntax of this specification (4.2) has no type variables, and user code cannot declare polymorphic types. An `upper_id` appearing in a type annotation in user code is always resolved as a `NamedType` (a type alias reference), and if there is no corresponding declaration, it is an undefined reference error.
+- The type syntax of this specification (4.2) has no type variables, and user code cannot declare polymorphic types. A `NamedType` appearing in a type annotation in user code — whether a bare `upper_id` or a qualified `namespace.upper_id` (4.2) — is always resolved as a type alias reference, and if there is no corresponding declaration (for the qualified form: no such namespace, or no public type alias of that name in the module it refers to), it is an undefined reference error.
 - However, only built-in symbols defined by this specification (core functions and functions of the built-in library; Chapters 6 and 15) may have polymorphic types whose signatures contain type variables (single uppercase names such as `T`, `U`, `R`).
 - A signature containing type variables is treated as a type scheme, and is instantiated to concrete types independently for each call and then checked. Within a single call, type variables of the same name must be bound to the same concrete type.
 - Instantiation is determined from the argument types and the contextual expected type. If a single concrete type cannot be determined, it is an inference failure error (4.3).
@@ -584,7 +588,9 @@ Import forms:
 - A named import `import { a, b } from "path"` brings only the specified names, among the public symbols of the target module, into the name resolution scope of the current module. If a specified name does not exist among the public symbols, it is an error before type checking.
 - `import { a as b } from "path"` brings in the public symbol `a` under the name `b` (renaming import). The identifiers before and after renaming must be of the same kind (`lower_id` with `lower_id`, `upper_id` with `upper_id`).
 - A namespace import `import * as m from "path"` refers to the target module through the namespace `m`. Public symbols are not brought in implicitly and are referenced in the form `m.symbol`.
-- Type aliases (`upper_id`) can be brought in by named import. Because a type reference in a type annotation is limited to a `NamedType` (4.2) consisting of a single `upper_id`, type references via a namespace (`m.TypeName`) are not possible. To use a type, use a named import.
+- Type aliases (`upper_id`) can be brought in by named import, which binds the bare name directly.
+- A namespace import also makes the target module's public type aliases available, in type-annotation position only, qualified as `m.TypeName` (`QualifiedNamedType`, 4.2). This is the one context where a namespace member is written into a grammar position other than an expression: elsewhere, a namespace import brings in no names of its own and is referenced only as `m.symbol` in expressions (above). Bringing a type in by named import and referencing it through its module's namespace both denote the same declaration; a module may use either form, or both, for the same type.
+- A namespaced type reference resolves against the same public/internal boundary as any other namespace reference: `m.TypeName` is well-formed only when `TypeName` is a public type alias (not `internal`) of the module `m` refers to.
 - No form is provided that unconditionally brings in all public symbols (the names to be brought in are made explicit in the declaration).
 
 Re-export (`ExportDecl`):
@@ -705,9 +711,14 @@ export sum2(a: Number, b: Number) = add(a, b)
 labels = ["a", "b", "c"]
 internal csv = types.joinWithComma(labels)
 notify_all(): Void = for_each(labels, \(x) -> send(x))
+
+// types.Strings is a qualified reference to lib/types.lask's type alias
+// Strings, made available by the namespace import above; no named import
+// of Strings is needed alongside it.
+describe(xs: types.Strings): String = concat("labels: ", types.joinWithComma(xs))
 ```
 
-Here `notify` is an external dependency declared in `lask.json` as a single-file source. `sum2` and `notify_all` are public symbols (the marker on `notify_all` is omitted, which is equivalent to `export`); `csv` is not.
+Here `notify` is an external dependency declared in `lask.json` as a single-file source. `sum2`, `notify_all`, and `describe` are public symbols (the marker on `notify_all` and `describe` is omitted, which is equivalent to `export`); `csv` is not.
 
 ```lask
 // module: lib/deploy.lask

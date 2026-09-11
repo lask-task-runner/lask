@@ -103,7 +103,10 @@ data STypeF
   | SAsyncHandle SType
   | -- | Parameter types and return type.
     SFunction [SType] SType
-  | SNamed Text
+  | -- | @Nothing@: bare @upper_id@. @Just ns@: qualified @ns.TypeName@,
+    -- a reference to a public type alias of the module the namespace
+    -- import @ns@ refers to (spec 4.2 QualifiedNamedType).
+    SNamed (Maybe Text) Text
   deriving (Show, Eq)
 
 data Expr = Expr {exprSpan :: Span, exprF :: ExprF}

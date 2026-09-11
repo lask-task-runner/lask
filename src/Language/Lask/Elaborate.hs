@@ -330,11 +330,24 @@ typeFromS ctx path st = do
               abort (diag ETypeFieldDuplicate fsp ("duplicate field: '" <> k <> "'"))
             t' <- go t
             pure (Map.insert k t' acc)
-      SNamed n -> aliasType ctx path sp n
+      SNamed q n -> aliasType ctx path sp q n
 
-aliasType :: Ctx -> FilePath -> Span -> Text -> TC Type
-aliasType ctx path sp n =
-  case Map.lookup path (ctxScopes ctx) >>= Map.lookup n . gsTypes of
+aliasType :: Ctx -> FilePath -> Span -> Maybe Text -> Text -> TC Type
+aliasType ctx path sp qualifier n = do
+  -- A qualified reference (ns.TypeName) is resolved by first following
+  -- the namespace import to its target module, then searching that
+  -- module's own type-alias table instead of the current module's
+  -- (mirrors 'elabDot's namespace member resolution). Resolve.checkType
+  -- (spec 7 phase 3) has already rejected any reference to a non-public
+  -- type alias by the time this runs, so no visibility check is needed
+  -- here.
+  searchPath <- case qualifier of
+    Nothing -> pure path
+    Just ns ->
+      case Map.lookup path (ctxScopes ctx) >>= Map.lookup ns . gsNamespaces of
+        Just key -> pure key
+        Nothing -> abort (diag ENameUndefined sp ("undefined namespace: '" <> ns <> "'"))
+  case Map.lookup searchPath (ctxScopes ctx) >>= Map.lookup n . gsTypes of
     Just (TBuiltinAlias "Error") -> pure errorType
     Just (TBuiltinAlias "CommandResult") -> pure commandResultType
     Just (TBuiltinAlias other) ->
@@ -655,7 +668,7 @@ typeToS sp t = SType sp $ case t of
   TyRecord fs -> SRecord [(Spanned sp k, typeToS sp v) | (k, v) <- Map.toList fs]
   TyAsync e -> SAsyncHandle (typeToS sp e)
   TyFun psL r -> SFunction (map (typeToS sp) psL) (typeToS sp r)
-  TyVar v -> SNamed v
+  TyVar v -> SNamed Nothing v
 
 -- Variables ---------------------------------------------------------------------
 

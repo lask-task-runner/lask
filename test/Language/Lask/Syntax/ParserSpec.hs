@@ -164,6 +164,18 @@ spec = do
     it "parses >= splitting after a generic type" $
       pModule "m: Map<String>= x" `shouldBe` Right [DValue "m" Public (Just (ty (SMap (ty SString)))) (var "x")]
 
+    it "parses a bare named type" $
+      pModule "u: Config = 1" `shouldBe` Right [DValue "u" Public (Just (ty (SNamed Nothing "Config"))) (num 1)]
+
+    it "parses a namespace-qualified named type (spec 4.2 QualifiedNamedType)" $
+      pModule "u: tf.TfOutputs = 1"
+        `shouldBe` Right [DValue "u" Public (Just (ty (SNamed (Just "tf") "TfOutputs"))) (num 1)]
+
+    it "parses a namespace-qualified type nested inside a generic" $
+      pModule "xs: Array<tf.TfOutputs> = []"
+        `shouldBe` Right
+          [DValue "xs" Public (Just (ty (SArray (ty (SNamed (Just "tf") "TfOutputs"))))) (ex (EArray []))]
+
   describe "expressions" $ do
     it "parses operator precedence: * over +" $
       pExpr "1 + 2 * 3"

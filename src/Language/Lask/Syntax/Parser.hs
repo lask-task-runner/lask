@@ -339,31 +339,42 @@ validateParamOrder = go (0 :: Int)
 -- Types -------------------------------------------------------------------------
 
 pType :: P SType
-pType = do
-  Spanned sp name <- upperId
-  case name of
-    "Any" -> pure (SType sp SAny)
-    "Number" -> pure (SType sp SNumber)
-    "String" -> pure (SType sp SString)
-    "Bool" -> pure (SType sp SBool)
-    "Null" -> pure (SType sp SNull)
-    "Void" -> pure (SType sp SVoid)
-    "Environment" -> pure (SType sp SEnvironment)
-    "Array" -> pGeneric1 sp SArray
-    "Map" -> pGeneric1 sp SMap
-    "AsyncHandle" -> pGeneric1 sp SAsyncHandle
-    "Record" -> do
-      _ <- op OpLt
-      fields <- sepBy pRecordField (sym TComma)
-      e <- closeAngle
-      pure (SType (sp <> e) (SRecord fields))
-    "Function" -> do
-      _ <- op OpLt
-      ts <- sepBy1 pType (sym TComma)
-      e <- closeAngle
-      pure (SType (sp <> e) (SFunction (init ts) (last ts)))
-    _ -> pure (SType sp (SNamed name))
+pType = choice [pQualifiedNamed, pUnqualified]
   where
+    -- Dispatches purely on the leading token (TLowerId vs TUpperId), so
+    -- no other Type alternative can be mistaken for this one and no
+    -- backtracking is needed (spec 4.2 QualifiedNamedType).
+    pQualifiedNamed = do
+      Spanned sp1 ns <- lowerId
+      _ <- sym TDot
+      Spanned sp2 name <- upperId
+      pure (SType (sp1 <> sp2) (SNamed (Just ns) name))
+
+    pUnqualified = do
+      Spanned sp name <- upperId
+      case name of
+        "Any" -> pure (SType sp SAny)
+        "Number" -> pure (SType sp SNumber)
+        "String" -> pure (SType sp SString)
+        "Bool" -> pure (SType sp SBool)
+        "Null" -> pure (SType sp SNull)
+        "Void" -> pure (SType sp SVoid)
+        "Environment" -> pure (SType sp SEnvironment)
+        "Array" -> pGeneric1 sp SArray
+        "Map" -> pGeneric1 sp SMap
+        "AsyncHandle" -> pGeneric1 sp SAsyncHandle
+        "Record" -> do
+          _ <- op OpLt
+          fields <- sepBy pRecordField (sym TComma)
+          e <- closeAngle
+          pure (SType (sp <> e) (SRecord fields))
+        "Function" -> do
+          _ <- op OpLt
+          ts <- sepBy1 pType (sym TComma)
+          e <- closeAngle
+          pure (SType (sp <> e) (SFunction (init ts) (last ts)))
+        _ -> pure (SType sp (SNamed Nothing name))
+
     pGeneric1 sp f = do
       _ <- op OpLt
       t <- pType
