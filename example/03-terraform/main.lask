@@ -11,7 +11,7 @@
 // Commands run with this example's directory as cwd; the Terraform root
 // module lives in ./infra and uses only the builtin terraform_data resource,
 // so apply touches nothing outside this directory. By default commands run in
-// Docker (#docker("alpine/terragrunt:1.5.7")), so host terraform is optional.
+// Docker (#docker("hashicorp/terraform:1.16.2")), so host terraform is optional.
 // For OpenTofu, pass both --bin tofu and an --env image that includes tofu.
 
 import * as tf from "terraform"

@@ -4,9 +4,9 @@
     "modules": {
         "terraform": {
             "git": "https://github.com/lask-task-runner/lask-terraform",
-            "hash": "sha256-d7e9ce61bf09c00d764e96c3273fa7354a6dd674823f46cb0790bf5c2e0e3dcb",
-            "requested": "v0.1.0",
-            "rev": "0c9bb0e29700ff39484816f7dcf60e8fb55605cc"
+            "hash": "sha256-ec4fee04d0e1e37420527a58ae038f12aeec5b308fe3d5a254bd1c128fd009f1",
+            "requested": "v0.1.1",
+            "rev": "b56973364d24f57cc0a7e6c55ae013d190094d94"
         }
     }
 }
