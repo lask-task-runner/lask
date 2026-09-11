@@ -1,9 +1,12 @@
+import * as tf from "terraform"
+import * as aws from "aws"
+
 python = #python:3.12.14-alpine3.24
 node = #node:20.20.2-alpine3.23
-terraform = #hashicorp/terraform:1.9.8
-awscli = #amazon/aws-cli:2.36.41
 playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
 curl = #curlimages/curl:8.21.0
+
+internal as_string(v: Any): String = cast(v)
 
 // Runs the API's Python unit tests (api/).
 test_api() = $[python] pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
@@ -28,7 +31,7 @@ test_e2e(
   --email: String = get_env("E2E_EMAIL"),
   --password!!: String = get_env("E2E_PASSWORD")
 ) = do {
-  website = $[terraform] terraform -chdir="infra" output -raw website_url
+  website = tf_output().website_url
 
   $[playwright] cd e2e && \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && \
@@ -59,35 +62,77 @@ build_web(
   VITE_REDIRECT_URI="#{redirect_uri}" \
   npm run build
 
+// The handful of infra/ outputs the tasks below actually use.
+type InfraOutputs = Record<
+  api_url: String,
+  frontend_bucket: String,
+  cognito_issuer: String,
+  user_pool_client_id: String,
+  cognito_domain: String,
+  website_url: String,
+  cloudfront_distribution_id: String,
+  user_pool_id: String
+>
+
+// Fetches every Terraform output in infra/ with a single `terraform output
+// -json` call and returns it as one typed record — cheaper than calling
+// terraform_output() (which re-runs that command) once per field, and lets
+// callers write tf_output().api_url instead of a name string.
+tf_output(): InfraOutputs = do {
+  os = tf.outputs(dir = "infra")
+  {
+    api_url: output_field(os, "api_url"),
+    frontend_bucket: output_field(os, "frontend_bucket"),
+    cognito_issuer: output_field(os, "cognito_issuer"),
+    user_pool_client_id: output_field(os, "user_pool_client_id"),
+    cognito_domain: output_field(os, "cognito_domain"),
+    website_url: output_field(os, "website_url"),
+    cloudfront_distribution_id: output_field(os, "cloudfront_distribution_id"),
+    user_pool_id: output_field(os, "user_pool_id")
+  }
+}
+
+internal output_field(os: tf.TfOutputs, name: String): String =
+  as_string(tf.output_entry(os, name).value)
+
 // Deploys everything: applies the Terraform infra, builds the frontend
 // against it, and uploads the result to S3/CloudFront.
+//
+// aws_region/aws_access_key_id/aws_secret_access_key are ordinary
+// Terraform variables that infra/ feeds straight to the AWS provider (see
+// infra/providers.tf) — pre-existing to this example, not introduced by
+// the move to lask-terraform. lask-terraform's own doc/design.md §8 advises
+// against passing secrets through --vars for exactly this pair; changing
+// how infra/ takes AWS credentials is out of scope here.
 deploy(
   --region: String = get_env("AWS_DEFAULT_REGION"),
   --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
   --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
 ) = do {
   build_lambda_deps()
-  $[terraform] terraform -chdir="infra" init
-  $[terraform] terraform -chdir="infra" apply -auto-approve \
-    -var "aws_region=#{region}" \
-    -var "aws_access_key_id=#{access_key_id}" \
-    -var "aws_secret_access_key=#{secret_key}"
+  tf.init(dir = "infra")
+  tf.apply(
+    dir = "infra",
+    vars = { aws_region: region, aws_access_key_id: access_key_id, aws_secret_access_key: secret_key }
+  )
 
-  api_url = $[terraform] terraform -chdir="infra" output -raw api_url
-  bucket = $[terraform] terraform -chdir="infra" output -raw frontend_bucket
-  authority = $[terraform] terraform -chdir="infra" output -raw cognito_issuer
-  client_id = $[terraform] terraform -chdir="infra" output -raw user_pool_client_id
-  domain = $[terraform] terraform -chdir="infra" output -raw cognito_domain
-  website = $[terraform] terraform -chdir="infra" output -raw website_url
-  dist_id = $[terraform] terraform -chdir="infra" output -raw cloudfront_distribution_id
+  output = tf_output()
 
-  build_web(api_url, authority, client_id, domain, "#{website}/")
+  build_web(output.api_url, output.cognito_issuer, output.user_pool_client_id, output.cognito_domain, "#{output.website_url}/")
 
-  $[awscli] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" aws s3 sync web/dist "s3://#{bucket}" --delete
+  // aws.* below default to the same official amazon/aws-cli image this
+  // example used directly before, so --env is not overridden here.
+  aws.s3_sync(
+    "web/dist", "s3://#{output.frontend_bucket}", delete = true,
+    region = region, access_key_id = access_key_id, secret_access_key = secret_key
+  )
 
   // Invalidates the cached index.html so the new build is served
   // immediately instead of the previous one.
-  $[awscli] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" aws cloudfront create-invalidation --distribution-id "#{dist_id}" --paths "/index.html" --output text
+  aws.cloudfront_create_invalidation(
+    output.cloudfront_distribution_id, ["/index.html"],
+    region = region, access_key_id = access_key_id, secret_access_key = secret_key
+  )
 }
 
 // Creates a Cognito sign-in user with a permanent password (self sign-up
@@ -99,16 +144,17 @@ create_user(
   --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
   --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
 ) = do {
-  pool = $[terraform] terraform -chdir="infra" output -raw user_pool_id
-  $[awscli] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" \
-    aws cognito-idp admin-create-user \
-      --user-pool-id "#{pool}" --username "#{email}" \
-      --user-attributes Name=email,Value="#{email}" Name=email_verified,Value=true \
-      --message-action SUPPRESS --output text
-  $[awscli] AWS_ACCESS_KEY_ID="#{access_key_id}" AWS_SECRET_ACCESS_KEY="#{secret_key}" AWS_DEFAULT_REGION="#{region}" \
-    aws cognito-idp admin-set-user-password \
-      --user-pool-id "#{pool}" --username "#{email}" \
-      --password "#{password}" --permanent
+  pool = tf_output().user_pool_id
+  aws.cognito_idp_admin_create_user(
+    pool, email,
+    user_attributes = { email: email, email_verified: "true" },
+    message_action = "SUPPRESS",
+    region = region, access_key_id = access_key_id, secret_access_key = secret_key
+  )
+  aws.cognito_idp_admin_set_user_password(
+    pool, email, password, permanent = true,
+    region = region, access_key_id = access_key_id, secret_access_key = secret_key
+  )
 }
 
 // Tears down everything deploy() created.
@@ -117,22 +163,22 @@ destroy(
   --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
   --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
 ) = do {
-  $[terraform] terraform -chdir="infra" destroy -auto-approve \
-    -var "aws_region=#{region}" \
-    -var "aws_access_key_id=#{access_key_id}" \
-    -var "aws_secret_access_key=#{secret_key}"
+  tf.destroy(
+    dir = "infra", auto_approve = true,
+    vars = { aws_region: region, aws_access_key_id: access_key_id, aws_secret_access_key: secret_key }
+  )
 }
 
 // Reads a Terraform output by name, e.g. api_url or website_url.
 //   lask eval --stdout-encode text terraform_output api_url
 terraform_output(name: String): String =
-  $[terraform] terraform -chdir="infra" output -raw "#{name}"
+  as_string(tf.output_value(name, dir = "infra"))
 
 type Healthcheck = Record<status: String>
 
 // Calls the deployed API's health route and returns its HTTP status.
 healthcheck_api(): Healthcheck = do {
-  url = $[terraform] terraform -chdir="infra" output -raw api_url
+  url = tf_output().api_url
   status = $[curl] curl -s -o /dev/null -w "%{http_code}" "#{url}"
   return { status: status }
 }
@@ -140,8 +186,7 @@ healthcheck_api(): Healthcheck = do {
 // Same as healthcheck_api, but for the frontend: it's a static site with
 // no JSON body, so the HTTP status code is the health signal instead.
 healthcheck_web(): Healthcheck = do {
-  url = $[terraform] terraform -chdir="infra" output -raw website_url
+  url = tf_output().website_url
   status = $[curl] curl -s -o /dev/null -w "%{http_code}" "#{url}"
   return { status: status }
 }
-

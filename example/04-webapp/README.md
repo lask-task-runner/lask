@@ -7,8 +7,14 @@ Terraform, no AWS CLI, and for this first step, not even an AWS account:
 
 ```bash
 cd example/04-webapp
+lask deps sync   # one-time, needs network: fetches the terraform/aws modules main.lask imports
 lask run test
 ```
+
+`deps sync` is the only step here that touches the network — `check`, `run`,
+and `eval` never do (that's true even for `test`, which never calls
+Terraform or aws-cli itself: the whole file is checked before anything
+runs, and both modules are imported at the top of [main.lask](main.lask)).
 
 That runs the API's Python tests and the frontend's JavaScript tests, each
 inside its own container. The toolchains come down as Docker images and are
@@ -25,8 +31,6 @@ the file and referred to by name:
 ```lask
 python = #python:3.12.14-alpine3.24
 node = #node:20.20.2-alpine3.23
-terraform = #hashicorp/terraform:1.9.8
-awscli = #amazon/aws-cli:2.36.41
 playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
 curl = #curlimages/curl:8.21.0
 ```
@@ -59,7 +63,7 @@ next one with `#{...}`, and a task can declare what it returns:
 type Healthcheck = Record<status: String>
 
 healthcheck_web(): Healthcheck = do {
-  url = $[terraform] terraform -chdir="infra" output -raw website_url
+  url = as_string(tf.output_value("website_url", dir = "infra"))
   status = $[curl] curl -s -o /dev/null -w "%{http_code}" "#{url}"
   return { status: status }
 }
@@ -67,6 +71,19 @@ healthcheck_web(): Healthcheck = do {
 
 Note the two different environments in one task: Terraform and curl each
 run in their own container, and neither is installed on your machine.
+
+`tf` here isn't a raw `terraform` binary call — it's the
+[lask-terraform](https://github.com/lask-task-runner/lask-terraform) module,
+imported like any other code reuse across projects (`import * as tf from
+"terraform"`, declared once in [lask.json](lask.json) and pinned by content
+hash in [lask.lock.json](lask.lock.json)). `output_value` is a typed
+function of that module, not a string glued together from `terraform
+output -raw ...`. `deploy`, `create_user`, and `destroy` similarly call
+through [lask-aws](https://github.com/lask-task-runner/lask-aws)
+(`import * as aws from "aws"`) for S3 sync, CloudFront invalidation, and
+Cognito user provisioning, instead of hand-rolling `aws s3 sync` /
+`aws cloudfront create-invalidation` / `aws cognito-idp admin-create-user`
+with a credential prefix repeated at every call site.
 
 Parameters can default to an environment variable, and marking one `!!`
 keeps it out of the logs — `deploy` prints `AWS_SECRET_ACCESS_KEY="***"`
