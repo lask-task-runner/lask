@@ -176,6 +176,7 @@ stripSpansDecl :: Decl -> Decl
 stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DImportNamed specs path -> DImportNamed (map stripSpec specs) path
   DImportNamespace a p -> DImportNamespace a p
+  DExportFrom specs path -> DExportFrom (map stripSpec specs) path
   DTypeAlias n t -> DTypeAlias n (stripSpansType t)
   DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
   DFunction n ps t e ->

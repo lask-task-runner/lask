@@ -76,7 +76,7 @@ library
     , async >=2.2 && <3
     , base >=4.7 && <5
     , base16-bytestring >=1.0 && <2
-    , bytestring ==0.11.*
+    , bytestring >=0.11 && <0.13
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-sha256 >=0.11 && <1
@@ -114,7 +114,7 @@ executable lask
     , async >=2.2 && <3
     , base >=4.7 && <5
     , base16-bytestring >=1.0 && <2
-    , bytestring ==0.11.*
+    , bytestring >=0.11 && <0.13
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-sha256 >=0.11 && <1
@@ -167,12 +167,12 @@ test-suite lask-test
     , async >=2.2 && <3
     , base >=4.7 && <5
     , base16-bytestring >=1.0 && <2
-    , bytestring ==0.11.*
+    , bytestring >=0.11 && <0.13
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-sha256 >=0.11 && <1
     , directory >=1.0 && <2
-    , doctest ==0.22.*
+    , doctest >=0.22 && <0.25
     , filepath >=1.4 && <2
     , free >=5.0 && <6
     , haskeline >=0.8 && <1

@@ -1,6 +1,6 @@
 install_path = "$HOME/.local/bin"
 
-envs: Map<Environment> = { "local": #local, "docker": #haskell:9.6.5 }
+envs: Map<Environment> = { "local": #local, "docker": #haskell:9.10.3 }
 
 // Run the unit test suite.
 //

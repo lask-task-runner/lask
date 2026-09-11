@@ -156,11 +156,11 @@ handle logger =
           Just file -> case lexSemanticTokens path (virtualFileText file) of
             Right ts -> case makeSemanticTokens defaultSemanticTokensLegend ts of
               Right ts' -> responder $ Right $ LSP.InL ts'
-              Left t -> responder $ Left $ LSP.ResponseError (LSP.InR LSP.ErrorCodes_InternalError) t Nothing
+              Left t -> responder $ Left $ LSP.TResponseError (LSP.InR LSP.ErrorCodes_InternalError) t Nothing
             Left _ -> case makeSemanticTokens defaultSemanticTokensLegend [] of
               Right ts -> responder $ Right $ LSP.InL ts
-              Left t -> responder $ Left $ LSP.ResponseError (LSP.InR LSP.ErrorCodes_InternalError) t Nothing
-          Nothing -> responder $ Left $ LSP.ResponseError (LSP.InR LSP.ErrorCodes_InternalError) "cannot get virtual file" Nothing,
+              Left t -> responder $ Left $ LSP.TResponseError (LSP.InR LSP.ErrorCodes_InternalError) t Nothing
+          Nothing -> responder $ Left $ LSP.TResponseError (LSP.InR LSP.ErrorCodes_InternalError) "cannot get virtual file" Nothing,
       requestHandler LSP.SMethod_TextDocumentHover $ \req responder -> do
         let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
             doc = LSP.toNormalizedUri uri

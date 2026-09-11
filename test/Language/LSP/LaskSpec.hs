@@ -239,13 +239,13 @@ spec = do
         forM_ (positions src) $ \(l, c) -> do
           items <- completionAt "test.lask" src (Position l c)
           let ls = map (^. L.label) items
-              context = name <> " at " <> show (l, c) <> ": "
+              caseLabel = name <> " at " <> show (l, c) <> ": "
           -- Comparing the whole list forces the result, so a crash in
           -- the analysis surfaces at the position that caused it.
-          assert (context <> "duplicate labels in " <> show ls) (nub ls == ls)
+          assert (caseLabel <> "duplicate labels in " <> show ls) (nub ls == ls)
           forM_ items $ \i ->
             assert
-              (context <> "bad sortText " <> show (i ^. L.sortText) <> " on " <> show (i ^. L.label))
+              (caseLabel <> "bad sortText " <> show (i ^. L.sortText) <> " on " <> show (i ^. L.label))
               (sortTextOk i)
 
   describe "completion while typing" $
@@ -371,7 +371,7 @@ lastLine ts = case reverse ts of
 -- | An assertion that names the failing case, so a sweep reports the
 -- position that broke rather than just which check it was.
 assert :: String -> Bool -> Expectation
-assert context ok = unless ok (expectationFailure context)
+assert caseLabel ok = unless ok (expectationFailure caseLabel)
 
 labels :: FilePath -> Text -> UInt -> UInt -> IO [Text]
 labels path src l c = map (^. L.label) <$> completionAt path src (Position l c)
