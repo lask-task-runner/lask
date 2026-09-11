@@ -23,7 +23,7 @@ dependencies:
   - async >= 2.2 && < 3
   - base16-bytestring >= 1.0 && < 2
   - cryptohash-sha256 >= 0.11 && < 1
-  - bytestring >= 0.11 && < 0.12
+  - bytestring >= 0.11 && < 0.13
   - co-log-core >= 0.3.0 && < 0.4
   - containers >= 0.6 && < 0.8
   - directory >= 1.0 && < 2
@@ -80,7 +80,7 @@ tests:
       - -with-rtsopts=-N
     dependencies:
       - lask
-      - doctest >= 0.22 && < 0.23
+      - doctest >= 0.22 && < 0.25
       - hspec >= 2.11 && < 3
       - hspec-core >= 2.11 && < 3
       - hspec-megaparsec >= 2.2 && < 3
