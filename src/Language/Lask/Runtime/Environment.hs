@@ -27,8 +27,6 @@ import Control.Exception (IOException, try)
 import Control.Monad (unless)
 import Data.IORef (atomicModifyIORef', newIORef)
 import qualified Data.Aeson as A
-import qualified Data.Aeson.Key as AK
-import qualified Data.Aeson.KeyMap as KM
 import Data.Map.Strict (Map)
 import Language.Lask.Runtime.Image (imageExists, recipeTag)
 import System.Directory (makeAbsolute)

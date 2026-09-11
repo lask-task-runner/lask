@@ -18,8 +18,8 @@ import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (atomicModifyIORef', newIORef)
-import Data.List (isPrefixOf, nub, sort)
-import Data.Maybe (isNothing, listToMaybe)
+import Data.List (nub, sort)
+import Data.Maybe (isNothing)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
 import Data.Scientific (toRealFloat)
@@ -34,7 +34,7 @@ import Language.Lask.Deps.Cache (cacheDirFor)
 import Language.Lask.Deps.Fetch (DepSource (..), fetchAndStore, resolveGitRev, syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Diagnostic (Diagnostic (..), mkDiagnostic)
+import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
 import Language.Lask.ErrorCode
@@ -87,7 +87,7 @@ cmdCheck opts = do
     Left ds -> do
       TIO.putStrLn (renderDiags (optJsonFormat opts) ds)
       exitWith (ExitFailure 1)
-    Right compiled -> do
+    Right _ -> do
       if optJsonFormat opts
         then TIO.putStrLn "[]"
         else putStrLn "the module is valid"
@@ -332,7 +332,6 @@ cmdEnvs envsOpts = do
   let opts = envsCommon envsOpts
   compiled <- compileOrExit opts
   let core = compiledCore compiled
-      baseDir = cpBaseDir core
   -- Without a function, the whole module; with one, only what its call
   -- graph can reach (spec 11.4).
   scope <- case envsFunction envsOpts of
@@ -435,7 +434,7 @@ cmdDepsSync opts frozen = do
       -- be fetched again, so that changing `rev` without changing
       -- `hash` is caught as E-MODULE-HASH-MISMATCH (spec 11.5).
       let declaredRef e = case e of
-            DepGit _ r -> Just r
+            DepGit _ ref -> Just ref
             DepUrl {} -> Nothing
           needsRecheck path e =
             case Map.lookup path (maybe Map.empty lockModules prior) of
@@ -733,11 +732,11 @@ cmdDepsDiff opts name = do
   let requested = case entry of
         DepGit _ r -> Just r
         DepUrl _ -> Nothing
-      line l r
+      diffLine l r
         | l == r = "  = " <> maybe "-" id l
         | otherwise = "  - " <> maybe "-" id l <> "\n  + " <> maybe "-" id r
   TIO.putStrLn "revision:"
-  TIO.putStrLn (line (lkRequested locked) requested)
+  TIO.putStrLn (diffLine (lkRequested locked) requested)
   TIO.putStrLn "content hash:"
   TIO.putStrLn ("  = " <> lkHash locked)
   when (lkRequested locked /= requested) $

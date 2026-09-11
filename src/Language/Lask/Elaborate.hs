@@ -1119,10 +1119,6 @@ elabEnv ctx path locals sp h mArgs = do
       go False args
       pure args
 
-    literalString (Expr _ (EString [TPChunk t])) = Just t
-    literalString (Expr _ (EString [])) = Just ""
-    literalString _ = Nothing
-
     -- Bind positional-then-named args against a constructor signature.
     bindEnvArgs :: Text -> [(Text, Type)] -> [(Text, Type)] -> [Arg] -> TC [(Text, Core)]
     bindEnvArgs kind required optional args = do

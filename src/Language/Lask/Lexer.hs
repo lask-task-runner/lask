@@ -20,6 +20,7 @@ where
 import Control.Monad.State.Strict (State, lift, modify, runState)
 import Data.Char (chr, isDigit, isHexDigit)
 import qualified Data.Char as Char
+import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Void (Void)
@@ -338,7 +339,7 @@ pPunct =
 
 bundleToDiagnostic :: ParseErrorBundle Text Void -> Diagnostic
 bundleToDiagnostic bundle =
-  let err = head (bagToList (bundleErrors bundle))
+  let err = NE.head (bundleErrors bundle)
       (_, posState) = reachOffset (errorOffset err) (bundlePosState bundle)
       pos = fromSourcePos (pstateSourcePos posState)
       msg = T.pack (parseErrorTextPretty err)
@@ -347,5 +348,3 @@ bundleToDiagnostic bundle =
         StageSyntax
         (Span pos pos)
         (T.strip msg)
-  where
-    bagToList = foldr (:) []
