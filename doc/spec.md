@@ -314,7 +314,7 @@ Lexical rules:
 Reserved words:
 
 - The following words are reserved words and must not be used as identifiers.
-- `import`, `from`, `as`, `type`, `do`, `async`, `await`, `if`, `else`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
+- `import`, `export`, `internal`, `from`, `as`, `type`, `do`, `async`, `await`, `if`, `else`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
 - `stdin` is not a reserved word but is a reserved identifier (9.3), and must not be declared or rebound in user code.
 
 String interpolation:
@@ -389,6 +389,7 @@ Record field names:
 - String literals used in type notation and as object literal keys must not contain interpolation (`#{...}`).
 - Duplicate field names within the same record type or the same object literal (including collisions between identifier form and string literal form) are a static error (`E-TYPE-FIELD-DUPLICATE`).
 - Access to field names that do not conform to `lower_id` uses string literal indexing (6.8).
+- A reserved word (3.3) is not usable as an identifier and therefore not as a field name in identifier form. A field whose name is a reserved word (`internal`, `export`, `type`, ...) is written in string literal form (`Record<"internal": Bool>`, `{"internal": true}`) and read by string literal indexing (6.8).
 
 Type well-formedness rules:
 
@@ -557,7 +558,7 @@ Declaration termination rules:
 - `as` and `from` are not continuation tokens (6.5). An `import` declaration must be written on one line, except inside the braces of `NamedImports` (which may span multiple lines by the open-bracket continuation rule). The closing `}` and the `from` clause must be placed on the same line.
 - A line-leading `(` or `[` does not continue the preceding declaration and is interpreted as the start of a new declaration. Since a top-level declaration begins with `import`, `type`, or an identifier, this case results in a syntax error.
 - The optional `!!` marker on a `ValueDecl` name declares a secret binding (6.10); it does not affect parsing of the rest of the declaration.
-- `export` and `internal` are contextual keywords, not reserved words (3.2). They are recognized only at the start of a top-level declaration: if the following token is `=`, `(`, or `:`, the word is an ordinary identifier; otherwise it is a visibility marker. For `export`, a following `{` begins an `ExportDecl`, while a following identifier or `type` marks a declaration.
+- `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
 
 Module loading unit:

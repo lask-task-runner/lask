@@ -3,6 +3,7 @@
 module Language.Lask.Syntax.ParserSpec (spec) where
 
 import Data.Either (isLeft, isRight)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import Language.Lask.Lexer.Token (CmdStream (..), Op (..), Spanned (..))
 import Language.Lask.Span (Span (NoSpan))
@@ -16,6 +17,12 @@ pModule :: Text -> Either String [DeclF]
 pModule src = case parseModule "test.lask" src of
   Left d -> Left (show d)
   Right m -> Right [f | Decl _ f <- moduleDecls (stripSpansModule m)]
+
+-- | The top-level names carrying the @internal@ marker (spec 5).
+pInternal :: Text -> Either String [Text]
+pInternal src = case parseModule "test.lask" src of
+  Left d -> Left (show d)
+  Right m -> Right (Set.toAscList (moduleInternal m))
 
 pExpr :: Text -> Either String ExprF
 pExpr src = case parseExpr "test.lask" src of
@@ -130,6 +137,32 @@ spec = do
 
     it "rejects renamed imports that change identifier kind" $
       pModule "import { add as Strings } from \"lib.lask\"" `shouldSatisfy` isLeft
+
+    it "parses the visibility markers (spec 5)" $ do
+      pModule "export a = 1" `shouldBe` Right [DValue "a" Public Nothing (num 1)]
+      pModule "internal a = 1" `shouldBe` Right [DValue "a" Public Nothing (num 1)]
+      pModule "internal type Strings = Array<String>"
+        `shouldBe` Right [DTypeAlias "Strings" (ty (SArray (ty SString)))]
+
+    it "records which names are marked internal (spec 5)" $ do
+      pInternal "internal a = 1\nb = 2\ninternal c() = 3" `shouldBe` Right ["a", "c"]
+      pInternal "export a = 1" `shouldBe` Right []
+
+    it "parses a re-export declaration (spec 5)" $
+      pModule "export { a, b as c } from \"./lib.lask\""
+        `shouldBe` Right
+          [ DExportFrom
+              [ImportSpec NoSpan "a" Nothing, ImportSpec NoSpan "b" (Just "c")]
+              "./lib.lask"
+          ]
+
+    it "rejects the markers as ordinary names (spec 3.3)" $ do
+      -- Reserved words since they became `Visibility` markers, so
+      -- none of these is a declaration of a name any more.
+      pModule "export = 1" `shouldSatisfy` isLeft
+      pModule "internal(x) = x" `shouldSatisfy` isLeft
+      pModule "internal: Number = 1" `shouldSatisfy` isLeft
+      pModule "y = export" `shouldSatisfy` isLeft
 
     it "parses multiple declarations separated by newlines and semicolons" $
       pModule "a = 1; b = 2\nc = 3"

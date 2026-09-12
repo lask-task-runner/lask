@@ -745,7 +745,8 @@ completionAt path src (Position pl pc)
 -- The lexer accepts a great deal that the parser rejects, so this
 -- keeps the names a user has already written available while the
 -- buffer as a whole is still half-written: a declaration is any
--- identifier in column one that is followed by @(@, @=@ or @:@.
+-- identifier that is followed by @(@, @=@ or @:@ and either sits in
+-- column one or directly follows an @export@\/@internal@ marker.
 tokenNames :: FilePath -> Text -> [Text]
 tokenNames path src = case lexTokens path src of
   Left _ -> []
@@ -753,11 +754,16 @@ tokenNames path src = case lexTokens path src of
   where
     declNames ts =
       [ n
-      | (Tok.Spanned sp t, next) <- zip ts (drop 1 ts),
-        inColumnOne sp,
+      | (prev, Tok.Spanned sp t, next) <- zip3 (Nothing : map Just ts) ts (drop 1 ts),
+        inColumnOne sp || maybe False isMarker prev,
         n <- identText t,
         opensDecl (Tok.spannedValue next)
       ]
+
+    -- `export name = ...` / `internal name = ...` (spec 5): the name
+    -- sits one token right of the declaration start.
+    isMarker (Tok.Spanned _ (Tok.TKw k)) = k `elem` [Tok.KExport, Tok.KInternal]
+    isMarker _ = False
 
     opensDecl Tok.TLParen = True
     opensDecl Tok.TAssign = True
@@ -772,6 +778,9 @@ tokenNames path src = case lexTokens path src of
     identText _ = []
 
     importNames (Tok.Spanned _ (Tok.TKw Tok.KImport) : rest) =
+      boundByImport rest <> importNames rest
+    -- `export { a, b as c } from "..."` binds its names here too.
+    importNames (Tok.Spanned _ (Tok.TKw Tok.KExport) : rest) =
       boundByImport rest <> importNames rest
     importNames (_ : rest) = importNames rest
     importNames [] = []

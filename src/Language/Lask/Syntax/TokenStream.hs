@@ -87,22 +87,9 @@ renderToken t = case t of
   TEllipsis -> "..."
   TNewline -> "newline"
 
+-- | Reserved words render by their single spelling table (spec 3.3).
 renderKeyword :: Keyword -> String
-renderKeyword k = case k of
-  KImport -> "import"
-  KFrom -> "from"
-  KAs -> "as"
-  KType -> "type"
-  KDo -> "do"
-  KAsync -> "async"
-  KAwait -> "await"
-  KIf -> "if"
-  KElse -> "else"
-  KFor -> "for"
-  KReturn -> "return"
-  KTry -> "try"
-  KCatch -> "catch"
-  KFinally -> "finally"
+renderKeyword = T.unpack . keywordText
 
 renderOp :: Op -> String
 renderOp o = case o of
