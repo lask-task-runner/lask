@@ -8,6 +8,7 @@ module Command.Lask.Envs
     collectEnvRefs,
     collectEnvRefsFrom,
     collectRecipes,
+    envRefOfCore,
   )
 where
 
@@ -26,10 +27,29 @@ data EnvRef = EnvRef
   }
   deriving (Show, Eq, Ord)
 
--- | All environment constructions in the core program.
+-- | All environment constructions in the core program, including the
+-- environments named by command declarations (spec ch. 5). A declared
+-- command must be enumerable and materializable even when no task uses
+-- it, because @lask cmd@ can invoke it (spec 11.8).
 collectEnvRefs :: CoreProgram -> [EnvRef]
 collectEnvRefs core =
   concatMap declEnvRefs (Map.elems (cpDecls core))
+    <> concatMap fromEnvCore (commandEnvs core)
+
+-- | The environments of every command declaration in the program.
+commandEnvs :: CoreProgram -> [Core]
+commandEnvs core = concatMap Map.elems (Map.elems (cpCommands core))
+
+-- | The reference one environment core denotes, for display.
+envRefOfCore :: Core -> EnvRef
+envRefOfCore c = case coreF c of
+  CEnv kind args -> mkRef kind args
+  _ -> EnvRef "?" "?" "?"
+
+fromEnvCore :: Core -> [EnvRef]
+fromEnvCore c = case coreF c of
+  CEnv kind args -> mkRef kind args : concatMap (fromEnvCore . snd) args
+  _ -> []
 
 -- | The environments reachable from one declaration: its own
 -- environment expressions plus those of every top-level declaration
@@ -105,7 +125,7 @@ children c = case coreF c of
 -- (dockerfile, context) pairs (spec 10.2). The context defaults to the
 -- Dockerfile's directory.
 collectRecipes :: CoreProgram -> [(Text, Text)]
-collectRecipes core = concatMap fromDecl (Map.elems (cpDecls core))
+collectRecipes core = concatMap fromDecl (Map.elems (cpDecls core)) <> concatMap go (commandEnvs core)
   where
     fromDecl cd = go (cdCore cd)
     go c = case coreF c of

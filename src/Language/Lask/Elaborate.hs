@@ -71,6 +71,11 @@ data CoreProgram = CoreProgram
     -- | Names of the entry module marked @internal@ (spec 5): not
     -- reachable from the CLI or from help listings.
     cpInternal :: Set Text,
+    -- | Each module's command words and the environments they name
+    -- (spec ch. 5). Kept for enumeration (11.4) and for @lask cmd@
+    -- (11.8), which must resolve a command the module declares even
+    -- when no task uses it.
+    cpCommands :: Map FilePath (Map Text Core),
     -- | Name references with their types, recorded during
     -- elaboration for editor tooling (hover).
     cpHover :: [HoverInfo]
@@ -98,7 +103,9 @@ data St = St
   { stDecls :: Map Key CoreDecl,
     stAliases :: Map Key Type,
     stActive :: Set Key,
-    stHover :: [HoverInfo]
+    stHover :: [HoverInfo],
+    -- | Command tables, built once per module on first use.
+    stCommands :: Map FilePath (Map Text (Span, Core))
   }
 
 type TC = StateT St (Either Diagnostic)
@@ -138,9 +145,9 @@ mismatch sp expected actual =
 
 elaborateProgram :: Program -> Map FilePath GlobalScope -> Either [Diagnostic] CoreProgram
 elaborateProgram prog scopes =
-  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s))) (St Map.empty Map.empty Set.empty []) of
+  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s))) (St Map.empty Map.empty Set.empty [] Map.empty) of
     Left d -> Left [d]
-    Right (decls, hover) ->
+    Right (decls, hover, commands) ->
       Right
         CoreProgram
           { cpEntry = progEntry prog,
@@ -149,11 +156,15 @@ elaborateProgram prog scopes =
             cpInternal =
               maybe Set.empty (moduleInternal . lmModule) $
                 Map.lookup (progEntry prog) (progModules prog),
+            cpCommands = Map.map (Map.map snd) commands,
             cpHover = hover
           }
   where
     ctx = Ctx prog scopes
-    elabAll =
+    -- Every module's command declarations are checked, whether or not
+    -- a command string uses them (spec ch. 5).
+    elabAll = do
+      mapM_ (commandTable ctx . lmPath) (Map.elems (progModules prog))
       mapM_
         (demandDecl ctx)
         [ (lmPath lm, n)
@@ -1118,9 +1129,20 @@ envKey c = case coreF c of
   CNull -> "null"
   other -> T.pack (show other)
 
--- | The module's command words and the environments they name.
+-- | The module's command words and the environments they name, built
+-- once per module and then cached.
 commandTable :: Ctx -> FilePath -> TC (Map Text (Span, Core))
-commandTable ctx path = foldM addDecl Map.empty (moduleCommandDecls ctx path)
+commandTable ctx path = do
+  cached <- gets stCommands
+  case Map.lookup path cached of
+    Just table -> pure table
+    Nothing -> do
+      table <- buildCommandTable ctx path
+      modify (\st -> st {stCommands = Map.insert path table (stCommands st)})
+      pure table
+
+buildCommandTable :: Ctx -> FilePath -> TC (Map Text (Span, Core))
+buildCommandTable ctx path = foldM addDecl Map.empty (moduleCommandDecls ctx path)
   where
     addDecl tbl (names, envExpr) = do
       mEnv <- staticEnv ctx path envExpr
