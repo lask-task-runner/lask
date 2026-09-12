@@ -8,6 +8,7 @@ module Command.Lask.Entry
 where
 
 import Command.Lask.ArgCodec
+import Command.Lask.Complete (completionScript)
 import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom, collectRecipes)
 import Command.Lask.Help
 import Command.Lask.Options
@@ -71,6 +72,7 @@ runRootCommand cmd = case cmd of
   CmdDepsDiff opts name -> cmdDepsDiff opts name
   CmdEnvBuild opts -> cmdEnvBuild opts
   CmdEnvList opts -> cmdEnvList opts
+  CmdCompletion sh -> TIO.putStr (completionScript sh)
   CmdVersion -> cmdVersion
 
 -- version ---------------------------------------------------------------------
