@@ -53,15 +53,15 @@ spec = do
       lexed "Number x" `shouldBe` Right [TUpperId "Number", lid "x"]
 
     it "lexes keywords, not identifiers" $
-      lexed "if else do type import from as async await for return try catch finally"
+      lexed "if else do type import export internal from as async await for return try catch finally"
         `shouldBe` Right
           ( map
               TKw
-              [KIf, KElse, KDo, KType, KImport, KFrom, KAs, KAsync, KAwait, KFor, KReturn, KTry, KCatch, KFinally]
+              [KIf, KElse, KDo, KType, KImport, KExport, KInternal, KFrom, KAs, KAsync, KAwait, KFor, KReturn, KTry, KCatch, KFinally]
           )
 
     it "keywords are matched whole-word only" $
-      lexed "iffy forx" `shouldBe` Right [lid "iffy", lid "forx"]
+      lexed "iffy forx exported internals" `shouldBe` Right [lid "iffy", lid "forx", lid "exported", lid "internals"]
 
     it "lexes literal keywords" $
       lexed "true false null" `shouldBe` Right [TBool True, TBool False, TNull]

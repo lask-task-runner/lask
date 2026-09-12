@@ -97,17 +97,6 @@ spec = do
       hasAtom "export { a } from \"./lib.lask\"" (0, 0, 6, SemanticTokenTypes_Keyword)
     it "marks a marker after another declaration" $
       hasAtom "a = 1\ninternal b = 2" (1, 0, 8, SemanticTokenTypes_Keyword)
-    it "keeps `internal` a variable when it is the declared name" $ do
-      hasAtom "internal = 1" (0, 0, 8, SemanticTokenTypes_Variable)
-      hasAtom "internal(x) = x" (0, 0, 8, SemanticTokenTypes_Variable)
-      hasAtom "internal: Number = 1" (0, 0, 8, SemanticTokenTypes_Variable)
-    it "keeps `export` a variable where a declaration cannot start" $ do
-      -- A reference in an expression, not a marker.
-      hasAtom "y = export" (0, 4, 6, SemanticTokenTypes_Variable)
-      -- Inside a block, where statements are not declarations.
-      hasAtom "f() = do {\n  export\n}" (1, 2, 6, SemanticTokenTypes_Variable)
-      -- A continuation line is not a declaration start.
-      hasAtom "y =\n  export" (1, 2, 6, SemanticTokenTypes_Variable)
 
   describe "hover" $ do
     let src =

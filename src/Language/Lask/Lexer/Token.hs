@@ -34,6 +34,8 @@ data Spanned a = Spanned
 -- literal tokens instead.
 data Keyword
   = KImport
+  | KExport
+  | KInternal
   | KFrom
   | KAs
   | KType
@@ -145,6 +147,8 @@ startsContinuation t = case t of
 keywordFromText :: Text -> Maybe Keyword
 keywordFromText t = case t of
   "import" -> Just KImport
+  "export" -> Just KExport
+  "internal" -> Just KInternal
   "from" -> Just KFrom
   "as" -> Just KAs
   "type" -> Just KType
@@ -167,6 +171,8 @@ keywordFromText t = case t of
 keywordText :: Keyword -> Text
 keywordText k = case k of
   KImport -> "import"
+  KExport -> "export"
+  KInternal -> "internal"
   KFrom -> "from"
   KAs -> "as"
   KType -> "type"

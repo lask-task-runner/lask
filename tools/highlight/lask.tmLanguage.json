@@ -87,7 +87,7 @@
         { "name": "keyword.control.flow.lask", "match": "\\b(do|if|else|for|return|try|catch|finally)\\b" },
         { "name": "keyword.control.async.lask", "match": "\\b(async|await)\\b" },
         { "name": "keyword.control.import.lask", "match": "\\b(import|from|as|type)\\b" },
-        { "name": "storage.modifier.lask", "match": "^\\s*(export|internal)\\b" }
+        { "name": "storage.modifier.lask", "match": "\\b(export|internal)\\b" }
       ]
     },
     "constant": { "name": "constant.language.lask", "match": "\\b(true|false|null)\\b" },

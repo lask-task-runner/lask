@@ -167,45 +167,28 @@ pModule = do
       _ -> Nothing
 
 -- | One top-level declaration and whether it carries @internal@.
--- @export@ and @internal@ are contextual keywords (spec 5): they are
--- markers only at the start of a declaration and only when the next
--- token cannot continue a value or function binding. A leading word
--- that turns out to be an ordinary identifier is pushed back.
+-- @export@ and @internal@ are reserved words (spec 3.3), so a leading
+-- marker is unambiguous: no lookahead, and the marker can never be a
+-- declaration name.
 pTopLevel :: P (Decl, Bool)
-pTopLevel = do
-  lead <- peekTok
-  case lead of
-    Just t@(Spanned s (TLowerId w))
-      | w == "export" || w == "internal" -> do
-          _ <- lowerId
-          nxt <- peekTok
-          case nxt of
-            -- @export { a, b } from "path"@ (spec 5).
-            Just (Spanned _ TLBrace) | w == "export" -> do
-              _ <- sym TLBrace
-              specs <- sepBy1 pImportSpec (sym TComma)
-              _ <- sym TRBrace
-              Spanned e path <- kw KFrom *> stringLit "export path"
-              pure (Decl (s <> e) (DExportFrom specs path), False)
-            -- An ordinary declaration whose name happens to be
-            -- @export@ or @internal@.
-            Just (Spanned _ nt)
-              | nt `elem` [TAssign, TLParen, TColon] -> do
-                  pushBack t
-                  plain
-            _ -> do
-              d <- pDecl
-              pure (d, w == "internal")
-    _ -> plain
+pTopLevel =
+  choice
+    [ do
+        s <- kw KExport
+        choice [pExportFrom s, plain],
+      kw KInternal *> ((\d -> (d, True)) <$> pDecl),
+      plain
+    ]
   where
     plain = (\d -> (d, False)) <$> pDecl
 
--- | Return a token to the push-back buffer, undoing a lookahead that
--- consumed it.
-pushBack :: Spanned Token -> P ()
-pushBack t = do
-  pb <- lift get
-  lift (put (t : pb))
+    -- @export { a, b } from "path"@ (spec 5).
+    pExportFrom s = do
+      _ <- sym TLBrace
+      specs <- sepBy1 pImportSpec (sym TComma)
+      _ <- sym TRBrace
+      Spanned e path <- kw KFrom *> stringLit "export path"
+      pure (Decl (s <> e) (DExportFrom specs path), False)
 
 pDecl :: P Decl
 pDecl = choice [pImport, pTypeAliasDecl, pValueOrFunction]

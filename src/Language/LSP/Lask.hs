@@ -57,7 +57,6 @@ import Language.Lask.Doc (docBlockAbove)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), HoverInfo (..))
 import Language.Lask.ErrorCode (codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
-import Language.Lask.Lexer.Layout (layout)
 import qualified Language.Lask.Lexer.Token as Tok
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics)
@@ -233,16 +232,15 @@ sendDiagnostics fileUri version ds = do
 
 -- | Semantic token atoms from the lexer: comments (collected on the
 -- side), interpolation contents (nested token streams inside string
--- and command tokens, recursively), command heads (@$@\/@$1@\/
--- @$2@\/@$*@) as function tokens, and the contextual visibility
--- keywords (@export@\/@internal@) as keyword tokens.
+-- and command tokens, recursively), and command heads (@$@\/@$1@\/
+-- @$2@\/@$*@) as function tokens.
 lexSemanticTokens :: String -> Text -> Either Text [SemanticTokenAbsolute]
 lexSemanticTokens fileName src =
   case lexTokensWithComments fileName src of
     Left e -> Left $ T.pack $ pretty e
     Right (ts, comments) ->
       let atoms =
-            concatMap (flattenToken (visibilitySpans ts)) ts
+            concatMap flattenToken ts
               <> [(c, SemanticTokenTypes_Comment) | c <- comments]
           sorted = sortOn (spanStart . fst) atoms
        in Right (join (map toAbsolutes sorted))
@@ -283,28 +281,25 @@ lexSemanticTokens fileName src =
       (x : _) | c >= 1 && c <= T.length x -> Just (T.index x (c - 1))
       _ -> Nothing
 
-    flattenToken :: Set.Set S.Span -> Tok.Spanned Tok.Token -> [(S.Span, SemanticTokenTypes)]
-    flattenToken vis (Tok.Spanned sp t) = case t of
+    flattenToken :: Tok.Spanned Tok.Token -> [(S.Span, SemanticTokenTypes)]
+    flattenToken (Tok.Spanned sp t) = case t of
       Tok.TString strParts ->
-        carve sp SemanticTokenTypes_String (partAtoms vis strParts)
+        carve sp SemanticTokenTypes_String (partAtoms strParts)
       Tok.TCommand _ env cmdParts ->
         let headLen = case sp of
               S.Span (S.Position _ l c) _
                 | maybe False (`elem` ("12*" :: String)) (charAt l (c + 1)) -> 2
               _ -> 1
             (headSpan, restSpan) = splitSpanAt sp headLen
-            nested = maybe [] (concatMap (flattenToken vis)) env <> partAtoms vis cmdParts
+            nested = maybe [] (concatMap flattenToken) env <> partAtoms cmdParts
          in (headSpan, SemanticTokenTypes_Function) : carve restSpan SemanticTokenTypes_String nested
-      -- `export`/`internal` in marker position: a keyword like
-      -- `import`, not the variable the lexer sees.
-      Tok.TLowerId _ | sp `Set.member` vis -> [(sp, SemanticTokenTypes_Keyword)]
       _ -> case toSemanticTokenTypes t of
         Just typ -> [(sp, typ)]
         Nothing -> []
 
-    partAtoms vis = concatMap (partAtom vis)
-    partAtom _ (Tok.Chunk _) = []
-    partAtom vis (Tok.Interp toks) = concatMap (flattenToken vis) toks
+    partAtoms = concatMap partAtom
+    partAtom (Tok.Chunk _) = []
+    partAtom (Tok.Interp toks) = concatMap flattenToken toks
 
     splitSpanAt (S.Span s@(S.Position f l c) e) n =
       let mid = S.Position f l (c + n)
@@ -335,42 +330,6 @@ lexSemanticTokens fileName src =
       Tok.TRawString _ -> Just SemanticTokenTypes_String
       Tok.TEnvHead _ -> Just SemanticTokenTypes_Macro
       _ -> Nothing
-
--- | Spans of the @export@ and @internal@ markers (spec 5). They are
--- contextual keywords, not reserved words, so the lexer hands them
--- over as plain identifiers: they are markers only at the start of a
--- top-level declaration and only when the next token cannot continue
--- a value or function binding (@=@, @(@, @:@), which is the same
--- lookahead the parser uses. Anything else spelled @export@ or
--- @internal@ stays an ordinary name.
---
--- The newline-significance pass (spec 6.5) is applied first so that a
--- word opening a continuation line is not mistaken for a declaration
--- start; the remaining tokens keep their original spans.
-visibilitySpans :: [Tok.Spanned Tok.Token] -> Set.Set S.Span
-visibilitySpans = Set.fromList . go (0 :: Int) True . layout
-  where
-    go _ _ [] = []
-    go depth declStart (Tok.Spanned sp t : rest) =
-      [sp | declStart, depth == 0, isVisibility t, marksDecl rest]
-        <> go (depth + nesting t) (terminator t) rest
-
-    isVisibility (Tok.TLowerId w) = w == "export" || w == "internal"
-    isVisibility _ = False
-
-    marksDecl (Tok.Spanned _ n : _) = n `notElem` [Tok.TAssign, Tok.TLParen, Tok.TColon]
-    marksDecl [] = False
-
-    nesting t = case t of
-      Tok.TLParen -> 1
-      Tok.TLBracket -> 1
-      Tok.TLBrace -> 1
-      Tok.TRParen -> -1
-      Tok.TRBracket -> -1
-      Tok.TRBrace -> -1
-      _ -> 0
-
-    terminator t = t == Tok.TNewline || t == Tok.TSemi
 
 toRange :: S.Span -> Range
 toRange (S.Span (S.Position _ l1 c1) (S.Position _ l2 c2)) =
@@ -633,14 +592,10 @@ completionAt path src (Position pl pc)
          in Cand label (kindFor (Just ty)) (Just (renderType ty)) Nothing 5
       Nothing -> Cand label CompletionItemKind_Variable Nothing Nothing 5
 
-    -- Reserved words, the literal keywords, and the contextual
-    -- visibility markers (spec 5), which are not reserved words and
-    -- so are absent from 'Tok.Keyword'.
     keywordCands =
       [ Cand w CompletionItemKind_Keyword Nothing Nothing 6
       | w <-
           map Tok.keywordText [minBound .. maxBound :: Tok.Keyword]
-            <> ["export", "internal"]
             <> ["true", "false", "null"]
       ]
 
@@ -790,8 +745,8 @@ completionAt path src (Position pl pc)
 -- The lexer accepts a great deal that the parser rejects, so this
 -- keeps the names a user has already written available while the
 -- buffer as a whole is still half-written: a declaration is any
--- identifier that is followed by @(@, @=@ or @:@ and sits in column
--- one, or directly after a column-one @export@\/@internal@ marker.
+-- identifier that is followed by @(@, @=@ or @:@ and either sits in
+-- column one or directly follows an @export@\/@internal@ marker.
 tokenNames :: FilePath -> Text -> [Text]
 tokenNames path src = case lexTokens path src of
   Left _ -> []
@@ -800,16 +755,15 @@ tokenNames path src = case lexTokens path src of
     declNames ts =
       [ n
       | (prev, Tok.Spanned sp t, next) <- zip3 (Nothing : map Just ts) ts (drop 1 ts),
-        inColumnOne sp || maybe False afterMarker prev,
+        inColumnOne sp || maybe False isMarker prev,
         n <- identText t,
         opensDecl (Tok.spannedValue next)
       ]
 
     -- `export name = ...` / `internal name = ...` (spec 5): the name
-    -- sits one token right of column one.
-    afterMarker (Tok.Spanned sp (Tok.TLowerId w)) =
-      inColumnOne sp && (w == "export" || w == "internal")
-    afterMarker _ = False
+    -- sits one token right of the declaration start.
+    isMarker (Tok.Spanned _ (Tok.TKw k)) = k `elem` [Tok.KExport, Tok.KInternal]
+    isMarker _ = False
 
     opensDecl Tok.TLParen = True
     opensDecl Tok.TAssign = True
@@ -826,8 +780,8 @@ tokenNames path src = case lexTokens path src of
     importNames (Tok.Spanned _ (Tok.TKw Tok.KImport) : rest) =
       boundByImport rest <> importNames rest
     -- `export { a, b as c } from "..."` binds its names here too.
-    importNames (Tok.Spanned sp (Tok.TLowerId "export") : rest)
-      | inColumnOne sp = boundByImport rest <> importNames rest
+    importNames (Tok.Spanned _ (Tok.TKw Tok.KExport) : rest) =
+      boundByImport rest <> importNames rest
     importNames (_ : rest) = importNames rest
     importNames [] = []
 
