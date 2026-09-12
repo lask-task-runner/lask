@@ -288,7 +288,8 @@ spec = do
           )
 
     it "parses stream selectors" $
-      pExpr "$* ls" `shouldBe` Right (ECommand StreamAll Nothing [TPChunk NoSpan "ls"])
+      pExpr "$*[#local] ls"
+        `shouldBe` Right (ECommand StreamAll (Just (ex (EEnv "local" Nothing))) [TPChunk NoSpan "ls"])
 
   describe "do blocks and statements" $ do
     it "parses do blocks with binds and trailing expression" $
@@ -366,7 +367,7 @@ spec = do
       pModule
         ( "publish(tag: String): String = do {\n"
             <> "  if (tag == \"\") { return \"skip: no tag\" }\n"
-            <> "  r = $* ./release.sh #{tag}\n"
+            <> "  r = $*[#local] ./release.sh #{tag}\n"
             <> "  if (r.code != 0) { return r.stderr }\n"
             <> "  \"released\"\n"
             <> "}"

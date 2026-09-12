@@ -1,6 +1,9 @@
 sample_name = "lask-example-02"
 
-test() = $[#golang:latest] go test -v ./...
+command "go" on #golang:latest
+command "docker" on #local
+
+test() = $ go test -v ./...
 
 build(
   --image: String = sample_name,

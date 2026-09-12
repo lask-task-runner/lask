@@ -231,7 +231,7 @@ spec = do
       map (^. L.label) items `shouldMatchList` ["x", "y"]
       [i ^. L.detail | i <- items, i ^. L.label == "y"] `shouldBe` [Just "String"]
     it "offers the fields of a command result" $ do
-      let src = "f() = do {\n  r = $* echo hi\n  return r.\n}"
+      let src = "f() = do {\n  r = $*[#local] echo hi\n  return r.\n}"
       ls <- labels "test.lask" src 2 11
       ls `shouldMatchList` ["code", "stderr", "stdout"]
     it "offers nothing for a receiver it cannot resolve" $ do
@@ -252,7 +252,7 @@ spec = do
       ls <- labels "test.lask" "inc(x: Number) = x + 1\r\ny = i" 1 5
       ls `shouldSatisfy` elem "inc"
     it "offers locals inside a command interpolation" $ do
-      ls <- labels "test.lask" "greet(name: String) = $ echo #{na}" 0 33
+      ls <- labels "test.lask" "greet(name: String) = $[#local] echo #{na}" 0 41
       ls `shouldSatisfy` elem "name"
 
   describe "completion invariants" $

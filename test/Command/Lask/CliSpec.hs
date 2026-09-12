@@ -135,7 +135,7 @@ spec = beforeAll findLask $ do
 
   describe "exit codes (spec 11.3, 16.9)" $ do
     it "passes command exit codes through" $ \lask ->
-      withProject [("main.lask", "f() = $ exit 42\n")] $ \dir -> do
+      withProject [("main.lask", "f() = $[#local] exit 42\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""
         resExit r `shouldBe` 42
         resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO"
@@ -162,7 +162,7 @@ spec = beforeAll findLask $ do
           r <- runLask lask dir ["eval", "f"] ""
           r `shouldBe` Result 0 "75\n" ""
     it "exits 1 on static errors without evaluating" $ \lask ->
-      withProject [("main.lask", "x: Number = \"s\"\nf() = $ echo should-not-run\n")] $ \dir -> do
+      withProject [("main.lask", "x: Number = \"s\"\nf() = $[#local] echo should-not-run\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""
         resExit r `shouldBe` 1
     it "exits 4 on unknown functions" $ \lask ->
@@ -197,7 +197,7 @@ spec = beforeAll findLask $ do
 
   describe "commands and environments (spec 16.5, 16.7)" $ do
     it "runs local commands with interpolation" $ \lask ->
-      withProject [("main.lask", "n = \"world\"\nf() = $ echo hello #{n}\n")] $ \dir -> do
+      withProject [("main.lask", "n = \"world\"\nf() = $[#local] echo hello #{n}\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "f"] ""
         resExit r `shouldBe` 0
         resOut r `shouldBe` "\"hello world\\n\"\n"
@@ -232,7 +232,7 @@ spec = beforeAll findLask $ do
         resErr r `shouldSatisfy` isInfixOf "E-TYPE-ENV-CONSTRUCT"
 
   describe "command execution logs (spec 12.3)" $ do
-    let src = "f() = $* sh -lc \"echo out; echo err 1>&2\"\n"
+    let src = "f() = $*[#local] sh -lc \"echo out; echo err 1>&2\"\n"
     it "relays child output to stderr in the text format" $ \lask ->
       withProject [("main.lask", src)] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""
@@ -243,7 +243,7 @@ spec = beforeAll findLask $ do
         resErr r `shouldSatisfy` isInfixOf "[#local:1] 2| err"
         resErr r `shouldSatisfy` isInfixOf "[#local:1] exit 0"
     it "keeps stdout clean: only the eval result" $ \lask ->
-      withProject [("main.lask", "f() = do {\n  v = $ echo value\n  trim(v)\n}\n")] $ \dir -> do
+      withProject [("main.lask", "f() = do {\n  v = $[#local] echo value\n  trim(v)\n}\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "f"] ""
         resExit r `shouldBe` 0
         resOut r `shouldBe` "\"value\"\n"
@@ -268,7 +268,7 @@ spec = beforeAll findLask $ do
         -- Every stderr line is a single JSON object (spec 12.2).
         all (\l -> take 1 l == "{") (lines (resErr r)) `shouldBe` True
     it "logs exit with level warn on non-zero codes" $ \lask ->
-      withProject [("main.lask", "f() = $* sh -lc \"exit 3\"\n")] $ \dir -> do
+      withProject [("main.lask", "f() = $*[#local] sh -lc \"exit 3\"\n")] $ \dir -> do
         r <- runLask lask dir ["run", "--format", "json", "f"] ""
         resExit r `shouldBe` 0
         resErr r `shouldSatisfy` isInfixOf "\"code\":3"

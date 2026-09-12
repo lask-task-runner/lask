@@ -192,9 +192,9 @@ spec = do
       hasType "m: Map<Number> = {\"a\": 1}\nv = m[\"a\"]" "v" "Number"
 
   describe "commands and environments (spec 6.6, 6.7)" $ do
-    it "types $ as String" $ hasType "v() = $ git --version" "v" "Function<String>"
-    it "types $* as CommandResult" $
-      hasType "v() = $* ls" "v" "Function<Record<code: Number, stderr: String, stdout: String>>"
+    it "types $ as String" $ hasType "v() = $[#local] git --version" "v" "Function<String>"
+    it "types $*[#local] as CommandResult" $
+      hasType "v() = $*[#local] ls" "v" "Function<Record<code: Number, stderr: String, stdout: String>>"
     it "accepts Environment-typed command environments" $
       accepts "b(env: Environment) = $[env] ls"
     it "rejects non-Environment command environments" $
@@ -236,7 +236,64 @@ spec = do
     it "rejects mismatched catch types" $
       rejects "f() = try { 1 } catch (e) { \"x\" }" ETypeMismatch
     it "types try/finally by the body" $
-      hasType "f() = try { 1 } finally { run_command(\"true\") }" "f" "Function<Number>"
+      hasType "f() = try { 1 } finally { run_command(\"true\", #local) }" "f" "Function<Number>"
+
+  describe "command declarations and dispatch (spec ch. 5, 10.9)" $ do
+    it "takes the environment from the command word" $
+      hasType "command \"go\" on #golang:1.25\nv() = $ go test ./..." "v" "Function<String>"
+
+    it "accepts a top-level binding of an environment expression" $
+      hasType "e = #golang:1.25\ncommand \"go\" on e\nv() = $ go test ./..." "v" "Function<String>"
+
+    it "lets neutral words stand alongside a declared command" $
+      hasType "command \"npm\" on #node:20.20.2-alpine3.23\nv() = $ cd web && npm ci" "v" "Function<String>"
+
+    it "skips assignment words before the command word" $
+      hasType "command \"npm\" on #node:20.20.2-alpine3.23\nv() = $ FOO=1 npm ci" "v" "Function<String>"
+
+    it "rejects a command string that names no declared command" $
+      rejects "command \"go\" on #golang:1.25\nv() = $ npm ci" ETypeCommandNoEnv
+
+    it "rejects a bare command with no declarations at all" $
+      rejects "v() = $ echo hi" ETypeCommandNoEnv
+
+    it "rejects a command word that cannot be determined statically" $
+      rejects "command \"go\" on #golang:1.25\nbin = \"go\"\nv() = $ #{bin} test" ETypeCommandNoEnv
+
+    it "rejects a command string that could not be segmented" $
+      rejects "command \"go\" on #golang:1.25\nv() = $ go test \"unterminated" ETypeCommandNoEnv
+
+    it "rejects two different environments in one command string" $
+      rejects
+        "command \"go\" on #golang:1.25\ncommand \"npm\" on #node:20.20.2-alpine3.23\nv() = $ go build && npm ci"
+        ETypeCommandConflict
+
+    it "treats #local as an environment like any other" $ do
+      hasType "command \"ls\" on #local\nv() = $ ls dist" "v" "Function<String>"
+      rejects
+        "command \"ls\" on #local\ncommand \"go\" on #golang:1.25\nv() = $ ls dist && go test"
+        ETypeCommandConflict
+
+    it "does not conflict when two declarations name the same environment" $
+      hasType
+        "command \"go\" on #golang:1.25\ncommand \"gofmt\" on #golang:1.25\nv() = $ gofmt -l . && go vet"
+        "v"
+        "Function<String>"
+
+    it "leaves an explicit environment specification alone" $
+      hasType
+        "command \"npm\" on #node:20.20.2-alpine3.23\nv() = $[#local] npm ci"
+        "v"
+        "Function<String>"
+
+    it "rejects an environment that is not known before execution" $
+      rejects "img = \"golang:1.25\"\ncommand \"go\" on #docker(img)\nv() = $ go test" ETypeCommandDecl
+
+    it "rejects a name that could never be a command word" $
+      rejects "command \"my prog\" on #local\nv() = $ ls" ETypeCommandName
+
+    it "rejects a duplicate command word" $
+      rejects "command \"go\", \"go\" on #golang:1.25\nv() = $ go test" ETypeCommandDuplicate
 
   describe "misc" $ do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"

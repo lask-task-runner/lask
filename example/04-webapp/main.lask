@@ -6,13 +6,21 @@ node = #node:20.20.2-alpine3.23
 playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
 curl = #curlimages/curl:8.21.0
 
+// The programs below run in the images that provide them, so the
+// commands name only what they run (spec ch. 5, 10.9). playwright is
+// deliberately not registered: test_e2e runs npm and npx, but needs
+// the image for the browsers it carries, not for the program.
+command "python", "pip" on python
+command "node", "npm", "npx" on node
+command "curl" on curl
+
 internal as_string(v: Any): String = cast(v)
 
 // Runs the API's Python unit tests (api/).
-test_api() = $[python] pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
+test_api() = $ pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
 
 // Runs the frontend's unit tests (web/).
-test_web() = $[node] cd web && npm ci --no-audit --no-fund && npm test
+test_web() = $ cd web && npm ci --no-audit --no-fund && npm test
 
 // Runs the fast, offline tests. test_e2e is kept separate since it needs
 // a deployed stack and a signed-in user.
@@ -43,7 +51,7 @@ test_e2e(
 
 // Installs the API's Python dependencies into api/vendor so the Lambda
 // deployment package (infra/lambda.tf) includes them.
-build_lambda_deps() = $[python] pip install -q --no-cache-dir -r api/requirements.txt --target api/vendor --upgrade
+build_lambda_deps() = $ pip install -q --no-cache-dir -r api/requirements.txt --target api/vendor --upgrade
 
 // Builds the React frontend (web/) with the deployed API and Cognito
 // settings baked in as environment variables, so the built bundle needs
@@ -54,7 +62,7 @@ build_web(
   cognito_client_id: String,
   cognito_domain: String,
   redirect_uri: String
-) = $[node] cd web && npm ci --no-audit --no-fund && \
+) = $ cd web && npm ci --no-audit --no-fund && \
   VITE_API_URL="#{api_url}" \
   VITE_COGNITO_AUTHORITY="#{cognito_authority}" \
   VITE_COGNITO_CLIENT_ID="#{cognito_client_id}" \
@@ -179,7 +187,7 @@ type Healthcheck = Record<status: String>
 // Calls the deployed API's health route and returns its HTTP status.
 healthcheck_api(): Healthcheck = do {
   url = tf_output().api_url
-  status = $[curl] curl -s -o /dev/null -w "%{http_code}" "#{url}"
+  status = $ curl -s -o /dev/null -w "%{http_code}" "#{url}"
   return { status: status }
 }
 
@@ -187,6 +195,6 @@ healthcheck_api(): Healthcheck = do {
 // no JSON body, so the HTTP status code is the health signal instead.
 healthcheck_web(): Healthcheck = do {
   url = tf_output().website_url
-  status = $[curl] curl -s -o /dev/null -w "%{http_code}" "#{url}"
+  status = $ curl -s -o /dev/null -w "%{http_code}" "#{url}"
   return { status: status }
 }
