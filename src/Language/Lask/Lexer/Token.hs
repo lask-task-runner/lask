@@ -79,7 +79,13 @@ isBinaryOp _ = True
 -- | A piece of an interpreted string or command string: either a
 -- literal chunk or an interpolation holding its own token stream.
 data StrPart
-  = Chunk Text
+  = -- | A literal chunk with the source span it was lexed from.
+    -- Positions inside the chunk are recovered by walking its text
+    -- from the span's start; the walk is exact except across an
+    -- escape, which collapses more source characters than it yields
+    -- (spec 6.6). No command word candidate contains an escape
+    -- (spec 10.9), so dispatch is unaffected.
+    Chunk Span Text
   | Interp [Spanned Token]
   deriving (Show, Eq, Ord)
 
@@ -194,7 +200,7 @@ stripToken t = case t of
   TCommand s env ps -> TCommand s (fmap stripTokens' env) (map stripPart ps)
   _ -> t
   where
-    stripPart (Chunk c) = Chunk c
+    stripPart (Chunk _ c) = Chunk NoSpan c
     stripPart (Interp ts) = Interp (stripTokens' ts)
     stripTokens' = map (Spanned NoSpan . stripToken . spannedValue)
 

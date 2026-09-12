@@ -354,7 +354,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
     checkArg sc (Arg _ (AKw _ e)) = checkExpr sc e
 
     checkPart sc (TPInterp e) = checkExpr sc e
-    checkPart _ (TPChunk _) = []
+    checkPart _ (TPChunk _ _) = []
 
     -- Do blocks: bindings become visible only after their statement;
     -- rebinding in the same block is a duplicate (spec 7.3, 6.5).
