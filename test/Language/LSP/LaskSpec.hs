@@ -88,6 +88,27 @@ spec = do
       hasAtom src (0, 7, 6, SemanticTokenTypes_Type)
       hasAtom src (0, 29, 1, SemanticTokenTypes_Number)
 
+  describe "visibility markers" $ do
+    it "marks `internal` on a declaration as a keyword" $
+      hasAtom "internal x = 1" (0, 0, 8, SemanticTokenTypes_Keyword)
+    it "marks `export` on a declaration as a keyword" $
+      hasAtom "export f() = 1" (0, 0, 6, SemanticTokenTypes_Keyword)
+    it "marks `export ... from` as a keyword" $
+      hasAtom "export { a } from \"./lib.lask\"" (0, 0, 6, SemanticTokenTypes_Keyword)
+    it "marks a marker after another declaration" $
+      hasAtom "a = 1\ninternal b = 2" (1, 0, 8, SemanticTokenTypes_Keyword)
+    it "keeps `internal` a variable when it is the declared name" $ do
+      hasAtom "internal = 1" (0, 0, 8, SemanticTokenTypes_Variable)
+      hasAtom "internal(x) = x" (0, 0, 8, SemanticTokenTypes_Variable)
+      hasAtom "internal: Number = 1" (0, 0, 8, SemanticTokenTypes_Variable)
+    it "keeps `export` a variable where a declaration cannot start" $ do
+      -- A reference in an expression, not a marker.
+      hasAtom "y = export" (0, 4, 6, SemanticTokenTypes_Variable)
+      -- Inside a block, where statements are not declarations.
+      hasAtom "f() = do {\n  export\n}" (1, 2, 6, SemanticTokenTypes_Variable)
+      -- A continuation line is not a declaration start.
+      hasAtom "y =\n  export" (1, 2, 6, SemanticTokenTypes_Variable)
+
   describe "hover" $ do
     let src =
           "// Adds one.\n\
@@ -164,6 +185,10 @@ spec = do
     it "offers reserved words" $ do
       ls <- labels "test.lask" "im" 0 2
       ls `shouldSatisfy` elem "import"
+    it "offers the visibility markers" $ do
+      ls <- labels "test.lask" "e" 0 1
+      ls `shouldSatisfy` elem "export"
+      ls `shouldSatisfy` elem "internal"
     it "ranks module top-level names above builtins and reserved words" $ do
       items <- completionAt "test.lask" "inc(x: Number) = x + 1\ny = i" (Position 1 5)
       let sortTextOf n = [i ^. L.sortText | i <- items, i ^. L.label == n]
@@ -199,6 +224,14 @@ spec = do
       let src = "import * as m from \"./x.lask\"\nbroken(\ny = m"
       ls <- labels "test.lask" src 2 5
       ls `shouldSatisfy` elem "m"
+    it "offers names bound by an export-from when the buffer does not parse" $ do
+      let src = "export { a } from \"./x.lask\"\nbroken(\ny = a"
+      ls <- labels "test.lask" src 2 5
+      ls `shouldSatisfy` elem "a"
+    it "offers names declared with a visibility marker when the buffer does not parse" $ do
+      let src = "internal inc(x: Number) = x + 1\nbroken(\ny = i"
+      ls <- labels "test.lask" src 2 5
+      ls `shouldSatisfy` elem "inc"
     it "never offers the healing placeholder" $ do
       ls <- labels "test.lask" "" 0 0
       ls `shouldSatisfy` notElem "_"
