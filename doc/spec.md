@@ -2347,7 +2347,7 @@ Standard output contract:
 - `text` is human-readable display, `json` is machine-readable display, and `pretty-json` is formatted JSON display.
 - `eval` outputs the evaluation result to stdout with the specified encoding.
 - `run` does not output the evaluation result to stdout. `run` must not output anything to stdout.
-- `cmd` produces no evaluation result. Its stdout belongs to the invoked program and is passed through unchanged (11.8), so the rule for evaluation results does not apply to it.
+- `cmd` produces no evaluation result. Its stdout is the invoked program's stdout, passed through unchanged and never relayed (11.8), so the rule for evaluation results does not apply to it and the output of `lask cmd` can be piped.
 - The one exception is help display (11.6). When `--help` is given, no function is evaluated, so the contract for evaluation results does not apply and `run` writes the help to stdout.
 - `check` outputs diagnostic results to stdout.
 - For both `run` / `eval`, the output destination for execution logs and diagnostics is stderr (9.6, Chapter 12).
@@ -2677,10 +2677,11 @@ Execution rules:
 
 Stream rules:
 
-- When stdin, stdout and stderr are all terminals, they are attached to the program, and a terminal is allocated in the `docker` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
-- Otherwise stdin is forwarded to the program until EOF, and stdout and stderr are relayed as the command execution log (12.3).
+- The program's stdin and stdout are always those of the `cmd` process. `cmd` produces no evaluation result, so its stdout belongs to the program (11.3), and `lask cmd` can therefore be piped exactly as the program it runs can.
+- When stdin, stdout and stderr are all terminals, stderr is attached to the program as well, and a terminal is allocated in the `docker` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
+- Otherwise the program's standard error is relayed as the command execution log (12.3). The relay is applied to standard error only: relaying standard output would either duplicate it or withhold it from the pipe, and interactivity and pipeability both take precedence over the completeness of the relay.
+- The start line and the exit line of 12.3 are emitted in every case, so every invocation is recorded with its environment, its argument vector and its exit status.
 - `INT` and `TERM` are forwarded to the program, and the container must be removed on exit, including on signal.
-- The start line and the exit line of 12.3 are emitted in all cases; the relay lines are emitted only when the streams are not terminals, or when `--format json` is given (12.3).
 
 Exit code rules:
 
@@ -2701,9 +2702,9 @@ npm            docker  node:20.20.2-alpine3.23     ok
 terraform      docker  hashicorp/terraform:1.16.2  missing (lask env build)
 mv             local                               ok
 
-$ lask cmd go test ./...
+$ lask cmd go test ./... > report.txt
 2026-09-12T12:56:40.217Z [#golang:1.25:1] $ go test ./...
-ok  	example/pkg	0.412s
+2026-09-12T12:56:41.002Z [#golang:1.25:1] 2| warning: unused variable
 2026-09-12T12:56:41.002Z [#golang:1.25:1] exit 0
 ```
 
@@ -2754,7 +2755,7 @@ Relay rules:
 
 - The relay is performed sequentially line by line (line buffering). Output must not be accumulated until the child process exits.
 - The targets are `run` / `eval` execution, the connection diagnostics of `envs --check` (11.4), and `cmd` (11.8). The relayed content is identical regardless of which sugar (`$`, `$1`, `$2`, `$*`) was used for execution.
-- For `cmd`, the start line and the exit line are always emitted, while the relay lines are emitted only when the corresponding streams are not terminals. When they are, the program's standard output and standard error are connected to the terminal directly (11.8): a prefixed, line-buffered relay cannot carry a prompt, a pager, or a progress display, and interactivity takes precedence over the relay. `--format json` forces relay for `cmd` even on a terminal.
+- For `cmd` (11.8), the start line and the exit line are always emitted. Standard output is never relayed, because it is the program's own output channel and is passed through unchanged; standard error is relayed as `2|` lines unless all three streams are terminals, in which case it is attached to the terminal directly, a prefixed line-buffered relay being unable to carry a prompt, a pager, or a progress display.
 - For each command execution, a 1-based sequence number (execution number) that is unique within the top-level execution is assigned. Execution numbers are not duplicated even under concurrent execution (`async`).
 - Each log line contains a timestamp and an environment summary with the execution number. The executed command is recorded only on the start line; subsequent lines are correlated by the execution number (the command is not recorded on every line).
 - The secret masking of 12.8 applies to relayed content. Output volume limits and suppression measures (rate limiting, suppression options, etc.) may be provided as implementation-defined.

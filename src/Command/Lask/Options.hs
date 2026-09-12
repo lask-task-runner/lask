@@ -6,6 +6,7 @@ module Command.Lask.Options
     CommonOpts (..),
     RunOpts (..),
     EnvsOpts (..),
+    CmdOpts (..),
     DepsAddSource (..),
     pRootCommand,
     runOptionsHelp,
@@ -46,6 +47,15 @@ data EnvsOpts = EnvsOpts
     envsCheck :: Bool
   }
 
+-- | @lask cmd@ (spec 11.8): a declared command and everything after
+-- its name, or @--list@.
+data CmdOpts = CmdOpts
+  { cmdCommon :: CommonOpts,
+    cmdList :: Bool,
+    cmdName :: Maybe Text,
+    cmdArgs :: [Text]
+  }
+
 data RootCommand
   = CmdServe
   | CmdCheck CommonOpts
@@ -59,6 +69,7 @@ data RootCommand
   | CmdDepsDiff CommonOpts Text
   | CmdEnvBuild CommonOpts
   | CmdEnvList CommonOpts
+  | CmdCmd CmdOpts
   | CmdVersion
 
 -- | The source of a @deps add@ entry (spec 11.5).
@@ -97,6 +108,18 @@ pCommon =
     <*> switch (long "no-color" <> help "Disable colored output")
   where
     build m fmt tid nc = CommonOpts m (fmt == ("json" :: String)) tid nc
+
+-- | Everything after the command name belongs to the program, with no
+-- interception at all (spec 11.8) — not even @--help@, which a program
+-- may define itself. @noIntersperse@ gives exactly that boundary, as it
+-- does for @run@ / @eval@.
+pCmdOpts :: Parser CmdOpts
+pCmdOpts =
+  CmdOpts
+    <$> pCommon
+    <*> switch (long "list" <> help "List the commands the module declares")
+    <*> optional (T.pack <$> argument str (metavar "COMMAND"))
+    <*> many (T.pack <$> argument str (metavar "ARGS..."))
 
 pRunOpts :: Parser RunOpts
 pRunOpts =
@@ -165,6 +188,12 @@ pRootCommand =
         <> command "envs" (withHelp (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))
         <> command "deps" (withHelp pDepsCommand (progDesc "Manage external dependencies"))
         <> command "env" (withHelp pEnvCommand (progDesc "Materialize and inspect container images"))
+        <> command
+          "cmd"
+          ( info
+              (CmdCmd <$> pCmdOpts <**> helper)
+              (progDesc "Run a declared command in its declared environment" <> noIntersperse)
+          )
         <> command "version" (withHelp (pure CmdVersion) (progDesc "Print the lask version"))
     )
   where

@@ -60,6 +60,76 @@ withProject files action =
 
 spec :: Spec
 spec = beforeAll findLask $ do
+  describe "cmd (spec 11.8)" $ do
+    let proj =
+          [ ( "main.lask",
+              "command \"echo\", \"printf\", \"false\" on #local\n\nhello() = $ echo hi\n"
+            )
+          ]
+
+    it "runs a declared command in its declared environment" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "echo", "hello", "world"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "hello world\n"
+
+    it "passes each argument as one word, with no shell" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "printf", "[%s]", "two words"] ""
+        resOut r `shouldBe` "[two words]"
+
+    it "relays the program's stderr with a 2| prefix" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "printf", "boom"] ""
+        resOut r `shouldBe` "boom"
+
+    it "always writes the start and exit lines of 12.3" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "echo", "hi"] ""
+        resErr r `shouldSatisfy` isInfixOf "[#local:1] $ echo hi"
+        resErr r `shouldSatisfy` isInfixOf "[#local:1] exit 0"
+
+    it "passes the program's exit code through" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "false"] ""
+        resExit r `shouldBe` 1
+
+    it "does not intercept --help after the command name" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "echo", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "--help\n"
+
+    it "reports an unknown command as a usage error (exit 4)" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "nope"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldSatisfy` isInfixOf "lask cmd --list"
+
+    it "reports a missing command name as a usage error" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd"] ""
+        resExit r `shouldBe` 4
+
+    it "lists the declared commands with their environments" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "--list"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldSatisfy` isInfixOf "echo"
+        resOut r `shouldSatisfy` isInfixOf "local"
+
+    it "lists commands as JSON under --format json" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "--format", "json", "--list"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldSatisfy` isInfixOf "\"name\":\"echo\""
+
+    it "exits 1 on a static error before running anything" $ \lask ->
+      withProject [("main.lask", "x: Number = \"s\"\ncommand \"echo\" on #local\n")] $ \dir -> do
+        r <- runLask lask dir ["cmd", "echo", "hi"] ""
+        resExit r `shouldBe` 1
+        resOut r `shouldBe` ""
+
   describe "spec 16.1: minimal program" $ do
     it "eval prints the JSON result, run prints nothing" $ \lask ->
       withProject [("main.lask", "hello() = \"hello, lask\"\n")] $ \dir -> do

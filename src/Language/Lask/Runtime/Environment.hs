@@ -17,6 +17,7 @@ module Language.Lask.Runtime.Environment
     resolveEnv,
     mkCommandRunner,
     runLoggedProcess,
+    runDeclaredCommand,
     envLogInfo,
     dockerArgs,
   )
@@ -45,10 +46,10 @@ import Language.Lask.Runtime.Secrets (maskSecrets)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (valueToJson)
 import System.Exit (ExitCode (..))
-import System.IO (Handle, hClose)
+import System.IO (Handle, hClose, hIsTerminalDevice, stderr, stdin, stdout)
 import System.Process
-  ( CreateProcess (cwd, std_err, std_in, std_out),
-    StdStream (CreatePipe),
+  ( CreateProcess (cwd, delegate_ctlc, std_err, std_in, std_out),
+    StdStream (CreatePipe, Inherit),
     createProcess,
     proc,
     shell,
@@ -103,20 +104,148 @@ envLogInfo _ resolved = (summary, json)
 dockerArgs :: FilePath -> Text -> Map Text Value -> Text -> [String]
 dockerArgs baseDir image opts cmd =
   ["run", "--rm", "-v", baseDir <> ":/work", "-w", "/work", "--entrypoint", "/bin/sh"]
-    <> optArgs
+    <> dockerOptArgs opts
     <> [T.unpack image, "-c", T.unpack cmd]
+
+-- | Implementation-defined environment options (spec 10.2).
+dockerOptArgs :: Map Text Value -> [String]
+dockerOptArgs opts =
+  concat
+    [ case (k, v) of
+        ("memory", VString m) -> ["--memory", T.unpack m]
+        ("cpus", VNumber n) -> ["--cpus", formatNum n]
+        _ -> []
+    | (k, v) <- Map.toList opts
+    ]
   where
-    optArgs =
-      concat
-        [ case (k, v) of
-            ("memory", VString m) -> ["--memory", T.unpack m]
-            ("cpus", VNumber n) -> ["--cpus", formatNum n]
-            _ -> []
-        | (k, v) <- Map.toList opts
-        ]
     formatNum n
       | isInteger n = formatScientific Sci.Fixed (Just 0) n
       | otherwise = formatScientific Sci.Fixed Nothing n
+
+-- | Arguments for @docker run@ of one program with its argument
+-- vector (spec 11.8): no shell is created, so the program name becomes
+-- the entrypoint and the remaining words are passed as they stand.
+dockerExecArgs :: FilePath -> Text -> Map Text Value -> Bool -> Text -> [Text] -> [String]
+dockerExecArgs baseDir image opts interactive prog argv =
+  ["run", "--rm"]
+    <> (if interactive then ["-i", "-t"] else [])
+    <> ["-v", baseDir <> ":/work", "-w", "/work", "--entrypoint", T.unpack prog]
+    <> dockerOptArgs opts
+    <> [T.unpack image]
+    <> map T.unpack argv
+
+-- | Run one declared command with its argument vector (spec 11.8).
+--
+-- Unlike a command execution expression this creates no shell, so an
+-- argument containing whitespace cannot be re-split.
+--
+-- The program's stdout is always Lask's stdout, so @lask cmd@ can be
+-- piped like the program it runs (spec 11.3: its stdout belongs to the
+-- program). What varies is stderr. When all three standard streams are
+-- terminals it is attached directly, because a prefixed line-buffered
+-- relay cannot carry a prompt, a pager, or a progress display, and
+-- interactivity takes precedence over the relay; otherwise it is
+-- relayed as the command execution log (12.3). The start and exit
+-- lines are written either way.
+runDeclaredCommand ::
+  FilePath ->
+  CommandLogSink ->
+  -- | Force the relay even on a terminal (@--format json@).
+  Bool ->
+  EnvValue ->
+  -- | Program name (the declared command word).
+  Text ->
+  -- | Its arguments, each preserved as one word.
+  [Text] ->
+  IO (Either LaskFailure Int)
+runDeclaredCommand baseDir0 sink forceRelay envValue prog argv = do
+  baseDir <- makeAbsolute baseDir0
+  tty <- allTerminals
+  let interactive = tty && not forceRelay
+  case resolveEnv envValue of
+    Left failure -> pure (Left failure)
+    Right resolved -> do
+      let (sm, ej) = envLogInfo envValue resolved
+          rendered = T.unwords (prog : argv)
+          launch cp = do
+            r <- try (runAttachedProcess sink sm ej rendered interactive cp)
+            pure (mapLaunchFailure r)
+      case resolved of
+        ResolvedLocal ->
+          launch ((proc (T.unpack prog) (map T.unpack argv)) {cwd = Just baseDir})
+        ResolvedDocker image opts ->
+          launch (proc "docker" (dockerExecArgs baseDir image opts interactive prog argv))
+        ResolvedRecipe df ctx opts -> do
+          tagE <- recipeTag baseDir df ctx
+          case tagE of
+            Left e -> pure (Left (ioFailure EIoImageMissing e))
+            Right tag -> do
+              ok <- imageExists tag
+              if not ok
+                then
+                  pure . Left . ioFailure EIoImageMissing $
+                    "image for recipe '" <> df <> "' is not materialized; run 'lask env build'"
+                else launch (proc "docker" (dockerExecArgs baseDir tag opts interactive prog argv))
+  where
+    allTerminals =
+      and <$> mapM hIsTerminalDevice [stdin, stdout, stderr]
+    mapLaunchFailure r = case r of
+      Left e -> Left (ioFailure EIoEnvResolve ("cannot launch command: " <> T.pack (show (e :: IOException))))
+      Right code -> Right code
+
+-- | Run a process with the caller's stdin and stdout attached,
+-- emitting the start and exit lines of the command execution log. When
+-- not interactive, stderr is relayed line by line as @2|@ entries
+-- instead of being attached (spec 11.8).
+runAttachedProcess ::
+  CommandLogSink ->
+  Text ->
+  A.Value ->
+  Text ->
+  -- | Attach stderr directly rather than relaying it.
+  Bool ->
+  CreateProcess ->
+  IO Int
+runAttachedProcess sink summary envJson rendered interactive cp = do
+  maskedCmd <- maskSecrets rendered
+  emit maskedCmd ClStart
+  (_, _, mErr, ph) <-
+    createProcess
+      cp
+        { std_in = Inherit,
+          std_out = Inherit,
+          std_err = if interactive then Inherit else CreatePipe,
+          delegate_ctlc = True
+        }
+  mapM_ (relayErr maskedCmd) mErr
+  exitCode <- waitForProcess ph
+  let code = case exitCode of
+        ExitSuccess -> 0
+        ExitFailure n -> n
+  emit maskedCmd (ClExit code)
+  pure code
+  where
+    emit maskedCmd kind = do
+      now <- getCurrentTime
+      sink (CommandLog now summary envJson 1 maskedCmd kind)
+
+    relayErr maskedCmd h = go ""
+      where
+        go pending = do
+          chunkT <- TIO.hGetChunk h
+          if T.null chunkT
+            then unless (T.null pending) (emitLine maskedCmd pending)
+            else do
+              let (ls, rest) = splitLines (pending <> chunkT)
+              mapM_ (emitLine maskedCmd) ls
+              go rest
+    emitLine maskedCmd l = do
+      now <- getCurrentTime
+      masked <- maskSecrets l
+      sink (CommandLog now summary envJson 1 maskedCmd (ClLine 2 masked))
+    splitLines t = case T.breakOn "\n" t of
+      (_, rest) | T.null rest -> ([], t)
+      (l, rest) -> let (ls, r) = splitLines (T.drop 1 rest) in (T.stripEnd l : ls, r)
 
 -- | Real command runner over the three environment families
 -- (spec 10.2, 10.8): a unified result contract regardless of the
