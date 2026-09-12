@@ -24,7 +24,7 @@ lid :: Text -> Token
 lid = TLowerId
 
 chunk1 :: Text -> [StrPart]
-chunk1 t = [Chunk t]
+chunk1 t = [Chunk NoSpan t]
 
 -- | Nested tokens inside 'Interp' / command environments come back
 -- from 'stripTokens' wrapped with 'NoSpan'.
@@ -115,7 +115,7 @@ spec = do
     it "lexes interpolation as a nested token stream" $
       lexed "\"x#{a + 1}y\""
         `shouldBe` Right
-          [TString [Chunk "x", Interp (map nt [lid "a", TOp OpAdd, num 1]), Chunk "y"]]
+          [TString [Chunk NoSpan "x", Interp (map nt [lid "a", TOp OpAdd, num 1]), Chunk NoSpan "y"]]
 
     it "handles nested braces inside interpolation" $
       lexed "\"#{ {a: 1}.a }\""
@@ -161,7 +161,7 @@ spec = do
     it "captures interpolation inside command strings" $
       lexed "$ echo #{name} done"
         `shouldBe` Right
-          [TCommand StreamOut Nothing [Chunk "echo ", Interp [nt (lid "name")], Chunk " done"]]
+          [TCommand StreamOut Nothing [Chunk NoSpan "echo ", Interp [nt (lid "name")], Chunk NoSpan " done"]]
 
     it "escapes literal \\#{ in command strings" $
       lexed "$ echo \\#{x}"

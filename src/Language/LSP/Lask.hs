@@ -298,7 +298,7 @@ lexSemanticTokens fileName src =
         Nothing -> []
 
     partAtoms = concatMap partAtom
-    partAtom (Tok.Chunk _) = []
+    partAtom (Tok.Chunk _ _) = []
     partAtom (Tok.Interp toks) = concatMap flattenToken toks
 
     splitSpanAt (S.Span s@(S.Position f l c) e) n =

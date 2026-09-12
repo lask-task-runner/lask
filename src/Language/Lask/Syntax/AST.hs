@@ -143,7 +143,10 @@ data ExprF
     EEnv Text (Maybe [Arg])
   deriving (Show, Eq)
 
-data TextPart = TPChunk Text | TPInterp Expr
+-- | A piece of a string or command string. 'TPChunk' carries the
+-- source span it was lexed from, so a position inside it can be
+-- recovered by walking its text (spec 10.9 command words).
+data TextPart = TPChunk Span Text | TPInterp Expr
   deriving (Show, Eq)
 
 data Arg = Arg {argSpan :: Span, argF :: ArgF}
@@ -224,7 +227,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EEnv h as -> EEnv h (fmap (map stripArg) as)
   other -> other
   where
-    stripPart (TPChunk c) = TPChunk c
+    stripPart (TPChunk _ c) = TPChunk NoSpan c
     stripPart (TPInterp e) = TPInterp (stripSpansExpr e)
     stripArg (Arg _ (APos e)) = Arg NoSpan (APos (stripSpansExpr e))
     stripArg (Arg _ (AKw n e)) = Arg NoSpan (AKw n (stripSpansExpr e))

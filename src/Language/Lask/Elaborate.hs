@@ -711,7 +711,7 @@ elabString ctx path locals sp parts = do
         _ -> CStr cs
   pure (Core sp core, TyString)
   where
-    part (TPChunk t) = pure (CPText t)
+    part (TPChunk _ t) = pure (CPText t)
     part (TPInterp e) = do
       (c, t) <- infer ctx path locals e
       unless (stringifiable t) $
@@ -822,7 +822,7 @@ elabIndex ctx path locals sp inner idx = do
     other ->
       abort (diag ETypeAccess sp ("index access requires Array, Map or Record, got " <> renderType other))
   where
-    literalString (Expr _ (EString [TPChunk t])) = Just t
+    literalString (Expr _ (EString [TPChunk _ t])) = Just t
     literalString (Expr _ (EString [])) = Just ""
     literalString _ = Nothing
 
