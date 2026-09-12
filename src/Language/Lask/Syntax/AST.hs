@@ -60,6 +60,9 @@ data DeclF
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
+  | -- | @command "go", "gofmt" on #golang:1.25@ (spec 5): registers
+    -- each name as a command word of this module. Binds nothing.
+    DCommand [Spanned Text] Expr
   deriving (Show, Eq)
 
 -- | Whether a binding carries the @!!@ secret marker (spec 6.10).
@@ -184,6 +187,7 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
   DFunction n ps t e ->
     DFunction n (map stripParam ps) (fmap stripSpansType t) (stripSpansExpr e)
+  DCommand ns e -> DCommand [Spanned NoSpan n | Spanned _ n <- ns] (stripSpansExpr e)
   where
     stripSpec (ImportSpec _ n a) = ImportSpec NoSpan n a
 

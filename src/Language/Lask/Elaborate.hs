@@ -35,6 +35,7 @@ import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTarget (..))
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST
+import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), commandWords, validCommandName)
 import Language.Lask.Types
 import System.FilePath (isAbsolute, normalise, splitDirectories)
 
@@ -1036,15 +1037,15 @@ elabCommand ::
   TC (Core, Type)
 elabCommand ctx path locals sp stream mEnv parts = do
   (cmdCore, _) <- elabString ctx path locals sp parts
-  envArg <- case mEnv of
-    Nothing -> pure []
+  envCore <- case mEnv of
     Just envExpr -> do
       (c, t) <- infer ctx path locals envExpr
       unless (conformsTo t TyEnvironment) $
         abort . withExpectedActual "Environment" (renderType t) $
           diag ETypeCommandEnv (exprSpan envExpr) "command environment must be an Environment"
-      pure [("env", c)]
-  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore] envArg)
+      pure c
+    Nothing -> dispatchEnv ctx path sp parts
+  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore, envCore] [])
   case stream of
     StreamAll -> pure (call, commandResultType)
     StreamOut -> pure (streamSelect call "stdout", TyString)
@@ -1067,6 +1068,111 @@ elabCommand ctx path locals sp stream mEnv parts = do
           -- tagged E-RUNTIME-COMMAND-NONZERO for diagnostics (14.5).
           failCall = Core sp (CApp (Core sp (CVar (BuiltinRef "%commandFail"))) [errRecord] [])
        in Core sp (CDo [CSBind r call, CSExpr (Core sp (CIf cond okBranch failCall))])
+
+-- Command declarations and dispatch (spec ch. 5, 10.9) -----------------------
+
+-- | The command declarations of one module, in source order.
+moduleCommandDecls :: Ctx -> FilePath -> [([Spanned Text], Expr)]
+moduleCommandDecls ctx path = case Map.lookup path (progModules (ctxProg ctx)) of
+  Nothing -> []
+  Just lm -> [(ns, e) | Decl _ (DCommand ns e) <- moduleDecls (lmModule lm)]
+
+-- | A command declaration's environment, as its core form. The
+-- expression must be an environment expression, or an identifier bound
+-- at top level to one, and its arguments must be literals: the reason
+-- for the restriction is that the environment be enumerable and
+-- pinnable without evaluating the module (spec ch. 5).
+staticEnv :: Ctx -> FilePath -> Expr -> TC (Maybe Core)
+staticEnv ctx = go Set.empty
+  where
+    go seen p ex = case exprF ex of
+      EEnv {} -> do
+        (c, _) <- infer ctx p Map.empty ex
+        pure (if literalEnv c then Just c else Nothing)
+      EVar n
+        | not (Set.member (p, n) seen),
+          Just (VTopLevel dp dn) <- lookupValueTarget ctx p n,
+          Just (Decl _ (DValue _ _ _ rhs)) <- lookupDeclAst ctx (dp, dn) ->
+            go (Set.insert (p, n) seen) dp rhs
+      _ -> pure Nothing
+
+    literalEnv c = case coreF c of
+      CEnv _ args -> all (literal . snd) args
+      _ -> False
+    literal c = case coreF c of
+      CStrLit _ -> True
+      CNumber _ -> True
+      CBool _ -> True
+      CNull -> True
+      _ -> False
+
+-- | A canonical rendering of an environment value, for the structural
+-- equality selection compares (spec 10.9). Spans are not part of it,
+-- so two declarations naming the same environment agree.
+envKey :: Core -> Text
+envKey c = case coreF c of
+  CEnv kind args -> kind <> "(" <> T.intercalate "," [k <> "=" <> envKey v | (k, v) <- args] <> ")"
+  CStrLit t -> "\"" <> t <> "\""
+  CNumber n -> T.pack (show n)
+  CBool b -> if b then "true" else "false"
+  CNull -> "null"
+  other -> T.pack (show other)
+
+-- | The module's command words and the environments they name.
+commandTable :: Ctx -> FilePath -> TC (Map Text (Span, Core))
+commandTable ctx path = foldM addDecl Map.empty (moduleCommandDecls ctx path)
+  where
+    addDecl tbl (names, envExpr) = do
+      mEnv <- staticEnv ctx path envExpr
+      case mEnv of
+        Nothing ->
+          abort . diag ETypeCommandDecl (exprSpan envExpr) $
+            "a command declaration needs an environment that is known before execution: "
+              <> "an environment expression with literal arguments, or a top-level binding of one"
+        Just env -> foldM (addName env) tbl names
+    addName env tbl (Spanned nameSp n) = do
+      unless (validCommandName n) $
+        abort . diag ETypeCommandName nameSp $
+          "'" <> n <> "' could never be recognized as a command word in a command string"
+      when (Map.member n tbl) $
+        abort (diag ETypeCommandDuplicate nameSp ("command '" <> n <> "' is declared more than once"))
+      pure (Map.insert n (nameSp, env) tbl)
+
+-- | The environment of a command execution expression that carries no
+-- environment specification (spec 10.9).
+dispatchEnv :: Ctx -> FilePath -> Span -> [TextPart] -> TC Core
+dispatchEnv ctx path sp parts = do
+  tbl <- commandTable ctx path
+  case commandWords parts of
+    NotAnalysable _ why ->
+      abort . diag ETypeCommandNoEnv sp $
+        "the command string could not be segmented (" <> why <> "), so no command word could be read; "
+          <> "give the environment explicitly with $[...]"
+    Analysed ws -> case [(cwText w, env) | w <- ws, cwCandidate w, Just (_, env) <- [Map.lookup (cwText w) tbl]] of
+      [] -> abort (diag ETypeCommandNoEnv sp (noneMessage ws))
+      ((n0, env0) : more) -> case [n | (n, env) <- more, envKey env /= envKey env0] of
+        [] -> pure env0
+        (n1 : _) ->
+          abort . diag ETypeCommandConflict sp $
+            "this command runs both '"
+              <> n0
+              <> "' ("
+              <> envKey env0
+              <> ") and '"
+              <> n1
+              <> "' ("
+              <> maybe "?" (envKey . snd) (Map.lookup n1 tbl)
+              <> "), but a command string is one process in one environment; "
+              <> "split the command or give the environment explicitly with $[...]"
+  where
+    noneMessage ws =
+      let seen = [cwText w | w <- ws, cwCandidate w]
+          quoted' ns = T.intercalate ", " ["'" <> n <> "'" | n <- ns]
+          named = case seen of
+            [] -> "no command word could be read"
+            [n] -> "'" <> n <> "' is not a declared command"
+            ns -> "none of " <> quoted' ns <> " is a declared command"
+       in named <> "; declare it with `command \"<name>\" on <environment>` or give the environment explicitly with $[...]"
 
 -- Environment expressions (spec 6.7, 10.2) ---------------------------------------------------
 

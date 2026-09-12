@@ -159,6 +159,8 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
         let key = resolveKey path
             (gs', newDs) = foldl (addImport key) (gs, []) specs
          in go gs' (newDs <> ds) rest
+      -- Registers command words, binds no name (spec ch. 5).
+      DCommand {} -> go gs ds rest
       DImportNamespace alias path ->
         let key = resolveKey path
             dups =
@@ -245,6 +247,10 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
           <> maybe [] checkType t
           <> checkExpr [paramNames ps] body
       DTypeAlias _ t -> checkType t
+      -- The environment of a command declaration is checked for
+      -- static resolvability in "Language.Lask.Elaborate" (spec ch. 5);
+      -- here only its name references are resolved.
+      DCommand _ e -> checkExpr [] e
       DImportNamed {} -> []
       DExportFrom {} -> []
       DImportNamespace {} -> []

@@ -39,6 +39,7 @@ data Keyword
   | KFrom
   | KAs
   | KType
+  | KCommand
   | KDo
   | KAsync
   | KAwait
@@ -158,6 +159,7 @@ keywordFromText t = case t of
   "from" -> Just KFrom
   "as" -> Just KAs
   "type" -> Just KType
+  "command" -> Just KCommand
   "do" -> Just KDo
   "async" -> Just KAsync
   "await" -> Just KAwait
@@ -182,6 +184,7 @@ keywordText k = case k of
   KFrom -> "from"
   KAs -> "as"
   KType -> "type"
+  KCommand -> "command"
   KDo -> "do"
   KAsync -> "async"
   KAwait -> "await"
