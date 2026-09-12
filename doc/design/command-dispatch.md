@@ -273,10 +273,9 @@ depends on.
 - The absence of any highlighted word in a bracket-less command string is
   therefore the visible form of `E-TYPE-COMMAND-NOENV`. A line where nothing
   lights up has no environment, and the diagnostic will say so.
-- When a command string selects an environment while carrying an explicit
-  environment specification, the words are still references and are still
-  highlighted, but the modifier `deprecated` — or an implementation-chosen
-  "inactive" rendering — should mark them, because §1.1 makes them inert.
+- A command string carrying an explicit environment specification has no
+  highlighted words at all: dispatch was not performed, so no word in it is a
+  reference to anything. What lights up is exactly what decided.
 - Highlighting is computed from the same command table and the same procedure as
   dispatch. An implementation must not maintain a second, looser matcher for the
   editor: a word that lights up is a word that voted.
