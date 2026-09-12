@@ -24,6 +24,7 @@ source-repository head
 library
   exposed-modules:
       Command.Lask.ArgCodec
+      Command.Lask.Complete
       Command.Lask.Entry
       Command.Lask.Envs
       Command.Lask.Help
@@ -145,6 +146,7 @@ test-suite lask-test
   main-is: Spec.hs
   other-modules:
       Command.Lask.CliSpec
+      Command.Lask.CompleteSpec
       Language.Lask.Deps.DepsSpec
       Language.Lask.DocSpec
       Language.Lask.ElaborateSpec

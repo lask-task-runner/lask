@@ -108,6 +108,33 @@ Verify with `lask --help`. Archives for every platform are on the
 [latest release](https://github.com/lask-task-runner/lask/releases/latest); APT and
 Chocolatey support is planned.
 
+<details>
+<summary><b>Shell completion</b> &middot; bash, zsh, fish</summary>
+
+Completion knows your module, not just the CLI: it completes the functions the
+repository you are standing in defines, and each function's keyword parameters.
+
+```bash
+$ lask run <TAB>
+build_on_docker  doctest  install  test  uninstall  unittest
+$ lask run install --<TAB>
+--output  --env  --help
+$ lask run install --env <TAB>
+docker  local
+```
+
+```bash
+$ lask completion bash > /usr/local/etc/bash_completion.d/lask        # bash
+$ lask completion zsh  > "${fpath[1]}/_lask"                          # zsh
+$ lask completion fish > ~/.config/fish/completions/lask.fish         # fish
+```
+
+The script only ever asks the binary, so it keeps working across upgrades.
+Completion reads your module without running it: no task, no default value, and
+no environment is ever evaluated to answer a `<TAB>`.
+
+</details>
+
 ### Why Lask
 
 - **The feedback loop stays on your laptop.** The typo that used to cost a push and eight minutes of CI now underlines itself as you type: the VS Code extension talks to a language server built into the same binary, raising the same errors, with the same codes, that `lask check` would. In the terminal that check resolves names, arities, and types across every task in milliseconds — over the very definitions CI will run, with no second copy in YAML to drift out of sync.

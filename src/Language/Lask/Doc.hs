@@ -2,8 +2,8 @@
 
 -- | Documentation comments (spec 3.1): the contiguous block of
 -- comments directly above a declaration, and the tag conventions
--- (@\@param@, @\@return@, @\@example@, @\@hidden@) layered on top of
--- it. Consumed by editor integration (hover) and by CLI help
+-- (@\@param@, @\@return@, @\@example@, @\@hidden@, @\@complete@)
+-- layered on top of it. Consumed by editor integration (hover) and by CLI help
 -- (spec 11.6); documentation has no effect on the semantics.
 module Language.Lask.Doc
   ( DocComment (..),
@@ -28,12 +28,16 @@ data DocComment = DocComment
     docParams :: [(Text, Text)],
     docReturn :: Maybe Text,
     docExamples :: [Text],
+    -- | Parameter name (mapped to snake_case, spec 11.2) and the
+    -- words of its @\@complete@ tag, which say what shell completion
+    -- should offer for its value (spec 11.7).
+    docComplete :: [(Text, [Text])],
     docHidden :: Bool
   }
   deriving (Show, Eq)
 
 emptyDoc :: DocComment
-emptyDoc = DocComment Nothing Nothing [] Nothing [] False
+emptyDoc = DocComment Nothing Nothing [] Nothing [] [] False
 
 -- | The raw documentation text of the declaration starting on
 -- @declLine@: the run of comments that ends on the line immediately
@@ -101,6 +105,12 @@ parseDoc raw = foldl applyTag base (tagChunks tagLines)
         (pName, rest)
           | not (T.null pName) ->
               doc {docParams = docParams doc <> [(kebabToSnake pName, T.strip rest)]}
+        _ -> doc
+      -- Completion candidates for one parameter (spec 3.1). Never
+      -- evaluated: the words are read as written.
+      "complete" -> case T.words payload of
+        (pName : spec@(_ : _)) ->
+          doc {docComplete = docComplete doc <> [(kebabToSnake pName, spec)]}
         _ -> doc
       "return" -> doc {docReturn = nonEmpty payload}
       "example" -> case nonEmpty payload of
