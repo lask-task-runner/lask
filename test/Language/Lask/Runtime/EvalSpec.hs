@@ -176,30 +176,30 @@ spec = do
 
   describe "commands (spec 8.7, via mock runner)" $ do
     it "returns stdout for $ on success" $
-      evalsTo "f() = $ echo hi" "f" "\"hi\\n\""
+      evalsTo "f() = $[#local] echo hi" "f" "\"hi\\n\""
     it "returns the whole result for $*" $
-      evalsTo "f() = $* boom" "f" "{\"code\":7,\"stderr\":\"kaboom\",\"stdout\":\"\"}"
+      evalsTo "f() = $*[#local] boom" "f" "{\"code\":7,\"stderr\":\"kaboom\",\"stdout\":\"\"}"
     it "fails with the exit code and stderr for $ on non-zero" $
       -- The command string runs to the end of the line (spec 6.6), so
       -- the try block must span multiple lines.
       evalsTo
-        "f() = try {\n  $ boom\n} catch (e) {\n  e.message\n}"
+        "f() = try {\n  $[#local] boom\n} catch (e) {\n  e.message\n}"
         "f"
         "\"kaboom\""
     it "exposes the command exit code to catch" $
       evalsTo
-        "f() = do {\n  r = try {\n    $ boom\n  } catch (e) {\n    concat(\"code=\", \"?\")\n  }\n  r\n}"
+        "f() = do {\n  r = try {\n    $[#local] boom\n  } catch (e) {\n    concat(\"code=\", \"?\")\n  }\n  r\n}"
         "f"
         "\"code=?\""
     it "command failures carry the exit code" $
       evalsTo
-        "g(): Number = do {\n  r = $* boom\n  r.code\n}\nf() = g()"
+        "g(): Number = do {\n  r = $*[#local] boom\n  r.code\n}\nf() = g()"
         "f"
         "7"
     it "interpolates into command strings" $
-      evalsTo "n = \"world\"\nf() = $ echo hello #{n}" "f" "\"hello world\\n\""
+      evalsTo "n = \"world\"\nf() = $[#local] echo hello #{n}" "f" "\"hello world\\n\""
     it "propagates infrastructure failures" $
-      failsWith "f() = $ unreachable" "f" EIoEnvResolve
+      failsWith "f() = $[#local] unreachable" "f" EIoEnvResolve
 
   describe "async (spec 8.6)" $ do
     it "awaits spawned computations" $

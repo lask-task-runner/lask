@@ -121,7 +121,7 @@ stringLit lbl = matchTok lbl $ \t -> case t of
   _ -> Nothing
   where
     chunksOnly ps = T.concat <$> traverse chunkOf ps
-    chunkOf (Chunk c) = Just c
+    chunkOf (Chunk _ c) = Just c
     chunkOf (Interp _) = Nothing
 
 -- | Close a type argument list: @>@, or split @>>@\/@>=@ by pushing
@@ -173,7 +173,11 @@ pModule = do
 pTopLevel :: P (Decl, Bool)
 pTopLevel =
   choice
-    [ do
+    [ -- A command declaration binds no name, so it takes no visibility
+      -- marker (spec ch. 5); parsing it only here makes
+      -- @export command ...@ a syntax error.
+      (\d -> (d, False)) <$> pCommandDecl,
+      do
         s <- kw KExport
         choice [pExportFrom s, plain],
       kw KInternal *> ((\d -> (d, True)) <$> pDecl),
@@ -192,6 +196,21 @@ pTopLevel =
 
 pDecl :: P Decl
 pDecl = choice [pImport, pTypeAliasDecl, pValueOrFunction]
+
+-- | @command "go", "gofmt" on #golang:1.25@ (spec ch. 5). @on@ is a
+-- contextual keyword: nothing else may stand in its position, so it
+-- stays usable as an identifier everywhere else.
+pCommandDecl :: P Decl
+pCommandDecl = do
+  s <- kw KCommand
+  names <- sepBy1 (stringLit "command name") (sym TComma)
+  _ <- pOn
+  e <- pExpr
+  pure (Decl (s <> exprSpan e) (DCommand names e))
+  where
+    pOn = matchTok "on" $ \t -> case t of
+      TLowerId "on" -> Just ()
+      _ -> Nothing
 
 pImport :: P Decl
 pImport = do
@@ -473,12 +492,12 @@ pString = do
     TString ps -> Just (Right ps)
     _ -> Nothing
   f <- case raw of
-    Left s -> pure (EString [TPChunk s])
+    Left s -> pure (EString [TPChunk sp s])
     Right ps -> EString <$> traverse convertPart ps
   pure (Expr sp f)
 
 convertPart :: StrPart -> P TextPart
-convertPart (Chunk c) = pure (TPChunk c)
+convertPart (Chunk sp c) = pure (TPChunk sp c)
 convertPart (Interp toks) = TPInterp <$> subExpr "<interpolation>" toks
 
 -- | Parse a captured nested token stream as a full expression.

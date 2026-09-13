@@ -60,6 +60,9 @@ data DeclF
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
+  | -- | @command "go", "gofmt" on #golang:1.25@ (spec 5): registers
+    -- each name as a command word of this module. Binds nothing.
+    DCommand [Spanned Text] Expr
   deriving (Show, Eq)
 
 -- | Whether a binding carries the @!!@ secret marker (spec 6.10).
@@ -143,7 +146,10 @@ data ExprF
     EEnv Text (Maybe [Arg])
   deriving (Show, Eq)
 
-data TextPart = TPChunk Text | TPInterp Expr
+-- | A piece of a string or command string. 'TPChunk' carries the
+-- source span it was lexed from, so a position inside it can be
+-- recovered by walking its text (spec 10.9 command words).
+data TextPart = TPChunk Span Text | TPInterp Expr
   deriving (Show, Eq)
 
 data Arg = Arg {argSpan :: Span, argF :: ArgF}
@@ -181,6 +187,7 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
   DFunction n ps t e ->
     DFunction n (map stripParam ps) (fmap stripSpansType t) (stripSpansExpr e)
+  DCommand ns e -> DCommand [Spanned NoSpan n | Spanned _ n <- ns] (stripSpansExpr e)
   where
     stripSpec (ImportSpec _ n a) = ImportSpec NoSpan n a
 
@@ -224,7 +231,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EEnv h as -> EEnv h (fmap (map stripArg) as)
   other -> other
   where
-    stripPart (TPChunk c) = TPChunk c
+    stripPart (TPChunk _ c) = TPChunk NoSpan c
     stripPart (TPInterp e) = TPInterp (stripSpansExpr e)
     stripArg (Arg _ (APos e)) = Arg NoSpan (APos (stripSpansExpr e))
     stripArg (Arg _ (AKw n e)) = Arg NoSpan (AKw n (stripSpansExpr e))

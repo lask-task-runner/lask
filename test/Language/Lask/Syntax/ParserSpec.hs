@@ -39,7 +39,7 @@ num :: Double -> Expr
 num = ex . ENumber . realToFrac
 
 str :: Text -> Expr
-str t = ex (EString [TPChunk t])
+str t = ex (EString [TPChunk NoSpan t])
 
 var :: Text -> Expr
 var = ex . EVar
@@ -247,7 +247,7 @@ spec = do
     it "parses string interpolation" $
       pExpr "\"v=#{x + 1}\""
         `shouldBe` Right
-          (EString [TPChunk "v=", TPInterp (ex (EBin OpAdd (var "x") (num 1)))])
+          (EString [TPChunk NoSpan "v=", TPInterp (ex (EBin OpAdd (var "x") (num 1)))])
 
     it "parses object literals" $
       pExpr "{name: \"alice\", age: 20}"
@@ -284,11 +284,12 @@ spec = do
           ( ECommand
               StreamOut
               (Just (ex (EEnv "alpine:3.12" Nothing)))
-              [TPChunk "echo ", TPInterp (var "msg")]
+              [TPChunk NoSpan "echo ", TPInterp (var "msg")]
           )
 
     it "parses stream selectors" $
-      pExpr "$* ls" `shouldBe` Right (ECommand StreamAll Nothing [TPChunk "ls"])
+      pExpr "$*[#local] ls"
+        `shouldBe` Right (ECommand StreamAll (Just (ex (EEnv "local" Nothing))) [TPChunk NoSpan "ls"])
 
   describe "do blocks and statements" $ do
     it "parses do blocks with binds and trailing expression" $
@@ -366,7 +367,7 @@ spec = do
       pModule
         ( "publish(tag: String): String = do {\n"
             <> "  if (tag == \"\") { return \"skip: no tag\" }\n"
-            <> "  r = $* ./release.sh #{tag}\n"
+            <> "  r = $*[#local] ./release.sh #{tag}\n"
             <> "  if (r.code != 0) { return r.stderr }\n"
             <> "  \"released\"\n"
             <> "}"

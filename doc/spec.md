@@ -72,6 +72,7 @@ This specification is intended to serve as the reference for implementation, ver
   - [10.6 Environment Variable Rules](#106-environment-variable-rules)
   - [10.7 Permission Boundary](#107-permission-boundary)
   - [10.8 Responsibilities for Absorbing Environment Differences](#108-responsibilities-for-absorbing-environment-differences)
+  - [10.9 Command Dispatch](#109-command-dispatch)
 - [11. CLI Specification](#11-cli-specification)
   - [11.1 Subcommands](#111-subcommands)
   - [11.2 Function Invocation](#112-function-invocation)
@@ -80,6 +81,7 @@ This specification is intended to serve as the reference for implementation, ver
   - [11.5 Dependency Management (`deps`)](#115-dependency-management-deps)
   - [11.6 Help Display (`--help`)](#116-help-display---help)
   - [11.7 Environment Materialization (`env`)](#117-environment-materialization-env)
+  - [11.8 Command Invocation (`cmd`)](#118-command-invocation-cmd)
 - [12. Observability](#12-observability)
   - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
   - [12.2 Execution Log](#122-execution-log)
@@ -314,7 +316,8 @@ Lexical rules:
 Reserved words:
 
 - The following words are reserved words and must not be used as identifiers.
-- `import`, `export`, `internal`, `from`, `as`, `type`, `do`, `async`, `await`, `if`, `else`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
+- `import`, `export`, `internal`, `from`, `as`, `type`, `command`, `do`, `async`, `await`, `if`, `else`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
+- `on` is not a reserved word. It is a contextual keyword recognized only within a command declaration (Chapter 5), where no other token may appear in its position, and remains usable as an identifier elsewhere.
 - `stdin` is not a reserved word but is a reserved identifier (9.3), and must not be declared or rebound in user code.
 
 String interpolation:
@@ -533,7 +536,7 @@ This chapter defines modules, declarations, public symbols, and imports.
 
 ```ebnf
 Module        = { TopLevelDecl } .
-TopLevelDecl  = ( ImportDecl | ExportDecl
+TopLevelDecl  = ( ImportDecl | ExportDecl | CommandDecl
                 | [ Visibility ] ( TypeAliasDecl | Declaration ) ) decl_end .
 decl_end      = newline | ";" .
 Visibility    = "export" | "internal" .
@@ -541,6 +544,9 @@ TypeAliasDecl = "type" upper_id "=" Type .
 Declaration = ValueDecl | FunctionDecl .
 ValueDecl   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 FunctionDecl = lower_id "(" [ FunctionParameterList ] ")" [ ":" Type ] "=" Expression .
+
+CommandDecl   = "command" command_names "on" Expression .
+command_names = string_lit { "," string_lit } .
 
 ImportDecl      = "import" ( NamedImports | NamespaceImport ) "from" ImportPath .
 ExportDecl      = "export" NamedImports "from" ImportPath .
@@ -560,6 +566,27 @@ Declaration termination rules:
 - The optional `!!` marker on a `ValueDecl` name declares a secret binding (6.10); it does not affect parsing of the rest of the declaration.
 - `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
+
+Command declarations:
+
+- A command declaration registers each name as a **command word**: the name of a program that the given environment provides. It binds no name, and is the sole means by which a command execution expression with no environment specification obtains an environment (6.6, 10.9).
+- A name is a `string_lit` containing no interpolation. The set of command words a module declares must be determinable without evaluating it, for the same reason 10.2 requires literal `dockerfile` and `context` arguments.
+- A name is valid exactly when submitting it alone, as a whole command string, to the dispatch procedure of 10.9 yields exactly one candidate whose text is the name itself. Otherwise it is a static error (`E-TYPE-COMMAND-NAME`). The rule is stated against the procedure so that a name that could never be recognized in a command string is rejected where it is written; `docker-compose`, `7z` and `g++` are valid, while `my prog`, `a=b`, `/usr/bin/x` and `foo*` are not.
+- The environment expression must be statically resolvable: an environment expression (6.7), or an identifier resolving to a top-level value declaration whose right-hand side is, transitively, an environment expression. Its arguments must be literals; a dynamic image reference (10.3) is not permitted here. Any other expression is a static error (`E-TYPE-COMMAND-DECL`).
+- The restriction is what makes every declared environment enumerable (11.4), pinnable (10.3), and resolvable by `cmd` (11.8) without evaluating the module, and it is also what lets dispatch compare two environments for structural equality (10.9).
+- `#local` is permitted, and is how a module states which programs it runs on the host.
+- A command declaration takes no visibility marker. It binds no name and does not cross module boundaries, so `export` and `internal` would qualify nothing; writing one is a syntax error.
+- The command words of a module are exactly those its own command declarations register. Importing a module introduces none, so an import never changes the meaning of a command execution expression in the importing module. A module that needs the environment as a value binds it in the ordinary way and registers commands on the binding.
+- Declaring the same name twice within one module is a static error (`E-TYPE-COMMAND-DUPLICATE`). The names occupy no namespace shared with values or types, so they cannot collide with a declaration, an import, or a type alias.
+
+```lask
+node = #node:20.20.2-alpine3.23
+
+command "go" on #golang:1.25
+command "node", "npm", "npx" on node
+command "docker-compose" on #docker("docker/compose:2.29.7")
+command "mv", "rm", "ls" on #local
+```
 
 Module loading unit:
 
@@ -1075,7 +1102,7 @@ Examples:
 build() = do {
   image = "app"
   tag = "latest"
-  $ docker build -t #{image}:#{tag} .
+  $[#local] docker build -t #{image}:#{tag} .
   "ok"
 }
 
@@ -1118,7 +1145,7 @@ Semantically it is handled by normalization to the built-in function `run_comman
 Definition as a function:
 
 - `run_command` is a core function that executes a command in the specified execution environment and returns the entire result (exit code, standard output, standard error).
-- Its signature is `run_command(cmd: String, --env: Environment = #local): CommandResult`. The execution environment is given by the keyword parameter `env`, and when unspecified it is completed with the default execution environment `#local` (10.1).
+- Its signature is `run_command(cmd: String, env: Environment): CommandResult`. The execution environment is a required positional parameter: there is no default execution environment (10.1), and a keyword parameter cannot express a required argument because 6.1 requires one to have a default value.
 - `run_command` succeeds regardless of the exit code as long as the command completes (8.7). Failures occur only for execution infrastructure faults (unresolvable environment, inability to connect, inability to launch the command, etc.).
 
 The `CommandResult` type:
@@ -1128,18 +1155,18 @@ The `CommandResult` type:
 
 Desugaring rules:
 
-- `$* cmd` is syntactic sugar for `run_command("cmd")`.
-- `$ cmd` and `$1 cmd` are syntactic sugar for the following expression (`r` is a fresh identifier that does not collide with others).
+- `$*[env] cmd` is syntactic sugar for `run_command("cmd", env)`.
+- `$[env] cmd` and `$1[env] cmd` are syntactic sugar for the following expression (`r` is a fresh identifier that does not collide with others).
 
   ```lask
   do {
-    r = run_command("cmd")
+    r = run_command("cmd", env)
     if (r.code == 0) { r.stdout } else { fail({code: r.code, message: r.stderr}) }
   }
   ```
 
-- `$2 cmd` is syntactic sugar for the expression above with its success branch replaced by `r.stderr`.
-- The environment specifications `$[env]`, `$1[env]`, `$2[env]`, and `$*[env]` pass `env = env` to the `run_command` of the respective expanded form.
+- `$2[env] cmd` is syntactic sugar for the expression above with its success branch replaced by `r.stderr`.
+- A form written without an environment specification (`$ cmd`, `$1 cmd`, `$2 cmd`, `$* cmd`) expands identically, with the environment supplied by dispatch (10.9) over the command string. When dispatch selects no environment the expression is a static error (`E-TYPE-COMMAND-NOENV`); there is no fallback.
 - Only core functions (normalization to `run_command`, `fail`, and `choose`) and a record literal appear in the expanded forms, so the behavior can never be changed by user definitions.
 - `#{e}` inside a `shell_string` is evaluated first as string interpolation, and the post-interpolation string is passed as the command body.
 
@@ -1151,7 +1178,7 @@ Lexical rules:
 - Inside the command string, the shell's `;`, quotation marks, pipes, etc. can be used without escaping.
 - `#{` starts an interpolation. To include a literal `#{`, write `\#{`. A `#` not followed by `{` is treated as an ordinary character.
 - Inside `do`, the newline that terminates a command string simultaneously serves as statement termination (6.5).
-- A command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$ git --version` is interpreted as `run_command("git --version") |> trim`.
+- A command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run_command("git --version", #local) |> trim`.
 - All tokens on the same line after a command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. To process it inside an expression, first bind it and then use it, or call `run_command` directly.
 
 Here `run_command` is a core function and must not be directly declared or overridden by user code (15.5).
@@ -1161,12 +1188,13 @@ Environment specification rules:
 - `Environment` is a basic type defined in 4.1, and the responsibilities of execution environments are defined in Chapter 10.
 - `env` is an expression of type `Environment`. It is usually constructed with an environment expression (6.7) — `#local` or `#docker(...)` (including the sugar `#image-name`) — but any expression that returns an `Environment` value (a variable reference, etc.) can be placed there.
 - If resolution of `env` fails, it is a pre-execution error.
-- The default execution environment (the environment used by `$ ...` / `run_command`) is always `#local` (10.1).
+- When an environment specification is present it is the environment, and dispatch is not performed whatever the command string contains. When it is absent the environment is the one dispatch selects (10.9), and its absence is a static error when dispatch selects none. There is no default execution environment (10.1).
+- Whitespace after `$` is not significant. The command string begins immediately after `$`, after the stream specifier, or after the closing `]`, and its leading whitespace is removed, so `$go test` and `$ go test` are the same expression. Only a stream specifier and an environment specification may follow `$` without intervening whitespace.
 - Detailed environment resolution rules and responsibilities follow Chapter 10.
 
 Typing rules:
 
-- `run_command` is typed as `Function<String, CommandResult>` (the keyword parameter `env` does not appear in the function type; 7.5).
+- `run_command` is typed as `Function<String, Environment, CommandResult>` (7.5).
 - As a result of the desugaring, the expression type of `$ ...`, `$1 ...`, and `$2 ...` is `String`, and the expression type of `$* ...` is `CommandResult`.
 - If `env` does not conform to `Environment`, it is a type error.
 - The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a type error.
@@ -1187,7 +1215,7 @@ Examples:
 
 ```lask
 show_version() = do {
-  v = $ git --version
+  v = $[#local] git --version
   v
 }
 
@@ -1198,6 +1226,10 @@ build_in_docker(env: Environment) = do {
 
 show_in_fixed_image() =
   $[#alpine:3.20] uname -a
+
+// golangci-lint is registered as a command word, so the environment is
+// supplied by dispatch (10.9).
+command "golangci-lint" on #golangci/golangci-lint:v1.64.8
 
 lint(): String = do {
   r = $* golangci-lint run
@@ -1355,16 +1387,16 @@ Examples:
 ```lask
 build(): String = do {
   out = try {
-    $ make build
+    $[#local] make build
   } catch (e) {
     if (e.code == 2) {
-      $ make clean
-      $ make build
+      $[#local] make clean
+      $[#local] make build
     } else {
       fail(e)
     }
   } finally {
-    $ rm -rf ./tmp
+    $[#local] rm -rf ./tmp
   }
   out
 }
@@ -1427,7 +1459,7 @@ deploy(
   // `secret_key` is masked in the command log below, whether it came
   // from the default expression or was supplied directly as
   // `lask run deploy --secret_key ...`.
-  $ aws configure set aws_secret_access_key #{secret_key} --region #{region}
+  $[#amazon/aws-cli:2.31.9] aws configure set aws_secret_access_key #{secret_key} --region #{region}
 }
 ```
 
@@ -1535,7 +1567,7 @@ Consistency of helper functions (normalization targets of syntactic sugar):
 - `for_each`: `Function<Array<T>, Function<T, U>, Void>`
 - `recover`: `Function<Function<T>, Function<Error, T>, T>`
 - `fail`: `Function<Error, T>`
-- `run_command`: `Function<String, CommandResult>` (with a keyword parameter `--env: Environment = #local`)
+- `run_command`: `Function<String, Environment, CommandResult>`
 
 Type variables in signatures (`T`, `U`, etc.) are instantiated and checked per call according to the built-in polymorphism rules of 4.4.
 
@@ -1558,7 +1590,8 @@ The expansion order during static verification is as follows.
 6. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
 7. Sequential-execution expansion of `do { ... }`
 8. Expansion of environment expression sugar (`#name` -> `#name()`, and `#image-name` other than environment kind names -> `#docker("image-name")`)
-9. Command sugar expansion of `$ cmd` / `$[env] cmd`
+9. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
+10. Command sugar expansion of `$ cmd` / `$[env] cmd`
 
 Type checking is performed on the core expressions after expansion. The meaning of the expansion result must be equivalent to that of the original syntax.
 
@@ -1576,6 +1609,11 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-KEYWORD`: invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5)
 - `E-TYPE-CALL`: invalid call (calling a non-function value, etc.)
 - `E-TYPE-COMMAND-ENV`: invalid command execution environment type
+- `E-TYPE-COMMAND-NOENV`: a command execution expression with no environment specification for which dispatch selects no environment (6.6, 10.9)
+- `E-TYPE-COMMAND-CONFLICT`: one command string selects two structurally different environments (10.9)
+- `E-TYPE-COMMAND-DECL`: the environment of a command declaration is not statically resolvable to an environment expression (Chapter 5)
+- `E-TYPE-COMMAND-NAME`: a command declaration names a program that could never be recognized in a command string (Chapter 5)
+- `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module (Chapter 5)
 - `E-TYPE-ENV-CONSTRUCT`: invalid environment expression (unknown environment kind, neither or both of a registry reference and a recipe, a registry reference without a tag or digest, a non-literal `dockerfile`/`context`, a recipe path escaping the module tree, a dynamic image reference in a dependency domain, or an unknown or duplicate named argument; 10.2, 10.3)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
@@ -1714,10 +1752,10 @@ Multiple `await`s on the same `h` return the same completion result.
 
 ### 8.7 Command Execution (Core Function)
 
-Evaluation of `run_command(cmd, env = ...)`:
+Evaluation of `run_command(cmd, env)`:
 
 1. Evaluate `cmd` to a string (for command sugar containing interpolation, the interpolation expressions are evaluated from left to right and the finalized string is passed).
-2. Evaluate `env`. If unspecified, it is completed with the default value `#local` (7.5).
+2. Evaluate `env`. It is always present: command sugar supplies it from the environment specification or from dispatch (6.6, 10.9), and a direct call must pass it.
 3. Resolve `env` to an execution environment (10.4).
 4. Execute the command synchronously in the resolved environment. During execution, the child process's standard output and standard error are relayed to stderr in real time according to the rules of 12.3 (the relay does not affect the evaluation result).
 5. After the command completes, construct and return a `CommandResult` value (6.6). It is a success regardless of the exit code.
@@ -1927,7 +1965,7 @@ This chapter defines the execution environments that can be specified when invok
 
 ### 10.1 The `Environment` Type and Environment Expressions
 
-`Environment` is a built-in primitive type (4.1) representing the execution-target context that `run_command` (6.6) receives as the keyword parameter `env`. `Environment` values are constructed only by evaluating an environment expression (6.7) `#environment-kind(arguments...)`.
+`Environment` is a built-in primitive type (4.1) representing the execution-target context that `run_command` (6.6) receives as its second positional argument. `Environment` values are constructed only by evaluating an environment expression (6.7) `#environment-kind(arguments...)`.
 
 Rules:
 
@@ -1936,7 +1974,9 @@ Rules:
   - `#local` (local execution)
   - `#docker(...)` (container execution, including the sugar `#image-name`)
 - The `env` argument of `run_command` must be normalized to an `Environment` value at evaluation time.
-- The default execution environment (the environment used by `$ cmd` / `run_command`; 6.6, 8.7) is always `#local`. The default execution environment must not be changed by CLI options or other external configuration. Commands to be executed anywhere other than locally must always specify the environment explicitly with `$[env]` (or the `env` argument of `run_command`).
+- There is no default execution environment. Every command execution expression determines its environment from the expression itself — from its environment specification, or by dispatch over its command string (6.6, 10.9) — and an expression that determines none is a static error (`E-TYPE-COMMAND-NOENV`). Local execution is written `#local`, like any other environment, or is registered for a program by a command declaration (Chapter 5).
+- No CLI option or other external configuration may supply, alter, or override the environment of a command.
+- The rule replaces an earlier implicit fallback to `#local`. Its purpose is that a program's dependence on the host be stated rather than assumed: under a fallback, deleting a command declaration or mistyping a program name left the command running against whatever the host happened to provide, which is the failure Lask exists to prevent.
 
 Type conformance:
 
@@ -1984,7 +2024,7 @@ Materialization:
 
 Timing:
 
-- `check`, `run`, `eval`, and `envs` must not build or pull an image. A build instruction is arbitrary code execution, and making it reachable from an implicit path would reintroduce the load-time execution that Chapter 5 otherwise excludes.
+- `check`, `run`, `eval`, `envs`, and `cmd` must not build or pull an image. A build instruction is arbitrary code execution, and making it reachable from an implicit path would reintroduce the load-time execution that Chapter 5 otherwise excludes.
 - Images are materialized only by `lask deps sync` and `lask env build` (11.5, 11.7).
 - If a required image is absent when a command is to be executed, it is an external I/O error (`E-IO-IMAGE-MISSING`). The diagnostic must name the command that materializes it.
 
@@ -2100,6 +2140,71 @@ showBuilt() =
   $[#docker(dockerfile = "infra/Dockerfile", context = ".")] pwd
 ```
 
+### 10.9 Command Dispatch
+
+Dispatch determines the environment of a command execution expression that carries no environment specification (6.6), from the programs its command string invokes. It is performed during static expansion (7.6) and never at run time.
+
+Dispatch is a lexical procedure over the command string as written. It is not an interpretation of shell syntax: beyond the structure enumerated below, no dialect-dependent construct is given meaning, and 6.6's position that the specification prescribes only the evaluation procedure of the command string is otherwise unchanged.
+
+Determinacy principle:
+
+- Dispatch decides only where the command words are determined by the text alone, and selects nothing everywhere else. It may fail to determine an environment for a command string whose programs are obvious to a reader; it must never determine one from a construct it cannot read.
+- Selecting nothing is `E-TYPE-COMMAND-NOENV` (7.7), so an incomplete analysis costs an explicit environment specification, never a command running where the author did not intend.
+
+Input:
+
+- The procedure operates on the command string before interpolation, after the lexical normalization of 6.6 (leading and trailing whitespace removed, continuation lines joined).
+- Each interpolation `#{...}` is one opaque character, belonging to no other class. A hole may expand to any text, so no analysis may look through one.
+
+Regions and segmentation:
+
+- **Quoted regions.** A `'` opens a region ending at the next `'`; a `"` opens a region ending at the next unescaped `"`. A character preceded by `\` is literal. Nothing inside a quoted region is a separator or opens a region.
+- **Nested regions.** A command substitution `$(` to its matching `)`, a backquoted substitution `` ` `` to the next `` ` ``, and a grouping `(` to its matching `)` each open a nested region. Its content is segmented by these same rules and contributes its own command words; in the enclosing text the region occupies part of one word.
+- **Separators.** Outside quoted and nested regions, `&&`, `||`, `|`, `;`, `&`, and a newline are separators, matched longest-first. The text between two separators, before the first, or after the last, is a **segment**.
+- If a quoted or nested region is not closed before the end of the string, the command string is not analysable: dispatch selects nothing, and the diagnostic must state that the string could not be segmented rather than that no command was declared.
+
+Words and command words:
+
+- A **word** is a maximal run of characters containing no whitespace that lies outside a quoted or nested region. Whitespace inside `'...'`, `"..."`, `$(...)` or `` `...` `` does not divide a word, and an interpolation hole never divides one.
+- Within a segment, leading whitespace is skipped; then zero or more **assignment words** are skipped, an assignment word being a word whose text before its first `=` is non-empty and matches `[A-Za-z_] [A-Za-z0-9_]*`; the next word, if any, is that segment's **command word**. A segment with no such word contributes nothing.
+
+Candidates:
+
+- A command word is a **candidate** when it contains no quotation character, no `\`, no interpolation hole, and no nested region, and contains no `/`. A path such as `/usr/bin/npm` is therefore never a candidate: matching is on the word as written and never on a basename.
+- No further restriction is placed on its text. Command words are declared as string literals (Chapter 5), so candidacy need not anticipate what a program may be called.
+- A candidate **matches** when its text is identical to a command word declared by the module (Chapter 5). Matching is exact; no normalization is applied. A word matching none is neutral: it neither selects nor prevents selection.
+
+Selection:
+
+- Let `E` be the sequence of `Environment` values of the matched candidates, in order of occurrence.
+- If `E` is empty, dispatch selects nothing.
+- If every element of `E` is structurally equal (8.8) to the first, dispatch selects that value.
+- Otherwise it is a static error (`E-TYPE-COMMAND-CONFLICT`), whose diagnostic must name at least two of the conflicting command words with their environments.
+- Selection is unanimity, not majority: the number of times an environment is named plays no part, and order plays none either. Two distinct declarations denoting the same environment do not conflict, because selection compares environment values and not declarations.
+- `#local` participates on equal terms. A command string invoking both a program registered on `#local` and a program registered on a container therefore conflicts, and the author states the environment explicitly. A command string is one process in one environment, so a string claiming both must say which it means.
+
+Undeterminable command words:
+
+- A command word containing an interpolation hole cannot be resolved before execution. It is not a candidate and contributes nothing; if no other candidate matches, the expression is `E-TYPE-COMMAND-NOENV`, and the diagnostic must state that the command word is not statically determinable.
+- Dispatch is never attempted at run time on the interpolated string. An environment not determined statically is neither enumerable (11.4) nor pinnable (10.3).
+
+Examples, given `command "go" on #golang:1.25`, `command "node", "npm", "npx" on #node:20.20.2-alpine3.23`, `command "python", "pip" on #python:3.12.14-alpine3.24`, and `command "ls" on #local`:
+
+| command string | command words | selection |
+| --- | --- | --- |
+| `go test -v ./...` | `go` | `#golang:1.25` |
+| `cd web && npm ci && npm test` | `cd`, `npm`, `npm` | the Node image |
+| `pip install -r req.txt && python -m unittest` | `pip`, `python` | the Python image |
+| `FOO=1 PATH=/x npm ci` | `npm` | the Node image |
+| `MSG="hello world" npm ci` | `npm` | the Node image |
+| `npm ci --prefix $(pwd)/web` | `npm`, `pwd` | the Node image |
+| `ls dist` | `ls` | `#local` |
+| `` `which go` test `` | none (the first word contains a nested region) | nothing |
+| `sudo go build` | `sudo` | nothing |
+| `env FOO=1 go test` | `env` | nothing |
+| `#{bin} -chdir=infra init` | none (undeterminable) | nothing |
+| `ls dist && npm publish` | `ls`, `npm` | `E-TYPE-COMMAND-CONFLICT` |
+
 ## 11. CLI Specification
 
 This chapter defines the external contract of the CLI.
@@ -2116,6 +2221,7 @@ The CLI must provide the following subcommands.
 - `envs`: enumerates the execution environments used by tasks and checks their accessibility (11.4).
 - `deps`: manages external dependencies — fetches and verifies them, records new entries, and reports on the dependency graph (11.5).
 - `env`: materializes and inspects the container images the resolved graph requires (11.7).
+- `cmd`: invokes a declared command (Chapter 5) in its declared environment (11.8).
 
 Basic invocation syntax:
 
@@ -2148,6 +2254,8 @@ lask deps diff <name> [<from>..<to>] [--module <path>]
 lask deps why <name> [--module <path>]
 lask env build [--module <path>]
 lask env list [--module <path>]
+lask cmd [--module <path>] <command> [args ...]
+lask cmd --list [--module <path>]
 ```
 
 Policy on environment specification:
@@ -2155,7 +2263,7 @@ Policy on environment specification:
 - Specification of the execution environment is performed only via in-language environment expressions (6.7). No option (`--env` etc.) is provided for specifying or overriding the execution environment from the CLI.
 - Consequently, all execution environment specifications pass static validation (7.5, 7.7), and unknown environment kinds never reach runtime environment resolution (10.4).
 - To switch the execution environment per invocation, receive it via a function parameter (of type `Environment`, supplied by a caller in the same project) and pass it through to the command. A dynamic image reference constructed from a `String` is permitted in the root domain only (10.3).
-- The default execution environment is always `#local` (10.1).
+- There is no default execution environment (10.1). `cmd` (11.8) is no exception: it runs a declared command in that command's declared environment, and provides no option for choosing another.
 
 ### 11.2 Function Invocation
 
@@ -2175,6 +2283,7 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 - Options of `lask` itself (`--module`, `--arg-decode`, `--format`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
 - The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
 - `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
+- For `cmd`, no token after the command name is intercepted, `--help` included: those tokens are the invoked program's own arguments (11.8). The help of the subcommand is obtained with `lask cmd --help`, with no command name.
 - `--` after the function name ends the scan for `--help`: all following tokens are passed to the function verbatim. `--help=<value>` is likewise not intercepted and binds to the parameter `help` in the ordinary way.
 
 Function-name and parameter-name mapping rules:
@@ -2230,6 +2339,7 @@ Standard input contract:
 - `run` / `eval` accept stdin.
 - `repl` uses stdin for interactive input, and therefore does not provide the `stdin` reference variable (9.2, 9.3).
 - `check` / `serve` may accept stdin, but the meaning must be defined in the subcommand specification.
+- `cmd` connects stdin to the invoked program rather than binding it as a value (11.8). It evaluates no function, so the `stdin` reference variable of 9.3 does not arise.
 
 Standard output contract:
 
@@ -2238,6 +2348,7 @@ Standard output contract:
 - `text` is human-readable display, `json` is machine-readable display, and `pretty-json` is formatted JSON display.
 - `eval` outputs the evaluation result to stdout with the specified encoding.
 - `run` does not output the evaluation result to stdout. `run` must not output anything to stdout.
+- `cmd` produces no evaluation result. Its stdout is the invoked program's stdout, passed through unchanged and never relayed (11.8), so the rule for evaluation results does not apply to it and the output of `lask cmd` can be piped.
 - The one exception is help display (11.6). When `--help` is given, no function is evaluated, so the contract for evaluation results does not apply and `run` writes the help to stdout.
 - `check` outputs diagnostic results to stdout.
 - For both `run` / `eval`, the output destination for execution logs and diagnostics is stderr (9.6, Chapter 12).
@@ -2535,6 +2646,69 @@ Exit codes:
 - `3`: a pull, digest verification, or build failure (`E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`).
 - `4`: CLI usage error.
 
+### 11.8 Command Invocation (`cmd`)
+
+`cmd` invokes a command declared by the target module (Chapter 5) in that command's declared environment, without evaluating a function.
+
+Syntax:
+
+```text
+lask cmd [--module <path>] [lask options ...] <command> [args ...]
+lask cmd --list [--module <path>]
+```
+
+Name resolution rules:
+
+- `<command>` is resolved against the command words the target module declares, by exact text. The `-` to `_` mapping of 11.2 must not be applied: this is a program name and not a function name, so `lask cmd docker-compose up` resolves the command word `docker-compose`.
+- A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --list`.
+- No option for supplying or overriding the execution environment is provided (11.1, 10.4).
+
+Argument boundary rules:
+
+- Options of `lask` itself must be placed before `<command>`, following the boundary rule of 11.2.
+- All tokens after `<command>` are passed to the program verbatim, with no interception. Unlike 11.2 there is no exception for `--help`: `lask cmd go --help` must reach the program (11.6).
+- Arguments are not decoded. `--arg-decode` (11.2) does not apply, and an argument is the string the invoking shell produced.
+
+Execution rules:
+
+- The program is executed with `<command>` as its first argument vector entry and the following tokens as the remaining entries, each preserved as one argument. No shell is created and no shell metacharacter is interpreted. This differs from a command execution expression (6.6), which passes one string to a shell inside the environment, and it is why `cmd` cannot lose or re-split an argument containing whitespace.
+- Working directory and environment variable rules are those of 10.5 and 10.6.
+- `cmd` must not pull or build an image (10.3). An absent image is `E-IO-IMAGE-MISSING`, and the diagnostic must name the subcommand that materializes it.
+- `cmd` requires a lock file covering every declared dependency, on the same terms as `run` / `eval` / `envs` (Chapter 5).
+
+Stream rules:
+
+- The program's stdin and stdout are always those of the `cmd` process. `cmd` produces no evaluation result, so its stdout belongs to the program (11.3), and `lask cmd` can therefore be piped exactly as the program it runs can.
+- When stdin, stdout and stderr are all terminals, stderr is attached to the program as well, and a terminal is allocated in the `docker` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
+- Otherwise the program's standard error is relayed as the command execution log (12.3). The relay is applied to standard error only: relaying standard output would either duplicate it or withhold it from the pipe, and interactivity and pipeability both take precedence over the completeness of the relay.
+- The start line and the exit line of 12.3 are emitted in every case, so every invocation is recorded with its environment, its argument vector and its exit status.
+- `INT` and `TERM` are forwarded to the program, and the container must be removed on exit, including on signal.
+
+Exit code rules:
+
+- The program's exit code becomes the process exit code as is, consistent with the exit code contract of 11.3 and subject to the overlap of exit codes stated there.
+- Failures before the program starts follow the existing classification: `1` for a static error, `3` for an external I/O error, `4` for a CLI usage error.
+
+Rules (`--list`):
+
+- `--list` reports every command word the target module declares: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
+- `--list` performs no network access and no build, on the same terms as `envs` (11.4).
+
+Execution example:
+
+```text
+$ lask cmd --list
+go             docker  golang:1.25                 ok
+npm            docker  node:20.20.2-alpine3.23     ok
+terraform      docker  hashicorp/terraform:1.16.2  missing (lask env build)
+mv             local                               ok
+
+$ lask cmd go test ./... > report.txt
+2026-09-12T12:56:40.217Z [#golang:1.25:1] $ go test ./...
+2026-09-12T12:56:41.002Z [#golang:1.25:1] 2| warning: unused variable
+2026-09-12T12:56:41.002Z [#golang:1.25:1] exit 0
+```
+
 ## 12. Observability
 
 This chapter defines the means of observing execution.
@@ -2581,7 +2755,8 @@ During execution of `run_command` (8.7), the implementation must relay the child
 Relay rules:
 
 - The relay is performed sequentially line by line (line buffering). Output must not be accumulated until the child process exits.
-- The targets are `run` / `eval` execution and the connection diagnostics of `envs --check` (11.4). The relayed content is identical regardless of which sugar (`$`, `$1`, `$2`, `$*`) was used for execution.
+- The targets are `run` / `eval` execution, the connection diagnostics of `envs --check` (11.4), and `cmd` (11.8). The relayed content is identical regardless of which sugar (`$`, `$1`, `$2`, `$*`) was used for execution.
+- For `cmd` (11.8), the start line and the exit line are always emitted. Standard output is never relayed, because it is the program's own output channel and is passed through unchanged; standard error is relayed as `2|` lines unless all three streams are terminals, in which case it is attached to the terminal directly, a prefixed line-buffered relay being unable to carry a prompt, a pager, or a progress display.
 - For each command execution, a 1-based sequence number (execution number) that is unique within the top-level execution is assigned. Execution numbers are not duplicated even under concurrent execution (`async`).
 - Each log line contains a timestamp and an environment summary with the execution number. The executed command is recorded only on the start line; subsequent lines are correlated by the execution number (the command is not recorded on every line).
 - The secret masking of 12.8 applies to relayed content. Output volume limits and suppression measures (rate limiting, suppression options, etc.) may be provided as implementation-defined.
@@ -2903,6 +3078,11 @@ Representative codes:
 - `E-TYPE-ARITY`
 - `E-TYPE-CALL`
 - `E-TYPE-COMMAND-ENV`
+- `E-TYPE-COMMAND-NOENV`
+- `E-TYPE-COMMAND-CONFLICT`
+- `E-TYPE-COMMAND-DECL`
+- `E-TYPE-COMMAND-NAME`
+- `E-TYPE-COMMAND-DUPLICATE`
 - `E-TYPE-ENV-CONSTRUCT`
 - `E-TYPE-ACCESS`
 - `E-TYPE-FIELD-DUPLICATE`
@@ -2973,6 +3153,11 @@ Minimum targets:
 - `E-TYPE-ARITY`
 - `E-TYPE-CALL`
 - `E-TYPE-COMMAND-ENV`
+- `E-TYPE-COMMAND-NOENV`
+- `E-TYPE-COMMAND-CONFLICT`
+- `E-TYPE-COMMAND-DECL`
+- `E-TYPE-COMMAND-NAME`
+- `E-TYPE-COMMAND-DUPLICATE`
 - `E-TYPE-ENV-CONSTRUCT`
 - `E-TYPE-ACCESS`
 - `E-TYPE-FIELD-DUPLICATE`
@@ -3149,7 +3334,7 @@ Semantics:
 
 The built-in library provides at least the following functions.
 
-- `run_command`: `Function<String, CommandResult>` (with keyword parameter `--env: Environment = #local`)
+- `run_command`: `Function<String, Environment, CommandResult>`
 
 Contract:
 
@@ -3431,7 +3616,7 @@ Examples of `do`, `if`, `for`, and `$[env] ...` are shown.
 
 ```lask
 buildAndTest(env: Environment): String = do {
-  buildOut = $ sh -lc "echo local-build"
+  buildOut = $[#local] sh -lc "echo local-build"
 
   testOut = if (length(buildOut) > 0) {
     $[env] sh -lc "echo container-test"
@@ -3478,8 +3663,8 @@ During execution, a command execution log like the following flows to stderr in 
 Corresponding examples of `async` (sugar) and `spawn`/`await` (core functions) are shown.
 
 ```lask
-fetchA(): String = $ sh -lc "echo A"
-fetchB(): String = $ sh -lc "echo B"
+fetchA(): String = $[#local] sh -lc "echo A"
+fetchB(): String = $[#local] sh -lc "echo B"
 
 mergeAB(): String = do {
   a = async fetchA()
@@ -3583,7 +3768,7 @@ release(): String = do {
       fail(e)
     }
   } finally {
-    $ rm -rf ./tmp
+    $[#local] rm -rf ./tmp
   }
   out
 }

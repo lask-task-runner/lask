@@ -27,8 +27,15 @@ node  = #node:20
 // A custom image builds from a Dockerfile and is used the same way.
 infra = #docker(dockerfile = "Dockerfile", context = ".")
 
-test_api(): String = $[go] go test ./...
-test_web(): String = $[node] npm test
+// Declare which image provides each program, and the commands below
+// name only what they run. There is no default: a command with no
+// environment is an error, never a silent fall back to the host.
+command "go" on go
+command "npm" on node
+command "terraform" on infra
+
+test_api(): String = $ go test ./...
+test_web(): String = $ npm test
 
 // Both suites run concurrently; the build and deploy follow in order.
 //
@@ -39,11 +46,11 @@ release(--dry_run = false) = do {
   web = async test_web()
   await api
   await web
-  $[go] go build
+  $ go build
   if (dry_run) {
-    $[infra] terraform plan
+    $ terraform plan
   } else {
-    $[infra] terraform apply -auto-approve
+    $ terraform apply -auto-approve
   }
 }
 ```
@@ -125,7 +132,7 @@ Here is how Lask compares to the tools it most often stands in for:
 | -------------------------------------- | :--: | :--: | :--: | :------------: |
 | Static checks before execution (`lask check`) | ✅ types, names, arity | — | syntax only | schema only |
 | Typed task arguments with defaults      | ✅ `--name: String = "World"` | — | untyped strings | untyped vars |
-| Execution environments as values (Docker) | ✅ `$[#golang:1.22]` | — | — | — |
+| Execution environments as values (Docker) | ✅ `command "go" on #golang:1.22` | — | — | — |
 | Concurrency in the language             | ✅ `async` / `await` | `-j` (per-target) | — | `deps` run in parallel |
 | Code reuse across projects              | ✅ hash-pinned module imports | `include` | `import` (local) | `includes` |
 | File-based incremental rebuilds         | — | ✅ | — | ✅ checksum / timestamp |
@@ -186,7 +193,8 @@ What is in the box, for the reader who is already convinced:
 
 - **Types** — a structural system over `Number`, `String`, `Bool`, `Array<T>`, `Map<T>`, `Record<...>`, `Function<...>`, `AsyncHandle<T>` and `Environment`, checked along with syntax and name resolution before anything executes.
 - **Control flow** — `do`, `if`/`else`, `for`, `return`, `try`/`catch`/`finally` and `async`/`await`, all normalized onto a small functional core.
-- **Commands** — `$ cmd` captures stdout, `$2 cmd` stderr, `$* cmd` the whole result. Prefix with an environment to choose where it runs: `$[#alpine:3.20] cmd` for an image, or `$[#docker(dockerfile = "...", context = ".")] cmd` to build one, with optional `memory` and `cpus` limits.
+- **Commands** — `$ cmd` captures stdout, `$2 cmd` stderr, `$* cmd` the whole result. Every command states where it runs, and there is no default: `command "go" on #golang:1.22` declares which image provides a program, and a command string naming it runs there. Write the environment at the call site instead with `$[#alpine:3.20] cmd`, or `$[#docker(dockerfile = "...", context = ".")] cmd` to build one, with optional `memory` and `cpus` limits. A command that names no environment is a static error rather than a silent fall back to the host — which is the "works on my machine" failure this tool exists to prevent.
+- **Ad-hoc runs** — `lask cmd go test ./...` runs a declared command in its declared image, as an argument vector rather than through a shell, attaching your terminal when there is one. `lask cmd --list` shows what a project declares and whether each image is present.
 - **Modules** — named and namespace imports over `./`-relative paths, `stdin` bound as a string, JSON in and out.
 - **Dependencies** — declared in `lask.json`, pinned by content hash in a committed `lask.lock.json` (`lask deps add` / `sync` / `why`). `check`, `run` and `eval` refuse a stale lock and resolve nothing it does not already pin, so execution touches no network — only a verified local cache.
 - **Observability** — trace IDs, `call`/`return`/`fail` events (`--format json`), stack traces, and exit codes fixed by the spec.
