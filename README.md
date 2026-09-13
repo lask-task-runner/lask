@@ -139,13 +139,27 @@ mv  rm  stack  uname
 $ lask completion fish > ~/.config/fish/completions/lask.fish
 ```
 
-**bash** — with the `bash-completion` package installed:
+**bash** — write the script somewhere and source it:
 
 ```bash
-$ lask completion bash > ~/.local/share/bash-completion/completions/lask
+$ mkdir -p ~/.bash_completion.d
+$ lask completion bash > ~/.bash_completion.d/lask
 ```
 
-without it, add `source <(lask completion bash)` to your `~/.bashrc` instead.
+then, in `~/.bash_profile` (macOS Terminal starts a login shell, which does not
+read `~/.bashrc`) or in `~/.bashrc` (Linux):
+
+```bash
+source ~/.bash_completion.d/lask
+```
+
+With the `bash-completion` package installed — most Linux distributions have it
+— writing the script to `~/.local/share/bash-completion/completions/lask`
+instead loads it on demand, with nothing added to your rc file. That directory
+does nothing on a system without the package, which includes a stock macOS.
+Note that `source <(lask completion bash)` cannot be used there either: the
+`source` builtin in bash 3.2, still macOS's `/bin/bash`, silently reads nothing
+from a process substitution.
 
 **zsh** — the completion system has to be switched on, which macOS does not do
 for you:
