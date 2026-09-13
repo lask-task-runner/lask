@@ -9,7 +9,7 @@ import Data.List (nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.LSP.Lask (completionAt, hoverAt, lexSemanticTokens, uriPath)
+import Language.LSP.Lask (completionAt, hoverAt, inlayHintsIn, lexSemanticTokens, semanticTokens, uriPath)
 import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.Lask (checkText)
@@ -30,6 +30,27 @@ toks src = case lexSemanticTokens "test.lask" src of
 
 hasAtom :: Text -> Atom -> Expectation
 hasAtom src atom = toks src `shouldSatisfy` elem atom
+
+-- | Semantic tokens including the layer elaboration contributes.
+semTokens :: FilePath -> Text -> IO [Atom]
+semTokens path src = do
+  r <- semanticTokens path src
+  case r of
+    Right ts ->
+      pure
+        [ (fromIntegral l, fromIntegral c, fromIntegral len, typ)
+        | SemanticTokenAbsolute l c len typ _ <- ts
+        ]
+    Left e -> error (show e)
+
+-- | (line, character, label) of every inlay hint in the document.
+hintsFor :: FilePath -> Text -> IO [(UInt, UInt, Text)]
+hintsFor path src = do
+  hs <- inlayHintsIn path src (Range (Position 0 0) (Position 1000 0))
+  pure
+    [ (l, c, lbl)
+    | InlayHint (Position l c) (InL lbl) _ _ _ _ _ _ <- hs
+    ]
 
 spec :: Spec
 spec = do
@@ -81,6 +102,32 @@ spec = do
     it "highlights the environment expression in commands" $
       -- f() = $[#alpine:3.20] ls   (env head starts at col 8, length 12)
       hasAtom "f() = $[#alpine:3.20] ls" (0, 8, 12, SemanticTokenTypes_Macro)
+
+  describe "command words (spec 10.9)" $ do
+    let src = "command \"go\" on #golang:1.25\nf() = $ go test ./...\n"
+
+    it "marks a dispatching command word as a reference, not string text" $ do
+      ts <- semTokens "test.lask" src
+      -- line 1, column 8: the `go` that carries the environment
+      ts `shouldSatisfy` elem (1, 8, 2, SemanticTokenTypes_Function)
+
+    it "leaves the rest of the command string as string text" $ do
+      ts <- semTokens "test.lask" src
+      ts `shouldSatisfy` any (\(l, c, _, typ) -> l == 1 && c >= 10 && typ == SemanticTokenTypes_String)
+
+    it "marks nothing when no word carries the environment" $ do
+      ts <- semTokens "test.lask" "f() = $[#local] go test\n"
+      let inCommand = [t | t@(l, c, _, typ) <- ts, l == 0, c > 15, typ == SemanticTokenTypes_Function]
+      inCommand `shouldBe` []
+
+  describe "inlay hints (spec 10.9)" $ do
+    it "shows the environment dispatch derived, with the word that chose it" $ do
+      hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $ go test ./...\n"
+      hs `shouldBe` [(1, 6, "#golang:1.25 (go)")]
+
+    it "shows an explicit environment with no word" $ do
+      hs <- hintsFor "test.lask" "f() = $[#local] ls\n"
+      hs `shouldBe` [(0, 6, "#local")]
 
   describe "plain tokens" $ do
     it "still maps keywords, types, numbers" $ do

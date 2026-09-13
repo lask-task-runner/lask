@@ -9,6 +9,7 @@
 -- its body).
 module Language.Lask.Elaborate
   ( CoreProgram (..),
+    CommandUse (..),
     CoreDecl (..),
     Key,
     StaticParams (..),
@@ -76,11 +77,29 @@ data CoreProgram = CoreProgram
     -- (11.8), which must resolve a command the module declares even
     -- when no task uses it.
     cpCommands :: Map FilePath (Map Text Core),
+    -- | Every command execution expression, with the environment it
+    -- resolved to and the command words that selected it. Recorded for
+    -- editor tooling: the environment dispatch derived is not present
+    -- in the text, and the words that carry it must be visible as the
+    -- references they are (spec 10.9).
+    cpCommandUses :: [CommandUse],
     -- | Name references with their types, recorded during
     -- elaboration for editor tooling (hover).
     cpHover :: [HoverInfo]
   }
   deriving (Show)
+
+-- | One command execution expression as elaboration resolved it.
+data CommandUse = CommandUse
+  { -- | Span of the whole expression, anchored at its @$@.
+    cuSpan :: Span,
+    -- | The environment, in the notation of environment expressions.
+    cuEnv :: Text,
+    -- | The command words that selected it, empty when the expression
+    -- carried an explicit environment specification.
+    cuWords :: [Spanned Text]
+  }
+  deriving (Show, Eq)
 
 -- | A resolved name occurrence: where it was written, what it is, and
 -- (for top-level targets) which declaration it refers to.
@@ -104,11 +123,29 @@ data St = St
     stAliases :: Map Key Type,
     stActive :: Set Key,
     stHover :: [HoverInfo],
+    stCommandUses :: [CommandUse],
     -- | Command tables, built once per module on first use.
     stCommands :: Map FilePath (Map Text (Span, Core))
   }
 
 type TC = StateT St (Either Diagnostic)
+
+-- | Record how one command execution expression got its environment.
+recordCommandUse :: Span -> Core -> [Spanned Text] -> TC ()
+recordCommandUse sp env ws =
+  modify (\s -> s {stCommandUses = CommandUse sp (renderEnvCore env) ws : stCommandUses s})
+
+-- | An environment in the notation of environment expressions (6.7),
+-- for display.
+renderEnvCore :: Core -> Text
+renderEnvCore c = case coreF c of
+  CEnv "local" _ -> "#local"
+  CEnv "docker" args -> case (lookup "image" args, lookup "dockerfile" args) of
+    (Just (Core _ (CStrLit img)), _) -> "#" <> img
+    (_, Just (Core _ (CStrLit df))) -> "#docker(dockerfile = \"" <> df <> "\")"
+    _ -> "#docker(...)"
+  CEnv kind _ -> "#" <> kind
+  _ -> "?"
 
 -- | Record a resolved name occurrence for hover (editor tooling).
 recordVar :: Span -> Text -> Type -> Maybe Key -> TC ()
@@ -145,9 +182,9 @@ mismatch sp expected actual =
 
 elaborateProgram :: Program -> Map FilePath GlobalScope -> Either [Diagnostic] CoreProgram
 elaborateProgram prog scopes =
-  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s))) (St Map.empty Map.empty Set.empty [] Map.empty) of
+  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s, stCommandUses s))) (St Map.empty Map.empty Set.empty [] [] Map.empty) of
     Left d -> Left [d]
-    Right (decls, hover, commands) ->
+    Right (decls, hover, commands, uses) ->
       Right
         CoreProgram
           { cpEntry = progEntry prog,
@@ -157,6 +194,7 @@ elaborateProgram prog scopes =
               maybe Set.empty (moduleInternal . lmModule) $
                 Map.lookup (progEntry prog) (progModules prog),
             cpCommands = Map.map (Map.map snd) commands,
+            cpCommandUses = uses,
             cpHover = hover
           }
   where
@@ -1048,14 +1086,15 @@ elabCommand ::
   TC (Core, Type)
 elabCommand ctx path locals sp stream mEnv parts = do
   (cmdCore, _) <- elabString ctx path locals sp parts
-  envCore <- case mEnv of
+  (envCore, viaWords) <- case mEnv of
     Just envExpr -> do
       (c, t) <- infer ctx path locals envExpr
       unless (conformsTo t TyEnvironment) $
         abort . withExpectedActual "Environment" (renderType t) $
           diag ETypeCommandEnv (exprSpan envExpr) "command environment must be an Environment"
-      pure c
+      pure (c, [])
     Nothing -> dispatchEnv ctx path sp parts
+  recordCommandUse sp envCore viaWords
   let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore, envCore] [])
   case stream of
     StreamAll -> pure (call, commandResultType)
@@ -1161,8 +1200,9 @@ buildCommandTable ctx path = foldM addDecl Map.empty (moduleCommandDecls ctx pat
       pure (Map.insert n (nameSp, env) tbl)
 
 -- | The environment of a command execution expression that carries no
--- environment specification (spec 10.9).
-dispatchEnv :: Ctx -> FilePath -> Span -> [TextPart] -> TC Core
+-- environment specification, with the command words that selected it
+-- (spec 10.9).
+dispatchEnv :: Ctx -> FilePath -> Span -> [TextPart] -> TC (Core, [Spanned Text])
 dispatchEnv ctx path sp parts = do
   tbl <- commandTable ctx path
   case commandWords parts of
@@ -1170,14 +1210,14 @@ dispatchEnv ctx path sp parts = do
       abort . diag ETypeCommandNoEnv sp $
         "the command string could not be segmented (" <> why <> "), so no command word could be read; "
           <> "give the environment explicitly with $[...]"
-    Analysed ws -> case [(cwText w, env) | w <- ws, cwCandidate w, Just (_, env) <- [Map.lookup (cwText w) tbl]] of
+    Analysed ws -> case [(w, env) | w <- ws, cwCandidate w, Just (_, env) <- [Map.lookup (cwText w) tbl]] of
       [] -> abort (diag ETypeCommandNoEnv sp (noneMessage ws))
-      ((n0, env0) : more) -> case [n | (n, env) <- more, envKey env /= envKey env0] of
-        [] -> pure env0
+      matched@((w0, env0) : more) -> case [cwText w | (w, env) <- more, envKey env /= envKey env0] of
+        [] -> pure (env0, [Spanned (cwSpan w) (cwText w) | (w, _) <- matched])
         (n1 : _) ->
           abort . diag ETypeCommandConflict sp $
             "this command runs both '"
-              <> n0
+              <> cwText w0
               <> "' ("
               <> envKey env0
               <> ") and '"
