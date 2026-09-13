@@ -94,11 +94,14 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["cmd", "false"] ""
         resExit r `shouldBe` 1
 
+    -- printf takes its format first, so every implementation treats a
+    -- following --help as an operand; echo does not, and GNU's acts on
+    -- it. The point is that lask passed the token on either way.
     it "does not intercept --help after the command name" $ \lask ->
       withProject proj $ \dir -> do
-        r <- runLask lask dir ["cmd", "echo", "--help"] ""
+        r <- runLask lask dir ["cmd", "printf", "%s", "--help"] ""
         resExit r `shouldBe` 0
-        resOut r `shouldBe` "--help\n"
+        resOut r `shouldBe` "--help"
 
     it "reports an unknown command as a usage error (exit 4)" $ \lask ->
       withProject proj $ \dir -> do
