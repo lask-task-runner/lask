@@ -72,7 +72,7 @@ import Language.Lask.Deps.File (DepsFile (..), defaultDepsFileName, parseDepsFil
 import Language.Lask.Doc (DocComment (..), docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Lexer (lexTokensWithComments)
 import Language.Lask.Lexer.Token (Spanned (..))
-import Language.Lask.Span (Position (..), Span (..))
+import Language.Lask.Span (Position (..), Span (..), spanText)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Parser (parseModule)
 import Language.Lask.Utils (kebabToSnake)
@@ -193,6 +193,18 @@ complete r ws = case classify ws of
           [ Candidate (shellName s) (Just (shellDesc s))
           | s <- [Bash, Zsh, Fish],
             matches pfx (shellName s)
+          ]
+      )
+  PCommandWord modPath pfx -> do
+    idx <- loadIndex r modPath
+    pure
+      ( noFiles
+          [ Candidate w env
+          | (w, env) <- ciCommands idx,
+            -- Spec 11.8: a command word is a program name, matched by
+            -- exact text. The kebab mapping of 11.2 must not apply, or
+            -- `docker-compose` would resolve to `docker_compose`.
+            pfx `T.isPrefixOf` w
           ]
       )
   PDepName modPath pfx -> do
@@ -439,6 +451,8 @@ data Plan
   | PFnValue FilePath Text Text Text Text
   | -- | The nth positional argument of a function is being typed.
     PFnArg FilePath Text Int
+  | -- | A command word declared by the module (spec 11.8).
+    PCommandWord FilePath Text
   | PDepName FilePath Text
   | PShellName Text
   | -- | A name the user invents (@deps add NAME@).
@@ -477,7 +491,19 @@ data Opt = Opt
   }
   deriving (Show, Eq)
 
-data PosSpec = PosFunction | PosDepName | PosShell | PosFree
+data PosSpec = PosFunction | PosCommandWord | PosDepName | PosShell | PosFree
+  deriving (Show, Eq)
+
+-- | What a subcommand does with the tokens after its positional.
+data Boundary
+  = -- | Ordinary parsing continues (@envs@).
+    NoBoundary
+  | -- | They are the function's arguments (spec 11.2): lask's options
+    -- give way to the function's keyword parameters.
+    FunctionArgs
+  | -- | They belong to a program lask only launches (spec 11.8):
+    -- nothing is intercepted, so nothing is completed either.
+    ProgramArgs
   deriving (Show, Eq)
 
 data Cmd = Cmd
@@ -486,9 +512,7 @@ data Cmd = Cmd
     cmdSubs :: [Cmd],
     cmdOpts :: [Opt],
     cmdPos :: [PosSpec],
-    -- | @run@ and @eval@: past the function name, spec 11.2 hands
-    -- every token to the function.
-    cmdBoundary :: Bool
+    cmdBoundary :: Boundary
   }
 
 switchOpt :: Text -> Text -> Opt
@@ -512,7 +536,7 @@ commonOpts =
   ]
 
 plain :: Text -> Text -> [Opt] -> Cmd
-plain n h opts = Cmd n h [] (opts <> [helpOpt]) [] False
+plain n h opts = Cmd n h [] (opts <> [helpOpt]) [] NoBoundary
 
 -- | The CLI surface of spec 11.1, as data. It mirrors
 -- "Command.Lask.Options"; the end-to-end tests compare the two so
@@ -527,8 +551,14 @@ rootCommands =
     (plain "envs" "List and check environments" (commonOpts <> [switchOpt "check" "Check accessibility of each environment"]))
       { cmdPos = [PosFunction]
       },
-    Cmd "deps" "Manage external dependencies" depsSubs [helpOpt] [] False,
-    Cmd "env" "Materialize and inspect container images" envSubs [helpOpt] [] False,
+    Cmd "deps" "Manage external dependencies" depsSubs [helpOpt] [] NoBoundary,
+    Cmd "env" "Materialize and inspect container images" envSubs [helpOpt] [] NoBoundary,
+    (plain "cmd" "Run a declared command in its declared environment" (commonOpts <> [switchOpt "list" "List the commands the module declares"]))
+      { cmdPos = [PosCommandWord],
+        -- Spec 11.8: every token after the command word reaches the
+        -- program verbatim, @--help@ included.
+        cmdBoundary = ProgramArgs
+      },
     plain "version" "Print the lask version" [],
     (plain "completion" "Print the shell completion script" []) {cmdPos = [PosShell]}
   ]
@@ -540,7 +570,7 @@ rootCommands =
           cmdSubs = [],
           cmdOpts = commonOpts <> runOpts,
           cmdPos = [PosFunction],
-          cmdBoundary = True
+          cmdBoundary = FunctionArgs
         }
 
     runOpts =
@@ -608,7 +638,10 @@ data St = St
     stFnPos :: Int,
     -- | A keyword parameter whose value is the word under the cursor.
     stPendingFn :: Maybe Text,
-    stAfterSep :: Bool
+    stAfterSep :: Bool,
+    -- | Everything from here on belongs to a program lask only
+    -- launches (spec 11.8).
+    stOpaque :: Bool
   }
 
 -- | Where the request is, in the grammar above.
@@ -633,7 +666,8 @@ initialSt =
       stFnUsed = [],
       stFnPos = 0,
       stPendingFn = Nothing,
-      stAfterSep = False
+      stAfterSep = False,
+      stOpaque = False
     }
 
 cmdSummary :: Cmd -> (Text, Text)
@@ -641,6 +675,7 @@ cmdSummary c = (cmdName c, cmdHelp c)
 
 walk :: St -> [Text] -> Text -> Plan
 walk st [] cur = atCursor st cur
+walk st (_ : rest) cur | stOpaque st = walk st rest cur
 walk st (w : rest) cur = case stFn st of
   Just _ -> walk (inFunctionArgs st w) rest cur
   Nothing -> case optWord w of
@@ -704,9 +739,9 @@ matchCommand st w = case [c | c <- stCmds st, cmdName c == w] of
   [] -> Nothing
 
 consumePositional :: St -> Text -> St
-consumePositional st w = case currentPos st of
-  Just PosFunction
-    | maybe False cmdBoundary (stCmd st) -> st {stFn = Just (kebabToSnake w), stPending = Nothing}
+consumePositional st w = case (currentPos st, maybe NoBoundary cmdBoundary (stCmd st)) of
+  (Just PosFunction, FunctionArgs) -> st {stFn = Just (kebabToSnake w), stPending = Nothing}
+  (Just PosCommandWord, ProgramArgs) -> st {stOpaque = True, stPending = Nothing}
   _ -> st {stPos = stPos st + 1, stPending = Nothing}
 
 currentPos :: St -> Maybe PosSpec
@@ -749,6 +784,7 @@ lookupOpt opts name =
 -- | The word under the cursor decides which position the request is
 -- in.
 atCursor :: St -> Text -> Plan
+atCursor st _ | stOpaque st = PNothing
 atCursor st cur = case stFn st of
   Just fn
     | stAfterSep st -> PNothing
@@ -769,6 +805,7 @@ atCursor st cur = case stFn st of
         | not (null (stCmds st)) -> PCommands (map cmdSummary (stCmds st)) cur
         | otherwise -> case currentPos st of
             Just PosFunction -> PFunctionName (stModule st) cur
+            Just PosCommandWord -> PCommandWord (stModule st) cur
             Just PosDepName -> PDepName (stModule st) cur
             Just PosShell -> PShellName cur
             Just PosFree -> PFree
@@ -778,6 +815,9 @@ atCursor st cur = case stFn st of
 
 data CompleteIndex = CompleteIndex
   { ciDecls :: [IndexDecl],
+    -- | Command words (spec 5) with the source text of the
+    -- environment they were declared on.
+    ciCommands :: [(Text, Maybe Text)],
     -- | Top-level map literals by binding name, for @\@complete
     -- \@keys@.
     ciMapKeys :: Map.Map Text [Text]
@@ -816,7 +856,7 @@ data ParamValues = PvSpec ValueSpec | PvKeys Text
 loadIndex :: Resolver -> FilePath -> IO CompleteIndex
 loadIndex r path = do
   txt <- resolveRead r path
-  pure (maybe (CompleteIndex [] Map.empty) (buildIndex path) txt)
+  pure (maybe (CompleteIndex [] [] Map.empty) (buildIndex path) txt)
 
 -- | The index of a module, from its source text alone.
 --
@@ -834,6 +874,7 @@ fromModule :: FilePath -> Text -> AST.Module -> CompleteIndex
 fromModule path src m =
   CompleteIndex
     { ciDecls = mapMaybe decl (AST.moduleDecls m),
+      ciCommands = concatMap commandWords (AST.moduleDecls m),
       ciMapKeys = Map.fromList (mapMaybe mapBinding (AST.moduleDecls m))
     }
   where
@@ -879,6 +920,17 @@ fromModule path src m =
     docFor d = case AST.declSpan d of
       Span (Position _ l _) _ -> maybe emptyDoc parseDoc (docBlockAbove src comments l)
       NoSpan -> emptyDoc
+
+    -- @command "go", "gofmt" on #golang:1.25@ (spec 5). The
+    -- environment is shown as it was written, never resolved.
+    commandWords d = case AST.declF d of
+      AST.DCommand names env ->
+        [(w, environmentText env) | Spanned _ w <- names]
+      _ -> []
+
+    environmentText e = case T.strip (spanText src (AST.exprSpan e)) of
+      "" -> Nothing
+      t -> Just t
 
     mapBinding d = case AST.declF d of
       AST.DValue n _ _ (AST.Expr _ (AST.EObject fields)) ->
@@ -939,8 +991,24 @@ typeText (AST.SType _ f) = case f of
 -- top-level declaration, and the keyword parameters written in its
 -- parameter list.
 scanIndex :: Text -> CompleteIndex
-scanIndex src = CompleteIndex (mapMaybe declOfLine (T.lines src)) Map.empty
+scanIndex src =
+  CompleteIndex
+    (mapMaybe declOfLine (T.lines src))
+    (concatMap commandsOfLine (T.lines src))
+    Map.empty
   where
+    -- @command "go", "gofmt" on #golang:1.25@, read as text.
+    commandsOfLine l = case T.stripPrefix "command " l of
+      Nothing -> []
+      Just rest ->
+        let (names, env) = T.breakOn " on " rest
+         in [ (w, if T.null env then Nothing else Just (T.strip (T.drop 4 env)))
+            | chunk <- T.splitOn "," names,
+              let w = T.dropAround (== '"') (T.strip chunk),
+              not (T.null w),
+              not ("\"" `T.isInfixOf` w)
+            ]
+
     declOfLine l = do
       let (name, rest) = T.span isNameChar l
           body = T.dropWhile (== ' ') rest

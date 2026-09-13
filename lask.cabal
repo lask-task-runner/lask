@@ -60,6 +60,7 @@ library
       Language.Lask.Serialize
       Language.Lask.Span
       Language.Lask.Syntax.AST
+      Language.Lask.Syntax.CommandWords
       Language.Lask.Syntax.Parser
       Language.Lask.Syntax.Scope
       Language.Lask.Syntax.TokenStream
@@ -157,6 +158,7 @@ test-suite lask-test
       Language.Lask.Runtime.EnvironmentSpec
       Language.Lask.Runtime.EvalSpec
       Language.Lask.Runtime.SecretsSpec
+      Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
       Language.LSP.LaskSpec
       Paths_lask

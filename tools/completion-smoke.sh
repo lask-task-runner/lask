@@ -46,6 +46,8 @@ DRIVE
   expect_in "completes function names" "doctest" "$out"
   out=$(cd "$ROOT" && PATH="$(dirname "$LASK"):$PATH" bash --norc "$TMP/bash-drive.sh" "$TMP/lask.bash" lask run install -- 2>&1)
   expect_in "completes keyword parameters" "--output" "$out"
+  out=$(cd "$ROOT" && PATH="$(dirname "$LASK"):$PATH" bash --norc "$TMP/bash-drive.sh" "$TMP/lask.bash" lask cmd "" 2>&1)
+  expect_in "completes command words" "uname" "$out"
   # bash splits --opt=value at the '='; the script has to put it back.
   out=$(cd "$ROOT" && PATH="$(dirname "$LASK"):$PATH" bash --norc "$TMP/bash-drive.sh" "$TMP/lask.bash" lask check --module = ma 2>&1)
   expect_in "rejoins --opt=value" "main.lask" "$out"
@@ -71,6 +73,8 @@ DRIVE
   expect_in "completes function names with descriptions" "doctest:Run the doctests" "$out"
   out=$(cd "$ROOT" && PATH="$(dirname "$LASK"):$PATH" zsh -f "$TMP/zsh-drive.zsh" "$TMP/_lask" run install -- 2>&1)
   expect_in "completes keyword parameters" "--output" "$out"
+  out=$(cd "$ROOT" && PATH="$(dirname "$LASK"):$PATH" zsh -f "$TMP/zsh-drive.zsh" "$TMP/_lask" cmd "" 2>&1)
+  expect_in "completes command words" "uname" "$out"
   out=$(cd "$ROOT" && PATH="$(dirname "$LASK"):$PATH" zsh -f "$TMP/zsh-drive.zsh" "$TMP/_lask" run install "" 2>&1)
   expect_in "falls back to files where nothing is known" "FILES" "$out"
 else
@@ -87,6 +91,9 @@ if command -v fish >/dev/null; then
   out=$(cd "$ROOT" && PATH="$(dirname "$LASK"):$PATH" fish --no-config \
           -c "source $TMP/lask.fish; complete -C'lask run install --'" 2>&1)
   expect_in "completes keyword parameters" "--output" "$out"
+  out=$(cd "$ROOT" && PATH="$(dirname "$LASK"):$PATH" fish --no-config \
+          -c "source $TMP/lask.fish; complete -C'lask cmd '" 2>&1)
+  expect_in "completes command words" "uname" "$out"
 else
   skip "fish not installed"
 fi

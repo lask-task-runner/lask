@@ -2,6 +2,10 @@ install_path = "$HOME/.local/bin"
 
 envs: Map<Environment> = { "local": #local, "docker": #haskell:9.10.3 }
 
+// Programs this project runs on the host. Declaring them lets the
+// commands below name only what they run (spec ch. 5, 10.9).
+command "stack", "uname", "mv", "rm" on #local
+
 // Run the unit test suite.
 //
 // @param env  Environment to build and test in ("local" or "docker").

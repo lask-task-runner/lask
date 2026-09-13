@@ -24,11 +24,10 @@ memResolver files =
     entriesOf d =
       let prefix = if d == "." then "" else d <> "/"
        in nub
-            [ (head parts, not (null (tail parts)))
+            [ (name, not (null deeper))
             | (p, _) <- files,
               prefix `isPrefixOf` p,
-              let parts = splitOn '/' (drop (length prefix) p),
-              not (null parts)
+              name : deeper <- [splitOn '/' (drop (length prefix) p)]
             ]
 
     splitOn c s = case break (== c) s of
@@ -66,7 +65,10 @@ buildModule =
       "packaged(--env2: Environment = #local) = $[env2] echo hi",
       "",
       "// A secret default must never be read, let alone shown.",
-      "login(--password!!: String = \"hunter2\") = $ echo #{password}"
+      "login(--password!!: String = \"hunter2\") = $ echo #{password}",
+      "",
+      "command \"go\", \"docker-compose\" on #golang:1.25",
+      "command \"mv\" on #local"
     ]
 
 project :: [(FilePath, Text)]
@@ -199,6 +201,31 @@ spec = do
     it "completes a parameter in the --out-dir form when that is what is typed" $
       valuesFor ["run", "build", "--out-d"] `shouldReturn` ["--out-dir"]
 
+  describe "command words (spec 11.8)" $ do
+    it "offers the commands the module declares, with the environment as written" $
+      describesAs ["cmd", ""]
+        `shouldReturn` [ ("go", Just "#golang:1.25"),
+                         ("docker-compose", Just "#golang:1.25"),
+                         ("mv", Just "#local")
+                       ]
+
+    it "matches a command word by exact text, without the kebab mapping" $ do
+      valuesFor ["cmd", "docker-"] `shouldReturn` ["docker-compose"]
+      valuesFor ["cmd", "docker_"] `shouldReturn` []
+
+    it "offers the subcommand's own options before the command word" $ do
+      vs <- valuesFor ["cmd", "--"]
+      vs `shouldOffer` ["--list", "--module"]
+
+    it "completes nothing at all after the command word" $ do
+      -- Spec 11.8: every token there reaches the program verbatim,
+      -- --help included, so lask has nothing to say about them.
+      afterName <- respondTo ["cmd", "go", ""]
+      resCandidates afterName `shouldBe` []
+      afterFlag <- respondTo ["cmd", "go", "test", "--"]
+      resCandidates afterFlag `shouldBe` []
+      (resDirective afterFlag .&. dirNoFileComp) `shouldBe` 0
+
   describe "parameter values" $ do
     it "completes a Bool parameter" $
       valuesFor ["run", "build", "--publish", ""] `shouldReturn` ["true", "false"]
@@ -218,8 +245,7 @@ spec = do
 
     it "names the positional being typed instead of guessing its value" $ do
       cs <- describesAs ["run", "build", ""]
-      map fst cs `shouldBe` [activeHelpMarker]
-      snd (head cs) `shouldBe` Just "target : String - Build target name."
+      cs `shouldBe` [(activeHelpMarker, Just "target : String - Build target name.")]
 
   describe "degradation (spec 11.7)" $ do
     it "still finds declaration heads and keyword parameters in a module that does not parse" $ do

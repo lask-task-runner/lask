@@ -66,9 +66,10 @@ builtinSchemes =
       ("has_key", Scheme ["T"] [TyMap (tv "T"), TyString] TyBool),
       ("keys", Scheme ["T"] [TyMap (tv "T")] (TyArray TyString)),
       ("values", Scheme ["T"] [TyMap (tv "T")] (TyArray (tv "T"))),
-      -- 15.5 command execution (keyword parameter --env is not part
-      -- of the function type, spec 6.6)
-      ("run_command", mono [TyString] commandResultType),
+      -- 15.5 command execution. The environment is positional and
+      -- required: there is no default execution environment (spec 10.1),
+      -- and a keyword parameter must have a default (spec 6.1).
+      ("run_command", mono [TyString, TyEnvironment] commandResultType),
       -- 15.6 parallel/async
       ("spawn", Scheme ["T"] [TyFun [] (tv "T")] (TyAsync (tv "T"))),
       ("all", Scheme ["T"] [TyArray (TyAsync (tv "T"))] (TyArray (tv "T"))),
