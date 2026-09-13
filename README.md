@@ -133,11 +133,40 @@ $ lask cmd <TAB>
 mv  rm  stack  uname
 ```
 
-```bash
-$ lask completion bash > /usr/local/etc/bash_completion.d/lask        # bash
-$ lask completion zsh  > "${fpath[1]}/_lask"                          # zsh
-$ lask completion fish > ~/.config/fish/completions/lask.fish         # fish
+**fish** — nothing else to do:
+
+```fish
+$ lask completion fish > ~/.config/fish/completions/lask.fish
 ```
+
+**bash** — with the `bash-completion` package installed:
+
+```bash
+$ lask completion bash > ~/.local/share/bash-completion/completions/lask
+```
+
+without it, add `source <(lask completion bash)` to your `~/.bashrc` instead.
+
+**zsh** — the completion system has to be switched on, which macOS does not do
+for you:
+
+```zsh
+$ mkdir -p ~/.zsh/completions
+$ lask completion zsh > ~/.zsh/completions/_lask
+```
+
+then, in `~/.zshrc`:
+
+```zsh
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+If `compinit` already runs in your `~/.zshrc` — every framework does it for you
+— only the `fpath` line is new, and any directory already on `$fpath` works just
+as well. `compinit` caches what it found, so after adding a file, delete
+`~/.zcompdump*` and open a new shell. If completion does nothing and
+`command not found: compdef` appears when zsh starts, `compinit` has not run.
 
 The script only ever asks the binary, so it keeps working across upgrades.
 Completion reads your module without running it: no task, no default value, and
