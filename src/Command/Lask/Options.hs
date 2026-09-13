@@ -16,6 +16,7 @@ module Command.Lask.Options
 where
 
 import Command.Lask.ArgCodec
+import Command.Lask.Complete (Shell, parseShell)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Options.Applicative
@@ -70,6 +71,7 @@ data RootCommand
   | CmdEnvBuild CommonOpts
   | CmdEnvList CommonOpts
   | CmdCmd CmdOpts
+  | CmdCompletion Shell
   | CmdVersion
 
 -- | The source of a @deps add@ entry (spec 11.5).
@@ -193,6 +195,12 @@ pRootCommand =
           ( info
               (CmdCmd <$> pCmdOpts <**> helper)
               (progDesc "Run a declared command in its declared environment" <> noIntersperse)
+          )
+        <> command
+          "completion"
+          ( withHelp
+              (CmdCompletion <$> argument (maybeReader parseShell) (metavar "bash|zsh|fish"))
+              (progDesc "Print the shell completion script")
           )
         <> command "version" (withHelp (pure CmdVersion) (progDesc "Print the lask version"))
     )

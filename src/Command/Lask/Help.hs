@@ -18,6 +18,10 @@ module Command.Lask.Help
     renderHelpJson,
     renderListText,
     renderListJson,
+
+    -- * Declaration shape, shared with shell completion (spec 11.7)
+    declParams,
+    isFunctionDecl,
   )
 where
 

@@ -44,3 +44,12 @@ jobs:
 
       - name: Run doctests
         run: stack exec doctest app src
+
+      # The generated completion scripts are shell code, so the only
+      # place their quoting and word splitting can be checked is a
+      # shell. A shell that is missing is skipped, not failed.
+      - name: Install shells for the completion smoke test
+        run: sudo apt-get update -qq && sudo apt-get install -y zsh fish
+
+      - name: Shell completion smoke test
+        run: tools/completion-smoke.sh "$(stack path --local-install-root)/bin/lask"

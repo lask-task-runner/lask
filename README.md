@@ -115,6 +115,79 @@ Verify with `lask --help`. Archives for every platform are on the
 [latest release](https://github.com/lask-task-runner/lask/releases/latest); APT and
 Chocolatey support is planned.
 
+<details>
+<summary><b>Shell completion</b> &middot; bash, zsh, fish</summary>
+
+Completion knows your module, not just the CLI: it completes the functions the
+repository you are standing in defines, each function's keyword parameters, and
+the commands it declares.
+
+```bash
+$ lask run <TAB>
+build_on_docker  doctest  install  test  uninstall  unittest
+$ lask run install --<TAB>
+--output  --env  --help
+$ lask run install --env <TAB>
+docker  local
+$ lask cmd <TAB>
+mv  rm  stack  uname
+```
+
+**fish** — nothing else to do:
+
+```fish
+$ lask completion fish > ~/.config/fish/completions/lask.fish
+```
+
+**bash** — write the script somewhere and source it:
+
+```bash
+$ mkdir -p ~/.bash_completion.d
+$ lask completion bash > ~/.bash_completion.d/lask
+```
+
+then, in `~/.bash_profile` (macOS Terminal starts a login shell, which does not
+read `~/.bashrc`) or in `~/.bashrc` (Linux):
+
+```bash
+source ~/.bash_completion.d/lask
+```
+
+With the `bash-completion` package installed — most Linux distributions have it
+— writing the script to `~/.local/share/bash-completion/completions/lask`
+instead loads it on demand, with nothing added to your rc file. That directory
+does nothing on a system without the package, which includes a stock macOS.
+Note that `source <(lask completion bash)` cannot be used there either: the
+`source` builtin in bash 3.2, still macOS's `/bin/bash`, silently reads nothing
+from a process substitution.
+
+**zsh** — the completion system has to be switched on, which macOS does not do
+for you:
+
+```zsh
+$ mkdir -p ~/.zsh/completions
+$ lask completion zsh > ~/.zsh/completions/_lask
+```
+
+then, in `~/.zshrc`:
+
+```zsh
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+If `compinit` already runs in your `~/.zshrc` — every framework does it for you
+— only the `fpath` line is new, and any directory already on `$fpath` works just
+as well. `compinit` caches what it found, so after adding a file, delete
+`~/.zcompdump*` and open a new shell. If completion does nothing and
+`command not found: compdef` appears when zsh starts, `compinit` has not run.
+
+The script only ever asks the binary, so it keeps working across upgrades.
+Completion reads your module without running it: no task, no default value, and
+no environment is ever evaluated to answer a `<TAB>`.
+
+</details>
+
 ### Why Lask
 
 - **The feedback loop stays on your laptop.** The typo that used to cost a push and eight minutes of CI now underlines itself as you type: the VS Code extension talks to a language server built into the same binary, raising the same errors, with the same codes, that `lask check` would. In the terminal that check resolves names, arities, and types across every task in milliseconds — over the very definitions CI will run, with no second copy in YAML to drift out of sync.
