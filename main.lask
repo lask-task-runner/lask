@@ -2,6 +2,28 @@ install_path = "$HOME/.local/bin"
 
 envs: Map<Environment> = { "local": #local, "docker": #haskell:9.10.3 }
 
+// Where each shell looks for completion scripts, and what the file has
+// to be called there.
+completion_dirs: Map<String> = {
+  "bash": "$HOME/.bash_completion.d",
+  "zsh": "$HOME/.zsh/completions",
+  "fish": "$HOME/.config/fish/completions"
+}
+
+completion_files: Map<String> = {
+  "bash": "lask",
+  "zsh": "_lask",
+  "fish": "lask.fish"
+}
+
+// The one line each shell still needs in its startup file. Only fish
+// loads a completion script from its directory unprompted.
+completion_hints: Map<String> = {
+  "bash": "add to ~/.bash_profile (macOS) or ~/.bashrc: source $HOME/.bash_completion.d/lask",
+  "zsh": "add to ~/.zshrc, above compinit: fpath=($HOME/.zsh/completions $fpath)",
+  "fish": "nothing else to do"
+}
+
 // Programs this project runs on the host. Declaring them lets the
 // commands below name only what they run (spec ch. 5, 10.9).
 command "stack", "uname", "mv", "rm" on #local
@@ -64,8 +86,46 @@ build_on_docker(--output = install_path) = do {
   }
 }
 
+// Install the shell completion script for one shell.
+//
+// Writes the script the installed binary generates into the directory
+// that shell reads. bash and zsh load nothing from that directory on
+// their own, so the line they still need is printed at the end rather
+// than written into your startup file.
+//
+// @param shell   Shell to install the completion script for.
+// @param output  Directory the binary was installed into.
+// @complete shell @keys completion_dirs
+// @complete output @dir
+// @example lask run install_completion --shell fish
+install_completion(--shell: String = "zsh", --output = install_path): String = do {
+  if (!has_key(completion_dirs, shell)) {
+    fail({ code: 4, message: "unknown shell: #{shell}" })
+  } else {
+    dir = completion_dirs[shell]
+    $[#local] mkdir -p #{dir}
+    // Written aside and moved into place, so a failure leaves a
+    // hidden file no shell reads rather than a truncated script.
+    $[#local] #{output}/lask completion #{shell} > #{dir}/.lask-completion.tmp && \
+      mv #{dir}/.lask-completion.tmp #{dir}/#{completion_files[shell]}
+    $[#local] echo '#{completion_hints[shell]}'
+  }
+}
+
 // Remove the installed binary.
 //
 // @param output  Directory the binary was installed into.
 // @complete output @dir
 uninstall(--output = install_path) = $ rm #{output}/lask
+
+// Remove the shell completion script for one shell.
+//
+// @param shell  Shell to remove the completion script for.
+// @complete shell @keys completion_dirs
+uninstall_completion(--shell: String = "zsh"): String = do {
+  if (!has_key(completion_dirs, shell)) {
+    fail({ code: 4, message: "unknown shell: #{shell}" })
+  } else {
+    $[#local] rm -f #{completion_dirs[shell]}/#{completion_files[shell]}
+  }
+}
