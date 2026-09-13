@@ -24,10 +24,6 @@ completion_hints: Map<String> = {
   "fish": "nothing else to do"
 }
 
-// Programs this project runs on the host. Declaring them lets the
-// commands below name only what they run (spec ch. 5, 10.9).
-command "stack", "uname", "mv", "rm" on #local
-
 // Run the unit test suite.
 //
 // @param env  Environment to build and test in ("local" or "docker").
@@ -63,7 +59,7 @@ test(--env: String = "docker") = do {
 // @complete output @dir
 install(--output = install_path, --env: String = "local") = do {
   if (env == "local") {
-    $ stack --local-bin-path #{output} install
+    $[#local] stack --local-bin-path #{output} install
   } else {
     build_on_docker(output = install_path)
   }
@@ -77,12 +73,12 @@ install(--output = install_path, --env: String = "local") = do {
 // @param output  Directory the binary is moved into.
 // @complete output @dir
 build_on_docker(--output = install_path) = do {
-  host_os = $ uname -s
+  host_os = $[#local] uname -s
   if (host_os != "Linux\n") {
     fail({ code: 1, message: "install on docker is only supported on Linux." })
   } else {
     $[envs["docker"]] stack --local-bin-path . install --allow-different-user
-    $ mv ./lask #{output}/lask
+    $[#local] mv ./lask #{output}/lask
   }
 }
 
@@ -116,7 +112,7 @@ install_completion(--shell: String = "zsh", --output = install_path): String = d
 //
 // @param output  Directory the binary was installed into.
 // @complete output @dir
-uninstall(--output = install_path) = $ rm #{output}/lask
+uninstall(--output = install_path) = $[#local] rm #{output}/lask
 
 // Remove the shell completion script for one shell.
 //
