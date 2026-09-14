@@ -130,20 +130,18 @@ spec = do
       hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $* go test\n"
       hs `shouldBe` [(1, 8, "[#golang:1.25]")]
 
-    it "resolves an environment named by a binding" $ do
-      hs <- hintsFor "test.lask" "e = #golang:1.25\nf() = $[e] go test\n"
-      hs `shouldBe` [(1, 7, "[#golang:1.25]")]
-
-    it "shows nothing where the source already spells the environment out" $ do
-      hs <- hintsFor "test.lask" "f() = $[#local] ls\n"
-      hs `shouldBe` []
-
-    it "shows nothing for an environment computed at run time" $ do
-      hs <-
+    it "shows nothing where the expression carries an environment" $ do
+      -- Each of these says where it runs; a second bracket in front of
+      -- the first would only be noise.
+      byLiteral <- hintsFor "test.lask" "f() = $[#local] ls\n"
+      byLiteral `shouldBe` []
+      byBinding <- hintsFor "test.lask" "e = #golang:1.25\nf() = $[e] go test\n"
+      byBinding `shouldBe` []
+      byExpression <-
         hintsFor
           "test.lask"
           "es: Map<Environment> = {\"a\": #local}\nf(k: String) = $[es[k]] ls\n"
-      hs `shouldBe` []
+      byExpression `shouldBe` []
 
     it "anchors on the $ of a command continued across lines" $ do
       hs <-
