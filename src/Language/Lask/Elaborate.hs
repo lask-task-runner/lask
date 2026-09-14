@@ -93,8 +93,14 @@ data CoreProgram = CoreProgram
 data CommandUse = CommandUse
   { -- | Span of the whole expression, anchored at its @$@.
     cuSpan :: Span,
-    -- | The environment, in the notation of environment expressions.
-    cuEnv :: Text,
+    -- | The environment in the notation of environment expressions,
+    -- when it is determinable before execution. Nothing for an
+    -- environment computed at run time, which nothing can display.
+    cuEnv :: Maybe Text,
+    -- | Whether the site already spells the environment out. An
+    -- environment expression written at the @$@ needs no hint; a
+    -- binding referenced there, or a dispatched command, does.
+    cuEnvWritten :: Bool,
     -- | The command words that selected it, empty when the expression
     -- carried an explicit environment specification.
     cuWords :: [Spanned Text]
@@ -131,9 +137,16 @@ data St = St
 type TC = StateT St (Either Diagnostic)
 
 -- | Record how one command execution expression got its environment.
-recordCommandUse :: Span -> Core -> [Spanned Text] -> TC ()
-recordCommandUse sp env ws =
-  modify (\s -> s {stCommandUses = CommandUse sp (renderEnvCore env) ws : stCommandUses s})
+recordCommandUse :: Span -> Maybe Text -> Bool -> [Spanned Text] -> TC ()
+recordCommandUse sp env written ws =
+  modify (\s -> s {stCommandUses = CommandUse sp env written ws : stCommandUses s})
+
+-- | Whether an environment specification is an environment expression
+-- written out at the site, rather than a reference to one.
+isEnvLiteral :: Expr -> Bool
+isEnvLiteral e = case exprF e of
+  EEnv {} -> True
+  _ -> False
 
 -- | An environment in the notation of environment expressions (6.7),
 -- for display.
@@ -145,7 +158,7 @@ renderEnvCore c = case coreF c of
     (_, Just (Core _ (CStrLit df))) -> "#docker(dockerfile = \"" <> df <> "\")"
     _ -> "#docker(...)"
   CEnv kind _ -> "#" <> kind
-  _ -> "?"
+  _ -> "#?"
 
 -- | Record a resolved name occurrence for hover (editor tooling).
 recordVar :: Span -> Text -> Type -> Maybe Key -> TC ()
@@ -1086,15 +1099,18 @@ elabCommand ::
   TC (Core, Type)
 elabCommand ctx path locals sp stream mEnv parts = do
   (cmdCore, _) <- elabString ctx path locals sp parts
-  (envCore, viaWords) <- case mEnv of
+  (envCore, written, shownEnv, viaWords) <- case mEnv of
     Just envExpr -> do
       (c, t) <- infer ctx path locals envExpr
       unless (conformsTo t TyEnvironment) $
         abort . withExpectedActual "Environment" (renderType t) $
           diag ETypeCommandEnv (exprSpan envExpr) "command environment must be an Environment"
-      pure (c, [])
-    Nothing -> dispatchEnv ctx path sp parts
-  recordCommandUse sp envCore viaWords
+      shown <- fmap renderEnvCore <$> staticEnvCore ctx path envExpr
+      pure (c, isEnvLiteral envExpr, shown, [])
+    Nothing -> do
+      (c, ws) <- dispatchEnv ctx path sp parts
+      pure (c, False, Just (renderEnvCore c), ws)
+  recordCommandUse sp shownEnv written viaWords
   let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore, envCore] [])
   case stream of
     StreamAll -> pure (call, commandResultType)
@@ -1133,19 +1149,10 @@ moduleCommandDecls ctx path = case Map.lookup path (progModules (ctxProg ctx)) o
 -- for the restriction is that the environment be enumerable and
 -- pinnable without evaluating the module (spec ch. 5).
 staticEnv :: Ctx -> FilePath -> Expr -> TC (Maybe Core)
-staticEnv ctx = go Set.empty
+staticEnv ctx path e = do
+  mc <- staticEnvCore ctx path e
+  pure (mc >>= \c -> if literalEnv c then Just c else Nothing)
   where
-    go seen p ex = case exprF ex of
-      EEnv {} -> do
-        (c, _) <- infer ctx p Map.empty ex
-        pure (if literalEnv c then Just c else Nothing)
-      EVar n
-        | not (Set.member (p, n) seen),
-          Just (VTopLevel dp dn) <- lookupValueTarget ctx p n,
-          Just (Decl _ (DValue _ _ _ rhs)) <- lookupDeclAst ctx (dp, dn) ->
-            go (Set.insert (p, n) seen) dp rhs
-      _ -> pure Nothing
-
     literalEnv c = case coreF c of
       CEnv _ args -> all (literal . snd) args
       _ -> False
@@ -1155,6 +1162,23 @@ staticEnv ctx = go Set.empty
       CBool _ -> True
       CNull -> True
       _ -> False
+
+-- | Follow an environment specification to the environment expression
+-- it names, through top-level bindings. Yields Nothing for anything
+-- computed at run time.
+staticEnvCore :: Ctx -> FilePath -> Expr -> TC (Maybe Core)
+staticEnvCore ctx = go Set.empty
+  where
+    go seen p ex = case exprF ex of
+      EEnv {} -> do
+        (c, _) <- infer ctx p Map.empty ex
+        pure (Just c)
+      EVar n
+        | not (Set.member (p, n) seen),
+          Just (VTopLevel dp dn) <- lookupValueTarget ctx p n,
+          Just (Decl _ (DValue _ _ _ rhs)) <- lookupDeclAst ctx (dp, dn) ->
+            go (Set.insert (p, n) seen) dp rhs
+      _ -> pure Nothing
 
 -- | A canonical rendering of an environment value, for the structural
 -- equality selection compares (spec 10.9). Spans are not part of it,

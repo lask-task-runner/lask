@@ -121,13 +121,40 @@ spec = do
       inCommand `shouldBe` []
 
   describe "inlay hints (spec 10.9)" $ do
-    it "shows the environment dispatch derived, with the word that chose it" $ do
+    it "shows the environment dispatch derived, in the notation of the source" $ do
       hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $ go test ./...\n"
-      hs `shouldBe` [(1, 6, "#golang:1.25 (go)")]
+      -- reads as `$[#golang:1.25] go test ./...`
+      hs `shouldBe` [(1, 7, "[#golang:1.25]")]
 
-    it "shows an explicit environment with no word" $ do
+    it "places the bracket after a stream selector" $ do
+      hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $* go test\n"
+      hs `shouldBe` [(1, 8, "[#golang:1.25]")]
+
+    it "resolves an environment named by a binding" $ do
+      hs <- hintsFor "test.lask" "e = #golang:1.25\nf() = $[e] go test\n"
+      hs `shouldBe` [(1, 7, "[#golang:1.25]")]
+
+    it "shows nothing where the source already spells the environment out" $ do
       hs <- hintsFor "test.lask" "f() = $[#local] ls\n"
-      hs `shouldBe` [(0, 6, "#local")]
+      hs `shouldBe` []
+
+    it "shows nothing for an environment computed at run time" $ do
+      hs <-
+        hintsFor
+          "test.lask"
+          "es: Map<Environment> = {\"a\": #local}\nf(k: String) = $[es[k]] ls\n"
+      hs `shouldBe` []
+
+    it "anchors on the $ of a command continued across lines" $ do
+      hs <-
+        hintsFor
+          "test.lask"
+          ( "command \"npm\" on #node:20\n"
+              <> "f(u: String) = $ cd web && npm ci && \\\n"
+              <> "  VITE_API_URL=\"#{u}\" \\\n"
+              <> "  npm run build\n"
+          )
+      hs `shouldBe` [(1, 16, "[#node:20]")]
 
   describe "plain tokens" $ do
     it "still maps keywords, types, numbers" $ do

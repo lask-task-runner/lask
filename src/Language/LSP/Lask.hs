@@ -384,10 +384,15 @@ toRange S.NoSpan = Range (Position 0 0) (Position 0 0)
 
 -- Hover -----------------------------------------------------------------------
 
--- | The environment of every command execution expression, shown at
--- its @$@ (spec 10.9). Dispatch derives an environment that is not
--- written anywhere in the line, so without this a reader — or a diff —
--- cannot see where the command runs.
+-- | The environment of every command execution expression whose source
+-- does not already spell it out, shown in the notation the author would
+-- have written: @$[#node:20.20.2-alpine3.23] cd web && npm ci@, with
+-- the bracket inserted right after the @$@.
+--
+-- Dispatch derives an environment that appears nowhere in the line, so
+-- without this a reader — or a diff — cannot see where the command
+-- runs. The command word that selected it is not repeated in the label:
+-- it is already highlighted as the reference it is.
 inlayHintsIn :: FilePath -> Text -> LSP.Range -> IO [LSP.InlayHint]
 inlayHintsIn path src (LSP.Range (Position startLine _) (Position endLine _)) = do
   partial <- compileTextPartial path src
@@ -395,27 +400,36 @@ inlayHintsIn path src (LSP.Range (Position startLine _) (Position endLine _)) = 
     Nothing -> []
     Just core -> mapMaybe hint (cpCommandUses core)
   where
-    hint cu = case cuSpan cu of
-      S.Span (S.Position f l c) _
-        | normalise f == normalise path,
+    srcLines = T.lines src
+
+    -- The environment specification stands right after the `$` and its
+    -- stream selector, if any (spec 6.6).
+    headWidth l c = case charAt l (c + 1) of
+      Just ch | ch `elem` ("12*" :: String) -> 2
+      _ -> 1
+
+    charAt l c = case drop (l - 1) srcLines of
+      (x : _) | c >= 1 && c <= T.length x -> Just (T.index x (c - 1))
+      _ -> Nothing
+
+    hint cu = case (cuSpan cu, cuEnv cu) of
+      (S.Span (S.Position f l c) _, Just env)
+        | not (cuEnvWritten cu),
+          normalise f == normalise path,
           let line = fromIntegral (l - 1),
           line >= startLine && line <= endLine ->
             Just
               LSP.InlayHint
-                { LSP._position = Position line (fromIntegral (c - 1)),
-                  LSP._label = LSP.InL (label cu),
+                { LSP._position = Position line (fromIntegral (c - 1 + headWidth l c)),
+                  LSP._label = LSP.InL ("[" <> env <> "]"),
                   LSP._kind = Nothing,
                   LSP._textEdits = Nothing,
                   LSP._tooltip = Nothing,
                   LSP._paddingLeft = Nothing,
-                  LSP._paddingRight = Just True,
+                  LSP._paddingRight = Nothing,
                   LSP._data_ = Nothing
                 }
       _ -> Nothing
-
-    label cu = case cuWords cu of
-      [] -> cuEnv cu
-      (w : _) -> cuEnv cu <> " (" <> Tok.spannedValue w <> ")"
 
 -- | Hover information for a document position: the type of the name
 -- under the cursor (name references recorded during elaboration, or
