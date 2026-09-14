@@ -384,15 +384,18 @@ toRange S.NoSpan = Range (Position 0 0) (Position 0 0)
 
 -- Hover -----------------------------------------------------------------------
 
--- | The environment of every command execution expression whose source
--- does not already spell it out, shown in the notation the author would
--- have written: @$[#node:20.20.2-alpine3.23] cd web && npm ci@, with
--- the bracket inserted right after the @$@.
+-- | The environment dispatch derived, shown in the notation the author
+-- would have written: @$[#node:20.20.2-alpine3.23] cd web && npm ci@,
+-- with the bracket inserted right after the @$@.
 --
--- Dispatch derives an environment that appears nowhere in the line, so
--- without this a reader — or a diff — cannot see where the command
--- runs. The command word that selected it is not repeated in the label:
--- it is already highlighted as the reference it is.
+-- Only a command expression carrying no environment specification gets
+-- one. Dispatch derives an environment that appears nowhere in such a
+-- line, so without this a reader — or a diff — cannot see where the
+-- command runs; a line that already has @$[...]@ says where it runs,
+-- and a second bracket in front of the first would only be noise.
+--
+-- The command word that selected it is not repeated in the label: it is
+-- already highlighted as the reference it is.
 inlayHintsIn :: FilePath -> Text -> LSP.Range -> IO [LSP.InlayHint]
 inlayHintsIn path src (LSP.Range (Position startLine _) (Position endLine _)) = do
   partial <- compileTextPartial path src
@@ -414,8 +417,7 @@ inlayHintsIn path src (LSP.Range (Position startLine _) (Position endLine _)) = 
 
     hint cu = case (cuSpan cu, cuEnv cu) of
       (S.Span (S.Position f l c) _, Just env)
-        | not (cuEnvWritten cu),
-          normalise f == normalise path,
+        | normalise f == normalise path,
           let line = fromIntegral (l - 1),
           line >= startLine && line <= endLine ->
             Just
