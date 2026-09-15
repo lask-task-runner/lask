@@ -6,9 +6,7 @@
 
 Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
 
-A `deploy.sh` grows until nobody wants to touch it: no real arguments, no types, no way to exercise one step without running all of them, and a typo three functions down that surfaces only in production. It also only truly works on the machine of whoever wrote it, since it silently inherits their `jq`, their GNU `sed`, their Python. Pipeline YAML you cannot run on your laptop at all, so changing one character means push, wait, read a red log, guess again.
-
-Lask answers each of those in the file itself. A task is an ordinary function — typed keyword arguments, a return value, callable on its own — and the image it runs in is a value written beside the command, so one definition reproduces on any machine. `lask check` resolves every name, argument, and type across the whole file before a single command runs.
+Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger or Earthly too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
 
 <div align="center">
   <picture>
@@ -57,7 +55,25 @@ release(--dry_run = false) = do {
 
 </details>
 
-### Install
+Beyond the snippet above: [example/03-terraform](example/03-terraform) drives Terraform through hash-pinned shared tasks, and [example/04-webapp](example/04-webapp) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed.
+
+## Why Lask
+
+Lask makes automation *verifiable*, *portable*, *programmable*, *reusable*, *runnable* and *discoverable*.
+
+**Verifiable**. `lask check` resolves every name, argument and type before a single command runs — over the very definitions CI will execute, with no second copy in YAML to drift out of sync. The same errors appear in your editor as you type, so a typo costs seconds instead of a red CI log.
+
+**Portable**. An execution environment is a value: pin an image once with `command "go" on #golang:1.22`, and every command that names it runs there — reproducibly, on your laptop and in CI alike. A command that names no environment is a static error, never a silent fall back to the host, so the only things to install are Lask and Docker.
+
+**Programmable**. A task is an ordinary function — typed keyword arguments with defaults, a return value, callable on its own. Control flow, error handling and concurrency belong to the language rather than to shell convention. That language is a DSL and not a general-purpose one, so the same task takes fewer lines than an SDK in Go or TypeScript would, with no project to build around it.
+
+**Reusable**. Inside a project, tasks call each other like the functions they are; across projects, shared tasks live in their own repository and are imported rather than copied. Imports are pinned by content hash in a committed lock file, so every machine resolves the same code and a run reaches no network.
+
+**Runnable**. The CLI is small, and every piece of a project runs on its own: a task with `lask run`, an expression in the REPL, or a one-off command inside its own container with `lask cmd go test ./...`. Nothing has to be pushed, and nothing has to be run through a shell to try it. A task's signature is its command line, too: keyword arguments become flags, so `release(--dry_run = false)` is `lask run release --dry-run true` with nothing to wire up.
+
+**Discoverable**. A documentation comment above a task — `@param`, `@return`, `@example` — is the single source for both `--help` and the editor's hover, so prose never drifts from the code it describes. Types are already in the source, so `--help` needs no hand-written usage string: it reports the signature, the inferred return type, and every image the task will need before you run it.
+
+## Install
 
 <details open>
 <summary><b>macOS</b> &middot; Homebrew</summary>
@@ -188,38 +204,31 @@ no environment is ever evaluated to answer a `<TAB>`.
 
 </details>
 
-### Why Lask
-
-- **The feedback loop stays on your laptop.** The typo that used to cost a push and eight minutes of CI now underlines itself as you type: the VS Code extension talks to a language server built into the same binary, raising the same errors, with the same codes, that `lask check` would. In the terminal that check resolves names, arities, and types across every task in milliseconds — over the very definitions CI will run, with no second copy in YAML to drift out of sync.
-- **The environment belongs to the task, not to the machine or the runner's config.** A shell script inherits whatever happens to be installed, which is how `sed -i` works for its author and breaks for everyone on the other OS. A CI job pins its image in a file your laptop never reads, which is why "works in CI" and "works here" stay separate questions. In Lask `#golang:1.22` is a value written next to the command, and that same pin applies on every machine that runs the task.
-- **Nothing to install but Lask and Docker.** [example/04-webapp](example/04-webapp) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with no Python, no Node.js, no Terraform, and no AWS CLI on it. Each of those tools lives in an image its task names, so the whole interface is `lask run test`, `lask run deploy`, `lask run test-e2e`.
-- **Arguments and reuse without the shell tax.** Instead of `"$1"` and `set -u` discipline, tasks take keyword arguments with defaults and declared types. Instead of copying a helper script between repos — or chasing a reusable workflow through someone else's YAML — you keep shared tasks in their own repository and import it, pinned by content hash in a committed lock file. [example/03-terraform](example/03-terraform) drives Terraform that way, and `lask deps sync` is the only step that touches the network.
-
-### Comparison
+## Comparison
 
 Lask is a task runner, not a build system — and not a CI platform. It does not replace GitHub Actions, GitLab CI, or Jenkins; it replaces what your jobs run, so one definition executes on your laptop and inside whatever runner you already have. Your provider's YAML keeps the part it is genuinely good at — triggers, permissions, secrets — wrapped around a step that calls `lask run`. Switching providers then means rewriting that step, not your pipeline.
 
-Here is how Lask compares to the tools it most often stands in for:
+Here is how Lask compares to the lighter tools it replaces and to the heavier one it stops short of:
 
-|                                        | Lask | make | just | Task (go-task) |
-| -------------------------------------- | :--: | :--: | :--: | :------------: |
-| Static checks before execution (`lask check`) | ✅ types, names, arity | — | syntax only | schema only |
-| Typed task arguments with defaults      | ✅ `--name: String = "World"` | — | untyped strings | untyped vars |
-| Execution environments as values (Docker) | ✅ `command "go" on #golang:1.22` | — | — | — |
-| Concurrency in the language             | ✅ `async` / `await` | `-j` (per-target) | — | `deps` run in parallel |
-| Code reuse across projects              | ✅ hash-pinned module imports | `include` | `import` (local) | `includes` |
-| File-based incremental rebuilds         | — | ✅ | — | ✅ checksum / timestamp |
-| Config format                           | typed language | Makefile | justfile | YAML |
-| Install                                 | single binary (Homebrew / Releases) | preinstalled | single binary | single binary |
+|                                         | Lask | make | Taskfile | Dagger |
+| --------------------------------------- | :--: | :--: | :------: | :----: |
+| Static checks before execution           | ✅ types, names, arity (`lask check`) | — | schema only | via the SDK's language |
+| Typed task arguments with defaults       | ✅ `--name: String = "World"` | — | untyped vars | ✅ in the SDK's language |
+| Execution environments as values         | ✅ `command "go" on #golang:1.22` | — | — | ✅ containers in the API |
+| Concurrency                              | ✅ `async` / `await` | `-j` (per-target) | `deps` run in parallel | ✅ implicit in the DAG |
+| Code reuse across projects               | ✅ hash-pinned module imports | `include` | `includes` | ✅ Git modules |
+| Incremental rebuilds                     | — | ✅ file targets | ✅ checksum / timestamp | ✅ content-addressed cache |
+| Config format                            | typed DSL | Makefile | YAML | Go / Python / TypeScript |
+| What you install                         | single binary + Docker | preinstalled | single binary | binary + engine + SDK toolchain |
 
 **When to use something else:**
 
 - If your tasks are primarily *"rebuild only what changed"* over file targets, `make` (or a real build system like Bazel) is the right tool. Lask does not track file freshness.
-- If all you need is a flat list of one-line command aliases, `just` is simpler and that simplicity is a feature.
+- If you need artifact caching at build-system scale, or you want your pipeline written in Go or TypeScript with a full SDK behind it, Dagger goes further than Lask does — at the cost of an engine to run and an ecosystem to keep.
 
 **When Lask pays off:** tasks that take arguments, call each other, run in pinned Docker environments, or run concurrently — the point where Makefiles and YAML pipelines usually turn into untestable shell scripts. `lask check` verifies all of it before anything executes.
 
-### Example
+## Example
 
 <div align="center">
   <img alt="Terminal recording: lask check reports the module is valid, then lask run cowsay-hello Lask pulls the cowsay image, traces the command it runs inside it, and prints the cow" src="doc/assets/lask-cowsay.gif" width="831">
@@ -233,7 +242,7 @@ $ lask eval hello --name Lask
 "Hello, Lask!"
 ```
 
-`hello` is a pure function and needs nothing installed; `cowsay_hello` calls it and runs the result in a container, so that one needs Docker. Every command Lask runs is logged with the environment it ran in, which stream each line came from (`1|` stdout, `2|` stderr), and its exit status.
+`hello` is a pure function and needs nothing installed; `cowsay_hello` calls it and runs the result in a container, so that one needs Docker. Every command Lask runs is logged with the environment it ran in, the stream each line came from (`1|` stdout, `2|` stderr), and its exit status.
 
 <details>
 <summary>The recorded run, as text</summary>
@@ -254,32 +263,19 @@ $ lask run cowsay-hello Lask
 
 </details>
 
-### Editor Support
+## Editor Support
 
 Because tasks are typed, the editor can help in ways it cannot with a shell script. `lask serve` is a language server built into the same binary, so the VS Code extension gives you the errors `lask check` would report as you type, plus go-to-definition, autocomplete, hover types, and inlay hints for inferred ones.
 
 Install the [Lask extension from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ToruIkeda.vscode-lask), or search for "Lask" in VS Code.
 
-### Features
-
-What is in the box, for the reader who is already convinced:
-
-- **Types** — a structural system over `Number`, `String`, `Bool`, `Array<T>`, `Map<T>`, `Record<...>`, `Function<...>`, `AsyncHandle<T>` and `Environment`, checked along with syntax and name resolution before anything executes.
-- **Control flow** — `do`, `if`/`else`, `for`, `return`, `try`/`catch`/`finally` and `async`/`await`, all normalized onto a small functional core.
-- **Commands** — `$ cmd` captures stdout, `$2 cmd` stderr, `$* cmd` the whole result. Every command states where it runs, and there is no default: `command "go" on #golang:1.22` declares which image provides a program, and a command string naming it runs there. Write the environment at the call site instead with `$[#alpine:3.20] cmd`, or `$[#docker(dockerfile = "...", context = ".")] cmd` to build one, with optional `memory` and `cpus` limits. A command that names no environment is a static error rather than a silent fall back to the host — which is the "works on my machine" failure this tool exists to prevent.
-- **Ad-hoc runs** — `lask cmd go test ./...` runs a declared command in its declared image, as an argument vector rather than through a shell, attaching your terminal when there is one. `lask cmd --list` shows what a project declares and whether each image is present.
-- **Modules** — named and namespace imports over `./`-relative paths, `stdin` bound as a string, JSON in and out.
-- **Dependencies** — declared in `lask.json`, pinned by content hash in a committed `lask.lock.json` (`lask deps add` / `sync` / `why`). `check`, `run` and `eval` refuse a stale lock and resolve nothing it does not already pin, so execution touches no network — only a verified local cache.
-- **Observability** — trace IDs, `call`/`return`/`fail` events (`--format json`), stack traces, and exit codes fixed by the spec.
-
-Every one of these is defined normatively in [doc/spec.md](doc/spec.md).
-
-### Usage
+## Usage
 
 ```bash
 $ lask check                       # static validation
 $ lask run <function> [args...]    # execute (result not printed)
 $ lask eval <function> [args...]   # execute and print the result as JSON
+$ lask cmd <command> [args...]     # run a declared command in its declared image
 $ lask envs [--check]              # list/check referenced environments
 $ lask env build | list            # materialize / inspect container images
 $ lask deps sync                   # fetch + verify external dependencies
@@ -292,40 +288,11 @@ $ lask version                     # print the lask version
 
 Function and keyword-argument names map from kebab-case on the CLI: `lask run show-version --out-dir /tmp` calls `show_version(--out_dir ...)`.
 
-#### Every task documents itself
-
-Types are already in the source, so `--help` does not need a hand-written usage string. It reports the signature, the return type it inferred, and — because environments are values rather than strings — every image the task will need, before you run it:
-
-```bash
-$ lask run release --help
-Usage:
-  lask run release [--dry_run <Bool>]
-
-Parameters:
-  --dry_run : Bool = false
-      Run `terraform plan` instead of `terraform apply`.
-
-Returns:
-  String
-
-Environments:
-  Dockerfile  docker       recipe Dockerfile
-  docker      golang:1.22
-  docker      node:20
-
-Examples:
-  lask run release --dry-run true
-
-Defined at main.lask:14
-```
-
-The prose comes from the documentation comment above the declaration: its first paragraph is the summary, and `@param`, `@return`, and `@example` lines fill in the rest ([spec 3.1](doc/spec.md)). The same text is what the editor shows on hover.
-
-### Status
+## Status
 
 Lask is pre-1.0: features are `experimental` until the first tagged release, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released.
 
-### Development
+## Development
 
 ```bash
 $ lask run test
