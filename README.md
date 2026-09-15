@@ -27,8 +27,15 @@ node  = #node:20
 // A custom image builds from a Dockerfile and is used the same way.
 infra = #docker(dockerfile = "Dockerfile", context = ".")
 
-test_api(): String = $[go] go test ./...
-test_web(): String = $[node] npm test
+// Declare which image provides each program, and the commands below
+// name only what they run. There is no default: a command with no
+// environment is an error, never a silent fall back to the host.
+command "go" on go
+command "npm" on node
+command "terraform" on infra
+
+test_api(): String = $ go test ./...
+test_web(): String = $ npm test
 
 // Both suites run concurrently; the build and deploy follow in order.
 //
@@ -39,11 +46,11 @@ release(--dry_run = false) = do {
   web = async test_web()
   await api
   await web
-  $[go] go build
+  $ go build
   if (dry_run) {
-    $[infra] terraform plan
+    $ terraform plan
   } else {
-    $[infra] terraform apply -auto-approve
+    $ terraform apply -auto-approve
   }
 }
 ```
@@ -108,22 +115,97 @@ Verify with `lask --help`. Archives for every platform are on the
 [latest release](https://github.com/lask-task-runner/lask/releases/latest); APT and
 Chocolatey support is planned.
 
+<details>
+<summary><b>Shell completion</b> &middot; bash, zsh, fish</summary>
+
+Completion knows your module, not just the CLI: it completes the functions the
+repository you are standing in defines, each function's keyword parameters, and
+the commands it declares.
+
+```bash
+$ lask run <TAB>
+build_on_docker  doctest  install  test  uninstall  unittest
+$ lask run install --<TAB>
+--output  --env  --help
+$ lask run install --env <TAB>
+docker  local
+$ lask cmd <TAB>
+mv  rm  stack  uname
+```
+
+**fish** — nothing else to do:
+
+```fish
+$ lask completion fish > ~/.config/fish/completions/lask.fish
+```
+
+**bash** — write the script somewhere and source it:
+
+```bash
+$ mkdir -p ~/.bash_completion.d
+$ lask completion bash > ~/.bash_completion.d/lask
+```
+
+then, in `~/.bash_profile` (macOS Terminal starts a login shell, which does not
+read `~/.bashrc`) or in `~/.bashrc` (Linux):
+
+```bash
+source ~/.bash_completion.d/lask
+```
+
+With the `bash-completion` package installed — most Linux distributions have it
+— writing the script to `~/.local/share/bash-completion/completions/lask`
+instead loads it on demand, with nothing added to your rc file. That directory
+does nothing on a system without the package, which includes a stock macOS.
+Note that `source <(lask completion bash)` cannot be used there either: the
+`source` builtin in bash 3.2, still macOS's `/bin/bash`, silently reads nothing
+from a process substitution.
+
+**zsh** — the completion system has to be switched on, which macOS does not do
+for you:
+
+```zsh
+$ mkdir -p ~/.zsh/completions
+$ lask completion zsh > ~/.zsh/completions/_lask
+```
+
+then, in `~/.zshrc`:
+
+```zsh
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+If `compinit` already runs in your `~/.zshrc` — every framework does it for you
+— only the `fpath` line is new, and any directory already on `$fpath` works just
+as well. `compinit` caches what it found, so after adding a file, delete
+`~/.zcompdump*` and open a new shell. If completion does nothing and
+`command not found: compdef` appears when zsh starts, `compinit` has not run.
+
+The script only ever asks the binary, so it keeps working across upgrades.
+Completion reads your module without running it: no task, no default value, and
+no environment is ever evaluated to answer a `<TAB>`.
+
+</details>
+
 ### Why Lask
 
 - **The feedback loop stays on your laptop.** The typo that used to cost a push and eight minutes of CI now underlines itself as you type: the VS Code extension talks to a language server built into the same binary, raising the same errors, with the same codes, that `lask check` would. In the terminal that check resolves names, arities, and types across every task in milliseconds — over the very definitions CI will run, with no second copy in YAML to drift out of sync.
 - **The environment belongs to the task, not to the machine or the runner's config.** A shell script inherits whatever happens to be installed, which is how `sed -i` works for its author and breaks for everyone on the other OS. A CI job pins its image in a file your laptop never reads, which is why "works in CI" and "works here" stay separate questions. In Lask `#golang:1.22` is a value written next to the command, and that same pin applies on every machine that runs the task.
 - **Nothing to install but Lask and Docker.** [example/04-webapp](example/04-webapp) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with no Python, no Node.js, no Terraform, and no AWS CLI on it. Each of those tools lives in an image its task names, so the whole interface is `lask run test`, `lask run deploy`, `lask run test-e2e`.
-- **Arguments and reuse without the shell tax.** Instead of `"$1"` and `set -u` discipline, tasks take keyword arguments with defaults and declared types. Instead of copying a helper script between repos, you import a module pinned by content hash.
+- **Arguments and reuse without the shell tax.** Instead of `"$1"` and `set -u` discipline, tasks take keyword arguments with defaults and declared types. Instead of copying a helper script between repos — or chasing a reusable workflow through someone else's YAML — you keep shared tasks in their own repository and import it, pinned by content hash in a committed lock file. [example/03-terraform](example/03-terraform) drives Terraform that way, and `lask deps sync` is the only step that touches the network.
 
 ### Comparison
 
-Lask is a task runner, not a build system. Here is how it compares to the tools it most often replaces:
+Lask is a task runner, not a build system — and not a CI platform. It does not replace GitHub Actions, GitLab CI, or Jenkins; it replaces what your jobs run, so one definition executes on your laptop and inside whatever runner you already have. Your provider's YAML keeps the part it is genuinely good at — triggers, permissions, secrets — wrapped around a step that calls `lask run`. Switching providers then means rewriting that step, not your pipeline.
+
+Here is how Lask compares to the tools it most often stands in for:
 
 |                                        | Lask | make | just | Task (go-task) |
 | -------------------------------------- | :--: | :--: | :--: | :------------: |
 | Static checks before execution (`lask check`) | ✅ types, names, arity | — | syntax only | schema only |
 | Typed task arguments with defaults      | ✅ `--name: String = "World"` | — | untyped strings | untyped vars |
-| Execution environments as values (Docker) | ✅ `$[#golang:1.22]` | — | — | — |
+| Execution environments as values (Docker) | ✅ `command "go" on #golang:1.22` | — | — | — |
 | Concurrency in the language             | ✅ `async` / `await` | `-j` (per-target) | — | `deps` run in parallel |
 | Code reuse across projects              | ✅ hash-pinned module imports | `include` | `import` (local) | `includes` |
 | File-based incremental rebuilds         | — | ✅ | — | ✅ checksum / timestamp |
@@ -184,7 +266,8 @@ What is in the box, for the reader who is already convinced:
 
 - **Types** — a structural system over `Number`, `String`, `Bool`, `Array<T>`, `Map<T>`, `Record<...>`, `Function<...>`, `AsyncHandle<T>` and `Environment`, checked along with syntax and name resolution before anything executes.
 - **Control flow** — `do`, `if`/`else`, `for`, `return`, `try`/`catch`/`finally` and `async`/`await`, all normalized onto a small functional core.
-- **Commands** — `$ cmd` captures stdout, `$2 cmd` stderr, `$* cmd` the whole result. Prefix with an environment to choose where it runs: `$[#alpine:3.20] cmd` for an image, or `$[#docker(dockerfile = "...", context = ".")] cmd` to build one, with optional `memory` and `cpus` limits.
+- **Commands** — `$ cmd` captures stdout, `$2 cmd` stderr, `$* cmd` the whole result. Every command states where it runs, and there is no default: `command "go" on #golang:1.22` declares which image provides a program, and a command string naming it runs there. Write the environment at the call site instead with `$[#alpine:3.20] cmd`, or `$[#docker(dockerfile = "...", context = ".")] cmd` to build one, with optional `memory` and `cpus` limits. A command that names no environment is a static error rather than a silent fall back to the host — which is the "works on my machine" failure this tool exists to prevent.
+- **Ad-hoc runs** — `lask cmd go test ./...` runs a declared command in its declared image, as an argument vector rather than through a shell, attaching your terminal when there is one. `lask cmd --list` shows what a project declares and whether each image is present.
 - **Modules** — named and namespace imports over `./`-relative paths, `stdin` bound as a string, JSON in and out.
 - **Dependencies** — declared in `lask.json`, pinned by content hash in a committed `lask.lock.json` (`lask deps add` / `sync` / `why`). `check`, `run` and `eval` refuse a stale lock and resolve nothing it does not already pin, so execution touches no network — only a verified local cache.
 - **Observability** — trace IDs, `call`/`return`/`fail` events (`--format json`), stack traces, and exit codes fixed by the spec.

@@ -8,7 +8,9 @@ module Command.Lask.Entry
 where
 
 import Command.Lask.ArgCodec
-import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom, collectRecipes)
+import Command.Lask.Complete (completionScript)
+import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom, collectRecipes, envRefOfCore)
+import Language.Lask.Core.AST (Core (..), CoreF (..))
 import Command.Lask.Help
 import Command.Lask.Options
 import Control.Exception (try)
@@ -18,8 +20,8 @@ import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (atomicModifyIORef', newIORef)
-import Data.List (isPrefixOf, nub, sort)
-import Data.Maybe (isNothing, listToMaybe)
+import Data.List (nub, sort)
+import Data.Maybe (isNothing)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
 import Data.Scientific (toRealFloat)
@@ -34,7 +36,7 @@ import Language.Lask.Deps.Cache (cacheDirFor)
 import Language.Lask.Deps.Fetch (DepSource (..), fetchAndStore, resolveGitRev, syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Diagnostic (Diagnostic (..), mkDiagnostic)
+import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
 import Language.Lask.ErrorCode
@@ -71,6 +73,8 @@ runRootCommand cmd = case cmd of
   CmdDepsDiff opts name -> cmdDepsDiff opts name
   CmdEnvBuild opts -> cmdEnvBuild opts
   CmdEnvList opts -> cmdEnvList opts
+  CmdCmd cmdOpts -> cmdCmd cmdOpts
+  CmdCompletion sh -> TIO.putStr (completionScript sh)
   CmdVersion -> cmdVersion
 
 -- version ---------------------------------------------------------------------
@@ -87,7 +91,7 @@ cmdCheck opts = do
     Left ds -> do
       TIO.putStrLn (renderDiags (optJsonFormat opts) ds)
       exitWith (ExitFailure 1)
-    Right compiled -> do
+    Right _ -> do
       if optJsonFormat opts
         then TIO.putStrLn "[]"
         else putStrLn "the module is valid"
@@ -332,7 +336,6 @@ cmdEnvs envsOpts = do
   let opts = envsCommon envsOpts
   compiled <- compileOrExit opts
   let core = compiledCore compiled
-      baseDir = cpBaseDir core
   -- Without a function, the whole module; with one, only what its call
   -- graph can reach (spec 11.4).
   scope <- case envsFunction envsOpts of
@@ -435,7 +438,7 @@ cmdDepsSync opts frozen = do
       -- be fetched again, so that changing `rev` without changing
       -- `hash` is caught as E-MODULE-HASH-MISMATCH (spec 11.5).
       let declaredRef e = case e of
-            DepGit _ r -> Just r
+            DepGit _ ref -> Just ref
             DepUrl {} -> Nothing
           needsRecheck path e =
             case Map.lookup path (maybe Map.empty lockModules prior) of
@@ -686,6 +689,101 @@ cmdEnvList opts = withRecipes opts $ \baseDir recipes ->
         ok <- imageExists tag
         TIO.putStrLn (df <> "  recipe  " <> tag <> (if ok then "  present" else "  MISSING"))
 
+-- | @lask cmd@ (spec 11.8): run a declared command in its declared
+-- environment, as an argument vector rather than through a shell.
+cmdCmd :: CmdOpts -> IO ()
+cmdCmd cmdOpts = do
+  let opts = cmdCommon cmdOpts
+  compiled <- compileOrExit opts
+  let core = compiledCore compiled
+      table = Map.findWithDefault Map.empty (cpEntry core) (cpCommands core)
+  if cmdList cmdOpts
+    then listCommands opts core table
+    else case cmdName cmdOpts of
+      Nothing -> usageError opts "no command given; try 'lask cmd --list'"
+      Just name -> case Map.lookup name table of
+        Nothing ->
+          usageError opts $
+            "'" <> name <> "' is not a command of this module; try 'lask cmd --list'"
+        Just envCore -> do
+          envValue <- envValueOrExit opts envCore
+          traceId <- maybe newTraceId pure (optTraceId opts)
+          writeErr <- newLineWriter stderr
+          let sink
+                | optJsonFormat opts = jsonCommandLog traceId writeErr
+                | otherwise = textCommandLog writeErr
+          r <- runDeclaredCommand (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
+          case r of
+            -- Failures before the program starts keep the existing
+            -- classification (spec 11.8); the program's own exit code
+            -- passes through verbatim.
+            Left failure -> failureExit opts traceId failure
+            Right 0 -> exitSuccess
+            Right code -> exitWith (ExitFailure code)
+
+-- | The declared commands of the entry module, with the state of the
+-- image each needs (spec 11.8). No network access and no build.
+listCommands :: CommonOpts -> CoreProgram -> Map.Map Text Core -> IO ()
+listCommands opts core table = do
+  rows <- mapM row (Map.toList table)
+  if optJsonFormat opts
+    then
+      TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode $
+        [ A.object
+            [ (AK.fromText "name", A.String name),
+              (AK.fromText "kind", A.String (refKind ref)),
+              (AK.fromText "target", A.String (refTarget ref)),
+              (AK.fromText "present", A.Bool present)
+            ]
+        | (name, ref, present) <- rows
+        ]
+    else do
+      let width = maximum (8 : [T.length n | (n, _, _) <- rows])
+      forM_ rows $ \(name, ref, present) ->
+        TIO.putStrLn
+          ( T.justifyLeft width ' ' name
+              <> "  "
+              <> T.justifyLeft 6 ' ' (refKind ref)
+              <> "  "
+              <> refTarget ref
+              <> (if present then "" else "  MISSING (lask env build)")
+          )
+  where
+    row (name, envCore) = do
+      present <- imagePresent (cpBaseDir core) envCore
+      pure (name, envRefOfCore envCore, present)
+
+-- | Whether the image a command needs is on the target daemon. No
+-- network access and no build (spec 11.8, 10.3).
+imagePresent :: FilePath -> Core -> IO Bool
+imagePresent baseDir c = case coreF c of
+  CEnv "local" _ -> pure True
+  CEnv "docker" args -> case (lookup "image" args, lookup "dockerfile" args) of
+    (Just (Core _ (CStrLit image)), _) -> imageExists image
+    (_, Just (Core _ (CStrLit df))) -> do
+      let ctx = case lookup "context" args of
+            Just (Core _ (CStrLit x)) -> x
+            _ -> T.pack (takeDirectory (T.unpack df))
+      tagE <- recipeTag baseDir df ctx
+      either (const (pure False)) imageExists tagE
+    _ -> pure False
+  _ -> pure False
+
+-- | Evaluate a command declaration's environment core to a runtime
+-- value. The declaration form guarantees literal arguments (ch. 5), so
+-- this needs no evaluation context.
+envValueOrExit :: CommonOpts -> Core -> IO EnvValue
+envValueOrExit opts c = case coreF c of
+  CEnv kind args -> EnvValue kind . Map.fromList <$> mapM literal args
+  _ -> usageError opts "the command's environment is not a constant"
+  where
+    literal (k, v) = case coreF v of
+      CStrLit t -> pure (k, VString t)
+      CNumber n -> pure (k, VNumber n)
+      CBool b -> pure (k, VBool b)
+      CNull -> pure (k, VNull)
+      _ -> usageError opts "the command's environment is not a constant"
+
 -- | Load the target module and hand its recipe environments to the
 -- action, exiting on static errors.
 withRecipes :: CommonOpts -> (FilePath -> [(Text, Text)] -> IO ()) -> IO ()
@@ -733,11 +831,11 @@ cmdDepsDiff opts name = do
   let requested = case entry of
         DepGit _ r -> Just r
         DepUrl _ -> Nothing
-      line l r
+      diffLine l r
         | l == r = "  = " <> maybe "-" id l
         | otherwise = "  - " <> maybe "-" id l <> "\n  + " <> maybe "-" id r
   TIO.putStrLn "revision:"
-  TIO.putStrLn (line (lkRequested locked) requested)
+  TIO.putStrLn (diffLine (lkRequested locked) requested)
   TIO.putStrLn "content hash:"
   TIO.putStrLn ("  = " <> lkHash locked)
   when (lkRequested locked /= requested) $

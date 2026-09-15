@@ -162,3 +162,26 @@ spec = do
       failsWith
         [("main.lask", "type A = Array<B>\ntype B = Map<A>")]
         ETypeIllformed
+
+    it "resolves namespace-qualified type references" $
+      ok
+        [ ("main.lask", "import * as m from \"./lib.lask\"\nxs: m.Strings = [\"a\"]"),
+          ("lib.lask", "type Strings = Array<String>")
+        ]
+
+    it "reports missing namespace type aliases" $
+      failsWith
+        [ ("main.lask", "import * as m from \"./lib.lask\"\nxs: m.Missing = [\"a\"]"),
+          ("lib.lask", "type Strings = Array<String>")
+        ]
+        ENameUndefined
+
+    it "reports a qualified type reference through an unbound namespace" $
+      failsWith [("main.lask", "xs: nope.Strings = [\"a\"]")] ENameUndefined
+
+    it "rejects a qualified reference to an internal type alias" $
+      failsWith
+        [ ("main.lask", "import * as m from \"./lib.lask\"\nxs: m.Strings = [\"a\"]"),
+          ("lib.lask", "internal type Strings = Array<String>")
+        ]
+        ENameUndefined

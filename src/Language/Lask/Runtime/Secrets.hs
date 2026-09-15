@@ -27,7 +27,7 @@ module Language.Lask.Runtime.Secrets
 where
 
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (foldl', sortOn)
+import Data.List (sortOn)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T

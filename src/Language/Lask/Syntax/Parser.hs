@@ -121,7 +121,7 @@ stringLit lbl = matchTok lbl $ \t -> case t of
   _ -> Nothing
   where
     chunksOnly ps = T.concat <$> traverse chunkOf ps
-    chunkOf (Chunk c) = Just c
+    chunkOf (Chunk _ c) = Just c
     chunkOf (Interp _) = Nothing
 
 -- | Close a type argument list: @>@, or split @>>@\/@>=@ by pushing
@@ -167,48 +167,50 @@ pModule = do
       _ -> Nothing
 
 -- | One top-level declaration and whether it carries @internal@.
--- @export@ and @internal@ are contextual keywords (spec 5): they are
--- markers only at the start of a declaration and only when the next
--- token cannot continue a value or function binding. A leading word
--- that turns out to be an ordinary identifier is pushed back.
+-- @export@ and @internal@ are reserved words (spec 3.3), so a leading
+-- marker is unambiguous: no lookahead, and the marker can never be a
+-- declaration name.
 pTopLevel :: P (Decl, Bool)
-pTopLevel = do
-  lead <- peekTok
-  case lead of
-    Just t@(Spanned s (TLowerId w))
-      | w == "export" || w == "internal" -> do
-          _ <- lowerId
-          nxt <- peekTok
-          case nxt of
-            -- @export { a, b } from "path"@ (spec 5).
-            Just (Spanned _ TLBrace) | w == "export" -> do
-              _ <- sym TLBrace
-              specs <- sepBy1 pImportSpec (sym TComma)
-              _ <- sym TRBrace
-              Spanned e path <- kw KFrom *> stringLit "export path"
-              pure (Decl (s <> e) (DExportFrom specs path), False)
-            -- An ordinary declaration whose name happens to be
-            -- @export@ or @internal@.
-            Just (Spanned _ nt)
-              | nt `elem` [TAssign, TLParen, TColon] -> do
-                  pushBack t
-                  plain
-            _ -> do
-              d <- pDecl
-              pure (d, w == "internal")
-    _ -> plain
+pTopLevel =
+  choice
+    [ -- A command declaration binds no name, so it takes no visibility
+      -- marker (spec ch. 5); parsing it only here makes
+      -- @export command ...@ a syntax error.
+      (\d -> (d, False)) <$> pCommandDecl,
+      do
+        s <- kw KExport
+        choice [pExportFrom s, plain],
+      kw KInternal *> ((\d -> (d, True)) <$> pDecl),
+      plain
+    ]
   where
     plain = (\d -> (d, False)) <$> pDecl
 
--- | Return a token to the push-back buffer, undoing a lookahead that
--- consumed it.
-pushBack :: Spanned Token -> P ()
-pushBack t = do
-  pb <- lift get
-  lift (put (t : pb))
+    -- @export { a, b } from "path"@ (spec 5).
+    pExportFrom s = do
+      _ <- sym TLBrace
+      specs <- sepBy1 pImportSpec (sym TComma)
+      _ <- sym TRBrace
+      Spanned e path <- kw KFrom *> stringLit "export path"
+      pure (Decl (s <> e) (DExportFrom specs path), False)
 
 pDecl :: P Decl
 pDecl = choice [pImport, pTypeAliasDecl, pValueOrFunction]
+
+-- | @command "go", "gofmt" on #golang:1.25@ (spec ch. 5). @on@ is a
+-- contextual keyword: nothing else may stand in its position, so it
+-- stays usable as an identifier everywhere else.
+pCommandDecl :: P Decl
+pCommandDecl = do
+  s <- kw KCommand
+  names <- sepBy1 (stringLit "command name") (sym TComma)
+  _ <- pOn
+  e <- pExpr
+  pure (Decl (s <> exprSpan e) (DCommand names e))
+  where
+    pOn = matchTok "on" $ \t -> case t of
+      TLowerId "on" -> Just ()
+      _ -> Nothing
 
 pImport :: P Decl
 pImport = do
@@ -339,31 +341,42 @@ validateParamOrder = go (0 :: Int)
 -- Types -------------------------------------------------------------------------
 
 pType :: P SType
-pType = do
-  Spanned sp name <- upperId
-  case name of
-    "Any" -> pure (SType sp SAny)
-    "Number" -> pure (SType sp SNumber)
-    "String" -> pure (SType sp SString)
-    "Bool" -> pure (SType sp SBool)
-    "Null" -> pure (SType sp SNull)
-    "Void" -> pure (SType sp SVoid)
-    "Environment" -> pure (SType sp SEnvironment)
-    "Array" -> pGeneric1 sp SArray
-    "Map" -> pGeneric1 sp SMap
-    "AsyncHandle" -> pGeneric1 sp SAsyncHandle
-    "Record" -> do
-      _ <- op OpLt
-      fields <- sepBy pRecordField (sym TComma)
-      e <- closeAngle
-      pure (SType (sp <> e) (SRecord fields))
-    "Function" -> do
-      _ <- op OpLt
-      ts <- sepBy1 pType (sym TComma)
-      e <- closeAngle
-      pure (SType (sp <> e) (SFunction (init ts) (last ts)))
-    _ -> pure (SType sp (SNamed name))
+pType = choice [pQualifiedNamed, pUnqualified]
   where
+    -- Dispatches purely on the leading token (TLowerId vs TUpperId), so
+    -- no other Type alternative can be mistaken for this one and no
+    -- backtracking is needed (spec 4.2 QualifiedNamedType).
+    pQualifiedNamed = do
+      Spanned sp1 ns <- lowerId
+      _ <- sym TDot
+      Spanned sp2 name <- upperId
+      pure (SType (sp1 <> sp2) (SNamed (Just ns) name))
+
+    pUnqualified = do
+      Spanned sp name <- upperId
+      case name of
+        "Any" -> pure (SType sp SAny)
+        "Number" -> pure (SType sp SNumber)
+        "String" -> pure (SType sp SString)
+        "Bool" -> pure (SType sp SBool)
+        "Null" -> pure (SType sp SNull)
+        "Void" -> pure (SType sp SVoid)
+        "Environment" -> pure (SType sp SEnvironment)
+        "Array" -> pGeneric1 sp SArray
+        "Map" -> pGeneric1 sp SMap
+        "AsyncHandle" -> pGeneric1 sp SAsyncHandle
+        "Record" -> do
+          _ <- op OpLt
+          fields <- sepBy pRecordField (sym TComma)
+          e <- closeAngle
+          pure (SType (sp <> e) (SRecord fields))
+        "Function" -> do
+          _ <- op OpLt
+          ts <- sepBy1 pType (sym TComma)
+          e <- closeAngle
+          pure (SType (sp <> e) (SFunction (init ts) (last ts)))
+        _ -> pure (SType sp (SNamed Nothing name))
+
     pGeneric1 sp f = do
       _ <- op OpLt
       t <- pType
@@ -479,12 +492,12 @@ pString = do
     TString ps -> Just (Right ps)
     _ -> Nothing
   f <- case raw of
-    Left s -> pure (EString [TPChunk s])
+    Left s -> pure (EString [TPChunk sp s])
     Right ps -> EString <$> traverse convertPart ps
   pure (Expr sp f)
 
 convertPart :: StrPart -> P TextPart
-convertPart (Chunk c) = pure (TPChunk c)
+convertPart (Chunk sp c) = pure (TPChunk sp c)
 convertPart (Interp toks) = TPInterp <$> subExpr "<interpolation>" toks
 
 -- | Parse a captured nested token stream as a full expression.

@@ -1,21 +1,52 @@
 install_path = "$HOME/.local/bin"
 
-envs: Map<Environment> = { "local": #local, "docker": #haskell:9.6.5 }
+envs: Map<Environment> = { "local": #local, "docker": #haskell:9.10.3 }
+
+// Where each shell looks for completion scripts, and what the file has
+// to be called there.
+completion_dirs: Map<String> = {
+  "bash": "$HOME/.bash_completion.d",
+  "zsh": "$HOME/.zsh/completions",
+  "fish": "$HOME/.config/fish/completions"
+}
+
+completion_files: Map<String> = {
+  "bash": "lask",
+  "zsh": "_lask",
+  "fish": "lask.fish"
+}
+
+// The one line each shell still needs in its startup file. Only fish
+// loads a completion script from its directory unprompted.
+completion_hints: Map<String> = {
+  "bash": "add to ~/.bash_profile (macOS) or ~/.bashrc: source $HOME/.bash_completion.d/lask",
+  "zsh": "add to ~/.zshrc, above compinit: fpath=($HOME/.zsh/completions $fpath)",
+  "fish": "nothing else to do"
+}
+
+// Programs this project runs on the host, so that `lask cmd stack build`
+// runs them in that environment without going through a task
+// (spec ch. 5, 11.8). The task bodies below name their environment
+// explicitly, so this declaration is only about `lask cmd`.
+command "stack", "uname", "mv", "rm" on #local
 
 // Run the unit test suite.
 //
 // @param env  Environment to build and test in ("local" or "docker").
+// @complete env @keys envs
 unittest(--env: String = "docker") = $[envs[env]] stack install --test && stack test
 
 // Run the doctests of app/ and src/.
 //
 // @param env  Environment to build and test in ("local" or "docker").
+// @complete env @keys envs
 doctest(--env: String = "docker") = $[envs[env]] stack install --test && stack exec doctest app/** src/**
 
 // Run the unit tests and the doctests in parallel.
 //
 // @param env  Environment to build and test in ("local" or "docker").
 // @return The output of each suite, keyed by its name.
+// @complete env @keys envs
 // @example lask run test --env local
 test(--env: String = "docker") = do {
   t1 = async unittest(env = env)
@@ -30,9 +61,11 @@ test(--env: String = "docker") = do {
 //
 // @param output  Directory the binary is installed into.
 // @param env     Environment to build in ("local" or "docker").
+// @complete env @keys envs
+// @complete output @dir
 install(--output = install_path, --env: String = "local") = do {
   if (env == "local") {
-    $ stack --local-bin-path #{output} install
+    $[#local] stack --local-bin-path #{output} install
   } else {
     build_on_docker(output = install_path)
   }
@@ -44,17 +77,57 @@ install(--output = install_path, --env: String = "local") = do {
 // the host's work directory.
 //
 // @param output  Directory the binary is moved into.
+// @complete output @dir
 build_on_docker(--output = install_path) = do {
-  host_os = $ uname -s
+  host_os = $[#local] uname -s
   if (host_os != "Linux\n") {
     fail({ code: 1, message: "install on docker is only supported on Linux." })
   } else {
     $[envs["docker"]] stack --local-bin-path . install --allow-different-user
-    $ mv ./lask #{output}/lask
+    $[#local] mv ./lask #{output}/lask
+  }
+}
+
+// Install the shell completion script for one shell.
+//
+// Writes the script the installed binary generates into the directory
+// that shell reads. bash and zsh load nothing from that directory on
+// their own, so the line they still need is printed at the end rather
+// than written into your startup file.
+//
+// @param shell   Shell to install the completion script for.
+// @param output  Directory the binary was installed into.
+// @complete shell @keys completion_dirs
+// @complete output @dir
+// @example lask run install_completion --shell fish
+install_completion(--shell: String = "zsh", --output = install_path): String = do {
+  if (!has_key(completion_dirs, shell)) {
+    fail({ code: 4, message: "unknown shell: #{shell}" })
+  } else {
+    dir = completion_dirs[shell]
+    $[#local] mkdir -p #{dir}
+    // Written aside and moved into place, so a failure leaves a
+    // hidden file no shell reads rather than a truncated script.
+    $[#local] #{output}/lask completion #{shell} > #{dir}/.lask-completion.tmp && \
+      mv #{dir}/.lask-completion.tmp #{dir}/#{completion_files[shell]}
+    $[#local] echo '#{completion_hints[shell]}'
   }
 }
 
 // Remove the installed binary.
 //
 // @param output  Directory the binary was installed into.
-uninstall(--output = install_path) = $ rm #{output}/lask
+// @complete output @dir
+uninstall(--output = install_path) = $[#local] rm #{output}/lask
+
+// Remove the shell completion script for one shell.
+//
+// @param shell  Shell to remove the completion script for.
+// @complete shell @keys completion_dirs
+uninstall_completion(--shell: String = "zsh"): String = do {
+  if (!has_key(completion_dirs, shell)) {
+    fail({ code: 4, message: "unknown shell: #{shell}" })
+  } else {
+    $[#local] rm -f #{completion_dirs[shell]}/#{completion_files[shell]}
+  }
+}

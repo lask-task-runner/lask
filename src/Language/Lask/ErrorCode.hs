@@ -22,6 +22,11 @@ data ErrorCode
   | ETypeArity
   | ETypeCall
   | ETypeCommandEnv
+  | ETypeCommandNoEnv
+  | ETypeCommandConflict
+  | ETypeCommandDecl
+  | ETypeCommandName
+  | ETypeCommandDuplicate
   | ETypeEnvConstruct
   | ETypeAccess
   | ETypeFieldDuplicate
@@ -68,6 +73,11 @@ codeText c = case c of
   ETypeArity -> "E-TYPE-ARITY"
   ETypeCall -> "E-TYPE-CALL"
   ETypeCommandEnv -> "E-TYPE-COMMAND-ENV"
+  ETypeCommandNoEnv -> "E-TYPE-COMMAND-NOENV"
+  ETypeCommandConflict -> "E-TYPE-COMMAND-CONFLICT"
+  ETypeCommandDecl -> "E-TYPE-COMMAND-DECL"
+  ETypeCommandName -> "E-TYPE-COMMAND-NAME"
+  ETypeCommandDuplicate -> "E-TYPE-COMMAND-DUPLICATE"
   ETypeEnvConstruct -> "E-TYPE-ENV-CONSTRUCT"
   ETypeAccess -> "E-TYPE-ACCESS"
   ETypeFieldDuplicate -> "E-TYPE-FIELD-DUPLICATE"

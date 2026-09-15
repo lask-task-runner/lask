@@ -20,6 +20,7 @@ where
 import Control.Monad.State.Strict (State, lift, modify, runState)
 import Data.Char (chr, isDigit, isHexDigit)
 import qualified Data.Char as Char
+import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Void (Void)
@@ -150,9 +151,9 @@ pInterpString = do
     pStrPart =
       choice
         [ Interp <$> (chunk "#{" *> pNestedUntil TLBrace TRBrace),
-          Chunk <$> pEscape,
-          Chunk <$> takeWhile1P Nothing plainChar,
-          Chunk "#" <$ char '#' -- '#' not followed by '{'
+          chunked pEscape,
+          chunked (takeWhile1P Nothing plainChar),
+          chunked ("#" <$ char '#') -- '#' not followed by '{'
         ]
     plainChar c =
       c /= '"' && c /= '\\' && c /= '\n' && c /= '\r' && c /= '#'
@@ -242,11 +243,11 @@ pCommandString = do
   where
     pCmdPart =
       choice
-        [ Chunk "#{" <$ chunk "\\#{",
-          Chunk "" <$ try (char '\\' *> pNewline), -- line continuation
+        [ chunked ("#{" <$ chunk "\\#{"),
+          chunked ("" <$ try (char '\\' *> pNewline)), -- line continuation
           Interp <$> (chunk "#{" *> pNestedUntil TLBrace TRBrace),
-          Chunk <$> takeWhile1P Nothing plainChar,
-          Chunk . T.singleton <$> satisfy (\c -> c /= '\n' && c /= '\r')
+          chunked (takeWhile1P Nothing plainChar),
+          chunked (T.singleton <$> satisfy (\c -> c /= '\n' && c /= '\r'))
         ]
     plainChar c =
       c /= '\n' && c /= '\r' && c /= '\\' && c /= '#'
@@ -277,19 +278,27 @@ pNestedUntil openTok closeTok = go (1 :: Int) []
 
 -- String part helpers ----------------------------------------------------
 
+-- | Tag a chunk producer with the source span it consumed.
+chunked :: Lexer Text -> Lexer StrPart
+chunked p = do
+  start <- getSourcePos
+  t <- p
+  end <- getSourcePos
+  pure (Chunk (Span (fromSourcePos start) (fromSourcePos end)) t)
+
 mergeChunks :: [StrPart] -> [StrPart]
 mergeChunks = filter notEmpty . foldr step []
   where
-    step (Chunk a) (Chunk b : rest) = Chunk (a <> b) : rest
+    step (Chunk sa a) (Chunk sb b : rest) = Chunk (sa <> sb) (a <> b) : rest
     step p rest = p : rest
-    notEmpty (Chunk "") = False
+    notEmpty (Chunk _ "") = False
     notEmpty _ = True
 
 trimTrailing :: [StrPart] -> [StrPart]
 trimTrailing ps = case reverse ps of
-  (Chunk c : rest) ->
+  (Chunk sp c : rest) ->
     let c' = T.dropWhileEnd (\x -> x == ' ' || x == '\t') c
-     in reverse (if T.null c' then rest else Chunk c' : rest)
+     in reverse (if T.null c' then rest else Chunk sp c' : rest)
   _ -> ps
 
 -- Punctuation and operators ----------------------------------------------
@@ -338,7 +347,7 @@ pPunct =
 
 bundleToDiagnostic :: ParseErrorBundle Text Void -> Diagnostic
 bundleToDiagnostic bundle =
-  let err = head (bagToList (bundleErrors bundle))
+  let err = NE.head (bundleErrors bundle)
       (_, posState) = reachOffset (errorOffset err) (bundlePosState bundle)
       pos = fromSourcePos (pstateSourcePos posState)
       msg = T.pack (parseErrorTextPretty err)
@@ -347,5 +356,3 @@ bundleToDiagnostic bundle =
         StageSyntax
         (Span pos pos)
         (T.strip msg)
-  where
-    bagToList = foldr (:) []

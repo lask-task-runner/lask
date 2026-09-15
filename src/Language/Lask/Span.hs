@@ -11,7 +11,6 @@ module Language.Lask.Span
   )
 where
 
-import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Utils (Pretty (pretty))
@@ -31,8 +30,8 @@ data Span
 
 instance Semigroup Span where
   Span s1 e1 <> Span s2 e2 =
-    let ps = sort [s1, e1, s2, e2]
-     in Span (head ps) (last ps)
+    let ps = [s1, e1, s2, e2]
+     in Span (minimum ps) (maximum ps)
   s@Span {} <> NoSpan = s
   NoSpan <> s@Span {} = s
   NoSpan <> NoSpan = NoSpan

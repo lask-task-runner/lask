@@ -5,6 +5,7 @@ module Language.Lask.Runtime.EnvironmentSpec (spec) where
 import Data.Either (isLeft)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.ErrorCode
@@ -91,7 +92,7 @@ spec = do
           out `shouldBe` "one\ntwo\n"
           errOut `shouldBe` "err\n"
         Left lf -> expectationFailure (show lf)
-      head (kinds entries) `shouldBe` ClStart
+      listToMaybe (kinds entries) `shouldBe` Just ClStart
       last (kinds entries) `shouldBe` ClExit 5
       [l | ClLine 1 l <- kinds entries] `shouldBe` ["one", "two"]
       [l | ClLine 2 l <- kinds entries] `shouldBe` ["err"]

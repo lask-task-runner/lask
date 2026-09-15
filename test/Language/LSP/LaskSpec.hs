@@ -9,7 +9,7 @@ import Data.List (nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.LSP.Lask (completionAt, hoverAt, lexSemanticTokens, uriPath)
+import Language.LSP.Lask (completionAt, hoverAt, inlayHintsIn, lexSemanticTokens, semanticTokens, uriPath)
 import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.Lask (checkText)
@@ -30,6 +30,27 @@ toks src = case lexSemanticTokens "test.lask" src of
 
 hasAtom :: Text -> Atom -> Expectation
 hasAtom src atom = toks src `shouldSatisfy` elem atom
+
+-- | Semantic tokens including the layer elaboration contributes.
+semTokens :: FilePath -> Text -> IO [Atom]
+semTokens path src = do
+  r <- semanticTokens path src
+  case r of
+    Right ts ->
+      pure
+        [ (fromIntegral l, fromIntegral c, fromIntegral len, typ)
+        | SemanticTokenAbsolute l c len typ _ <- ts
+        ]
+    Left e -> error (show e)
+
+-- | (line, character, label) of every inlay hint in the document.
+hintsFor :: FilePath -> Text -> IO [(UInt, UInt, Text)]
+hintsFor path src = do
+  hs <- inlayHintsIn path src (Range (Position 0 0) (Position 1000 0))
+  pure
+    [ (l, c, lbl)
+    | InlayHint (Position l c) (InL lbl) _ _ _ _ _ _ <- hs
+    ]
 
 spec :: Spec
 spec = do
@@ -82,11 +103,72 @@ spec = do
       -- f() = $[#alpine:3.20] ls   (env head starts at col 8, length 12)
       hasAtom "f() = $[#alpine:3.20] ls" (0, 8, 12, SemanticTokenTypes_Macro)
 
+  describe "command words (spec 10.9)" $ do
+    let src = "command \"go\" on #golang:1.25\nf() = $ go test ./...\n"
+
+    it "marks a dispatching command word as a reference, not string text" $ do
+      ts <- semTokens "test.lask" src
+      -- line 1, column 8: the `go` that carries the environment
+      ts `shouldSatisfy` elem (1, 8, 2, SemanticTokenTypes_Function)
+
+    it "leaves the rest of the command string as string text" $ do
+      ts <- semTokens "test.lask" src
+      ts `shouldSatisfy` any (\(l, c, _, typ) -> l == 1 && c >= 10 && typ == SemanticTokenTypes_String)
+
+    it "marks nothing when no word carries the environment" $ do
+      ts <- semTokens "test.lask" "f() = $[#local] go test\n"
+      let inCommand = [t | t@(l, c, _, typ) <- ts, l == 0, c > 15, typ == SemanticTokenTypes_Function]
+      inCommand `shouldBe` []
+
+  describe "inlay hints (spec 10.9)" $ do
+    it "shows the environment dispatch derived, in the notation of the source" $ do
+      hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $ go test ./...\n"
+      -- reads as `$[#golang:1.25] go test ./...`
+      hs `shouldBe` [(1, 7, "[#golang:1.25]")]
+
+    it "places the bracket after a stream selector" $ do
+      hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $* go test\n"
+      hs `shouldBe` [(1, 8, "[#golang:1.25]")]
+
+    it "shows nothing where the expression carries an environment" $ do
+      -- Each of these says where it runs; a second bracket in front of
+      -- the first would only be noise.
+      byLiteral <- hintsFor "test.lask" "f() = $[#local] ls\n"
+      byLiteral `shouldBe` []
+      byBinding <- hintsFor "test.lask" "e = #golang:1.25\nf() = $[e] go test\n"
+      byBinding `shouldBe` []
+      byExpression <-
+        hintsFor
+          "test.lask"
+          "es: Map<Environment> = {\"a\": #local}\nf(k: String) = $[es[k]] ls\n"
+      byExpression `shouldBe` []
+
+    it "anchors on the $ of a command continued across lines" $ do
+      hs <-
+        hintsFor
+          "test.lask"
+          ( "command \"npm\" on #node:20\n"
+              <> "f(u: String) = $ cd web && npm ci && \\\n"
+              <> "  VITE_API_URL=\"#{u}\" \\\n"
+              <> "  npm run build\n"
+          )
+      hs `shouldBe` [(1, 16, "[#node:20]")]
+
   describe "plain tokens" $ do
     it "still maps keywords, types, numbers" $ do
       let src = "add(x: Number): Number = x + 1"
       hasAtom src (0, 7, 6, SemanticTokenTypes_Type)
       hasAtom src (0, 29, 1, SemanticTokenTypes_Number)
+
+  describe "visibility markers" $ do
+    it "marks `internal` on a declaration as a keyword" $
+      hasAtom "internal x = 1" (0, 0, 8, SemanticTokenTypes_Keyword)
+    it "marks `export` on a declaration as a keyword" $
+      hasAtom "export f() = 1" (0, 0, 6, SemanticTokenTypes_Keyword)
+    it "marks `export ... from` as a keyword" $
+      hasAtom "export { a } from \"./lib.lask\"" (0, 0, 6, SemanticTokenTypes_Keyword)
+    it "marks a marker after another declaration" $
+      hasAtom "a = 1\ninternal b = 2" (1, 0, 8, SemanticTokenTypes_Keyword)
 
   describe "hover" $ do
     let src =
@@ -164,6 +246,10 @@ spec = do
     it "offers reserved words" $ do
       ls <- labels "test.lask" "im" 0 2
       ls `shouldSatisfy` elem "import"
+    it "offers the visibility markers" $ do
+      ls <- labels "test.lask" "e" 0 1
+      ls `shouldSatisfy` elem "export"
+      ls `shouldSatisfy` elem "internal"
     it "ranks module top-level names above builtins and reserved words" $ do
       items <- completionAt "test.lask" "inc(x: Number) = x + 1\ny = i" (Position 1 5)
       let sortTextOf n = [i ^. L.sortText | i <- items, i ^. L.label == n]
@@ -199,6 +285,14 @@ spec = do
       let src = "import * as m from \"./x.lask\"\nbroken(\ny = m"
       ls <- labels "test.lask" src 2 5
       ls `shouldSatisfy` elem "m"
+    it "offers names bound by an export-from when the buffer does not parse" $ do
+      let src = "export { a } from \"./x.lask\"\nbroken(\ny = a"
+      ls <- labels "test.lask" src 2 5
+      ls `shouldSatisfy` elem "a"
+    it "offers names declared with a visibility marker when the buffer does not parse" $ do
+      let src = "internal inc(x: Number) = x + 1\nbroken(\ny = i"
+      ls <- labels "test.lask" src 2 5
+      ls `shouldSatisfy` elem "inc"
     it "never offers the healing placeholder" $ do
       ls <- labels "test.lask" "" 0 0
       ls `shouldSatisfy` notElem "_"
@@ -209,7 +303,7 @@ spec = do
       map (^. L.label) items `shouldMatchList` ["x", "y"]
       [i ^. L.detail | i <- items, i ^. L.label == "y"] `shouldBe` [Just "String"]
     it "offers the fields of a command result" $ do
-      let src = "f() = do {\n  r = $* echo hi\n  return r.\n}"
+      let src = "f() = do {\n  r = $*[#local] echo hi\n  return r.\n}"
       ls <- labels "test.lask" src 2 11
       ls `shouldMatchList` ["code", "stderr", "stdout"]
     it "offers nothing for a receiver it cannot resolve" $ do
@@ -230,7 +324,7 @@ spec = do
       ls <- labels "test.lask" "inc(x: Number) = x + 1\r\ny = i" 1 5
       ls `shouldSatisfy` elem "inc"
     it "offers locals inside a command interpolation" $ do
-      ls <- labels "test.lask" "greet(name: String) = $ echo #{na}" 0 33
+      ls <- labels "test.lask" "greet(name: String) = $[#local] echo #{na}" 0 41
       ls `shouldSatisfy` elem "name"
 
   describe "completion invariants" $
@@ -239,13 +333,13 @@ spec = do
         forM_ (positions src) $ \(l, c) -> do
           items <- completionAt "test.lask" src (Position l c)
           let ls = map (^. L.label) items
-              context = name <> " at " <> show (l, c) <> ": "
+              caseLabel = name <> " at " <> show (l, c) <> ": "
           -- Comparing the whole list forces the result, so a crash in
           -- the analysis surfaces at the position that caused it.
-          assert (context <> "duplicate labels in " <> show ls) (nub ls == ls)
+          assert (caseLabel <> "duplicate labels in " <> show ls) (nub ls == ls)
           forM_ items $ \i ->
             assert
-              (context <> "bad sortText " <> show (i ^. L.sortText) <> " on " <> show (i ^. L.label))
+              (caseLabel <> "bad sortText " <> show (i ^. L.sortText) <> " on " <> show (i ^. L.label))
               (sortTextOk i)
 
   describe "completion while typing" $
@@ -371,7 +465,7 @@ lastLine ts = case reverse ts of
 -- | An assertion that names the failing case, so a sweep reports the
 -- position that broke rather than just which check it was.
 assert :: String -> Bool -> Expectation
-assert context ok = unless ok (expectationFailure context)
+assert caseLabel ok = unless ok (expectationFailure caseLabel)
 
 labels :: FilePath -> Text -> UInt -> UInt -> IO [Text]
 labels path src l c = map (^. L.label) <$> completionAt path src (Position l c)

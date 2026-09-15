@@ -10,7 +10,6 @@ import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Deps.File
-import Language.Lask.Deps.File (DepEntry (..), DepsFile (..))
 import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..))
 import Language.Lask.Diagnostic (diagCode)
 import Language.Lask.ErrorCode

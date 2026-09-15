@@ -4,8 +4,15 @@ node  = #node:20
 // A custom image builds from a Dockerfile and is used the same way.
 infra = #docker(dockerfile = "Dockerfile", context = ".")
 
-test_api(): String = $[go] go test ./...
-test_web(): String = $[node] npm test
+// Declare which image provides each program, and the commands below
+// name only what they run. There is no default: a command with no
+// environment is an error, never a silent fall back to the host.
+command "go" on go
+command "npm" on node
+command "terraform" on infra
+
+test_api(): String = $ go test ./...
+test_web(): String = $ npm test
 
 // Both suites run concurrently; the build and deploy follow in order.
 //
@@ -16,10 +23,10 @@ release(--dry_run = false) = do {
   web = async test_web()
   await api
   await web
-  $[go] go build
+  $ go build
   if (dry_run) {
-    $[infra] terraform plan
+    $ terraform plan
   } else {
-    $[infra] terraform apply -auto-approve
+    $ terraform apply -auto-approve
   }
 }

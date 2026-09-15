@@ -32,7 +32,7 @@ import Language.Lask.Syntax.Parser (parseExpr)
 import Language.Lask.Utils (Pretty (pretty))
 import System.Console.Haskeline
 import System.Directory (doesFileExist)
-import System.FilePath (normalise, takeDirectory, (</>))
+import System.FilePath (normalise, takeDirectory)
 import System.IO (stderr)
 
 -- | The synthetic binding used to evaluate expression inputs.

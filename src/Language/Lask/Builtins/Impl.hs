@@ -37,7 +37,7 @@ type Apply = Value -> [Value] -> [(Text, Value)] -> IO Value
 type CommandRunner = EnvValue -> Text -> IO (Either LaskFailure (Int, Text, Text))
 
 callBuiltin :: Apply -> CommandRunner -> Text -> [Value] -> [(Text, Value)] -> IO Value
-callBuiltin apply runCmd name args kwArgs = case (name, args) of
+callBuiltin apply runCmd name args _kwArgs = case (name, args) of
   -- 15.2 numeric ---------------------------------------------------------
   ("add", [VNumber a, VNumber b]) -> num (a + b)
   ("sub", [VNumber a, VNumber b]) -> num (a - b)
@@ -81,10 +81,7 @@ callBuiltin apply runCmd name args kwArgs = case (name, args) of
   ("keys", [VMap m]) -> pure (VArray (V.fromList (map VString (Map.keys m))))
   ("values", [VMap m]) -> pure (VArray (V.fromList (Map.elems m)))
   -- 15.5 command execution --------------------------------------------------
-  ("run_command", [VString cmd]) -> do
-    let env = case lookup "env" kwArgs of
-          Just (VEnv e) -> e
-          _ -> EnvValue "local" Map.empty
+  ("run_command", [VString cmd, VEnv env]) -> do
     r <- runCmd env cmd
     case r of
       Left failure -> throwIO failure

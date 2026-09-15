@@ -16,6 +16,8 @@ module Language.LSP.Lask
     lexSemanticTokens,
     uriPath,
     hoverAt,
+    inlayHintsIn,
+    semanticTokens,
     hoverMarkdown,
     completionAt,
   )
@@ -46,7 +48,7 @@ import qualified Control.Exception as E
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.List (minimumBy, sortOn)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust, listToMaybe, maybeToList)
+import Data.Maybe (isJust, listToMaybe, mapMaybe, maybeToList)
 import Data.Ord (comparing)
 import qualified Data.Set as Set
 import qualified Data.Text.IO as TIO
@@ -54,7 +56,7 @@ import Language.Lask (Compiled (..), Partial (..), checkText, compileText, compi
 import Language.Lask.Builtins.Sig (builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
 import Language.Lask.Doc (docBlockAbove)
-import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), HoverInfo (..))
+import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..))
 import Language.Lask.ErrorCode (codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
 import qualified Language.Lask.Lexer.Token as Tok
@@ -153,14 +155,24 @@ handle logger =
             path = uriPath uri
         mdoc <- getVirtualFile doc
         case mdoc of
-          Just file -> case lexSemanticTokens path (virtualFileText file) of
-            Right ts -> case makeSemanticTokens defaultSemanticTokensLegend ts of
-              Right ts' -> responder $ Right $ LSP.InL ts'
-              Left t -> responder $ Left $ LSP.ResponseError (LSP.InR LSP.ErrorCodes_InternalError) t Nothing
-            Left _ -> case makeSemanticTokens defaultSemanticTokensLegend [] of
-              Right ts -> responder $ Right $ LSP.InL ts
-              Left t -> responder $ Left $ LSP.ResponseError (LSP.InR LSP.ErrorCodes_InternalError) t Nothing
-          Nothing -> responder $ Left $ LSP.ResponseError (LSP.InR LSP.ErrorCodes_InternalError) "cannot get virtual file" Nothing,
+          Just file -> do
+            toksE <- liftIO $ semanticTokens path (virtualFileText file)
+            let emit ts = case makeSemanticTokens defaultSemanticTokensLegend ts of
+                  Right ts' -> responder $ Right $ LSP.InL ts'
+                  Left t -> responder $ Left $ LSP.TResponseError (LSP.InR LSP.ErrorCodes_InternalError) t Nothing
+            either (const (emit [])) emit toksE
+          Nothing -> responder $ Left $ LSP.TResponseError (LSP.InR LSP.ErrorCodes_InternalError) "cannot get virtual file" Nothing,
+      requestHandler LSP.SMethod_TextDocumentInlayHint $ \req responder -> do
+        let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
+            doc = LSP.toNormalizedUri uri
+            path = uriPath uri
+            rng = req ^. LSP.params . LSP.range
+        mdoc <- getVirtualFile doc
+        case mdoc of
+          Nothing -> responder $ Right $ LSP.InR LSP.Null
+          Just file -> do
+            hints <- liftIO $ inlayHintsIn path (virtualFileText file) rng
+            responder $ Right $ LSP.InL hints,
       requestHandler LSP.SMethod_TextDocumentHover $ \req responder -> do
         let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
             doc = LSP.toNormalizedUri uri
@@ -234,8 +246,29 @@ sendDiagnostics fileUri version ds = do
 -- side), interpolation contents (nested token streams inside string
 -- and command tokens, recursively), and command heads (@$@\/@$1@\/
 -- @$2@\/@$*@) as function tokens.
+-- | Semantic tokens for a document, including the layer that only
+-- elaboration knows: the command words that carry a command
+-- expression's environment (spec 10.9). They are reported as
+-- references, not as part of the command string, so a reader can see
+-- which word decides where the line runs — and a line where none
+-- lights up is one with no environment.
+--
+-- The spans come from the same table and the same procedure as
+-- dispatch, never from a second matcher of the editor's own.
+semanticTokens :: FilePath -> Text -> IO (Either Text [SemanticTokenAbsolute])
+semanticTokens path src = do
+  partial <- compileTextPartial path src
+  let wordSpans = maybe [] commandWordSpans (partialCore partial)
+  pure (lexSemanticTokensWith wordSpans path src)
+  where
+    commandWordSpans core =
+      [Tok.spannedSpan w | cu <- cpCommandUses core, w <- cuWords cu]
+
 lexSemanticTokens :: String -> Text -> Either Text [SemanticTokenAbsolute]
-lexSemanticTokens fileName src =
+lexSemanticTokens = lexSemanticTokensWith []
+
+lexSemanticTokensWith :: [S.Span] -> String -> Text -> Either Text [SemanticTokenAbsolute]
+lexSemanticTokensWith commandWordSpans fileName src =
   case lexTokensWithComments fileName src of
     Left e -> Left $ T.pack $ pretty e
     Right (ts, comments) ->
@@ -291,15 +324,24 @@ lexSemanticTokens fileName src =
                 | maybe False (`elem` ("12*" :: String)) (charAt l (c + 1)) -> 2
               _ -> 1
             (headSpan, restSpan) = splitSpanAt sp headLen
-            nested = maybe [] (concatMap flattenToken) env <> partAtoms cmdParts
+            nested =
+              maybe [] (concatMap flattenToken) env
+                <> partAtoms cmdParts
+                <> [ (ws, SemanticTokenTypes_Function)
+                   | ws <- commandWordSpans,
+                     spanWithin ws sp
+                   ]
          in (headSpan, SemanticTokenTypes_Function) : carve restSpan SemanticTokenTypes_String nested
       _ -> case toSemanticTokenTypes t of
         Just typ -> [(sp, typ)]
         Nothing -> []
 
     partAtoms = concatMap partAtom
-    partAtom (Tok.Chunk _) = []
+    partAtom (Tok.Chunk _ _) = []
     partAtom (Tok.Interp toks) = concatMap flattenToken toks
+
+    spanWithin (S.Span a b) (S.Span outerS outerE) = a >= outerS && b <= outerE
+    spanWithin _ _ = False
 
     splitSpanAt (S.Span s@(S.Position f l c) e) n =
       let mid = S.Position f l (c + n)
@@ -341,6 +383,55 @@ toRange (S.Span (S.Position _ l1 c1) (S.Position _ l2 c2)) =
 toRange S.NoSpan = Range (Position 0 0) (Position 0 0)
 
 -- Hover -----------------------------------------------------------------------
+
+-- | The environment dispatch derived, shown in the notation the author
+-- would have written: @$[#node:20.20.2-alpine3.23] cd web && npm ci@,
+-- with the bracket inserted right after the @$@.
+--
+-- Only a command expression carrying no environment specification gets
+-- one. Dispatch derives an environment that appears nowhere in such a
+-- line, so without this a reader — or a diff — cannot see where the
+-- command runs; a line that already has @$[...]@ says where it runs,
+-- and a second bracket in front of the first would only be noise.
+--
+-- The command word that selected it is not repeated in the label: it is
+-- already highlighted as the reference it is.
+inlayHintsIn :: FilePath -> Text -> LSP.Range -> IO [LSP.InlayHint]
+inlayHintsIn path src (LSP.Range (Position startLine _) (Position endLine _)) = do
+  partial <- compileTextPartial path src
+  pure $ case partialCore partial of
+    Nothing -> []
+    Just core -> mapMaybe hint (cpCommandUses core)
+  where
+    srcLines = T.lines src
+
+    -- The environment specification stands right after the `$` and its
+    -- stream selector, if any (spec 6.6).
+    headWidth l c = case charAt l (c + 1) of
+      Just ch | ch `elem` ("12*" :: String) -> 2
+      _ -> 1
+
+    charAt l c = case drop (l - 1) srcLines of
+      (x : _) | c >= 1 && c <= T.length x -> Just (T.index x (c - 1))
+      _ -> Nothing
+
+    hint cu = case (cuSpan cu, cuEnv cu) of
+      (S.Span (S.Position f l c) _, Just env)
+        | normalise f == normalise path,
+          let line = fromIntegral (l - 1),
+          line >= startLine && line <= endLine ->
+            Just
+              LSP.InlayHint
+                { LSP._position = Position line (fromIntegral (c - 1 + headWidth l c)),
+                  LSP._label = LSP.InL ("[" <> env <> "]"),
+                  LSP._kind = Nothing,
+                  LSP._textEdits = Nothing,
+                  LSP._tooltip = Nothing,
+                  LSP._paddingLeft = Nothing,
+                  LSP._paddingRight = Nothing,
+                  LSP._data_ = Nothing
+                }
+      _ -> Nothing
 
 -- | Hover information for a document position: the type of the name
 -- under the cursor (name references recorded during elaboration, or
@@ -745,7 +836,8 @@ completionAt path src (Position pl pc)
 -- The lexer accepts a great deal that the parser rejects, so this
 -- keeps the names a user has already written available while the
 -- buffer as a whole is still half-written: a declaration is any
--- identifier in column one that is followed by @(@, @=@ or @:@.
+-- identifier that is followed by @(@, @=@ or @:@ and either sits in
+-- column one or directly follows an @export@\/@internal@ marker.
 tokenNames :: FilePath -> Text -> [Text]
 tokenNames path src = case lexTokens path src of
   Left _ -> []
@@ -753,11 +845,16 @@ tokenNames path src = case lexTokens path src of
   where
     declNames ts =
       [ n
-      | (Tok.Spanned sp t, next) <- zip ts (drop 1 ts),
-        inColumnOne sp,
+      | (prev, Tok.Spanned sp t, next) <- zip3 (Nothing : map Just ts) ts (drop 1 ts),
+        inColumnOne sp || maybe False isMarker prev,
         n <- identText t,
         opensDecl (Tok.spannedValue next)
       ]
+
+    -- `export name = ...` / `internal name = ...` (spec 5): the name
+    -- sits one token right of the declaration start.
+    isMarker (Tok.Spanned _ (Tok.TKw k)) = k `elem` [Tok.KExport, Tok.KInternal]
+    isMarker _ = False
 
     opensDecl Tok.TLParen = True
     opensDecl Tok.TAssign = True
@@ -772,6 +869,9 @@ tokenNames path src = case lexTokens path src of
     identText _ = []
 
     importNames (Tok.Spanned _ (Tok.TKw Tok.KImport) : rest) =
+      boundByImport rest <> importNames rest
+    -- `export { a, b as c } from "..."` binds its names here too.
+    importNames (Tok.Spanned _ (Tok.TKw Tok.KExport) : rest) =
       boundByImport rest <> importNames rest
     importNames (_ : rest) = importNames rest
     importNames [] = []

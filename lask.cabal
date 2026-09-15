@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           lask
-version:        0.3.0
+version:        0.4.0
 description:    Please see the README on GitHub at <https://github.com/lask-task-runner/lask#readme>
 homepage:       https://github.com/lask-task-runner/lask#readme
 bug-reports:    https://github.com/lask-task-runner/lask/issues
@@ -24,6 +24,7 @@ source-repository head
 library
   exposed-modules:
       Command.Lask.ArgCodec
+      Command.Lask.Complete
       Command.Lask.Entry
       Command.Lask.Envs
       Command.Lask.Help
@@ -59,6 +60,7 @@ library
       Language.Lask.Serialize
       Language.Lask.Span
       Language.Lask.Syntax.AST
+      Language.Lask.Syntax.CommandWords
       Language.Lask.Syntax.Parser
       Language.Lask.Syntax.Scope
       Language.Lask.Syntax.TokenStream
@@ -76,7 +78,7 @@ library
     , async >=2.2 && <3
     , base >=4.7 && <5
     , base16-bytestring >=1.0 && <2
-    , bytestring ==0.11.*
+    , bytestring >=0.11 && <0.13
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-sha256 >=0.11 && <1
@@ -114,7 +116,7 @@ executable lask
     , async >=2.2 && <3
     , base >=4.7 && <5
     , base16-bytestring >=1.0 && <2
-    , bytestring ==0.11.*
+    , bytestring >=0.11 && <0.13
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-sha256 >=0.11 && <1
@@ -145,6 +147,7 @@ test-suite lask-test
   main-is: Spec.hs
   other-modules:
       Command.Lask.CliSpec
+      Command.Lask.CompleteSpec
       Language.Lask.Deps.DepsSpec
       Language.Lask.DocSpec
       Language.Lask.ElaborateSpec
@@ -155,6 +158,7 @@ test-suite lask-test
       Language.Lask.Runtime.EnvironmentSpec
       Language.Lask.Runtime.EvalSpec
       Language.Lask.Runtime.SecretsSpec
+      Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
       Language.LSP.LaskSpec
       Paths_lask
@@ -167,12 +171,12 @@ test-suite lask-test
     , async >=2.2 && <3
     , base >=4.7 && <5
     , base16-bytestring >=1.0 && <2
-    , bytestring ==0.11.*
+    , bytestring >=0.11 && <0.13
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-sha256 >=0.11 && <1
     , directory >=1.0 && <2
-    , doctest ==0.22.*
+    , doctest >=0.22 && <0.25
     , filepath >=1.4 && <2
     , free >=5.0 && <6
     , haskeline >=0.8 && <1
