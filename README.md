@@ -8,6 +8,8 @@ Lask (lambda + task) is a task runner with a small language behind it, giving au
 
 Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger or Earthly too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
 
+Lask aims to stay simple and light to use while matching what the heavyweight platforms can do.
+
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="doc/assets/main-dark.svg">
@@ -72,6 +74,30 @@ Lask makes automation *verifiable*, *portable*, *programmable*, *reusable*, *run
 **Runnable**. The CLI is small, and every piece of a project runs on its own: a task with `lask run`, an expression in the REPL, or a one-off command inside its own container with `lask cmd go test ./...`. Nothing has to be pushed, and nothing has to be run through a shell to try it. A task's signature is its command line, too: keyword arguments become flags, so `release(--dry_run = false)` is `lask run release --dry-run true` with nothing to wire up.
 
 **Discoverable**. A documentation comment above a task — `@param`, `@return`, `@example` — is the single source for both `--help` and the editor's hover, so prose never drifts from the code it describes. Types are already in the source, so `--help` needs no hand-written usage string: it reports the signature, the inferred return type, and every image the task will need before you run it.
+
+## Comparison
+
+Lask is a task runner, not a build system — and not a CI platform. It does not replace GitHub Actions, GitLab CI, or Jenkins; it replaces what your jobs run, so one definition executes on your laptop and inside whatever runner you already have. Your provider's YAML keeps the part it is genuinely good at — triggers, permissions, secrets — wrapped around a step that calls `lask run`. Switching providers then means rewriting that step, not your pipeline.
+
+Here is how Lask compares to the lighter tools it replaces and to the heavier one it stops short of:
+
+|                                         | Lask | make | Taskfile | Dagger |
+| --------------------------------------- | :--: | :--: | :------: | :----: |
+| Static checks before execution           | ✅ types, names, arity (`lask check`) | — | schema only | via the SDK's language |
+| Typed task arguments with defaults       | ✅ `--name: String = "World"` | — | untyped vars | ✅ in the SDK's language |
+| Execution environments as values         | ✅ `command "go" on #golang:1.22` | — | — | ✅ containers in the API |
+| Concurrency                              | ✅ `async` / `await` | `-j` (per-target) | `deps` run in parallel | ✅ implicit in the DAG |
+| Code reuse across projects               | ✅ hash-pinned module imports | `include` | `includes` | ✅ Git modules |
+| Incremental rebuilds                     | — | ✅ file targets | ✅ checksum / timestamp | ✅ content-addressed cache |
+| Config format                            | typed DSL | Makefile | YAML | Go / Python / TypeScript |
+| What you install                         | ✅ Lask + Docker, and nothing a task uses | make, plus every tool a task uses | single binary, plus every tool a task uses | binary + Docker + an SDK toolchain |
+
+**When to use something else:**
+
+- If your tasks are primarily *"rebuild only what changed"* over file targets, `make` (or a real build system like Bazel) is the right tool. Lask does not track file freshness.
+- If you need artifact caching at build-system scale, or you want your pipeline written in Go or TypeScript with a full SDK behind it, Dagger goes further than Lask does — at the cost of an engine to run and an ecosystem to keep.
+
+**When Lask pays off:** tasks that take arguments, call each other, run in pinned Docker environments, or run concurrently — the point where Makefiles and YAML pipelines usually turn into untestable shell scripts. `lask check` verifies all of it before anything executes.
 
 ## Install
 
@@ -204,70 +230,24 @@ no environment is ever evaluated to answer a `<TAB>`.
 
 </details>
 
-## Comparison
-
-Lask is a task runner, not a build system — and not a CI platform. It does not replace GitHub Actions, GitLab CI, or Jenkins; it replaces what your jobs run, so one definition executes on your laptop and inside whatever runner you already have. Your provider's YAML keeps the part it is genuinely good at — triggers, permissions, secrets — wrapped around a step that calls `lask run`. Switching providers then means rewriting that step, not your pipeline.
-
-Here is how Lask compares to the lighter tools it replaces and to the heavier one it stops short of:
-
-|                                         | Lask | make | Taskfile | Dagger |
-| --------------------------------------- | :--: | :--: | :------: | :----: |
-| Static checks before execution           | ✅ types, names, arity (`lask check`) | — | schema only | via the SDK's language |
-| Typed task arguments with defaults       | ✅ `--name: String = "World"` | — | untyped vars | ✅ in the SDK's language |
-| Execution environments as values         | ✅ `command "go" on #golang:1.22` | — | — | ✅ containers in the API |
-| Concurrency                              | ✅ `async` / `await` | `-j` (per-target) | `deps` run in parallel | ✅ implicit in the DAG |
-| Code reuse across projects               | ✅ hash-pinned module imports | `include` | `includes` | ✅ Git modules |
-| Incremental rebuilds                     | — | ✅ file targets | ✅ checksum / timestamp | ✅ content-addressed cache |
-| Config format                            | typed DSL | Makefile | YAML | Go / Python / TypeScript |
-| What you install                         | single binary + Docker | preinstalled | single binary | binary + engine + SDK toolchain |
-
-**When to use something else:**
-
-- If your tasks are primarily *"rebuild only what changed"* over file targets, `make` (or a real build system like Bazel) is the right tool. Lask does not track file freshness.
-- If you need artifact caching at build-system scale, or you want your pipeline written in Go or TypeScript with a full SDK behind it, Dagger goes further than Lask does — at the cost of an engine to run and an ecosystem to keep.
-
-**When Lask pays off:** tasks that take arguments, call each other, run in pinned Docker environments, or run concurrently — the point where Makefiles and YAML pipelines usually turn into untestable shell scripts. `lask check` verifies all of it before anything executes.
-
 ## Example
 
 <div align="center">
-  <img alt="Terminal recording: lask check reports the module is valid, then lask run cowsay-hello Lask pulls the cowsay image, traces the command it runs inside it, and prints the cow" src="doc/assets/lask-cowsay.gif" width="831">
+  <img alt="Terminal recording: lask check reports an error in the module; once it is fixed, lask run cowsay-hello Lask pulls the image, traces the command it runs inside it, and prints the cow" src="doc/assets/lask-cowsay.gif" width="831">
 </div>
 
-Tasks are ordinary functions, so you can ask one for its return value instead of running it:
+An error `lask check` finds, and a task that runs.
 
-```bash
-$ cd ./example/01-basic
-$ lask eval hello --name Lask
-"Hello, Lask!"
+Run a command in any image straight from the REPL, with nothing installed locally:
+
 ```
-
-`hello` is a pure function and needs nothing installed; `cowsay_hello` calls it and runs the result in a container, so that one needs Docker. Every command Lask runs is logged with the environment it ran in, the stream each line came from (`1|` stdout, `2|` stderr), and its exit status.
-
-<details>
-<summary>The recorded run, as text</summary>
-
-```bash
-$ lask run cowsay-hello Lask
-2026-09-04T15:43:40.248Z [#rancher/cowsay:1] $ cowsay "Hello, Lask!"
-2026-09-04T15:43:40.541Z [#rancher/cowsay:1] 1|  ______________
-2026-09-04T15:43:40.541Z [#rancher/cowsay:1] 1| < Hello, Lask! >
-2026-09-04T15:43:40.542Z [#rancher/cowsay:1] 1|  --------------
-2026-09-04T15:43:40.542Z [#rancher/cowsay:1] 1|         \   ^__^
-2026-09-04T15:43:40.542Z [#rancher/cowsay:1] 1|          \  (oo)\_______
-2026-09-04T15:43:40.543Z [#rancher/cowsay:1] 1|             (__)\       )\/\
-2026-09-04T15:43:40.543Z [#rancher/cowsay:1] 1|                 ||----w |
-2026-09-04T15:43:40.544Z [#rancher/cowsay:1] 1|                 ||     ||
-2026-09-04T15:43:40.858Z [#rancher/cowsay:1] exit 0
+$ lask repl
+lask> $[#rancher/cowsay] cowsay "Lask"
 ```
-
-</details>
 
 ## Editor Support
 
-Because tasks are typed, the editor can help in ways it cannot with a shell script. `lask serve` is a language server built into the same binary, so the VS Code extension gives you the errors `lask check` would report as you type, plus go-to-definition, autocomplete, hover types, and inlay hints for inferred ones.
-
-Install the [Lask extension from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ToruIkeda.vscode-lask), or search for "Lask" in VS Code.
+`lask serve` is a language server built into the same binary. Install the [Lask extension from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ToruIkeda.vscode-lask), or search for "Lask" in VS Code.
 
 ## Usage
 
@@ -285,8 +265,6 @@ $ lask repl                        # interactive session
 $ lask serve                       # language server (LSP)
 $ lask version                     # print the lask version
 ```
-
-Function and keyword-argument names map from kebab-case on the CLI: `lask run show-version --out-dir /tmp` calls `show_version(--out_dir ...)`.
 
 ## Status
 
