@@ -45,6 +45,7 @@ data Keyword
   | KAwait
   | KIf
   | KElse
+  | KCase
   | KFor
   | KReturn
   | KTry
@@ -165,6 +166,7 @@ keywordFromText t = case t of
   "await" -> Just KAwait
   "if" -> Just KIf
   "else" -> Just KElse
+  "case" -> Just KCase
   "for" -> Just KFor
   "return" -> Just KReturn
   "try" -> Just KTry
@@ -190,6 +192,7 @@ keywordText k = case k of
   KAwait -> "await"
   KIf -> "if"
   KElse -> "else"
+  KCase -> "case"
   KFor -> "for"
   KReturn -> "return"
   KTry -> "try"

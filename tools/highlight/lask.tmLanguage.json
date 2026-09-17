@@ -84,7 +84,7 @@
     "string-raw": { "name": "string.quoted.single.lask", "begin": "'", "end": "'" },
     "keyword": {
       "patterns": [
-        { "name": "keyword.control.flow.lask", "match": "\\b(do|if|else|for|return|try|catch|finally)\\b" },
+        { "name": "keyword.control.flow.lask", "match": "\\b(do|if|else|case|for|return|try|catch|finally)\\b" },
         { "name": "keyword.control.async.lask", "match": "\\b(async|await)\\b" },
         { "name": "keyword.control.import.lask", "match": "\\b(import|from|as|type)\\b" },
         { "name": "keyword.control.command.lask", "match": "\\b(command)\\b" },

@@ -472,6 +472,7 @@ pPrimary =
       pLambda,
       pDoExpr,
       pIfExpr,
+      pCaseExpr,
       pForExpr,
       pTryExpr
     ]
@@ -600,8 +601,42 @@ pIfHead = do
   c <- pExpr
   _ <- sym TRParen
   thenB <- pBlock
-  elseB <- optional (kw KElse *> pBlock)
+  -- Inside a `case` block an `else ->` opens the else arm and does not
+  -- continue this `if` (spec 6.4); anything else commits to a block,
+  -- so a parse error inside it is reported where it occurs.
+  elseB <- optional (try (kw KElse <* notFollowedBy (sym TArrow)) *> pBlock)
   pure (s, c, thenB, elseB)
+
+-- | @case@ (spec 6.4). The scrutinee is optional: without it the arm
+-- heads are conditions rather than values to compare against.
+--
+-- Arms are newline- or @;@-terminated, but the terminator before an
+-- @else@ arm is optional, because the layout pass drops a newline
+-- that precedes a line-leading @else@ (spec 6.5). 'pIfHead' gives up
+-- that @else@ when a @->@ follows it, so an arm body ending in an
+-- @if@ does not swallow the @else@ arm.
+pCaseExpr :: P Expr
+pCaseExpr = do
+  s <- kw KCase
+  scrut <- optional (sym TLParen *> pExpr <* sym TRParen)
+  _ <- sym TLBrace
+  skipMany terminator
+  arms <- many (pCaseArm <* skipMany terminator)
+  e <- sym TRBrace
+  pure (Expr (s <> e) (ECase scrut arms))
+
+pCaseArm :: P CaseArm
+pCaseArm = do
+  (hsp, heads) <-
+    choice
+      [ (\sp -> (sp, Nothing)) <$> try (kw KElse <* lookAhead (sym TArrow)),
+        do
+          hs <- sepBy1 pExpr (sym TComma)
+          pure (foldr1 (<>) (map exprSpan hs), Just hs)
+      ]
+  _ <- sym TArrow
+  body <- pExpr
+  pure (CaseArm (hsp <> exprSpan body) heads body)
 
 pForExpr :: P Expr
 pForExpr = do

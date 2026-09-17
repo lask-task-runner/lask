@@ -601,6 +601,7 @@ infer ctx path locals (Expr sp f) = case f of
             then ("for_each", TyVoid)
             else ("map", TyArray bodyTy)
     pure (Core sp (CApp (Core sp (CVar (BuiltinRef fnName))) [xsCore, bodyLam] []), resTy)
+  ECase scrut arms -> elabCase ctx path locals sp scrut arms Nothing
   ETry body mCatch mFin -> elabTry ctx path locals sp body mCatch mFin Nothing
   EAsync inner -> do
     (c, t) <- infer ctx path locals inner
@@ -650,6 +651,9 @@ check ctx path locals e@(Expr sp f) expected = case f of
   EDo block | expected /= TyAny -> do
     (stmts, _) <- elabBlock ctx path locals block (Just expected)
     pure (Core sp (CDo stmts))
+  ECase scrut arms | expected /= TyAny -> do
+    (c, _) <- elabCase ctx path locals sp scrut arms (Just expected)
+    pure c
   ETry body mCatch mFin | expected /= TyAny -> do
     (c, _) <- elabTry ctx path locals sp body mCatch mFin (Just expected)
     pure c
@@ -990,6 +994,129 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
 
     returnErr =
       abort (diag ESyntaxReturnPosition bsp "return is not allowed in this position")
+
+-- case (spec 6.4) -----------------------------------------------------------------------
+
+-- | @case@ is a chain of 'CIf': it adds no core function and no
+-- evaluation rule of its own (spec 6.4). The scrutinee form binds the
+-- scrutinee first, so it is evaluated once however many arms are
+-- tested; the condition form takes the arm heads as conditions.
+elabCase ::
+  Ctx ->
+  FilePath ->
+  Locals ->
+  Span ->
+  Maybe Expr ->
+  [CaseArm] ->
+  Maybe Type ->
+  TC (Core, Type)
+elabCase ctx path locals sp mScrut arms mExpected = do
+  (matchArms, elseBody) <- splitCaseArms sp arms
+  duplicateHeads (concatMap fst matchArms)
+  (mBind, conds) <- case mScrut of
+    Nothing -> do
+      cs <- mapM (\(hs, _) -> anyOf <$> mapM (\h -> check ctx path locals h TyBool) hs) matchArms
+      pure (Nothing, cs)
+    Just scrut -> do
+      (scrutCore, scrutTy) <- infer ctx path locals scrut
+      unless (comparable scrutTy) $
+        abort . diag ETypeMismatch (exprSpan scrut) $
+          "values of type " <> renderType scrutTy <> " cannot be matched by case"
+      let name = caseScrutName sp
+          matches h = do
+            hc <- check ctx path locals h scrutTy
+            let hsp = exprSpan h
+            pure (Core hsp (CBin PEq (Core hsp (CVar (LocalRef name))) hc))
+      cs <- mapM (\(hs, _) -> anyOf <$> mapM matches hs) matchArms
+      pure (Just (name, scrutCore), cs)
+  (bodies, ty) <- elabBodies (map snd matchArms <> [elseBody])
+  (matchBodies, elseCore) <- case reverse bodies of
+    (lastCore : revInit) -> pure (reverse revInit, lastCore)
+    [] -> abort (caseElse sp "a case expression requires an else arm")
+  let chain = foldr branch elseCore (zip conds matchBodies)
+      branch (cond, body) rest = Core (coreSpan cond <> coreSpan body) (CIf cond body rest)
+  pure $ case mBind of
+    Nothing -> (chain, ty)
+    Just (name, scrutCore) -> (Core sp (CDo [CSBind name scrutCore, CSExpr chain]), ty)
+  where
+    -- An arm with several heads matches any of them (spec 6.4).
+    anyOf [] = Core sp (CBool False)
+    anyOf (c : cs) = foldl (\acc x -> Core (coreSpan acc <> coreSpan x) (COr acc x)) c cs
+
+    -- All arm bodies share one type. Without an expected type, it
+    -- comes from the first arm that infers on its own, and every other
+    -- arm is checked against it, so a context-typed call such as
+    -- @fail(e)@ or @cast@ may sit in any arm (spec 6.4, 15.7). Arms
+    -- that fail to infer commit nothing ('tryTC'), so checking them
+    -- afterwards elaborates each arm exactly once.
+    elabBodies bodies = case mExpected of
+      Just t | t /= TyAny -> do
+        cs <- mapM (\b -> check ctx path locals b t) bodies
+        pure (cs, t)
+      _ -> inferFirst [] Nothing bodies
+
+    -- When no arm infers, the first arm's diagnostic is the report.
+    inferFirst _ mFirstErr [] = case mFirstErr of
+      Just d -> abort d
+      Nothing -> abort (caseElse sp "a case expression requires an else arm")
+    inferFirst pending mFirstErr (b : rest) = do
+      r <- tryTC (infer ctx path locals b)
+      case r of
+        Right (c, t) -> do
+          before <- mapM (\e -> check ctx path locals e t) (reverse pending)
+          after <- mapM (\e -> check ctx path locals e t) rest
+          pure (before <> (c : after), t)
+        Left d -> inferFirst (b : pending) (maybe (Just d) Just mFirstErr) rest
+
+    -- Two literal heads of the same value make the later arm
+    -- unreachable (spec 6.4). Heads that are not literals are not
+    -- compared with one another.
+    duplicateHeads = go Set.empty
+      where
+        go _ [] = pure ()
+        go seen (h : rest) = case literalKey h of
+          Just k
+            | Set.member k seen ->
+                abort . diag ETypeCaseDuplicate (exprSpan h) $
+                  "this case arm can never be selected: an earlier arm already matches " <> k
+            | otherwise -> go (Set.insert k seen) rest
+          Nothing -> go seen rest
+
+-- | A key identifying a literal arm head, or 'Nothing' for a head
+-- whose value is not known statically.
+literalKey :: Expr -> Maybe Text
+literalKey (Expr _ f) = case f of
+  ENull -> Just "null"
+  EBool b -> Just (if b then "true" else "false")
+  ENumber n -> Just (T.pack (show n))
+  EString [] -> Just "\"\""
+  EString [TPChunk _ t] -> Just (T.pack (show t))
+  _ -> Nothing
+
+-- | The name an elaborated @case@ binds its scrutinee to (spec 6.4).
+-- Angle brackets cannot occur in a @lower_id@, so it shadows nothing
+-- and no expression written in the source can refer to it.
+caseScrutName :: Span -> Text
+caseScrutName (Span (Position _ l c) _) =
+  "<case@" <> T.pack (show l) <> ":" <> T.pack (show c) <> ">"
+caseScrutName NoSpan = "<case>"
+
+-- | Split the arms into the matching arms and the body of the @else@
+-- arm, which must be present exactly once and last (spec 6.4).
+splitCaseArms :: Span -> [CaseArm] -> TC ([([Expr], Expr)], Expr)
+splitCaseArms sp arms = case reverse arms of
+  [] -> abort (caseElse sp "a case expression requires an else arm")
+  (CaseArm lsp lastHeads lastBody : revInit) -> do
+    let initArms = reverse revInit
+    case [asp | CaseArm asp Nothing _ <- initArms] of
+      (asp : _) -> abort (caseElse asp "the else arm must be the last arm of a case expression")
+      [] -> pure ()
+    case lastHeads of
+      Just _ -> abort (caseElse lsp "a case expression requires an else arm")
+      Nothing -> pure ([(hs, b) | CaseArm _ (Just hs) b <- initArms], lastBody)
+
+caseElse :: Span -> Text -> Diagnostic
+caseElse = mkDiagnostic ESyntaxCaseElse StageSyntax
 
 -- try/catch/finally (spec 6.9) ----------------------------------------------------------
 

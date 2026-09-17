@@ -59,6 +59,12 @@ stmt = Stmt NoSpan
 block :: [StmtF] -> Block
 block = Block NoSpan . map stmt
 
+carm :: [Expr] -> Expr -> CaseArm
+carm hs = CaseArm NoSpan (Just hs)
+
+celse :: Expr -> CaseArm
+celse = CaseArm NoSpan Nothing
+
 spec :: Spec
 spec = do
   describe "declarations" $ do
@@ -341,6 +347,58 @@ spec = do
               (var "xs")
               (block [SExpr (ex (ECall (var "concat") [posArg (str "item:"), posArg (var "x")]))])
           )
+
+    it "parses case expressions with a scrutinee (spec 6.4)" $
+      pExpr "case (x) {\n  \"a\" -> 1\n  else -> 2\n}"
+        `shouldBe` Right (ECase (Just (var "x")) [carm [str "a"] (num 1), celse (num 2)])
+
+    it "parses several heads in one arm" $
+      pExpr "case (x) {\n  \"a\", \"b\" -> 1\n  else -> 2\n}"
+        `shouldBe` Right (ECase (Just (var "x")) [carm [str "a", str "b"] (num 1), celse (num 2)])
+
+    it "parses the condition form without a scrutinee" $
+      pExpr "case {\n  c -> 1\n  else -> 2\n}"
+        `shouldBe` Right (ECase Nothing [carm [var "c"] (num 1), celse (num 2)])
+
+    it "parses semicolon-separated arms" $
+      pExpr "case (x) { 1 -> \"a\"; else -> \"b\" }"
+        `shouldBe` Right (ECase (Just (var "x")) [carm [num 1] (str "a"), celse (str "b")])
+
+    it "parses a do block as an arm body" $
+      pExpr "case (x) {\n  1 -> do { a = 1; a }\n  else -> 2\n}"
+        `shouldBe` Right
+          ( ECase
+              (Just (var "x"))
+              [ carm [num 1] (ex (EDo (block [SBind "a" Public (num 1), SExpr (var "a")]))),
+                celse (num 2)
+              ]
+          )
+
+    it "reads an else on its own line as the else arm, not as an if branch" $
+      pExpr "case (x) {\n  1 -> if (c) { 1 } else { 2 }\n  else -> 3\n}"
+        `shouldBe` Right
+          ( ECase
+              (Just (var "x"))
+              [ carm [num 1] (ex (EIf (var "c") (block [SExpr (num 1)]) (Just (block [SExpr (num 2)])))),
+                celse (num 3)
+              ]
+          )
+
+    it "lets an arm body's if put its else block on the next line" $
+      pExpr "case (x) {\n  1 -> if (c) { 1 }\n  else { 2 }\n  else -> 3\n}"
+        `shouldBe` Right
+          ( ECase
+              (Just (var "x"))
+              [ carm [num 1] (ex (EIf (var "c") (block [SExpr (num 1)]) (Just (block [SExpr (num 2)])))),
+                celse (num 3)
+              ]
+          )
+
+    it "parses an empty case (the else arm is required later, in elaboration)" $
+      pExpr "case (x) { }" `shouldBe` Right (ECase (Just (var "x")) [])
+
+    it "rejects an arm without a body" $
+      pModule "x = case (a) { 1 -> }" `shouldSatisfy` isLeft
 
     it "parses try-catch-finally" $
       pExpr "try { a } catch (e) { b } finally { c }"

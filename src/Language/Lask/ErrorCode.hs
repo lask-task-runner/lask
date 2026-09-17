@@ -15,6 +15,7 @@ import Data.Text (Text)
 data ErrorCode
   = ESyntaxUnexpectedToken
   | ESyntaxReturnPosition
+  | ESyntaxCaseElse
   | ENameUndefined
   | ENameAmbiguous
   | ENameDuplicate
@@ -30,6 +31,7 @@ data ErrorCode
   | ETypeEnvConstruct
   | ETypeAccess
   | ETypeFieldDuplicate
+  | ETypeCaseDuplicate
   | ETypeKeyword
   | ETypeIllformed
   | ETypeSecretNonString
@@ -66,6 +68,7 @@ codeText :: ErrorCode -> Text
 codeText c = case c of
   ESyntaxUnexpectedToken -> "E-SYNTAX-UNEXPECTED-TOKEN"
   ESyntaxReturnPosition -> "E-SYNTAX-RETURN-POSITION"
+  ESyntaxCaseElse -> "E-SYNTAX-CASE-ELSE"
   ENameUndefined -> "E-NAME-UNDEFINED"
   ENameAmbiguous -> "E-NAME-AMBIGUOUS"
   ENameDuplicate -> "E-NAME-DUPLICATE"
@@ -81,6 +84,7 @@ codeText c = case c of
   ETypeEnvConstruct -> "E-TYPE-ENV-CONSTRUCT"
   ETypeAccess -> "E-TYPE-ACCESS"
   ETypeFieldDuplicate -> "E-TYPE-FIELD-DUPLICATE"
+  ETypeCaseDuplicate -> "E-TYPE-CASE-DUPLICATE"
   ETypeKeyword -> "E-TYPE-KEYWORD"
   ETypeIllformed -> "E-TYPE-ILLFORMED"
   ETypeSecretNonString -> "E-TYPE-SECRET-NON-STRING"
