@@ -20,6 +20,7 @@ module Language.Lask.Syntax.AST
     Arg (..),
     ArgF (..),
     Block (..),
+    CaseArm (..),
     Stmt (..),
     StmtF (..),
     stripSpansModule,
@@ -135,6 +136,10 @@ data ExprF
     -- occurs for the statement-position guard form (spec 6.4/6.5).
     EIf Expr Block (Maybe Block)
   | EFor (Spanned Text) Expr Block
+  | -- | @case (e) { p -> b ... else -> b }@ (spec 6.4). 'Nothing' as
+    -- the scrutinee is the condition form, whose arm heads are @Bool@
+    -- conditions rather than values compared with the scrutinee.
+    ECase (Maybe Expr) [CaseArm]
   | -- | try body, optional catch (name, handler), optional finally.
     ETry Block (Maybe (Spanned Text, Block)) (Maybe Block)
   | EAsync Expr
@@ -150,6 +155,16 @@ data ExprF
 -- source span it was lexed from, so a position inside it can be
 -- recovered by walking its text (spec 10.9 command words).
 data TextPart = TPChunk Span Text | TPInterp Expr
+  deriving (Show, Eq)
+
+-- | One arm of an 'ECase'. 'Nothing' as the heads marks the @else@
+-- arm, which the elaborator requires to be present exactly once and
+-- last (spec 6.4). An arm with several heads matches any of them.
+data CaseArm = CaseArm
+  { caseArmSpan :: Span,
+    caseArmHeads :: Maybe [Expr],
+    caseArmBody :: Expr
+  }
   deriving (Show, Eq)
 
 data Arg = Arg {argSpan :: Span, argF :: ArgF}
@@ -220,6 +235,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EDo b -> EDo (stripBlock b)
   EIf c t e -> EIf (stripSpansExpr c) (stripBlock t) (fmap stripBlock e)
   EFor (Spanned _ x) xs b -> EFor (Spanned NoSpan x) (stripSpansExpr xs) (stripBlock b)
+  ECase scrut arms -> ECase (fmap stripSpansExpr scrut) (map stripArm arms)
   ETry b c fin ->
     ETry
       (stripBlock b)
@@ -231,6 +247,8 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EEnv h as -> EEnv h (fmap (map stripArg) as)
   other -> other
   where
+    stripArm (CaseArm _ hs b) =
+      CaseArm NoSpan (fmap (map stripSpansExpr) hs) (stripSpansExpr b)
     stripPart (TPChunk _ c) = TPChunk NoSpan c
     stripPart (TPInterp e) = TPInterp (stripSpansExpr e)
     stripArg (Arg _ (APos e)) = Arg NoSpan (APos (stripSpansExpr e))

@@ -316,7 +316,7 @@ Lexical rules:
 Reserved words:
 
 - The following words are reserved words and must not be used as identifiers.
-- `import`, `export`, `internal`, `from`, `as`, `type`, `command`, `do`, `async`, `await`, `if`, `else`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
+- `import`, `export`, `internal`, `from`, `as`, `type`, `command`, `do`, `async`, `await`, `if`, `else`, `case`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
 - `on` is not a reserved word. It is a contextual keyword recognized only within a command declaration (Chapter 5), where no other token may appear in its position, and remains usable as an identifier elsewhere.
 - `stdin` is not a reserved word but is a reserved identifier (9.3), and must not be declared or rebound in user code.
 
@@ -767,7 +767,7 @@ This chapter defines the expressions of Lask. Every unit of execution in Lask is
 ```ebnf
 Expression   = UnaryExpr | Expression binary_op Expression .
 UnaryExpr    = PrimaryExpr | unary_op UnaryExpr .
-PrimaryExpr  = operand | AccessorExpr | CallExpr | DoExpr | IfExpr | ForExpr | TryExpr | AsyncExpr | AwaitExpr .
+PrimaryExpr  = operand | AccessorExpr | CallExpr | DoExpr | IfExpr | CaseExpr | ForExpr | TryExpr | AsyncExpr | AwaitExpr .
 
 operand      = literal | lower_id | array_lit | object_lit | "(" Expression ")" | LambdaExpr | CommandExpr | EnvExpr .
 array_lit    = "[" [ Expression { "," Expression } ] "]" .
@@ -955,14 +955,32 @@ The execution environment may choose the concurrency mechanism for `async` (thre
 ### 6.4 Control Structures
 
 ```ebnf
-IfExpr  = "if" "(" Expression ")" Block "else" Block .
-ForExpr = "for" "(" lower_id ":" Expression ")" Block .
-Block   = "{" { DoStmt } "}" .
+IfExpr       = "if" "(" Expression ")" Block "else" Block .
+CaseExpr     = "case" [ "(" Expression ")" ] "{" { CaseArm arm_end } "}" .
+CaseArm      = ( CaseHeads | "else" ) "->" Expression .
+CaseHeads    = Expression { "," Expression } .
+ForExpr      = "for" "(" lower_id ":" Expression ")" Block .
+Block        = "{" { DoStmt } "}" .
+arm_end      = newline | ";" .
 ```
 
-Control structures are provided as the block-form expressions `IfExpr` / `ForExpr`, and semantically they are handled by normalization to the core function `choose` and the collection function `map`. `if` / `for` are reserved words and can appear only in the expression forms of this section (the function-call forms `if(c, t, f)` / `for(xs, body)` are not provided).
+Control structures are provided as the block-form expressions `IfExpr` / `CaseExpr` / `ForExpr`, and semantically they are handled by normalization to the core function `choose` and the collection function `map`. `if` / `case` / `for` are reserved words and can appear only in the expression forms of this section (the function-call forms `if(c, t, f)` / `for(xs, body)` are not provided).
 
-`IfExpr` / `ForExpr` are `PrimaryExpr` (beginning of Chapter 6) and can appear in any position where an expression can be placed, such as the right-hand side of a binding, a function body, or an argument.
+`IfExpr` / `CaseExpr` / `ForExpr` are `PrimaryExpr` (beginning of Chapter 6) and can appear in any position where an expression can be placed, such as the right-hand side of a binding, a function body, or an argument.
+
+`CaseExpr` is the multi-way conditional. It has two forms:
+
+- With a scrutinee, `case (e) { ... }`: each arm head is compared with the value of `e` by equality (`==`, 6.2).
+- Without a scrutinee, `case { ... }`: each arm head is a condition of type `Bool`, tested in order. This form takes the place of a chained `else if`, which the grammar does not provide, because the `else` of an `IfExpr` always takes a `Block`.
+
+Arm rules:
+
+- An arm head is an ordinary expression, not a binding pattern. `case (x) { y -> ... }` compares `x` with the value of `y`; it never binds `y`. Lask has no data constructors, so there are no destructuring patterns.
+- An arm may list several heads separated by `,` (`"bash", "zsh" -> ...`). The scrutinee form selects such an arm when the scrutinee equals any of its heads, and the condition form when any of its heads is `true` (which `||` expresses just as well).
+- The body of an arm is an `Expression`, not a `Block`, as in `LambdaExpr` (6.1) — which is what an arm becomes after normalization. A sequence of statements is written as an explicit `do { ... }` (6.5), and a `{` directly after `->` is an object literal.
+- Exactly one `else` arm is required, and it must be the last arm. A `case` with no arms, with no `else` arm, with more than one, or with an `else` arm that is not last, is a syntax error (`E-SYNTAX-CASE-ELSE`). Exhaustiveness is never inferred from the type of the scrutinee.
+- An arm terminates at a newline, `;`, or immediately before the block terminator `}`, by the termination rules of 6.5.
+- A newline before a line-leading `else` is a continuation and not a terminator (6.5), so no arm terminator is required before the `else` arm. An `IfExpr` in an arm body may likewise place its `else` block on the following line: an `else` followed by a `Block` continues that `IfExpr`, and an `else` followed by `->` begins the `else` arm.
 
 Definitions as functions:
 
@@ -978,6 +996,11 @@ Desugaring rules:
 - `if (c) { ... } else { ... }` is syntactic sugar for `choose(c, \() -> do { ... }, \() -> do { ... })`.
 - `for (x : xs) { ... }` is syntactic sugar for `map(xs, \(x) -> do { ... })`. However, when the type of the body block is `Void` (including an empty block), it is syntactic sugar for `for_each(xs, \(x) -> do { ... })` (`Array<Void>` is not constructed; 4.4).
 - For iteration for side effects where the result array is unnecessary, either make the body of type `Void` or use `for_each` directly.
+- `case (e) { p -> b; R }` is syntactic sugar for `do { s = e; choose(s == p, \() -> b, \() -> C) }`, where `s` is a fresh name that no source program can write (it therefore captures nothing and shadows nothing) and `C` is the expansion of the remaining arms `R`. Because the scrutinee is bound once, it is evaluated exactly once however many arms are tested.
+- An arm with several heads tests their disjunction: `p1, p2 -> b` produces the condition `s == p1 || s == p2` in the scrutinee form, and `p1 || p2` in the condition form.
+- `case { c -> b; R }` (the condition form) is syntactic sugar for `choose(c, \() -> b, \() -> C)`. It introduces no binding.
+- The final arm `else -> bz` expands to `bz` itself, as the false branch of the innermost `choose`.
+- `case` introduces no core function of its own, and no new evaluation rule: every form of it is a nested `choose`.
 
 Here `choose` is a core function that exists only to serve as a normalization target, and is not exposed in the built-in library (it cannot be referenced, declared, or overridden by user code). `map` / `filter` / `reduce` / `for_each` are functions of the built-in library (15.4) and at the same time core functions serving as normalization targets, and likewise must not be overridden.
 
@@ -990,6 +1013,10 @@ Typing rules:
 - `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because conformance of function types is limited to identity (4.4), in order to accept bodies of arbitrary return type through instantiation of built-in polymorphism).
 - An `IfExpr` is well-typed only when the condition expression is `Bool` and the types of the two branch blocks are the same `T`, and the type of the whole expression is `T`.
 - An `if` without `else` is not an expression. It appears solely as the `return` guard statement (the `GuardStmt` of 6.5), only in statement position.
+- A `CaseExpr` with a scrutinee is well-typed only when the type `S` of the scrutinee is a comparable type (6.2) and every arm head has that same type `S`. These are exactly the rules of `==`, because the expansion is a chain of `==`. A scrutinee of type `Any` is therefore a type error: move to a concrete type with `cast` (15.8) before dispatching on it.
+- A `CaseExpr` without a scrutinee is well-typed only when every arm head has type `Bool`.
+- A `CaseExpr` is well-typed only when the bodies of all arms, the `else` arm included, have the same type `T`, and the type of the whole expression is `T`.
+- Two heads of the same `CaseExpr` that are literals denoting the same value are a static error (`E-TYPE-CASE-DUPLICATE`): the later arm can never be selected. Heads that are not literals are not compared with one another.
 - A `ForExpr`, when the target expression is `Array<T>` and the type of the body block is `R` (`R` other than `Void`), has the type `Array<R>` as the whole expression.
 - When the type of the body block is `Void`, the `ForExpr` is normalized to `for_each` and the type of the whole expression is `Void`.
 
@@ -997,7 +1024,39 @@ Evaluation rules:
 
 - An `IfExpr` first evaluates only the condition expression, and evaluates only the then block if true, or only the else block if false (following `choose` of 8.5).
 - A `ForExpr` evaluates the target collection, then traverses the elements from left to right, applies the body block, and aggregates the results into an array in the same order (following `map` of 8.5).
+- A `CaseExpr` with a scrutinee evaluates the scrutinee exactly once, before any arm head. It then evaluates the heads in order, top to bottom and left to right within an arm, and stops at the first head equal to the scrutinee. The remaining heads are not evaluated, and only the body of the selected arm is evaluated. When no head is equal, the body of the `else` arm is evaluated.
+- A `CaseExpr` without a scrutinee evaluates the conditions in order and stops at the first that is `true`, evaluating only that arm's body. When none is `true`, the body of the `else` arm is evaluated.
+- If evaluation of the scrutinee or of an arm head fails, the whole expression fails at that point, and no further head or body is evaluated (8.10).
 - The interior of a `Block` follows the same statement rules as a `do` block (6.5), and the value of the block is the value of its final statement. The value of an empty block with no statements is `Void` (6.5).
+
+Examples:
+
+```lask
+// Dispatch on a value. The scrutinee is evaluated once.
+completion_dir(shell: String): String = case (shell) {
+  "bash" -> "$HOME/.bash_completion.d"
+  "zsh"  -> "$HOME/.zsh/completions"
+  "fish" -> "$HOME/.config/fish/completions"
+  else   -> fail({ code: 4, message: "unknown shell: #{shell}" })
+}
+
+// Several heads in one arm, and a statement sequence as an arm body.
+deploy(--target: String = "dev"): String = case (target) {
+  "dev", "staging" -> $[#local] ./deploy.sh #{target}
+  "prod" -> do {
+    $[#local] ./check_approval.sh
+    $[#local] ./deploy.sh prod
+  }
+  else -> fail({ code: 2, message: "unknown target: #{target}" })
+}
+
+// The condition form, in place of a chained else if.
+level(n: Number): String = case {
+  n >= 500 -> "error"
+  n >= 400 -> "warn"
+  else     -> "info"
+}
+```
 
 ### 6.5 Procedural Notation
 
@@ -1012,7 +1071,7 @@ stmt_end   = newline | ";" .
 ```
 
 Here `Block` is the block defined in 6.4 (`"{" { DoStmt } "}"`), and `newline` is the newline token defined in 3.3. Immediately before the block terminator `}`, `stmt_end` may be omitted.
-The block forms of `if` / `for` are expressions (the `IfExpr` / `ForExpr` of 6.4), so no dedicated statement forms exist. They appear as an `ExprStmt` or as the right-hand side of a `BindStmt`.
+The block forms of `if` / `case` / `for` are expressions (the `IfExpr` / `CaseExpr` / `ForExpr` of 6.4), so no dedicated statement forms exist. They appear as an `ExprStmt` or as the right-hand side of a `BindStmt`.
 
 Statement termination rules:
 
@@ -1022,7 +1081,7 @@ Statement termination rules:
   - A newline at a position where a bracket opened inside the statement (`(`, `[`, `{`) has not yet been closed
   - A newline at a position where the token at the end of the line is a continuation token. The continuation tokens are limited to the following: `=`, `,`, `:`, `->`, binary operators (`|>`, `+`, `==`, etc.; the `binary_op` of 6.2), `!`
   - A newline where the leading token of the next line is a binary operator (`|>`, `+`, `==`, etc.)
-  - A newline where the leading token of the next line is `else` (continuation after the closing `}` of the then block of an `IfExpr`)
+  - A newline where the leading token of the next line is `else` (continuation after the closing `}` of the then block of an `IfExpr`). Inside a `case` block the same rule is what lets an `else` arm begin a line (6.4)
   - A newline where the leading token of the next line is `catch` or `finally` (continuation after the closing `}` of a block of a `TryExpr`)
 - `as` and `from` are neither continuation tokens nor leading tokens of continuation. A line-leading `as` or `from` does not continue the preceding statement or declaration (see the constraints on `import` declarations in Chapter 5).
 - A line-leading `(` or `[` is interpreted as the start of a new statement. The call argument list or index access of the preceding statement must not begin with a line-leading `(` or `[`.
@@ -1031,7 +1090,7 @@ Statement termination rules:
 - These rules (determination of termination and continuation) also apply identically to the termination of top-level declarations (the declaration termination rules of Chapter 5).
 
 Procedural notation is syntactic sugar to ease gradual migration to the expression-centered core language.
-`do` is syntactic sugar for sequential evaluation, and `if (...) { ... } else { ... }` / `for (...) { ... }` are normalized by the rules of 6.4 into expressions that use `choose` / `map`.
+`do` is syntactic sugar for sequential evaluation, and `if (...) { ... } else { ... }` / `case (...) { ... }` / `for (...) { ... }` are normalized by the rules of 6.4 into expressions that use `choose` / `map`.
 
 Purpose and design policy:
 
@@ -1041,7 +1100,7 @@ Purpose and design policy:
 
 Desugaring rules:
 
-- The desugaring rules for `if (...) { ... } else { ... }` / `for (...) { ... }` follow 6.4.
+- The desugaring rules for `if (...) { ... } else { ... }` / `case (...) { ... }` / `for (...) { ... }` follow 6.4.
 - `do { e }` is equivalent to `e`.
 - `do { v = e1; s2; ...; sn; }` is normalized to an expression that first evaluates `e1`, binds it to `v`, and then evaluates `s2 ... sn`.
 - `do { e1; s2; ...; sn; }` is normalized to an expression that discards the value of `e1` and evaluates `s2 ... sn`.
@@ -1057,7 +1116,7 @@ Early return (`return`):
 - `return` may be placed only in the following positions (return-permitted positions). Violation is a syntax error (`E-SYNTAX-RETURN-POSITION`).
   - A statement position of the `do` block that is the body of a function declaration or lambda expression
   - A `GuardStmt` placed in a return-permitted position, and statement positions inside each branch block of an `IfExpr` in statement position (applied recursively)
-- Therefore, it cannot be used inside the body of `for`, inside each block of `try`/`catch`/`finally`, or inside `do` blocks appearing in expression positions such as the right-hand side of a binding or an argument.
+- Therefore, it cannot be used inside the body of `for`, inside the body of a `case` arm (arm bodies are expressions, 6.4), inside each block of `try`/`catch`/`finally`, or inside `do` blocks appearing in expression positions such as the right-hand side of a binding or an argument.
 - A `GuardStmt` (an `if` without `else`) is permitted only when the final statement of the block is a `ReturnStmt` (6.4).
 - No statement of the same block may be placed after a `ReturnStmt` (unreachable; syntax error).
 
@@ -1082,18 +1141,18 @@ Typing rules:
 - The type of the whole `do` is the type of the last statement (the trailing `ExprStmt` or an expression equivalent to it). If it has no statements, it is `Void`.
 - Empty blocks (`do {}`, and including empty `Block`s of the `IfExpr` / `ForExpr` of 6.4) are permitted. The type of an empty block is `Void`, and its evaluation result is `Void`.
 - Even when the right-hand side of a `BindStmt` has type `Void`, the binding itself is possible, but the bound name cannot be referenced as a value (4.4).
-- The typing rules for `IfExpr` / `ForExpr` follow 6.4 (the same when they appear as the right-hand side of a `BindStmt` or as the final statement).
+- The typing rules for `IfExpr` / `CaseExpr` / `ForExpr` follow 6.4 (the same when they appear as the right-hand side of a `BindStmt` or as the final statement).
 
 Evaluation rules:
 
 - Statements inside `do` are always evaluated from top to bottom.
 - If evaluation of the right-hand side of a `BindStmt` fails, the whole `do` fails at that point and subsequent statements are not evaluated.
-- The evaluation rules for `IfExpr` / `ForExpr` follow 6.4.
+- The evaluation rules for `IfExpr` / `CaseExpr` / `ForExpr` follow 6.4.
 
 Scoping rules:
 
 - An identifier introduced by a `BindStmt` inside a `do` block is in effect within the same block after that statement.
-- Bindings inside a block of `if` / `for` (6.4) do not leak outside that block.
+- Bindings inside a block of `if` / `for` and inside the body of a `case` arm (6.4) do not leak outside it. The name the normalization of a `case` scrutinee binds is fresh and cannot be referenced by any expression written in the source (6.4).
 - The iteration variable `x` of `for (x : xs)` is in effect only inside the body block.
 
 Examples:
@@ -1509,7 +1568,8 @@ Scope rules:
 
 - Lambda parameters are valid only within the lambda body.
 - A `BindStmt` in a `do` is valid within the same block for the statements that follow the declaring statement.
-- Bindings inside `if` / `for` / `try` blocks do not leak outward.
+- Bindings inside `if` / `for` / `try` blocks, and inside the body of a `case` arm, do not leak outward.
+- The name that the normalization of a `case` scrutinee (6.4) binds is fresh: it is visible to no expression written in the source, and shadows nothing.
 - The `x` in `for (x : xs)` is valid only within the iteration body.
 - The `e` in `catch (e)` is valid only within the `catch` block.
 
@@ -1571,7 +1631,7 @@ Consistency of helper functions (normalization targets of syntactic sugar):
 
 Type variables in signatures (`T`, `U`, etc.) are instantiated and checked per call according to the built-in polymorphism rules of 4.4.
 
-`async` / `if` / `for` / `$ ...` are statically verified as sugar over the helper functions above. `await e` is verified as an application of the core function `await`.
+`async` / `if` / `case` / `for` / `$ ...` are statically verified as sugar over the helper functions above. `await e` is verified as an application of the core function `await`.
 
 Consistency of environment expressions:
 
@@ -1586,16 +1646,17 @@ The expansion order during static verification is as follows.
 2. `await e` -> core function application `await(e)` (normalization of the parenthesis-omitted form)
 3. Continuation-distribution transformation of `return` (including guard statements) (6.5)
 4. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`
-5. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
-6. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
-7. Sequential-execution expansion of `do { ... }`
-8. Expansion of environment expression sugar (`#name` -> `#name()`, and `#image-name` other than environment kind names -> `#docker("image-name")`)
-9. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
-10. Command sugar expansion of `$ cmd` / `$[env] cmd`
+5. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name
+6. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
+7. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
+8. Sequential-execution expansion of `do { ... }`
+9. Expansion of environment expression sugar (`#name` -> `#name()`, and `#image-name` other than environment kind names -> `#docker("image-name")`)
+10. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
+11. Command sugar expansion of `$ cmd` / `$[env] cmd`
 
 Type checking is performed on the core expressions after expansion. The meaning of the expansion result must be equivalent to that of the original syntax.
 
-Only the choice of expansion target in step 5 (`map` / `for_each`) depends on the type of the body block (type-directed expansion). Implementations must type the body block first and determine the expansion target from that result. All other expansions are purely syntactic.
+Only the choice of expansion target in step 6 (`map` / `for_each`) depends on the type of the body block (type-directed expansion). Implementations must type the body block first and determine the expansion target from that result. All other expansions are purely syntactic.
 
 ### 7.7 Static Errors
 
@@ -1617,6 +1678,7 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-ENV-CONSTRUCT`: invalid environment expression (unknown environment kind, neither or both of a registry reference and a recipe, a registry reference without a tag or digest, a non-literal `dockerfile`/`context`, a recipe path escaping the module tree, a dynamic image reference in a dependency domain, or an unknown or duplicate named argument; 10.2, 10.3)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
+- `E-TYPE-CASE-DUPLICATE`: two literal heads of one `case` expression denote the same value, so the later arm is unreachable (6.4)
 - `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, invalid target type of `cast`; 4.2, 15.8)
 - `E-TYPE-SECRET-NON-STRING`: `!!` applied to a binding whose type is not `String` (6.10)
 - `E-MODULE-CYCLE`: module circular dependency
@@ -1698,6 +1760,8 @@ Evaluation of `choose(c, t, f)`:
 2. If `c = true`, evaluate only `t()`.
 3. If `c = false`, evaluate only `f()`.
 4. The unselected branch is not evaluated.
+
+`case` (6.4) has no core function of its own. Its scrutinee form is normalized to a binding of the scrutinee followed by a nested `choose`, so the scrutinee is evaluated once and the rule above governs the rest; its condition form is a nested `choose` directly.
 
 Evaluation of `map(xs, body)`:
 
@@ -3071,6 +3135,7 @@ Representative codes:
 
 - `E-SYNTAX-UNEXPECTED-TOKEN`
 - `E-SYNTAX-RETURN-POSITION`
+- `E-SYNTAX-CASE-ELSE`
 - `E-NAME-UNDEFINED`
 - `E-NAME-AMBIGUOUS`
 - `E-NAME-DUPLICATE`
@@ -3086,6 +3151,7 @@ Representative codes:
 - `E-TYPE-ENV-CONSTRUCT`
 - `E-TYPE-ACCESS`
 - `E-TYPE-FIELD-DUPLICATE`
+- `E-TYPE-CASE-DUPLICATE`
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
 - `E-TYPE-SECRET-NON-STRING`
@@ -3161,6 +3227,7 @@ Minimum targets:
 - `E-TYPE-ENV-CONSTRUCT`
 - `E-TYPE-ACCESS`
 - `E-TYPE-FIELD-DUPLICATE`
+- `E-TYPE-CASE-DUPLICATE`
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
 - `E-TYPE-SECRET-NON-STRING`

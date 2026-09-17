@@ -333,6 +333,12 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       ENot e -> checkExpr sc e
       EDo b -> checkBlock sc b
       EIf c t e -> checkExpr sc c <> checkBlock sc t <> maybe [] (checkBlock sc) e
+      ECase scrut arms ->
+        maybe [] (checkExpr sc) scrut
+          <> concat
+            [ concatMap (checkExpr sc) (concat hs) <> checkExpr sc body
+            | CaseArm _ hs body <- arms
+            ]
       EFor (Spanned xsp x) xs body ->
         checkExpr sc xs
           <> [coreDiag xsp x | isUnbindableName x]

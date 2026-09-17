@@ -119,6 +119,23 @@ spec = do
       evalsTo "f() = do {\n  a = 1\n  b = a + 1\n  a + b\n}" "f" "3"
     it "evaluates only the selected branch" $
       evalsTo "f() = if (true) { 1 } else { get({\"a\": 2}, \"missing\") }" "f" "1"
+    it "evaluates only the selected case arm (spec 6.4)" $
+      evalsTo "f() = case (1) {\n  1 -> 1\n  else -> get({\"a\": 2}, \"missing\")\n}" "f" "1"
+    it "stops testing heads at the first match" $
+      evalsTo "xs = [9]\nf() = case (1) {\n  1 -> \"a\"\n  xs[5] -> \"b\"\n  else -> \"c\"\n}" "f" "\"a\""
+    it "matches any of an arm's heads" $
+      evalsTo "f(s: String) = case (s) {\n  \"a\", \"b\" -> 1\n  else -> 2\n}\ng() = f(\"b\")" "g" "1"
+    it "falls through to the else arm" $
+      evalsTo "f(s: String) = case (s) {\n  \"a\" -> 1\n  else -> 2\n}\ng() = f(\"z\")" "g" "2"
+    it "dispatches on the value of a command scrutinee" $
+      -- The command string runs to the end of the line (spec 6.6), so
+      -- the scrutinee is bound first.
+      evalsTo
+        "f() = do {\n  r = $[#local] echo one\n  case (r) {\n    \"two\\n\" -> 2\n    \"one\\n\" -> 1\n    else -> 0\n  }\n}"
+        "f"
+        "1"
+    it "takes the first true arm of the condition form" $
+      evalsTo "f(n: Number) = case {\n  n >= 500 -> \"error\"\n  n >= 400 -> \"warn\"\n  else -> \"info\"\n}\ng() = f(404)" "g" "\"warn\""
     it "maps for expressions in order" $
       evalsTo "f() = for (x : [1, 2, 3]) { x * 2 }" "f" "[2,4,6]"
     it "evaluates early returns" $

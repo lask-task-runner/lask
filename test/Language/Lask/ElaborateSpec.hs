@@ -157,6 +157,49 @@ spec = do
       hasType "f() = do {\n  a = 1\n  a + 1\n}" "f" "Function<Number>"
     it "types empty blocks as Void" $ hasType "f() = do {}" "f" "Function<Void>"
 
+  describe "case expressions (spec 6.4)" $ do
+    it "types a case by its arm bodies" $
+      hasType
+        "f(x: String) = case (x) {\n  \"a\" -> 1\n  else -> 2\n}"
+        "f"
+        "Function<String, Number>"
+    it "types the condition form by its arm bodies" $
+      hasType
+        "f(n: Number) = case {\n  n > 1 -> \"big\"\n  else -> \"small\"\n}"
+        "f"
+        "Function<Number, String>"
+    it "requires an else arm" $
+      rejects "f(x: String) = case (x) {\n  \"a\" -> 1\n}" ESyntaxCaseElse
+    it "requires the else arm to be last" $
+      rejects "f(x: String) = case (x) {\n  else -> 1\n  \"a\" -> 2\n}" ESyntaxCaseElse
+    it "requires arm heads to have the scrutinee type" $
+      rejects "f(x: String) = case (x) {\n  1 -> 1\n  else -> 2\n}" ETypeMismatch
+    it "requires the condition form's heads to be Bool" $
+      rejects "f(x: String) = case {\n  x -> 1\n  else -> 2\n}" ETypeMismatch
+    it "requires the arm bodies to agree" $
+      rejects "f(x: String) = case (x) {\n  \"a\" -> 1\n  else -> \"z\"\n}" ETypeMismatch
+    it "rejects a scrutinee that cannot be compared (spec 6.2)" $
+      rejects "f(x: Any) = case (x) {\n  \"a\" -> 1\n  else -> 2\n}" ETypeMismatch
+    it "rejects a literal head an earlier arm already matches" $
+      rejects
+        "f(x: String) = case (x) {\n  \"a\" -> 1\n  \"b\", \"a\" -> 2\n  else -> 3\n}"
+        ETypeCaseDuplicate
+    it "allows equal heads that are not literals" $
+      accepts "k = \"a\"\nf(x: String) = case (x) {\n  k -> 1\n  k -> 2\n  else -> 3\n}"
+    it "takes the arm type from any arm that infers on its own (spec 15.7)" $
+      hasType
+        "f(x: String): String = case (x) {\n  \"a\" -> fail({ code: 1, message: \"no\" })\n  else -> \"z\"\n}"
+        "f"
+        "Function<String, String>"
+    it "checks every arm against an expected type" $
+      rejects
+        "f(x: String): String = case (x) {\n  \"a\" -> \"y\"\n  else -> 2\n}"
+        ETypeMismatch
+    it "rejects return inside an arm body (spec 6.5)" $
+      rejects
+        "f(x: String): String = do {\n  y = case (x) {\n    \"a\" -> do { return \"e\" }\n    else -> \"z\"\n  }\n  y\n}"
+        ESyntaxReturnPosition
+
   describe "early return (spec 6.5)" $ do
     it "accepts guard + return in function bodies" $
       accepts

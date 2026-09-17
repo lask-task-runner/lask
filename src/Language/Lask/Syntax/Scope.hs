@@ -118,6 +118,7 @@ childExprs (Expr _ f) = case f of
   EDo b -> blockExprs b
   EIf c t mElse -> c : blockExprs t <> maybe [] blockExprs mElse
   EFor _ xs b -> xs : blockExprs b
+  ECase scrut arms -> maybeToList scrut <> concatMap armExprs arms
   ETry b mCatch mFin ->
     blockExprs b
       <> maybe [] (blockExprs . snd) mCatch
@@ -127,6 +128,9 @@ childExprs (Expr _ f) = case f of
   ECommand _ env ps -> maybeToList env <> partExprs ps
   EEnv _ as -> maybe [] (map argExpr) as
   _ -> []
+
+armExprs :: CaseArm -> [Expr]
+armExprs (CaseArm _ hs b) = concat hs <> [b]
 
 blockExprs :: Block -> [Expr]
 blockExprs (Block _ ss) = concatMap stmtExprs ss
