@@ -46,6 +46,8 @@ import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
 import Language.Lask.Runtime.Image (buildRecipe, imageExists, recipeTag)
+import Language.Lask.Builtins.Impl (RtHooks (..))
+import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, renderValueText)
@@ -153,7 +155,13 @@ cmdRunEval printResult runOpts = do
         | optJsonFormat opts = jsonCommandLog traceId writeErr
         | otherwise = textCommandLog writeErr
   runner <- mkCommandRunner baseDir cmdLogSink
-  ctx0 <- mkRtCtx core stdinText runner
+  fileRunner <- mkFileRunner baseDir
+  let -- `log` (spec 15.12) writes execution log lines to stderr,
+      -- through the same serialized writer as the command logs.
+      logSink
+        | optJsonFormat opts = jsonLogSink traceId writeErr
+        | otherwise = textLogSink writeErr
+  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner logSink)
   let sink
         | optJsonFormat opts = writeErr . encodeEvent
         | otherwise = noSink

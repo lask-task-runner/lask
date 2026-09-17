@@ -356,6 +356,30 @@ spec = beforeAll findLask $ do
         all (\l -> take 1 l == "{") errLines `shouldBe` True
         resErr r `shouldSatisfy` isInfixOf "\"stage\":\"static\""
 
+  describe "log (spec 15.12)" $ do
+    it "writes to stderr, leaving stdout to the result alone (9.5)" $ \lask ->
+      withProject [("main.lask", "f() = do {\n  log(\"building\")\n  \"done\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"done\"\n"
+        resErr r `shouldSatisfy` isInfixOf "building"
+    it "carries a level and a message as JSON under --format json (12.2)" $ \lask ->
+      withProject [("main.lask", "f() = do {\n  log(\"building\")\n  \"done\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "--format", "json", "f"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldSatisfy` isInfixOf "\"level\":\"info\""
+        resErr r `shouldSatisfy` isInfixOf "\"message\":\"building\""
+    it "masks a registered secret (12.8)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "f() = do {\n  token!! = \"s3cret\"\n  log(concat(\"using \", token))\n  \"done\"\n}\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["eval", "f"] ""
+          resExit r `shouldBe` 0
+          resErr r `shouldSatisfy` (not . isInfixOf "s3cret")
+
   describe "observability (spec 12, 13.3)" $ do
     let src =
           "inner(): Number = fail({code: 9, message: \"deep\"})\n\

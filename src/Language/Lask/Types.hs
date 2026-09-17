@@ -8,6 +8,7 @@ module Language.Lask.Types
     renderType,
     conformsTo,
     comparable,
+    orderable,
     isGround,
     wellFormed,
     errorType,
@@ -97,6 +98,18 @@ comparable t = case t of
   TyArray e -> comparable e
   TyMap e -> comparable e
   TyRecord fs -> all comparable (Map.elems fs)
+  _ -> False
+
+-- | Types that @sort@ \/ @sort_by@ can order (spec 15.4).
+--
+-- Narrower than 'comparable': equality is structural and works on
+-- every data type, but an order has to be a total one. It is defined
+-- here for the sort functions alone and does not extend the ordering
+-- operators of 6.2, which stay @Number@-only.
+orderable :: Type -> Bool
+orderable t = case t of
+  TyNumber -> True
+  TyString -> True
   _ -> False
 
 -- | No type variables remain.
