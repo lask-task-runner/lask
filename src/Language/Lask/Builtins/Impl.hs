@@ -192,6 +192,12 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("contains_array", [VArray xs, v]) -> pure (VBool (any (valueEq v) (V.toList xs)))
   ("index_of_array", [VArray xs, v]) ->
     num (fromIntegral (indexOfBy (valueEq v) (V.toList xs)))
+  ("find", [VArray xs, f]) -> findM (V.toList xs)
+    where
+      findM [] = pure VNull
+      findM (x : rest) = do
+        ok <- truthy <$> apply f [x] []
+        if ok then pure x else findM rest
   ("find_index", [VArray xs, f]) -> findIndexM (V.toList xs) 0
     where
       findIndexM [] _ = num (-1)
@@ -316,11 +322,17 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   -- 15.9 environment access / secret marking ---------------------------------
   -- Reading the environment does not by itself make a value secret:
   -- masking is opt-in through `!!` / `mark_secret` (spec 6.10, 12.8).
+  -- get_ presupposes presence, so an unset variable is a failure and
+  -- not a value (spec 15.1, 15.9). find_env is the form that looks.
   ("get_env", [VString key]) -> do
     envs <- getEnvironment
     case lookup (T.unpack key) envs of
       Just value -> pure (VString (T.pack value))
-      Nothing -> pure VNull
+      Nothing ->
+        throwIO . runtimeFailure ERuntimeAccess $
+          "environment variable is not set: '" <> key <> "'"
+  ("find_env", [VString key]) ->
+    maybe VNull (VString . T.pack) <$> lookupEnv (T.unpack key)
   -- The desugaring target of `!!` secret bindings (spec 6.10): register
   -- the value for log masking (12.8) and hand it back untouched.
   ("has_env", [VString key]) -> VBool . maybe False (const True) <$> lookupEnv (T.unpack key)

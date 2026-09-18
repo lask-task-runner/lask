@@ -384,6 +384,8 @@ typeFromS ctx path st = do
             t' <- go t
             pure (Map.insert k t' acc)
       SNamed q n -> aliasType ctx path sp q n
+      SUnion (u : us) -> mkUnion <$> go u <*> mapM go us
+      SUnion [] -> pure TyAny -- unreachable: the parser builds at least two
 
 aliasType :: Ctx -> FilePath -> Span -> Maybe Text -> Text -> TC Type
 aliasType ctx path sp qualifier n = do
@@ -725,6 +727,7 @@ typeToS sp t = SType sp $ case t of
   TyRecord fs -> SRecord [(Spanned sp k, typeToS sp v) | (k, v) <- Map.toList fs]
   TyAsync e -> SAsyncHandle (typeToS sp e)
   TyFun psL r -> SFunction (map (typeToS sp) psL) (typeToS sp r)
+  TyUnion ts -> SUnion (map (typeToS sp) ts)
   TyVar v -> SNamed Nothing v
 
 -- Variables ---------------------------------------------------------------------
@@ -915,12 +918,21 @@ elabBin ctx path locals sp op a b mExpected = case op of
       ca <- check ctx path locals a TyNumber
       cb <- check ctx path locals b TyNumber
       pure (Core sp (CBin p ca cb), TyBool)
+    -- One side has to fit where the other is, and the wider of the two
+    -- -- the one conformed to -- has to be comparable (spec 6.2). For
+    -- two non-union types that is the same as requiring them equal.
     equality p = do
       (ca, ta) <- infer ctx path locals a
       (cb, tb) <- infer ctx path locals b
-      unless (ta == tb) (mismatch sp ta tb)
-      unless (comparable ta) $
-        abort (diag ETypeMismatch sp ("values of type " <> renderType ta <> " cannot be compared with ==/!="))
+      wider <-
+        if conformsTo ta tb
+          then pure tb
+          else
+            if conformsTo tb ta
+              then pure ta
+              else mismatch sp ta tb
+      unless (comparable wider) $
+        abort (diag ETypeMismatch sp ("values of type " <> renderType wider <> " cannot be compared with ==/!="))
       pure (Core sp (CBin p ca cb), TyBool)
     logical ctor = do
       ca <- check ctx path locals a TyBool
@@ -1012,24 +1024,34 @@ elabCase ::
   TC (Core, Type)
 elabCase ctx path locals sp mScrut arms mExpected = do
   (matchArms, elseBody) <- splitCaseArms sp arms
-  duplicateHeads (concatMap fst matchArms)
-  (mBind, conds) <- case mScrut of
+  duplicateHeads [h | (ValueHeads hs, _) <- matchArms, h <- hs]
+  (mBind, conds, narrows, taken) <- case mScrut of
     Nothing -> do
-      cs <- mapM (\(hs, _) -> anyOf <$> mapM (\h -> check ctx path locals h TyBool) hs) matchArms
-      pure (Nothing, cs)
+      cs <- mapM (boolCond . fst) matchArms
+      pure (Nothing, cs, map (const plain) matchArms, [])
     Just scrut -> do
       (scrutCore, scrutTy) <- infer ctx path locals scrut
-      unless (comparable scrutTy) $
+      let name = caseScrutName sp
+          scrutVar = Core (exprSpan scrut) (CVar (LocalRef name))
+      -- Only an equality head needs the scrutinee to be comparable
+      -- (spec 6.2, 6.4); a case that only dispatches on types does not.
+      when (any (isValueHeads . fst) matchArms && not (comparable scrutTy)) $
         abort . diag ETypeMismatch (exprSpan scrut) $
           "values of type " <> renderType scrutTy <> " cannot be matched by case"
-      let name = caseScrutName sp
-          matches h = do
-            hc <- check ctx path locals h scrutTy
-            let hsp = exprSpan h
-            pure (Core hsp (CBin PEq (Core hsp (CVar (LocalRef name))) hc))
-      cs <- mapM (\(hs, _) -> anyOf <$> mapM matches hs) matchArms
-      pure (Just (name, scrutCore), cs)
-  (bodies, ty) <- elabBodies (map snd matchArms <> [elseBody])
+      parts <- mapM (armPart scrutTy name scrutVar) matchArms
+      duplicateTypeHeads [m | (_, _, ms) <- parts, m <- ms]
+      pure
+        ( Just (name, scrutCore),
+          [c | (c, _, _) <- parts],
+          [n | (_, n, _) <- parts],
+          [m | (_, _, ms) <- parts, m <- ms]
+        )
+  let elseNarrow = case (mScrut, taken) of
+        (Just (Expr _ (EVar n)), _ : _)
+          | Just declared <- Map.lookup n locals -> narrowBind n declared (subtractAll declared taken)
+        _ -> plain
+  (bodies, ty) <-
+    elabBodies (zip narrows (map snd matchArms) <> [(elseNarrow, elseBody)])
   (matchBodies, elseCore) <- case reverse bodies of
     (lastCore : revInit) -> pure (reverse revInit, lastCore)
     [] -> abort (caseElse sp "a case expression requires an else arm")
@@ -1039,6 +1061,101 @@ elabCase ctx path locals sp mScrut arms mExpected = do
     Nothing -> (chain, ty)
     Just (name, scrutCore) -> (Core sp (CDo [CSBind name scrutCore, CSExpr chain]), ty)
   where
+    isValueHeads (ValueHeads _) = True
+    isValueHeads _ = False
+
+    -- How an arm body is elaborated: under which locals, and wrapped
+    -- in which rebinding of the narrowed scrutinee (spec 6.4).
+    plain :: (Locals, Core -> Core)
+    plain = (locals, id)
+
+    -- The condition form (spec 6.4): every head is a Bool, and a type
+    -- head has no scrutinee to dispatch on.
+    boolCond (TypeHeads (t : _)) =
+      abort . diag ETypeMismatch (stypeSpan t) $
+        "a type can only be the head of a case that has a scrutinee"
+    boolCond (TypeHeads []) = pure (Core sp (CBool False))
+    boolCond (ValueHeads hs) =
+      anyOf <$> mapM (\h -> check ctx path locals h TyBool) hs
+
+    -- One matching arm of the scrutinee form: its condition, how its
+    -- body is elaborated, and the members it takes out of the union.
+    armPart scrutTy name scrutVar (heads, _) = case heads of
+      ValueHeads hs -> do
+        tys <- mapM (headType scrutTy) hs
+        conds <- mapM (equalsHead scrutTy name) hs
+        let members = [t | Just t <- tys, t `elem` unionMembers scrutTy]
+            -- Only Null is exhausted by matching one of its values.
+            takenHere = filter (== TyNull) members
+        pure (anyOf conds, narrowTo scrutTy members, takenHere)
+      TypeHeads sts -> do
+        ms <- mapM (typeHead scrutTy) sts
+        let conds = [Core (stypeSpan st) (CIsType scrutVar m) | (st, m) <- zip sts ms]
+        pure (anyOf conds, narrowTo scrutTy ms, ms)
+
+    -- A type head is admissible for the two types whose runtime kind
+    -- is not settled statically (spec 6.4).
+    typeHead scrutTy st = do
+      m <- typeFromS ctx path st
+      case scrutTy of
+        TyUnion members
+          | m `elem` members -> pure m
+          | otherwise ->
+              abort . withExpectedActual (renderType scrutTy) (renderType m) $
+                diag ETypeMismatch (stypeSpan st) $
+                  renderType m <> " is not a member of " <> renderType scrutTy
+        TyAny
+          | dataType m && isGround m -> pure m
+          | otherwise ->
+              abort . diag ETypeIllformed (stypeSpan st) $
+                "a case type head must be a data type, got " <> renderType m
+        other ->
+          abort . diag ETypeMismatch (stypeSpan st) $
+            "dispatching on a type requires a union or Any scrutinee, got "
+              <> renderType other
+
+    -- The type a value head stands for, where it is knowable. The head
+    -- is elaborated again by 'equalsHead'; this pass commits nothing.
+    headType _ h = do
+      r <- tryTC (infer ctx path locals h)
+      pure $ case r of
+        Right (_, t) | isGround t -> Just t
+        _ -> Nothing
+
+    equalsHead scrutTy name h = do
+      hc <- check ctx path locals h scrutTy
+      let hsp = exprSpan h
+      pure (Core hsp (CBin PEq (Core hsp (CVar (LocalRef name))) hc))
+
+    -- Positive narrowing: inside the arm, the scrutinee has the type
+    -- its heads selected (spec 6.4). Only a plain local name narrows.
+    narrowTo scrutTy ms = case (mScrut, ms) of
+      (Just (Expr _ (EVar n)), m : rest)
+        | Map.lookup n locals == Just scrutTy -> narrowBind n scrutTy (mkUnion m rest)
+      _ -> plain
+
+    -- Rebind the name at the narrowed type for the arm body. A single
+    -- narrowed type goes through the conversion of cast (15.8), so a
+    -- record narrowed to Map<T> reaches the body as a map.
+    narrowBind n declared narrowed
+      | narrowed == declared = plain
+      | otherwise = (Map.insert n narrowed locals, wrap)
+      where
+        wrap body = Core (coreSpan body) (CDo [CSBind n rhs, CSExpr body])
+        scrutVar = Core sp (CVar (LocalRef (caseScrutName sp)))
+        rhs = case narrowed of
+          TyUnion _ -> scrutVar
+          _ -> Core sp (CCast scrutVar narrowed)
+
+    -- Subtractive narrowing for the else arm (spec 6.4). Removing
+    -- every member leaves the declared type: there is no empty type.
+    subtractAll declared takenTys = case filter (`notElem` takenTys) (unionMembers declared) of
+      (m : rest) | isUnion declared -> mkUnion m rest
+      _ -> declared
+      where
+        isUnion (TyUnion _) = True
+        isUnion _ = False
+
     -- An arm with several heads matches any of them (spec 6.4).
     anyOf [] = Core sp (CBool False)
     anyOf (c : cs) = foldl (\acc x -> Core (coreSpan acc <> coreSpan x) (COr acc x)) c cs
@@ -1051,22 +1168,36 @@ elabCase ctx path locals sp mScrut arms mExpected = do
     -- afterwards elaborates each arm exactly once.
     elabBodies bodies = case mExpected of
       Just t | t /= TyAny -> do
-        cs <- mapM (\b -> check ctx path locals b t) bodies
+        cs <- mapM (`checkArm` t) bodies
         pure (cs, t)
       _ -> inferFirst [] Nothing bodies
+
+    checkArm ((lcls, wrap), b) t = wrap <$> check ctx path lcls b t
 
     -- When no arm infers, the first arm's diagnostic is the report.
     inferFirst _ mFirstErr [] = case mFirstErr of
       Just d -> abort d
       Nothing -> abort (caseElse sp "a case expression requires an else arm")
-    inferFirst pending mFirstErr (b : rest) = do
-      r <- tryTC (infer ctx path locals b)
+    inferFirst pending mFirstErr (a@((lcls, wrap), b) : rest) = do
+      r <- tryTC (infer ctx path lcls b)
       case r of
         Right (c, t) -> do
-          before <- mapM (\e -> check ctx path locals e t) (reverse pending)
-          after <- mapM (\e -> check ctx path locals e t) rest
-          pure (before <> (c : after), t)
-        Left d -> inferFirst (b : pending) (maybe (Just d) Just mFirstErr) rest
+          before <- mapM (`checkArm` t) (reverse pending)
+          after <- mapM (`checkArm` t) rest
+          pure (before <> (wrap c : after), t)
+        Left d -> inferFirst (a : pending) (maybe (Just d) Just mFirstErr) rest
+
+    -- Two type heads denoting the same type make the later arm
+    -- unreachable (spec 6.4).
+    duplicateTypeHeads = goTy Set.empty
+      where
+        goTy _ [] = pure ()
+        goTy seen (m : rest)
+          | Set.member m seen =
+              abort . diag ETypeCaseDuplicate sp $
+                "this case arm can never be selected: an earlier arm already matches "
+                  <> renderType m
+          | otherwise = goTy (Set.insert m seen) rest
 
     -- Two literal heads of the same value make the later arm
     -- unreachable (spec 6.4). Heads that are not literals are not
@@ -1103,7 +1234,7 @@ caseScrutName NoSpan = "<case>"
 
 -- | Split the arms into the matching arms and the body of the @else@
 -- arm, which must be present exactly once and last (spec 6.4).
-splitCaseArms :: Span -> [CaseArm] -> TC ([([Expr], Expr)], Expr)
+splitCaseArms :: Span -> [CaseArm] -> TC ([(CaseHeads, Expr)], Expr)
 splitCaseArms sp arms = case reverse arms of
   [] -> abort (caseElse sp "a case expression requires an else arm")
   (CaseArm lsp lastHeads lastBody : revInit) -> do
@@ -1660,6 +1791,14 @@ elabCall ctx path locals sp fn args mExpected = do
               (c, _) <- infer ctx path locals arg
               pure (Core sp (CCast c expected), expected)
             _ -> abort (diag ETypeArity sp "cast takes exactly one argument")
+      | name == "to_string" = case (posExprs, kwArgs) of
+          ([arg], []) -> do
+            (c, t) <- infer ctx path locals arg
+            unless (stringifiable t) $
+              abort . diag ETypeMismatch (exprSpan arg) $
+                "'to_string' cannot render a value of type " <> renderType t
+            pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) [c] []), TyString)
+          _ -> abort (diag ETypeArity sp "to_string takes exactly one argument")
       | otherwise = do
           kwCores <- case (name, kwArgs) of
             (_, []) -> pure []
@@ -1680,14 +1819,18 @@ elabCall ctx path locals sp fn args mExpected = do
                 Nothing -> Map.empty
           (cores, subst) <- goArgs subst0 [] (zip posExprs params)
           builtinSideCondition name sp subst
+          let wellFormedRet t =
+                unless (wellFormed t) $
+                  abort . diag ETypeIllformed sp $
+                    "'" <> name <> "' would have the ill-formed result type " <> renderType t
           retTy <- case applySubst subst (schemeRet scheme) of
-            t | isGround t -> pure t
+            t | isGround t -> wellFormedRet t >> pure t
             t -> case mExpected of
               Just expT -> do
                 s' <- unifyOrFail sp t expT subst
                 let t' = applySubst s' t
                 if isGround t'
-                  then pure t'
+                  then wellFormedRet t' >> pure t'
                   else inferenceFailure
               Nothing -> inferenceFailure
           pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) (reverse cores) (kwEnvOf kwCores)), retTy)
@@ -1722,16 +1865,11 @@ elabCall ctx path locals sp fn args mExpected = do
                 pure (lam, ty)
           _ -> infer ctx path locals argExpr
 
+-- | Legal target of @cast@ (spec 15.8): a data type, fully
+-- instantiated. A union is one when all of its members are, which
+-- 'dataType' already requires of every union (4.2).
 castable :: Type -> Bool
-castable t = case t of
-  TyVoid -> False
-  TyFun _ _ -> False
-  TyAsync _ -> False
-  TyVar _ -> False
-  TyArray e -> castable e
-  TyMap e -> castable e
-  TyRecord fs -> all castable (Map.elems fs)
-  _ -> True
+castable t = dataType t && isGround t
 
 -- Type variable substitution / matching -------------------------------------------------------
 
@@ -1772,6 +1910,9 @@ applySubst s t = case t of
   TyRecord fs -> TyRecord (Map.map (applySubst s) fs)
   TyAsync e -> TyAsync (applySubst s e)
   TyFun ps r -> TyFun (map (applySubst s) ps) (applySubst s r)
+  -- Rebuilt through 'mkUnion': substitution can make two members the
+  -- same, or bring an Any in, and the result has to stay canonical.
+  TyUnion (u : us) -> mkUnion (applySubst s u) (map (applySubst s) us)
   _ -> t
 
 -- | First-order matching of a scheme pattern against a concrete type.
@@ -1786,6 +1927,17 @@ unifyE pat actual s = case (pat, actual) of
   (TyArray a, TyArray b) -> unifyE a b s
   (TyMap a, TyMap b) -> unifyE a b s
   (TyAsync a, TyAsync b) -> unifyE a b s
+  -- Instantiating a union return type against an expected union (spec
+  -- 4.4): drop the members the two share, and bind if that leaves one
+  -- variable facing one type.
+  (TyUnion ps, TyUnion as) ->
+    let common = filter (`elem` as) ps
+        ps' = filter (`notElem` common) ps
+        as' = filter (`notElem` common) as
+     in case (ps', as') of
+          ([], []) -> Right s
+          ([p], [a]) -> unifyE p a s
+          _ -> Left (renderType pat <> " does not match " <> renderType actual)
   (TyRecord as, TyRecord bs)
     | Map.keysSet as == Map.keysSet bs ->
         foldM (\acc (a, b) -> unifyE a b acc) s (zip (Map.elems as) (Map.elems bs))

@@ -130,7 +130,11 @@ childExprs (Expr _ f) = case f of
   _ -> []
 
 armExprs :: CaseArm -> [Expr]
-armExprs (CaseArm _ hs b) = concat hs <> [b]
+armExprs (CaseArm _ hs b) = headExprs hs <> [b]
+  where
+    -- Type heads hold no expressions; only value heads do.
+    headExprs (Just (ValueHeads es)) = es
+    headExprs _ = []
 
 blockExprs :: Block -> [Expr]
 blockExprs (Block _ ss) = concatMap stmtExprs ss

@@ -404,7 +404,11 @@ spec = do
       evalsTo "f() = to_string(true)" "f" "\"true\""
       evalsTo "f() = to_number(\" 42 \")" "f" "42"
     it "reports unrenderable and unparsable values" $ do
-      failsWith "f() = to_string([1])" "f" ERuntimeValue
+      -- An argument whose type is known not to be stringifiable is
+      -- rejected at the call site (spec 15.3); only Any reaches the
+      -- runtime check.
+      failsToCompile "f() = to_string([1])" "f"
+      failsWith "f() = to_string(from_json(\"[1]\"))" "f" ERuntimeValue
       failsWith "f() = to_number(\"seven\")" "f" EIoDataDecode
 
   describe "regular expressions (spec 15.3)" $ do
@@ -429,6 +433,9 @@ spec = do
       evalsTo "f() = first([1, 2])" "f" "1"
       evalsTo "f() = last([1, 2])" "f" "2"
       failsWith "f() = first([])" "f" ERuntimeAccess
+    it "returns the element it found, or null (15.1)" $ do
+      evalsTo "f(): String | Null = find([\"a\", \"bb\"], \\(s: String) -> length(s) == 2)" "f" "\"bb\""
+      evalsTo "f(): String | Null = find([\"a\"], \\(s: String) -> length(s) == 9)" "f" "null"
     it "slices, takes, drops and reverses with clamping" $ do
       evalsTo "f() = slice([1, 2, 3, 4], 1, 3)" "f" "[2,3]"
       evalsTo "f() = take([1, 2, 3], 99)" "f" "[1,2,3]"
@@ -519,6 +526,51 @@ spec = do
     it "falls back without ever yielding a null" $ do
       unsetEnv "LASK_TEST_ABSENT"
       evalsTo "f() = get_env_or(\"LASK_TEST_ABSENT\", \"fallback\")" "f" "\"fallback\""
+    it "reads a variable it presupposes is set" $ do
+      setEnv "LASK_TEST_PRESENT" "x"
+      evalsTo "f() = get_env(\"LASK_TEST_PRESENT\")" "f" "\"x\""
+    it "fails rather than yielding a null when get_env finds nothing (15.1)" $ do
+      unsetEnv "LASK_TEST_ABSENT"
+      failsWith "f() = get_env(\"LASK_TEST_ABSENT\")" "f" ERuntimeAccess
+    it "returns the absent case as a value from find_env" $ do
+      setEnv "LASK_TEST_PRESENT" "x"
+      unsetEnv "LASK_TEST_ABSENT"
+      evalsTo "f(): String | Null = find_env(\"LASK_TEST_PRESENT\")" "f" "\"x\""
+      evalsTo "f(): String | Null = find_env(\"LASK_TEST_ABSENT\")" "f" "null"
+      evalsTo
+        "f(): String = do {\n  v = find_env(\"LASK_TEST_ABSENT\")\n  case (v) {\n    Null -> \"fallback\"\n    else -> v\n  }\n}"
+        "f"
+        "\"fallback\""
+
+  describe "union types and type dispatch (spec 4.2, 6.4)" $ do
+    it "selects the arm whose type the value has" $ do
+      evalsTo "f(v: Any): String = case (v) {\n  String -> \"s\"\n  Number -> \"n\"\n  else -> \"?\"\n}\ng() = f(1)" "g" "\"n\""
+      evalsTo "f(v: Any): String = case (v) {\n  String -> \"s\"\n  Number -> \"n\"\n  else -> \"?\"\n}\ng() = f(true)" "g" "\"?\""
+    it "tests an element type through the whole array" $
+      evalsTo
+        "f(v: Any): String = case (v) {\n  Array<String> -> \"strings\"\n  else -> \"other\"\n}\ng() = f(from_json(\"[1]\"))"
+        "g"
+        "\"other\""
+    it "takes the first arm that matches" $
+      evalsTo
+        "f(v: Any): String = case (v) {\n  Any -> \"first\"\n  Number -> \"second\"\n  else -> \"?\"\n}\ng() = f(1)"
+        "g"
+        "\"first\""
+    it "converts a record narrowed to a map, so the body's type holds" $
+      evalsTo
+        "f(v: Any): Number = case (v) {\n  Map<Number> -> size(keys(v))\n  else -> 0\n}\ng() = f(from_json(\"{\\\"a\\\": 1, \\\"b\\\": 2}\"))"
+        "g"
+        "2"
+    it "evaluates only the selected arm's body" $
+      evalsTo
+        "f(v: Any): Number = case (v) {\n  Number -> 1\n  else -> get({\"a\": 2}, \"missing\")\n}\ng() = f(5)"
+        "g"
+        "1"
+    it "casts into and out of a union (spec 15.8)" $ do
+      evalsTo "f(): String | Null = cast(from_json(\"null\"))" "f" "null"
+      failsWith "f(v: String | Null): String = cast(v)\ng() = f(null)" "g" ERuntimeCast
+    it "serializes a union as the member the value is (spec 13.1)" $
+      evalsTo "f(): Array<String | Null> = [\"a\", null]" "f" "[\"a\",null]"
 
   describe "path operations (spec 15.10)" $
     it "are lexical and POSIX" $ do

@@ -157,6 +157,48 @@ spec = do
       hasType "f() = do {\n  a = 1\n  a + 1\n}" "f" "Function<Number>"
     it "types empty blocks as Void" $ hasType "f() = do {}" "f" "Function<Void>"
 
+  describe "union types (spec 4.2, 4.4)" $ do
+    it "reduces a union to its canonical form" $ do
+      hasType "f(x: Null | String): Null | String = x" "f" "Function<String | Null, String | Null>"
+      hasType "f(x: String | String): String = x" "f" "Function<String, String>"
+      hasType "f(x: Any | Null): Any = x" "f" "Function<Any, Any>"
+    it "accepts a member where the union is required" $
+      accepts "f(): String | Null = \"a\"\ng(): String | Null = null"
+    it "rejects the union where a member is required" $
+      rejects "f(x: String | Null): String = x" ETypeMismatch
+    it "does not lift the union through a constructor (spec 4.4)" $
+      rejects "f(xs: Array<String>): Array<String | Null> = xs" ETypeMismatch
+    it "checks a literal element-wise against a union element type" $
+      accepts "xs: Array<String | Null> = [\"a\", null]"
+    it "propagates an expected union into both branches of an if (spec 4.3)" $
+      accepts "f(c: Bool): String | Null = if (c) { \"a\" } else { null }"
+    it "still refuses to infer a union from differing branches" $
+      rejects "f(c: Bool) = if (c) { \"a\" } else { null }" ETypeMismatch
+    it "compares a union with one of its members (spec 6.2)" $ do
+      accepts "f(x: String | Null): Bool = x == null"
+      rejects "f(x: String | Null): Bool = x == 1" ETypeMismatch
+    it "refuses to interpolate a union that may be absent (spec 6.6)" $
+      rejects "f(x: String | Null): String = \"v=#{x}\"" ETypeMismatch
+    it "refuses to_string of a union that may be absent (spec 15.3)" $
+      rejects "f(x: String | Null): String = to_string(x)" ETypeMismatch
+    it "interpolates a union all of whose members are stringifiable" $
+      accepts "f(x: String | Number): String = \"v=#{x}\""
+    it "rejects a member that is not a data type (spec 4.2)" $ do
+      rejects "f(x: Function<Number, Number> | Null): Number = 1" ETypeIllformed
+      rejects "f(x: AsyncHandle<Number> | Null): Number = 1" ETypeIllformed
+      rejects "f(x: Void | Null): Number = 1" ETypeIllformed
+    it "casts to a union (spec 15.8)" $
+      accepts "f(v: Any): String | Null = cast(v)"
+    it "instantiates a union return type from an argument (spec 4.4)" $
+      hasType
+        "f(xs: Array<String>) = find(xs, \\(s: String) -> true)"
+        "f"
+        "Function<Array<String>, String | Null>"
+    it "rejects an instantiation whose result would be ill-formed" $
+      rejects
+        "f(fs: Array<Function<Number, Number>>) = find(fs, \\(g: Function<Number, Number>) -> true)"
+        ETypeIllformed
+
   describe "case expressions (spec 6.4)" $ do
     it "types a case by its arm bodies" $
       hasType
@@ -195,6 +237,46 @@ spec = do
       rejects
         "f(x: String): String = case (x) {\n  \"a\" -> \"y\"\n  else -> 2\n}"
         ETypeMismatch
+    it "narrows a union scrutinee in each arm (spec 6.4)" $
+      hasType
+        "f(x: Number | String | Null): String = case (x) {\n  Null -> \"none\"\n  Number -> to_string(x)\n  else -> x\n}"
+        "f"
+        "Function<Number | String | Null, String>"
+    it "narrows the else arm by subtracting the matched members" $
+      accepts "f(x: String | Null): String = case (x) {\n  Null -> \"none\"\n  else -> x\n}"
+    it "subtracts Null for a null value head too" $
+      accepts "f(x: String | Null): String = case (x) {\n  null -> \"none\"\n  else -> x\n}"
+    it "does not subtract for a value head that does not exhaust its member" $
+      rejects "f(x: String | Null): String = case (x) {\n  \"a\" -> \"none\"\n  else -> x\n}" ETypeMismatch
+    it "does not narrow a scrutinee that is not a plain name" $
+      rejects
+        "g(): String | Null = null\nf(): String = case (g()) {\n  Null -> \"none\"\n  else -> g()\n}"
+        ETypeMismatch
+    it "keeps the narrowing inside the arm" $
+      rejects
+        "f(x: String | Null): String = do {\n  y = case (x) {\n    Null -> \"none\"\n    else -> x\n  }\n  x\n}"
+        ETypeMismatch
+    it "dispatches on the type of an Any scrutinee (spec 4.4, 6.4)" $
+      hasType
+        "f(v: Any): String = case (v) {\n  String -> v\n  Array<String> -> join(v, \",\")\n  else -> to_json(v)\n}"
+        "f"
+        "Function<Any, String>"
+    it "leaves an Any scrutinee Any in the else arm" $
+      rejects "f(v: Any): String = case (v) {\n  Number -> \"n\"\n  else -> v\n}" ETypeMismatch
+    it "rejects a type head that is not a member of the union" $
+      rejects "f(x: String | Null): Number = case (x) {\n  Number -> 1\n  else -> 2\n}" ETypeMismatch
+    it "rejects a type head on a scrutinee that is neither a union nor Any" $
+      rejects "f(x: Number): Number = case (x) {\n  Number -> 1\n  else -> 2\n}" ETypeMismatch
+    it "rejects a type head that is not a data type" $
+      rejects "f(v: Any): Number = case (v) {\n  Function<Number> -> 1\n  else -> 2\n}" ETypeIllformed
+    it "rejects a type head in the condition form" $
+      rejects "f(): Number = case {\n  String -> 1\n  else -> 2\n}" ETypeMismatch
+    it "rejects a type head an earlier arm already matches" $
+      rejects
+        "f(x: String | Null): Number = case (x) {\n  Null -> 1\n  Null -> 2\n  else -> 3\n}"
+        ETypeCaseDuplicate
+    it "does not require a comparable scrutinee when every head is a type" $
+      accepts "f(x: Map<Any> | Null): Number = case (x) {\n  Null -> 0\n  else -> 1\n}"
     it "rejects return inside an arm body (spec 6.5)" $
       rejects
         "f(x: String): String = do {\n  y = case (x) {\n    \"a\" -> do { return \"e\" }\n    else -> \"z\"\n  }\n  y\n}"

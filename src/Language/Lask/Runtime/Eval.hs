@@ -164,6 +164,9 @@ evalCore ctx scope (Core _ f) = case f of
   CCast c ty -> do
     v <- evalCore ctx scope c
     castValue ty v
+  CIsType c ty -> do
+    v <- evalCore ctx scope c
+    pure (VBool (matchesType ty v))
   where
     evalKv (n, c) = (,) n <$> evalCore ctx scope c
 
@@ -267,6 +270,12 @@ castValue = go []
       (TyMap t, VRecord m) -> VMap <$> Map.traverseWithKey (\k x -> go (path <> [k]) t x) m
       (TyRecord fields, VRecord m) -> castRecord path fields m
       (TyRecord fields, VMap m) -> castRecord path fields m
+      -- Members are tried in the canonical order of 4.2 and the first
+      -- that matches decides, which matters only where two of them can
+      -- accept one value, as Record and Map can.
+      (TyUnion ts, _) -> case filter (`matchesType` v) ts of
+        (t : _) -> go path t v
+        [] -> castFail path ty v
       _ -> castFail path ty v
 
     castRecord path fields m
@@ -287,6 +296,28 @@ castValue = go []
           <> renderType ty
           <> ", got "
           <> typeNameOf v
+
+-- | The check of 'castValue' as a predicate: the condition of a @case@
+-- type head (spec 6.4), which tests without converting or failing.
+matchesType :: Type -> Value -> Bool
+matchesType ty v = case (ty, v) of
+  (TyAny, _) -> True
+  (TyNumber, VNumber _) -> True
+  (TyString, VString _) -> True
+  (TyBool, VBool _) -> True
+  (TyNull, VNull) -> True
+  (TyEnvironment, VEnv _) -> True
+  (TyArray t, VArray xs) -> V.all (matchesType t) xs
+  (TyMap t, VMap m) -> all (matchesType t) (Map.elems m)
+  (TyMap t, VRecord m) -> all (matchesType t) (Map.elems m)
+  (TyRecord fields, VRecord m) -> recordMatches fields m
+  (TyRecord fields, VMap m) -> recordMatches fields m
+  (TyUnion ts, _) -> any (`matchesType` v) ts
+  _ -> False
+  where
+    recordMatches fields m =
+      Map.keysSet fields == Map.keysSet m
+        && and (Map.elems (Map.intersectionWith matchesType fields m))
 
 internal :: Text -> IO a
 internal msg =

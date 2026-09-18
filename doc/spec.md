@@ -360,11 +360,15 @@ This chapter defines the types of values that Lask handles, type annotations, ty
   - `Record<field1: T1, field2: T2, ...>`: A record with fixed fields
   - `AsyncHandle<T>`: A handle referring to the result `T` of an asynchronous execution
   - `Function<T1, T2, ..., R>`: A function type consisting of positional parameters only. The last type argument is the return type.
+- Union types
+  - `T1 | T2 | ...`: A type whose values are the values of any one of its members. It is how a value that may be absent is typed (`String | Null`), and it is the only type former whose members are types of the program's own choosing rather than a fixed shape.
 
 ### 4.2 Type Syntax
 
 ```ebnf
-Type              = BaseType | ArrayType | MapType | RecordType | AsyncHandleType | FunctionType | NamedType .
+Type              = UnionType .
+UnionType         = SingleType { "|" SingleType } .
+SingleType        = BaseType | ArrayType | MapType | RecordType | AsyncHandleType | FunctionType | NamedType .
 BaseType          = "Any" | "Number" | "String" | "Bool" | "Null" | "Void" | "Environment" .
 ArrayType         = "Array" "<" Type ">" .
 MapType           = "Map" "<" Type ">" .
@@ -391,6 +395,28 @@ Definition of named types:
 - Example: `type Strings = Array<String>`
 - Example: given `import * as m from "./lib.lask"` and a public `type Config = Record<...>` in `lib.lask`, `m.Config` denotes that type.
 
+Union types:
+
+- `T1 | T2 | ...` denotes the type whose values are the values of any one member. `String | Null` is the type of a `String` that may be absent.
+- Because every production above is defined in terms of `Type`, a union may appear wherever a type may: as a type argument (`Array<String | Null>`), as a record field type (`Record<tag: String | Null>`), in a parameter or return position of a function type (`Function<String, String | Null>`), and as the right-hand side of a type alias (`type OptionalName = String | Null`).
+- `|` separates the members of a union only in type position. It is unrelated to the logical operator `||` (6.2), and a union must be written with its members separated (`String | Null`, not `String||Null`).
+
+Canonical form of a union:
+
+Type identity is structural (4.4), so every union is reduced to a canonical form when it is constructed. Two type expressions denoting the same union are therefore the same type, and print identically in diagnostics.
+
+- Flattening: a union is never a member of a union. The type syntax has no parenthesized type, so nesting arises only through a type alias: given `type AB = A | B`, the type `AB | C` is `A | B | C`.
+- Deduplication: repeated members are kept once. `A | A` is `A`.
+- Collapsing: a union of one member is that member.
+- Absorption by `Any`: `Any | T` is `Any`, because every type already conforms to `Any` (4.4). `Any | Null` is therefore `Any`.
+- Ordering: members are held in a fixed order, so that `String | Null` and `Null | String` denote the same type. Members are ordered by the order in which their type forms are listed in 4.1, and two members of the same form by their rendered notation, except that `Null` is always last. The order is total, so the canonical form of a union is unique.
+
+Well-formedness of a union:
+
+- `Void` must not be a member of a union (`E-TYPE-ILLFORMED`), as in every other position other than a function return type and the type argument of `AsyncHandle`.
+- Every member of a union must be a data type: `Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, and `Array` / `Map` / `Record` composed of them — the same set that `cast` may target (15.8). A union having a member that contains `Function<...>` or `AsyncHandle<T>` is a static error (`E-TYPE-ILLFORMED`).
+- The reason for the second rule is that a union is only useful if a program can get back out of it, and both ways out — the runtime type check of `cast` (15.8) and the type dispatch of `case` (6.4) — are defined for data types alone. A type such as `Function<Number, Number> | Null` would be inhabited but unusable, and it is rejected where it is written rather than where it is used.
+
 Record field names:
 
 - Field names may be written in identifier form (`lower_id`) or string literal form (`string_lit`). Identity is determined by comparison as strings, and `Record<name: String>` and `Record<"name": String>` denote the same type.
@@ -402,7 +428,7 @@ Record field names:
 
 Type well-formedness rules:
 
-- `Void` may appear only in the return-value position of a function type (`Function<..., Void>`) and as the type argument of `AsyncHandle<Void>`. Its appearance as a type argument of `Array` or `Map`, as a record field type, or in a parameter position of a function type is a static error (`E-TYPE-ILLFORMED`).
+- `Void` may appear only in the return-value position of a function type (`Function<..., Void>`) and as the type argument of `AsyncHandle<Void>`. Its appearance as a type argument of `Array` or `Map`, as a record field type, as a member of a union, or in a parameter position of a function type is a static error (`E-TYPE-ILLFORMED`).
 - All types constructed during type checking, including instantiations of the type variables of built-in polymorphism (4.4), must satisfy these well-formedness rules (e.g. an instantiation making the result type of `map` be `Array<Void>` is `E-TYPE-ILLFORMED`; constructing `AsyncHandle<Void>` via `spawn` is legal).
 - A type alias (`TypeAliasDecl`) must not reference itself directly or indirectly (recursion and mutual recursion are prohibited). A violation is a static error (`E-TYPE-ILLFORMED`). This rule guarantees that expansion of `NamedType` (4.3) always terminates in a finite number of steps.
 
@@ -426,6 +452,11 @@ Examples:
   - `Function<Number, Number, Number>`
   - `Function<String, Record<message: String, ok: Bool>>`
   - `Function<Number>`
+- Union types
+  - `String | Null`
+  - `Number | Null`
+  - `Array<String> | Null`
+  - `Record<ok: Bool> | Null`
 - Named types
   - `Strings` (`type Strings = Array<String>`)
   - `User`
@@ -439,6 +470,7 @@ Type annotations are optional, and the following type inference rules apply wher
 - When an annotation is given, the annotation takes precedence, and the inferred type must conform (per the conformance relation of 4.4) to the annotated type.
 - Type annotations (on variables, parameters, and return values) and the argument types of a callee propagate as the expected type for the corresponding expression, and are used for the expected-type-directed checking of literals (described below).
 - A number literal is `Number`, a string literal is `String`, a boolean literal is `Bool`, and the `null` literal is `Null`. An environment expression `#...` (6.7) is `Environment`.
+- A union type is never inferred. It is the type of an expression only where an annotation or a callee's signature says so, and the rules below are unchanged by the existence of unions: a heterogeneous array literal is still `Array<Any>` and not an array of a union, and two branches of differing types are still a type error rather than a union of the two. This keeps every union in a program one that someone wrote.
 - For an array literal `[e1, e2, ...]` with no expected type, the type of each element is inferred; if all are the same type `T`, the literal is `Array<T>`, and if heterogeneous, it is `Array<Any>`.
 - When the expected type is `Array<T>`, if every element expression conforms to `T`, the literal's type is `Array<T>`. If any element does not conform, it is a type error (conformance is invariant (4.4), but literals can promote element-wise to `Any` etc. via expected-type-directed checking).
 - The empty array `[]` follows the expected type if one exists; with no expected type it is `Array<Any>`.
@@ -448,6 +480,7 @@ Type annotations are optional, and the following type inference rules apply wher
   - When the expected type is `Map<T>`: when every value expression conforms to `T`, the literal's type is `Map<T>`. If any value does not conform, it is a type error (keys are always treated as `String`. 4.4).
   - When the expected type is `Any`: inferred as `Record<...>` in the same way as when there is no expected type.
   - Any other expected type is a type error.
+- When the expected type is a union `U1 | ... | Un`, the expression is checked against it by the conformance relation of 4.4, and an expected type is propagated into the branches of an `IfExpr` and the arms of a `CaseExpr` (6.4) unchanged. Therefore `f(): String | Null = if (c) { "x" } else { null }` is well-typed: each branch is checked against `String | Null`, and both `String` and `Null` conform to it.
 - When a variable or function declaration has no annotation, the type of the right-hand-side expression is adopted as the declared type.
 - When a function has no return-value annotation, the type of the function body is inferred as the return type.
 - When a parameter has no annotation, `Any` is adopted.
@@ -486,13 +519,18 @@ Type conformance relation:
 
 "Conformance" in type checking is a binary relation defined as follows. When the type `T` of an expression conforms to the type `U` of a required position, that expression may be placed in a position requiring `U` (an argument, the right-hand side of an annotated declaration, a field value, a return value, etc.).
 
-- Reflexivity: `T` conforms to `T`. Type identity is determined by structural identity after expanding `NamedType` (4.3).
+- Reflexivity: `T` conforms to `T`. Type identity is determined by structural identity after expanding `NamedType` (4.3) and reducing unions to canonical form (4.2).
 - Top type: any `T` conforms to `Any`. `Any` is the only top type.
+- Union introduction: a type `T` that is not a union conforms to `U1 | ... | Un` when `T` conforms to some `Ui`.
+- Union elimination: `T1 | ... | Tm` conforms to `U` when every `Ti` conforms to `U`.
 - No conformance relation exists for any pair of types other than the above.
+
+The two union rules together give: `String` conforms to `String | Null`; `String | Null` conforms to `String | Null | Number`; `String | Null` conforms to `Any`; and `String | Null` does **not** conform to `String`. Moving from a union to one of its members is not a conformance step: it requires the runtime check of `cast` (15.8) or the type dispatch of `case` (6.4). The relation remains reflexive, transitive, and antisymmetric on canonical forms, and `Any` remains the only top type.
 
 Invariance (no variance):
 
 - Conformance is not lifted into the interior of type constructors (invariant). `Array<Number>` does not conform to `Array<Any>` (element types must be identical). The same applies to `Map` and `AsyncHandle`.
+- The union rules are likewise not lifted: `Array<String>` does not conform to `Array<String | Null>`, and `Record<a: String>` does not conform to `Record<a: String | Null>`. A union describes one position, never the interior of a constructor at that position. An array or object literal can still be written directly at the union element type through expected-type-directed checking (4.3), as in `xs: Array<String | Null> = ["a", null]`.
 - `Record` has no width or depth subtyping. It conforms only when the field set and each field type are identical.
 - Function types conform only when identical. No variance (contravariance or covariance) is introduced for argument positions or return-value positions.
 - Under this definition, the soundness conditions of variance associated with subtyping (contravariance in function argument positions, etc.) do not arise.
@@ -500,7 +538,8 @@ Invariance (no variance):
 The meaning of types is defined by the following rules.
 
 - `Any` is the only top type that accepts values of all types (any type conforms to `Any`).
-- An expression of type `Any` may be placed only in positions requiring `Any`. Moving from `Any` to a concrete type can be done only via `cast` (15.8), which involves a runtime type check. No static implicit conversion is provided.
+- An expression of type `Any` may be placed only in positions requiring `Any`. Moving from `Any` to a concrete type is done only by a runtime type check, in one of two forms: `cast` (15.8), which yields the value at the target type and fails when it is of some other kind, and the type dispatch of `case` (6.4), which tests instead of failing and narrows the scrutinee in the arm it selects. The two perform the same check (15.8) and differ only in what happens when it does not hold. No static implicit conversion is provided.
+- Narrowing by `case` applies to a scrutinee of type `Any` exactly as it does to a union, with one difference that follows from `Any` having no members: an arm selected by the type head `M` narrows the scrutinee to `M`, and the `else` arm leaves it `Any`, because a type cannot be subtracted from `Any` and nothing is learned by a test that failed (6.4).
 - `Null` is a value type representing the absence of a value and can be evaluated as an expression.
 - `Void` is a type representing a computation result that returns no value, and must not be used as a value.
 - `Null` and `Void` are not identified with each other. Placing `Void` in a position requiring `Null`, or vice versa, is a type mismatch.
@@ -509,6 +548,7 @@ The meaning of types is defined by the following rules.
 - `Map<T>` is a built-in composite type denoting a dynamic associative array with string keys; the key type is always fixed to `String`.
 - `Record<...>` denotes a structure whose field set and field types are statically fixed.
 - The division of roles is: `Map<T>` for structures whose key set may vary at runtime, and `Record<...>` for structures with a key set fixed by specification.
+- `T1 | T2 | ...` denotes the values of any one member. A value of a union type carries no tag of its own: it is a value of exactly one member type at runtime, and which one is observed by the runtime type check of `cast` (15.8) or by `case` type dispatch (6.4).
 - `AsyncHandle<T>` is a runtime handle managing the lifecycle of an asynchronous computation, and is resolved to `T` by `await`.
 - Conformance between function types `Function<T1, T2, ..., R>` follows the conformance relation at the beginning of this section, and holds only when the number of positional parameters, each parameter type, and the return type are all identical (promotion to `Any` occurs only in positions requiring a top-level `Any`).
 - Parameter names, keyword parameters, and variadicity are not part of a function type. Because declared parameter information cannot be consulted when a function is applied after being passed around as a function value, binding is performed with positional arguments only, and all keyword parameters are completed with their default values (7.5).
@@ -521,6 +561,8 @@ Polymorphic types of built-in symbols (built-in polymorphism):
 - However, only built-in symbols defined by this specification (core functions and functions of the built-in library; Chapters 6 and 15) may have polymorphic types whose signatures contain type variables (single uppercase names such as `T`, `U`, `R`).
 - A signature containing type variables is treated as a type scheme, and is instantiated to concrete types independently for each call and then checked. Within a single call, type variables of the same name must be bound to the same concrete type.
 - Instantiation is determined from the argument types and the contextual expected type. If a single concrete type cannot be determined, it is an inference failure error (4.3).
+- A type variable may occur inside a union only in the return type of a signature, where the union is built by substituting the instantiation and never matched against an argument (`find`, 15.4, is `Function<Array<T>, Function<T, Bool>, T | Null>`). A signature whose parameter type contains a union mentioning a type variable is not well-formed, because matching an argument against `T | Null` cannot determine `T`. A union in a parameter position that mentions no type variable is an ordinary ground type and is checked by conformance like any other.
+- When the contextual expected type is used to instantiate a union return type, identical members of the expected type and of the signature's union are removed from both; if exactly one member remains on each side and the signature's is a type variable, it is bound to the other (`T | Null` against an expected `String | Null` binds `T` to `String`). In every other case the expected type contributes no binding, and the instantiation must come from the arguments or it is an inference failure error.
 - When a built-in polymorphic function is referenced as a function value in a position other than a call (binding to a variable, passing as an argument, etc.), the type variables must be uniquely instantiable from the expected type at the reference position. If instantiation is not possible, it is a type error. Example: `m: Function<Array<Number>, Function<Number, Number>, Array<Number>> = map` can be instantiated via the expected-type annotation, but `m = map` without an annotation is an inference failure error.
 - Implementations may realize built-in polymorphism by any internal mechanism, but must satisfy the observable type-checking results above. Polymorphism must not be extended to user-defined symbols.
 
@@ -529,6 +571,7 @@ Polymorphic types of built-in symbols (built-in polymorphism):
 - Directly serializable
   - `Any`, `Number`, `String`, `Bool`, `Null`
   - `Array<T>`, `Map<T>`, `Record<field1: T1, field2: T2, ...>`
+  - `T1 | T2 | ...` (every member of a union is a data type by the well-formedness rules of 4.2, so a union is always directly serializable; a value serializes as the member it actually is, 13.1)
 - Not directly serializable
   - `Void`, `Environment`
   - `AsyncHandle<T>`
@@ -905,9 +948,10 @@ The types of the operators are as follows.
 - `*`, `/`, `+`, `-` are typed as `Function<Number, Number, Number>`.
 - `<`, `<=`, `>`, `>=` are typed as `Function<Number, Number, Bool>`.
 - `&&`, `||` are typed as `Function<Bool, Bool, Bool>`.
-- `==`, `!=` are well-typed only when the types of the two sides match and that type is a comparable type; the result type is `Bool`.
-- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, and `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types.
-- Applying `==` / `!=` to types containing `Function`, `AsyncHandle`, `Void`, or `Any` is a static error. To compare values of `Any`, first move to a concrete type with `cast` (15.8) and then compare.
+- `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. When neither side is a union this is the same rule as "the two types match", because conformance between non-union types is identity or promotion to `Any`, and `Any` is not comparable.
+- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, and a union all of whose members are comparable types.
+- Therefore `x == null` is well-typed when `x: String | Null`, since `Null` conforms to `String | Null` and that union is comparable. It compares values and does not by itself narrow the type of `x`; narrowing is a property of `case` (6.4).
+- Applying `==` / `!=` to types containing `Function`, `AsyncHandle`, `Void`, or `Any` is a static error. To compare values of `Any`, first move to a concrete type with `cast` (15.8), or narrow with `case` (6.4), and then compare.
 - Equality of structured values (`Array` / `Map` / `Record`) is determined by recursive structural comparison of elements, keys, and fields. Equality of `Environment` follows 8.8.
 - `e1 |> f` is well-typed when `e1: T` and `f: Function<T, R>` hold, and the type of the whole expression is `R`.
 - `f <| e1` is well-typed when `e1: T` and `f: Function<T, R>` hold, and the type of the whole expression is `R`.
@@ -963,8 +1007,9 @@ The execution environment may choose the concurrency mechanism for `async` (thre
 ```ebnf
 IfExpr       = "if" "(" Expression ")" Block "else" Block .
 CaseExpr     = "case" [ "(" Expression ")" ] "{" { CaseArm arm_end } "}" .
-CaseArm      = ( CaseHeads | "else" ) "->" Expression .
+CaseArm      = ( CaseHeads | TypeHeads | "else" ) "->" Expression .
 CaseHeads    = Expression { "," Expression } .
+TypeHeads    = SingleType { "," SingleType } .
 ForExpr      = "for" "(" lower_id ":" Expression ")" Block .
 Block        = "{" { DoStmt } "}" .
 arm_end      = newline | ";" .
@@ -976,13 +1021,15 @@ Control structures are provided as the block-form expressions `IfExpr` / `CaseEx
 
 `CaseExpr` is the multi-way conditional. It has two forms:
 
-- With a scrutinee, `case (e) { ... }`: each arm head is compared with the value of `e` by equality (`==`, 6.2).
-- Without a scrutinee, `case { ... }`: each arm head is a condition of type `Bool`, tested in order. This form takes the place of a chained `else if`, which the grammar does not provide, because the `else` of an `IfExpr` always takes a `Block`.
+- With a scrutinee, `case (e) { ... }`: each arm head is either a value, compared with the value of `e` by equality (`==`, 6.2), or a type, tested against the runtime type of `e` (type dispatch). The two kinds of head may be mixed in one `case`.
+- Without a scrutinee, `case { ... }`: each arm head is a condition of type `Bool`, tested in order. This form takes the place of a chained `else if`, which the grammar does not provide, because the `else` of an `IfExpr` always takes a `Block`. This form has no type heads, because there is no scrutinee to dispatch on.
 
 Arm rules:
 
-- An arm head is an ordinary expression, not a binding pattern. `case (x) { y -> ... }` compares `x` with the value of `y`; it never binds `y`. Lask has no data constructors, so there are no destructuring patterns.
-- An arm may list several heads separated by `,` (`"bash", "zsh" -> ...`). The scrutinee form selects such an arm when the scrutinee equals any of its heads, and the condition form when any of its heads is `true` (which `||` expresses just as well).
+- A value head is an ordinary expression, not a binding pattern. `case (x) { y -> ... }` compares `x` with the value of `y`; it never binds `y`. Lask has no data constructors, so there are no destructuring patterns, and this is true of type heads as well: a type head selects an arm and narrows the scrutinee (below), and binds no new name.
+- A head that begins with an `upper_id` is a type head, and any other head is a value head. The two are told apart by the leading token alone, with no backtracking, because an `upper_id` can never begin an expression in this language: there are no data constructors, and a namespace is a `lower_id` (7.2). A type head is written as a type (4.2) and may not itself be a union — alternatives within one arm are written with `,`.
+- `null` and `Null` are both legal heads of the same test: the value head `null` compares by equality, the type head `Null` dispatches on the type, and because `Null` has exactly one value the two select the same arm and narrow identically (below). Prefer `Null` when the other arms of the same `case` are type heads, and `null` otherwise.
+- An arm may list several heads separated by `,` (`"bash", "zsh" -> ...`). The scrutinee form selects such an arm when any of its heads selects — equality for a value head, the type check for a type head — and the condition form when any of its heads is `true` (which `||` expresses just as well). One arm's heads are either all value heads or all type heads; the two kinds are mixed across arms of one `case`, never within one arm.
 - The body of an arm is an `Expression`, not a `Block`, as in `LambdaExpr` (6.1) — which is what an arm becomes after normalization. A sequence of statements is written as an explicit `do { ... }` (6.5), and a `{` directly after `->` is an object literal.
 - Exactly one `else` arm is required, and it must be the last arm. A `case` with no arms, with no `else` arm, with more than one, or with an `else` arm that is not last, is a syntax error (`E-SYNTAX-CASE-ELSE`). Exhaustiveness is never inferred from the type of the scrutinee.
 - An arm terminates at a newline, `;`, or immediately before the block terminator `}`, by the termination rules of 6.5.
@@ -1003,6 +1050,8 @@ Desugaring rules:
 - `for (x : xs) { ... }` is syntactic sugar for `map(xs, \(x) -> do { ... })`. However, when the type of the body block is `Void` (including an empty block), it is syntactic sugar for `for_each(xs, \(x) -> do { ... })` (`Array<Void>` is not constructed; 4.4).
 - For iteration for side effects where the result array is unnecessary, either make the body of type `Void` or use `for_each` directly.
 - `case (e) { p -> b; R }` is syntactic sugar for `do { s = e; choose(s == p, \() -> b, \() -> C) }`, where `s` is a fresh name that no source program can write (it therefore captures nothing and shadows nothing) and `C` is the expansion of the remaining arms `R`. Because the scrutinee is bound once, it is evaluated exactly once however many arms are tested.
+- A type head expands the same way, with the condition being the runtime type test of `s` against the head type rather than an equality: `case (e) { M -> b; R }` is `do { s = e; choose(<s is M>, \() -> b, \() -> C) }`. The test `<s is M>` is the runtime type check of `cast` at target `M` (15.8) used as a predicate, without its conversion and without its failure.
+- When the scrutinee is a plain local name `x` and the arm narrows it, the arm body is expanded with the narrowing in place: the branch function is `\() -> do { x = <narrowed x>; b }`, where `<narrowed x>` is `cast(s)` at the narrowed type when narrowing leaves exactly one member, and `s` itself otherwise. The rebinding is inside the branch function, so it is confined to that arm.
 - An arm with several heads tests their disjunction: `p1, p2 -> b` produces the condition `s == p1 || s == p2` in the scrutinee form, and `p1 || p2` in the condition form.
 - `case { c -> b; R }` (the condition form) is syntactic sugar for `choose(c, \() -> b, \() -> C)`. It introduces no binding.
 - The final arm `else -> bz` expands to `bz` itself, as the false branch of the innermost `choose`.
@@ -1019,18 +1068,46 @@ Typing rules:
 - `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because conformance of function types is limited to identity (4.4), in order to accept bodies of arbitrary return type through instantiation of built-in polymorphism).
 - An `IfExpr` is well-typed only when the condition expression is `Bool` and the types of the two branch blocks are the same `T`, and the type of the whole expression is `T`.
 - An `if` without `else` is not an expression. It appears solely as the `return` guard statement (the `GuardStmt` of 6.5), only in statement position.
-- A `CaseExpr` with a scrutinee is well-typed only when the type `S` of the scrutinee is a comparable type (6.2) and every arm head has that same type `S`. These are exactly the rules of `==`, because the expansion is a chain of `==`. A scrutinee of type `Any` is therefore a type error: move to a concrete type with `cast` (15.8) before dispatching on it.
+- A `CaseExpr` with a scrutinee is well-typed only when every value head's type conforms (4.4) to the type `S` of the scrutinee, and, when the expression has at least one value head, `S` is a comparable type (6.2). These are exactly the rules of `==`, because the expansion of a value head is a chain of `==`. A scrutinee of type `Any` is therefore a type error in a `case` having any value head, because `Any` is not comparable: dispatch on its type with type heads (below), or move to a concrete type with `cast` (15.8) first.
+- A type head is well-typed only when `S` is a union and the head is one of its members, or when `S` is `Any` and the head is a type `cast` may target (a data type; 4.2, 15.8). `E-TYPE-MISMATCH` for a head that is not a member of the union, and `E-TYPE-ILLFORMED` for a head that is not a data type. Dispatching on the type of a value of any other type decides nothing statically — the answer is already known — so it is rejected rather than being allowed as dead code.
+- The two admissible scrutinees are exactly the two types whose runtime kind is not settled statically. `Any` admits every data type as a head, because nothing is known about it; a union admits only its own members, because everything else is known not to occur.
+- A `case` all of whose heads are type heads does not require `S` to be comparable, since it performs no equality test. This is what makes `case` usable on an `Any`: `Any` is not comparable (6.2), so a value head on an `Any` scrutinee stays a type error while a type head is well-typed.
 - A `CaseExpr` without a scrutinee is well-typed only when every arm head has type `Bool`.
 - A `CaseExpr` is well-typed only when the bodies of all arms, the `else` arm included, have the same type `T`, and the type of the whole expression is `T`.
-- Two heads of the same `CaseExpr` that are literals denoting the same value are a static error (`E-TYPE-CASE-DUPLICATE`): the later arm can never be selected. Heads that are not literals are not compared with one another.
+- Two heads of the same `CaseExpr` that are literals denoting the same value are a static error (`E-TYPE-CASE-DUPLICATE`): the later arm can never be selected. Heads that are not literals are not compared with one another. Two type heads of the same `CaseExpr` denoting the same type are a static error for the same reason; two type heads denoting different types are not compared, even when one can match values the other also matches (below).
 - A `ForExpr`, when the target expression is `Array<T>` and the type of the body block is `R` (`R` other than `Void`), has the type `Array<R>` as the whole expression.
 - When the type of the body block is `Void`, the `ForExpr` is normalized to `for_each` and the type of the whole expression is `Void`.
+
+Narrowing of the scrutinee:
+
+Within the body of an arm, the scrutinee is known to be narrower than its declared type. That knowledge is given to the program under the following rules, which apply only when **the scrutinee is written as a plain local name**. Any other scrutinee still dispatches; it simply has no name whose type could be narrowed, because the name the normalization binds is fresh and unwritable (7.3).
+
+- In the body of an arm whose heads are the type heads `M1, ..., Mk`, the name has type `M1 | ... | Mk`, reduced to canonical form (4.2). With the usual single head `M`, that is `M`.
+- In the body of an arm selected by a value head of type `H`, the name has type `H` when `H` is a member of the union, and its declared type otherwise. Equality with a value of type `H` can only succeed for a value of type `H`. With several value heads it is the union of their types, by the same rule.
+- In the body of the `else` arm, the name has the declared union with every member matched by a preceding arm subtracted: a type head `M` subtracts `M`, and the value head `null` subtracts `Null`, because `Null` has exactly one value and matching it exhausts the member. Any other value head subtracts nothing — `"a"` does not exhaust `String`. Subtracting every member but one leaves that member, and subtracting nothing leaves the declared type. When the preceding arms subtract every member, the `else` arm is unreachable but still required and still type-checked, and the name keeps its declared type there: there is no empty type.
+- When the scrutinee's declared type is `Any` rather than a union, the arm rules above apply unchanged — an arm with the type heads `M1, ..., Mk` narrows the name to `M1 | ... | Mk` — and the `else` arm leaves the name `Any`. A type cannot be subtracted from `Any`, since `Any` has no members to remove, and a failed test tells a program nothing about what the value is.
+- Narrowing is a property of `case` alone. `if (x == null) { ... } else { ... }` does not narrow `x` in either block.
+
+The narrowed name is a binding of the arm body, so it shadows the outer binding inside that body and is invisible outside it (7.3). Where the narrowed type is a single type other than the declared one, the narrowed name is bound to the result of the same check-and-convert that `cast` performs at that type (15.8), so that a record value narrowed to `Map<T>`, or the reverse, reaches the body in the representation its type promises. Where the narrowed type is a union of two or more members, or is the declared type unchanged, the value is passed to the body as it is.
+
+```lask
+// The scrutinee is a name, so the else arm knows it is a String.
+port(): Number = do {
+  p = find_env("PORT")     // p: String | Null
+  case (p) {
+    Null -> 8080
+    else -> to_number(p)   // p: String here
+  }
+}
+```
 
 Evaluation rules:
 
 - An `IfExpr` first evaluates only the condition expression, and evaluates only the then block if true, or only the else block if false (following `choose` of 8.5).
 - A `ForExpr` evaluates the target collection, then traverses the elements from left to right, applies the body block, and aggregates the results into an array in the same order (following `map` of 8.5).
-- A `CaseExpr` with a scrutinee evaluates the scrutinee exactly once, before any arm head. It then evaluates the heads in order, top to bottom and left to right within an arm, and stops at the first head equal to the scrutinee. The remaining heads are not evaluated, and only the body of the selected arm is evaluated. When no head is equal, the body of the `else` arm is evaluated.
+- A `CaseExpr` with a scrutinee evaluates the scrutinee exactly once, before any arm head. It then tests the heads in order, top to bottom and left to right within an arm, and stops at the first head that selects: a value head selects when it is equal to the scrutinee, and a type head selects when the scrutinee passes the runtime type check for that type. The remaining heads are not evaluated or tested, and only the body of the selected arm is evaluated. When no head selects, the body of the `else` arm is evaluated.
+- A type head is tested and never evaluated: it is a type, not an expression, so it can neither fail nor have an effect.
+- Because 15.8 accepts a record value and a map value for either of `Record<...>` and `Map<T>`, two type heads of one `case` can both match the same runtime value. Order decides, as it does for value heads: the first arm that selects wins.
 - A `CaseExpr` without a scrutinee evaluates the conditions in order and stops at the first that is `true`, evaluating only that arm's body. When none is `true`, the body of the `else` arm is evaluated.
 - If evaluation of the scrutinee or of an arm head fails, the whole expression fails at that point, and no further head or body is evaluated (8.10).
 - The interior of a `Block` follows the same statement rules as a `do` block (6.5), and the value of the block is the value of its final statement. The value of an empty block with no statements is `Void` (6.5).
@@ -1061,6 +1138,34 @@ level(n: Number): String = case {
   n >= 500 -> "error"
   n >= 400 -> "warn"
   else     -> "info"
+}
+
+// Type dispatch over a union, with the scrutinee narrowed in each arm.
+render(v: Number | String | Null): String = case (v) {
+  Null   -> "(none)"
+  Number -> to_string(v)      // v: Number here
+  else   -> v                 // v: String here, the only member left
+}
+
+// The common case: a lookup that may find nothing.
+base_url(): String = do {
+  u = find_env("BASE_URL")    // u: String | Null
+  case (u) {
+    Null -> "http://localhost:3000"
+    else -> u                 // u: String here
+  }
+}
+
+// Dispatch on the shape of decoded input. The scrutinee is Any, so any
+// data type may be a head, and the else arm leaves it Any.
+summarize(): String = do {
+  v = from_json(stdin)                     // v: Any
+  case (v) {
+    String        -> v                     // v: String here
+    Array<String> -> join(v, ", ")         // v: Array<String> here
+    Null          -> "(empty)"
+    else          -> to_json(v)            // v: Any still
+  }
 }
 ```
 
@@ -1137,7 +1242,7 @@ Continuation-distribution transformation (normalization):
 
 Typing rules (early return):
 
-- The expression `e` of every `return e` and the final value of the function body must have the same type `T` (the return type of the function). The existing typing rules on the expression after the continuation-distribution transformation (the branch type agreement of 6.4) guarantee this.
+- The expression `e` of every `return e` and the final value of the function body must conform to the same type `T` (the return type of the function). The existing typing rules on the expression after the continuation-distribution transformation (the branch type agreement of 6.4) guarantee this. Where `T` is a union, that is what lets one `return` give a `String` and another `null` in a function returning `String | Null`: each is checked against `T` (4.3), and neither has to have the other's type.
 - If a `GuardStmt` is placed as the final statement of a function body, the continuation is empty, so it is a type error except when the return type is `Void`.
 
 Typing rules:
@@ -1263,6 +1368,7 @@ Typing rules:
 - As a result of the desugaring, the expression type of `$ ...`, `$1 ...`, and `$2 ...` is `String`, and the expression type of `$* ...` is `CommandResult`.
 - If `env` does not conform to `Environment`, it is a type error.
 - The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a type error.
+- The stringifiable types are `String`, `Number`, `Bool`, `Any`, and a union all of whose members are stringifiable. Every other type, `Null` included, is not stringifiable, and `to_string` (15.3) accepts exactly the same set. `String | Null` is therefore **not** stringifiable: a value that may be absent cannot be interpolated into a command, and must be resolved by `case` (6.4) or `cast` (15.8) first. `Any` is stringifiable statically and may still fail at runtime (15.3), because its content is unknown until then.
 
 Evaluation rules:
 
@@ -1371,7 +1477,7 @@ Distinction from module namespace references:
 Typing rules for field access:
 
 - `e.f` is well-typed only when the type of `e` is `Record<..., f: T, ...>` (a record type having the field `f`), and the type of the expression is `T`.
-- If the target record type does not have the field `f`, or if the target's type is other than `Record` (including `Map` and `Any`), it is a static error (`E-TYPE-ACCESS`). Values of `Any` are referenced after moving to a concrete type with `cast` (15.8).
+- If the target record type does not have the field `f`, or if the target's type is other than `Record` (including `Map`, `Any`, and a union), it is a static error (`E-TYPE-ACCESS`). A value of type `Any` or of a union type is referenced after moving to a concrete type, with `cast` (15.8) or by narrowing with `case` (6.4) — and that holds for a union even when every member of it has the field.
 - Only field names in identifier form (`lower_id`) can be referenced with `.f`. Field names not conforming to `lower_id` (4.2) are referenced with a string-literal index (described below).
 - Value retrieval from a `Map` uses `[...]` or `get` (15.4). Because the field set of a `Record` is statically fixed (4.4), field access does not fail at runtime.
 
@@ -1503,7 +1609,7 @@ Desugaring rules:
 
 Typing rules:
 
-- `!!` is permitted only where the declared or inferred type is `String`. A `!!` marker on a name whose type is anything other than `String` is a static error (`E-TYPE-SECRET-NON-STRING`).
+- `!!` is permitted only where the declared or inferred type is `String`. A `!!` marker on a name whose type is anything other than `String` is a static error (`E-TYPE-SECRET-NON-STRING`). `String | Null` is not `String`: a value that may be absent must be resolved first, because registering an absent value for masking would either mask nothing or, worse, mask the text of the absent case everywhere it appears in a log. Read a credential with `get_env` (15.9), which presupposes the variable is set, rather than with `find_env`.
 
 Scope of the masking effect:
 
@@ -1576,6 +1682,7 @@ Scope rules:
 - A `BindStmt` in a `do` is valid within the same block for the statements that follow the declaring statement.
 - Bindings inside `if` / `for` / `try` blocks, and inside the body of a `case` arm, do not leak outward.
 - The name that the normalization of a `case` scrutinee (6.4) binds is fresh: it is visible to no expression written in the source, and shadows nothing.
+- When a `case` narrows a scrutinee written as a plain local name (6.4), the narrowed name is a binding of the arm body. It shadows the outer binding of the same name within that body only, and the outer binding is unaffected in every other arm and after the expression. This is ordinary shadowing under the rules below, not a rebinding in the same scope.
 - The `x` in `for (x : xs)` is valid only within the iteration body.
 - The `e` in `catch (e)` is valid only within the `catch` block.
 
@@ -1597,7 +1704,7 @@ Supplementary rules:
 
 - A `NamedType` is expanded to its `TypeAliasDecl` before checking.
 - Because overloading is not permitted, one symbol has only one function type.
-- `Any` is broadly accepted on the receiving side (any type conforms to `Any`), but the transition from `Any` to a concrete type can only be performed via a runtime type check with `cast` (15.8) (4.4).
+- `Any` is broadly accepted on the receiving side (any type conforms to `Any`), but the transition from `Any` to a concrete type can only be performed by a runtime type check: `cast` (15.8), or the type dispatch of `case` (6.4) (4.4).
 
 ### 7.5 Call Consistency
 
@@ -1635,7 +1742,7 @@ Consistency of helper functions (normalization targets of syntactic sugar):
 - `fail`: `Function<Error, T>`
 - `run_command`: `Function<String, Environment, CommandResult>`
 
-Type variables in signatures (`T`, `U`, etc.) are instantiated and checked per call according to the built-in polymorphism rules of 4.4.
+Type variables in signatures (`T`, `U`, etc.) are instantiated and checked per call according to the built-in polymorphism rules of 4.4, including the restriction that a type variable may occur inside a union only in a return type.
 
 `async` / `if` / `case` / `for` / `$ ...` are statically verified as sugar over the helper functions above. `await e` is verified as an application of the core function `await`.
 
@@ -1652,7 +1759,7 @@ The expansion order during static verification is as follows.
 2. `await e` -> core function application `await(e)` (normalization of the parenthesis-omitted form)
 3. Continuation-distribution transformation of `return` (including guard statements) (6.5)
 4. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`
-5. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name
+5. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
 6. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
 7. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
 8. Sequential-execution expansion of `do { ... }`
@@ -1662,7 +1769,10 @@ The expansion order during static verification is as follows.
 
 Type checking is performed on the core expressions after expansion. The meaning of the expansion result must be equivalent to that of the original syntax.
 
-Only the choice of expansion target in step 6 (`map` / `for_each`) depends on the type of the body block (type-directed expansion). Implementations must type the body block first and determine the expansion target from that result. All other expansions are purely syntactic.
+Two expansions are type-directed, and every other expansion is purely syntactic.
+
+- The choice of expansion target in step 6 (`map` / `for_each`) depends on the type of the body block. Implementations must type the body block first and determine the expansion target from that result.
+- The expansion of a `case` arm in step 5 depends on the type of the scrutinee: whether a head is a value head or a type head is syntactic, but the narrowing rebinding a type head or a `null` head introduces (6.4) is determined by the scrutinee's type. Implementations must type the scrutinee first.
 
 ### 7.7 Static Errors
 
@@ -1684,8 +1794,8 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-ENV-CONSTRUCT`: invalid environment expression (unknown environment kind, neither or both of a registry reference and a recipe, a registry reference without a tag or digest, a non-literal `dockerfile`/`context`, a recipe path escaping the module tree, a dynamic image reference in a dependency domain, or an unknown or duplicate named argument; 10.2, 10.3)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
-- `E-TYPE-CASE-DUPLICATE`: two literal heads of one `case` expression denote the same value, so the later arm is unreachable (6.4)
-- `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, invalid target type of `cast`; 4.2, 15.8)
+- `E-TYPE-CASE-DUPLICATE`: two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4)
+- `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`; 4.2, 6.4, 15.8)
 - `E-TYPE-SECRET-NON-STRING`: `!!` applied to a binding whose type is not `String` (6.10)
 - `E-MODULE-CYCLE`: module circular dependency
 - `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
@@ -1768,6 +1878,12 @@ Evaluation of `choose(c, t, f)`:
 4. The unselected branch is not evaluated.
 
 `case` (6.4) has no core function of its own. Its scrutinee form is normalized to a binding of the scrutinee followed by a nested `choose`, so the scrutinee is evaluated once and the rule above governs the rest; its condition form is a nested `choose` directly.
+
+Evaluation of the condition of a type-head arm (6.4):
+
+1. The scrutinee has already been evaluated and bound, so nothing further is evaluated to test a type head.
+2. The bound value is checked against the head type by the runtime type check rules of `cast` (15.8). The check yields `true` or `false`; unlike `cast` it neither converts the value nor fails.
+3. When the arm is selected and the scrutinee is a narrowed name whose narrowed type calls for the conversion of 6.4, the value bound in the branch is the result of the corresponding `cast`, so that a record value narrowed to `Map<T>`, or the reverse, is converted before the body runs. The conversion follows a check that has just succeeded, or, in an `else` arm, a narrowing that leaves one member of the scrutinee's own type, so it cannot fail.
 
 Evaluation of `map(xs, body)`:
 
@@ -1956,7 +2072,7 @@ Rules:
 Type rules:
 
 - The static type of `stdin` is fixed to `String`. It must not be changed by implementation or CLI settings.
-- Structuring such as line splitting or JSON interpretation is performed within the language by applying functions of the built-in library (e.g., `split(stdin, "\n")` (15.3), `from_json(stdin)` (15.8)). The transition from the result of `from_json` (`Any`) to a concrete type uses `cast` (15.8) in combination.
+- Structuring such as line splitting or JSON interpretation is performed within the language by applying functions of the built-in library (e.g., `split(stdin, "\n")` (15.3), `from_json(stdin)` (15.8)). The transition from the result of `from_json` (`Any`) to a concrete type uses `cast` (15.8) in combination, or `case` type dispatch (6.4) where the input may take more than one shape.
 
 ### 9.4 Standard Input Decoding
 
@@ -2390,6 +2506,7 @@ Type conformance rules:
 
 - After binding, each argument must satisfy the call conformance of 7.5.
 - In `auto` mode, when ambiguous, `String` takes precedence.
+- A parameter whose type is a union is bound when the decoded value conforms to one of its members (4.4); no member is preferred over another, and the decoding mode alone decides what the token becomes. So for a parameter of type `Number | Null`, `--n 8080` binds a `Number` and `--n null` binds `Null` under `auto` or `json`, while under `text` both are `String` and neither conforms.
 - Decoding failure or type mismatch must be reported as an error before function evaluation begins.
 - Functions with positional parameters of type `Environment` are excluded from direct CLI invocation (since no decoding mode can construct an `Environment` value, this is a pre-execution error). Keyword parameters of type `Environment` are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive it as `String` etc. and construct the environment expression inside the function.
 
@@ -2976,6 +3093,11 @@ For `json` / `pretty-json`, the following mapping rules must be satisfied.
 - `Map<T>`: maps to a JSON object with string keys.
 - `Record<...>`: maps to a JSON object with field names as keys.
 
+Rules for unions:
+
+- `T1 | T2 | ...` maps according to the serialization rules of the member the value actually is. `String | Null` therefore maps to a JSON string or to JSON null, and nothing records which member was chosen.
+- Deserialization does not reconstruct a union: `from_json` / `decode` produce `Any` (15.8), and moving from there to a union is `cast` (15.8) like any other type.
+
 Rules for `Any`:
 
 - `Any` maps according to the serialization rules of the underlying value.
@@ -3261,7 +3383,7 @@ Representative examples:
 - `E-RUNTIME-DIV-BY-ZERO`: invalid arithmetic
 - `E-RUNTIME-COMMAND-NONZERO`: failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6)
 - `E-RUNTIME-AWAIT-FAILED`: `await` re-raises a failed state
-- `E-RUNTIME-ACCESS`: index out of range or missing key (8.9)
+- `E-RUNTIME-ACCESS`: index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9)
 - `E-RUNTIME-CAST`: failure of the runtime type check of `cast` (15.8)
 - `E-RUNTIME-VALUE`: a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13)
 - `E-RUNTIME-REGEX`: a malformed regular expression pattern (15.3)
@@ -3339,6 +3461,20 @@ Policy:
 - Access to the filesystem is never implicit. Every function that reads or writes it takes the target `Environment` as its last positional argument (15.11), just as `run_command` does, so the filesystem a program touches is always the one it names.
 - There is no overloading: one built-in name has exactly one signature, because a name resolves to a single type scheme (4.4). Where the same operation is wanted for both `String` and `Array<T>`, the array form carries the `_array` suffix (`concat_array`, `contains_array`, `index_of_array`), and where the same operation is wanted for both `Array<T>` and `Map<T>`, the map case is written by composing with `keys` / `values` / `entries` rather than by a second function.
 
+Naming of the absent case:
+
+A built-in that looks something up says in its name what it does when the thing is not there. The four shapes are exhaustive, and a new built-in that can come up empty takes one of them.
+
+| Shape | Contract | Result | Members |
+| --- | --- | --- | --- |
+| `get_…` | Presence is presupposed. Absence is a failure (`E-RUNTIME-ACCESS`). | `T` | `get`, `get_env`, and by the same reading `first`, `last`, `m[k]` |
+| `find_…` | A search. Absence is an ordinary result, not a failure. | `T \| Null`, or `-1` where the result is an index | `find`, `find_env`, `find_index` |
+| `…_or` | Total. The caller supplies the result for the absent case. | `T` | `get_or`, `get_env_or` |
+| `has_…` | Presence alone is asked. | `Bool` | `has_key`, `has_env` |
+
+- `get_` and `find_` differ only in what absence means, so the pair is written as two functions rather than one with a flag: `get_env` is for a variable the task requires, and `find_env` for one it merely accepts.
+- A `find_` function that returns a value reports absence as `Null`, which is why it needs a union type (4.2). A `find_` function that returns a position reports it as `-1`: a position is a `Number`, and `-1` is a position no array or string has, so the absent case needs no separate type. `index_of` (15.3) follows the same convention without the prefix, being the string counterpart of `index_of_array`.
+
 Publication rules:
 
 - Symbols of the built-in library are positioned at the lowest level of name resolution (the 5th rank in 7.2). If a user definition declares a symbol with the same name, it may shadow it according to the ordinary name resolution rules.
@@ -3415,12 +3551,13 @@ Semantics:
 - String concatenation is done with `concat` (or `join`). `+` is exclusive to `Number`, and applying it to `String` is a type error (6.2).
 - `contains(s, needle)` is true when `needle` occurs anywhere in `s`. An empty `needle` is always true.
 - `starts_with(s, prefix)` / `ends_with(s, suffix)` test the ends of `s`. An empty argument is always true.
-- `index_of(s, needle)` returns the zero-based position of the first occurrence of `needle`, or `-1` when it does not occur. An empty `needle` returns `0`. The absent case is a value and not a failure, because the language has no option type.
+- `index_of(s, needle)` returns the zero-based position of the first occurrence of `needle`, or `-1` when it does not occur. An empty `needle` returns `0`. The absent case is a value and not a failure: the result is a position, and `-1` is a position no string has (15.1). A search that returns the thing found rather than its position reports absence as `Null` instead — see `find` (15.4).
 - `substring(s, start, end)` returns the half-open range `[start, end)`. Both endpoints are clamped to `[0, length(s)]`, and an `end` at or before `start` yields the empty string, so `substring` never fails. Non-integer endpoints are truncated toward zero.
 - `pad_start(s, width, pad)` / `pad_end(s, width, pad)` prepend or append repetitions of `pad` until the result reaches `width` characters, truncating the last repetition as needed. When `length(s)` is already at least `width`, or `pad` is empty, `s` is returned unchanged.
 - `repeat(s, n)` concatenates `n` copies of `s`. `n` is truncated toward zero, and `n <= 0` yields the empty string.
 - `lines(s)` splits `s` on `\n` and removes one trailing `\r` from each line, so both LF and CRLF text split identically. A trailing newline does not produce a final empty element, and the empty string yields the empty array. This is the form to use on the `stdout` of a `CommandResult` (6.6).
 - `to_string(v)` produces the same text that interpolating `v` into a string would (6.6): a `String` unchanged, a `Number` in the canonical form of 13.1, and a `Bool` as `true` or `false`. A runtime value of any other kind, `Null` included, is `E-RUNTIME-VALUE`; use `to_json` (15.8) for structured values.
+- The argument type of `to_string` is `Any`, so the condition that makes the call meaningful is checked at the call site instead: the type of `v` must be stringifiable (6.6). `to_string` of a `String | Null` is therefore a static error (`E-TYPE-MISMATCH`), and the union is narrowed with `case` (6.4) first. As with `==` (6.2) and `sort` (15.4), this is a condition on the instantiated argument type that the signature cannot state. `Any` is stringifiable and remains accepted, with the runtime check above as its guard.
 - `to_number(s)` decodes `s`, ignoring surrounding whitespace, as a number in the JSON number grammar (13.1). Any other text is `E-IO-DATA-DECODE`. This is the form to use on a number read out of command output, and it replaces going through `from_json` and `cast`.
 
 Regular expressions:
@@ -3429,7 +3566,7 @@ Regular expressions:
 - Backreferences, lookaround and the lazy `?` quantifier suffix are deliberately not provided: every one of them requires backtracking. Matching is therefore linear in the length of the input whatever the pattern is. An implementation must not extend the syntax with a construct that makes matching super-linear — a task definition runs unattended, and a pattern that backtracked catastrophically would stall the run rather than report a diagnosable error.
 - Matching is POSIX leftmost-longest, not leftmost-first: among the matches that start at the earliest position, the longest one is chosen, so `a|ab` matches `ab` in the subject `ab`. Quantifiers are greedy for the same reason, and a pattern that relies on a lazy quantifier is written with a negated class instead — `"([^\"]*)"` in place of `"(.*?)"`.
 - `regex_test(s, pattern)` is true when the pattern matches anywhere in `s`.
-- `regex_match(s, pattern)` returns, for the leftmost-longest match, an array whose element `0` is the whole matched text and whose element `i` is the text of the `i`-th capture group, with a group that did not participate yielding the empty string. When there is no match it returns the empty array, so a caller tests with `is_empty` (15.4) rather than against a null.
+- `regex_match(s, pattern)` returns, for the leftmost-longest match, an array whose element `0` is the whole matched text and whose element `i` is the text of the `i`-th capture group, with a group that did not participate yielding the empty string. When there is no match it returns the empty array, so a caller tests with `is_empty` (15.4) rather than against a null: a successful match always has at least element `0`, so the empty array cannot be confused with one, and the result type stays `Array<String>`.
 - `regex_replace(s, pattern, replacement)` replaces every non-overlapping match from left to right. In `replacement`, `$0` to `$9` stand for the whole match and the capture groups, and `$$` stands for a literal `$`. A match of the empty string advances one character before the next attempt.
 - A pattern is normally written as a raw string (3.3), which performs no escape processing: `regex_match(s, '(\\d+)')`. In an interpreted string every backslash of the pattern has to be doubled.
 - A malformed pattern is `E-RUNTIME-REGEX`. When the pattern is a string literal containing no interpolation, an implementation may additionally report it statically as the advisory `W-REGEX-PATTERN` (14.2), since the call is then certain to fail.
@@ -3460,6 +3597,7 @@ The built-in library provides at least the following functions.
 - `sort_by`: `Function<Array<T>, Function<T, U>, Array<T>>`
 - `contains_array`: `Function<Array<T>, T, Bool>`
 - `index_of_array`: `Function<Array<T>, T, Number>`
+- `find`: `Function<Array<T>, Function<T, Bool>, T | Null>`
 - `find_index`: `Function<Array<T>, Function<T, Bool>, Number>`
 - `every`: `Function<Array<T>, Function<T, Bool>, Bool>`
 - `any`: `Function<Array<T>, Function<T, Bool>, Bool>`
@@ -3483,7 +3621,7 @@ Semantics:
 - `reduce` requires an initial value.
 - `for_each` discards each application result and returns `Void`. It is used for iteration whose purpose is side effects.
 - `map`, `filter`, `reduce`, and `for_each` are core functions that include the normalization targets of the control structures of 6.4, and must not be overridden by user code (subject to the exception provision of 15.1).
-- `get` results in a runtime error (`E-RUNTIME-ACCESS`) when the key is absent. This is the same failure contract as index access `m[k]` (6.8, 8.9). To tolerate a missing key, use `get_or`, or check in advance with `has_key`.
+- `get` results in a runtime error (`E-RUNTIME-ACCESS`) when the key is absent. This is the same failure contract as index access `m[k]` (6.8, 8.9), and it is what the `get_` prefix means throughout the library (15.1). To tolerate a missing key, use `get_or`, or check in advance with `has_key`.
 - Every function in this section is pure and returns a new value. No built-in mutates the array, map, or record it is given (8.2).
 
 Size and emptiness:
@@ -3505,8 +3643,20 @@ Ordering:
 Searching:
 
 - `contains_array(xs, v)` and `index_of_array(xs, v)` compare with the structural equality of `==` (6.2), so the element type must be a comparable type; any other element type is a static error (`E-TYPE-MISMATCH`). `index_of_array` returns `-1` when the value does not occur.
-- `find_index(xs, p)` returns the index of the first element for which `p` is true, or `-1`. `p` is applied from left to right and no further element is tested once one is true.
-- There is no function that returns the found element itself, because the language has no option type and no data constructors (6.4): a search that finds nothing has no value to return. Write `xs[find_index(xs, p)]` after testing the index against `-1`.
+- `find(xs, p)` returns the first element for which `p` is true, or `Null` when there is none. `p` is applied from left to right and no further element is tested once one is true. The result type `T | Null` is a union (4.2), so the caller resolves it with `case` (6.4) before using the element:
+
+  ```lask
+  first_flag(args: Array<String>): String = do {
+    a = find(args, \(x: String) -> starts_with(x, "--"))
+    case (a) {
+      Null -> ""
+      else -> a
+    }
+  }
+  ```
+
+- `find_index(xs, p)` returns the index of the first element for which `p` is true, or `-1`. It reports a position rather than a value, so the absent case is `-1` and not `Null` (15.1). Use `find` when the element is wanted and `find_index` when the position is.
+- A type variable inside a union is permitted in the return type of a signature, which is what `find` relies on, and not in a parameter type (4.4). One consequence of the canonical form of a union (4.2) is worth noting: searching an `Array<Any>` gives `Any | Null`, which is `Any`, so the absent case is then not distinguishable by type. That is inherent to `Any`, and the answer is the usual one — `cast` the decoded value to a concrete element type before searching it.
 - `every(xs, p)` is true when `p` holds for every element, and is true for an empty array. `any(xs, p)` is true when `p` holds for at least one element, and is false for an empty array. Both stop applying `p` at the first element that decides the result.
 - The name `all` is not used for `every`, because it is already the asynchronous helper of 15.6.
 
@@ -3634,9 +3784,10 @@ JSON conversion rules of `from_json` / `decode`:
 
 Type migration via `cast`:
 
-- `cast(v)` checks at runtime whether the value `v` conforms to the target type `T`, and if it conforms, returns `v` as a value of type `T`. It is the sole means of migration from `Any` to a concrete type (4.4).
+- `cast(v)` checks at runtime whether the value `v` conforms to the target type `T`, and if it conforms, returns `v` as a value of type `T`. Together with the type dispatch of `case` (6.4), which runs the same check without failing, it is one of the two means of migration from `Any` or from a union to a concrete type (4.4). Use `cast` where any other kind of value is an error, and `case` where the other kinds are to be handled.
 - The target type `T` must be uniquely concretized from the expected type at the reference position via built-in polymorphism (4.4) (e.g., `user: Record<name: String> = cast(from_json(stdin))`).
-- The target type `T` is limited to data types (`Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, and `Array`/`Map`/`Record` composed of them). A `cast` to a type containing `Void`, `Function`, or `AsyncHandle` is a static error (`E-TYPE-ILLFORMED`).
+- The target type `T` is limited to data types (`Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, `Array`/`Map`/`Record` composed of them, and unions of those). A `cast` to a type containing `Void`, `Function`, or `AsyncHandle` is a static error (`E-TYPE-ILLFORMED`). Every well-formed union is a legal target, because 4.2 already restricts a union's members to this same set.
+- `cast` is also the way out of a union when only one member is expected and any other is an error: `cast(v)` at target `String` on a `v: String | Null` succeeds when the value is a string and fails with `E-RUNTIME-CAST` when it is null. When the absent case is to be handled rather than rejected, use `case` (6.4), which tests without failing.
 
 Runtime type check rules for `cast`:
 
@@ -3645,6 +3796,7 @@ Runtime type check rules for `cast`:
 - `Map<T>`: every value conforms at runtime to `T`.
 - `Record<...>`: the key set matches the field set of the target type, and each value conforms at runtime to the corresponding field type.
 - Record values and map values are mutually acceptable. When the structural conditions are satisfied, the implementation converts to the target type's representation (record or map) as needed (to absorb the implementation choice for JSON objects in `from_json`).
+- `T1 | T2 | ...`: the value conforms when it conforms to some member. Members are tried in the canonical order of 4.2 and the first that matches decides the result, which matters only where two members can accept one value, as `Record<...>` and `Map<T>` can by the rule above.
 - Positions of `Any` within the target type pass without checking.
 - If the check fails, it is a runtime error (`E-RUNTIME-CAST`). The diagnostics should include the failing position (field path, index).
 
@@ -3666,18 +3818,21 @@ Contract:
 The built-in library provides at least the following functions.
 
 - `get_env`: `Function<String, String>`
+- `find_env`: `Function<String, String | Null>`
 - `has_env`: `Function<String, Bool>`
 - `get_env_or`: `Function<String, String, String>`
 - `mark_secret`: `Function<String, String>`
 
 Semantics:
 
-- `get_env(name)` returns the value of the process environment variable `name`, or `Null` if it is not set. `get_env` is a core function (7.2) and must not be directly declared or overridden by user code.
+- `get_env(name)` returns the value of the process environment variable `name`. It presupposes that the variable is set, and a variable that is not set is a runtime error (`E-RUNTIME-ACCESS`) whose diagnostic names the variable (15.1, 14.5). This is the form for a variable the task requires in order to run at all, such as a credential: the failure names what is missing, at the point it is missing, instead of letting an absent value travel on. `get_env` is a core function (7.2) and must not be directly declared or overridden by user code.
+- `find_env(name)` returns the value of `name`, or `Null` when it is not set. Its result type is the union `String | Null` (4.2), which the caller resolves with `case` (6.4) — or with `cast` (15.8) when an unset variable is to be treated as an error after all. This is the form for a variable the task merely accepts.
 - `has_env(name)` is true when `name` is set in the process environment, including when it is set to the empty string.
-- `get_env_or(name, fallback)` returns the value of `name` when it is set, and `fallback` when it is not. It always returns a `String`, so it is the form to prefer wherever a missing variable has a sensible default, and it makes the null case of `get_env` explicit at the call site.
-- All three read the process environment of the Lask process itself. They do not read the variables of an execution `Environment` (10.6); a command reads those through the shell it runs in.
-- `has_env` and `get_env_or` are ordinary built-in symbols and may be shadowed by a user definition (15.1). Only `get_env` and `mark_secret` are core functions.
-- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `get_env_or` behaves the same way.
+- `get_env_or(name, fallback)` returns the value of `name` when it is set, and `fallback` when it is not. It always returns a `String`, so it is the form to prefer wherever a missing variable has a sensible default, and it says at the call site what that default is.
+- The four differ only in what an unset variable means — a failure, a `Null`, a `Bool`, or a fallback — and follow the naming rules of 15.1. `find_env` is the only one of them whose result can be absent, and `get_env_or(name, fallback)` is exactly the `case` over `find_env(name)` that returns `fallback` for `Null`.
+- All four read the process environment of the Lask process itself. They do not read the variables of an execution `Environment` (10.6); a command reads those through the shell it runs in.
+- `find_env`, `has_env` and `get_env_or` are ordinary built-in symbols and may be shadowed by a user definition (15.1). Only `get_env` and `mark_secret` are core functions.
+- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. Note that `!!` requires `String` (6.10), so a credential is read with `get_env`, not with `find_env`.
 - `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged.
 - `mark_secret` is a core function and must not be directly declared or overridden by user code (7.2). It is the desugaring target of `!!` secret bindings (6.10); user code may also call it directly to register a value that isn't declared with `!!`.
 - Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out) and no effect on control flow: it is not a source of failure.

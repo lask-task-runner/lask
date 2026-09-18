@@ -68,6 +68,10 @@ data CoreF
     CEnv Text [(Text, Core)]
   | -- | @cast@ with its statically determined target type (15.8).
     CCast Core Type
+  | -- | The condition of a @case@ type head (spec 6.4): true when the
+    -- value passes the runtime type check of @cast@ at this type.
+    -- Unlike 'CCast' it neither converts the value nor fails.
+    CIsType Core Type
   deriving (Show, Eq)
 
 data CorePart = CPText Text | CPExpr Core

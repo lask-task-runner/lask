@@ -21,6 +21,7 @@ module Language.Lask.Syntax.AST
     ArgF (..),
     Block (..),
     CaseArm (..),
+    CaseHeads (..),
     Stmt (..),
     StmtF (..),
     stripSpansModule,
@@ -111,6 +112,9 @@ data STypeF
     -- a reference to a public type alias of the module the namespace
     -- import @ns@ refers to (spec 4.2 QualifiedNamedType).
     SNamed (Maybe Text) Text
+  | -- | @T1 | T2 | ...@ as written, with at least two members (spec
+    -- 4.2). Canonicalization happens when it becomes a semantic type.
+    SUnion [SType]
   deriving (Show, Eq)
 
 data Expr = Expr {exprSpan :: Span, exprF :: ExprF}
@@ -162,9 +166,16 @@ data TextPart = TPChunk Span Text | TPInterp Expr
 -- last (spec 6.4). An arm with several heads matches any of them.
 data CaseArm = CaseArm
   { caseArmSpan :: Span,
-    caseArmHeads :: Maybe [Expr],
+    caseArmHeads :: Maybe CaseHeads,
     caseArmBody :: Expr
   }
+  deriving (Show, Eq)
+
+-- | The heads of one arm (spec 6.4). A value head is compared with the
+-- scrutinee by equality; a type head dispatches on its runtime type.
+-- The two are never mixed within one arm: a head beginning with an
+-- @upper_id@ is a type, and an @upper_id@ cannot begin an expression.
+data CaseHeads = ValueHeads [Expr] | TypeHeads [SType]
   deriving (Show, Eq)
 
 data Arg = Arg {argSpan :: Span, argF :: ArgF}
@@ -219,6 +230,7 @@ stripSpansType (SType _ f) = SType NoSpan $ case f of
   SRecord fs -> SRecord [(Spanned NoSpan n, stripSpansType t) | (Spanned _ n, t) <- fs]
   SAsyncHandle t -> SAsyncHandle (stripSpansType t)
   SFunction ps r -> SFunction (map stripSpansType ps) (stripSpansType r)
+  SUnion ts -> SUnion (map stripSpansType ts)
   other -> other
 
 stripSpansExpr :: Expr -> Expr
@@ -247,8 +259,9 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EEnv h as -> EEnv h (fmap (map stripArg) as)
   other -> other
   where
-    stripArm (CaseArm _ hs b) =
-      CaseArm NoSpan (fmap (map stripSpansExpr) hs) (stripSpansExpr b)
+    stripArm (CaseArm _ hs b) = CaseArm NoSpan (fmap stripHeads hs) (stripSpansExpr b)
+    stripHeads (ValueHeads es) = ValueHeads (map stripSpansExpr es)
+    stripHeads (TypeHeads ts) = TypeHeads (map stripSpansType ts)
     stripPart (TPChunk _ c) = TPChunk NoSpan c
     stripPart (TPInterp e) = TPInterp (stripSpansExpr e)
     stripArg (Arg _ (APos e)) = Arg NoSpan (APos (stripSpansExpr e))

@@ -5,6 +5,9 @@
 -- well-formedness of @Void@ (4.2).
 module Language.Lask.Types
   ( Type (..),
+    mkUnion,
+    unionMembers,
+    dataType,
     renderType,
     conformsTo,
     comparable,
@@ -17,6 +20,7 @@ module Language.Lask.Types
   )
 where
 
+import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -39,7 +43,66 @@ data Type
     TyFun [Type] Type
   | -- | Type variable; only occurs in builtin schemes (4.4).
     TyVar Text
+  | -- | Union of two or more members in the canonical order of 4.2.
+    -- Construct only through 'mkUnion', which is what establishes
+    -- that invariant; pattern matching on it is fine anywhere.
+    TyUnion [Type]
   deriving (Show, Eq, Ord)
+
+-- | The union of a member and any number of further members, reduced
+-- to the canonical form of 4.2: members are flattened, @Any@ absorbs
+-- the whole union, duplicates are dropped, the rest are ordered, and a
+-- union of one member is that member.
+--
+-- Taking the first member separately keeps the function total: there
+-- is no empty type for @mkUnion []@ to denote.
+mkUnion :: Type -> [Type] -> Type
+mkUnion t ts
+  | TyAny `elem` flat = TyAny
+  | otherwise = case sortOn key (nub flat) of
+      [] -> TyAny -- unreachable: flat always holds at least t
+      [only] -> only
+      members -> TyUnion members
+  where
+    flat = concatMap unionMembers (t : ts)
+    key u = (rank u, renderType u)
+    -- The order the type forms are listed in 4.1, except that Null is
+    -- always last, so that @String | Null@ reads as it was written.
+    rank u = case u of
+      TyAny -> 0 :: Int
+      TyNumber -> 1
+      TyString -> 2
+      TyBool -> 3
+      TyEnvironment -> 4
+      TyArray _ -> 5
+      TyMap _ -> 6
+      TyRecord _ -> 7
+      TyAsync _ -> 8
+      TyFun _ _ -> 9
+      TyVar _ -> 10
+      TyVoid -> 11
+      TyUnion _ -> 12
+      TyNull -> 13
+
+-- | The members of a union, or the type itself for anything else.
+unionMembers :: Type -> [Type]
+unionMembers (TyUnion ts) = ts
+unionMembers t = [t]
+
+-- | Data types (4.2): the types a union may have as a member and the
+-- types @cast@ may check at runtime (15.8). A type variable passes,
+-- because it stands for whatever it is instantiated to, and the
+-- instantiation is checked by 'wellFormed' in its turn.
+dataType :: Type -> Bool
+dataType t = case t of
+  TyVoid -> False
+  TyFun _ _ -> False
+  TyAsync _ -> False
+  TyArray e -> dataType e
+  TyMap e -> dataType e
+  TyRecord fs -> all dataType (Map.elems fs)
+  TyUnion ts -> all dataType ts
+  _ -> True
 
 -- | Builtin alias @Error = Record\<code: Number, message: String\>@.
 errorType :: Type
@@ -69,6 +132,7 @@ renderType t = case t of
   TyAsync e -> "AsyncHandle<" <> renderType e <> ">"
   TyFun ps r -> "Function<" <> T.intercalate ", " (map renderType (ps <> [r])) <> ">"
   TyVar v -> v
+  TyUnion ts -> T.intercalate " | " (map renderType ts)
   where
     renderField k
       | isLowerId k = k
@@ -85,6 +149,10 @@ renderType t = case t of
 -- @Any@ as the sole top type. No variance.
 conformsTo :: Type -> Type -> Bool
 conformsTo _ TyAny = True
+-- Union elimination: every member has to fit where the union is used.
+conformsTo (TyUnion ts) u = all (`conformsTo` u) ts
+-- Union introduction: fitting one member is enough.
+conformsTo t (TyUnion us) = any (conformsTo t) us
 conformsTo t u = t == u
 
 -- | Comparable types for @==@\/@!=@ (spec 6.2).
@@ -98,6 +166,7 @@ comparable t = case t of
   TyArray e -> comparable e
   TyMap e -> comparable e
   TyRecord fs -> all comparable (Map.elems fs)
+  TyUnion ts -> all comparable ts
   _ -> False
 
 -- | Types that @sort@ \/ @sort_by@ can order (spec 15.4).
@@ -116,6 +185,7 @@ orderable t = case t of
 isGround :: Type -> Bool
 isGround t = case t of
   TyVar _ -> False
+  TyUnion ts -> all isGround ts
   TyArray e -> isGround e
   TyMap e -> isGround e
   TyRecord fs -> all isGround (Map.elems fs)
@@ -136,6 +206,9 @@ wellFormed = go True
       TyRecord fs -> all (go False) (Map.elems fs)
       TyAsync e -> go True e
       TyFun ps r -> all (go False) ps && go True r
+      -- A union admits data types only (4.2), which already excludes
+      -- Void, so the members are checked with Void disallowed.
+      TyUnion ts -> all dataType ts && all (go False) ts
       _ -> True
 
 -- | Types accepted inside string\/command interpolation @#{...}@
@@ -146,4 +219,5 @@ stringifiable t = case t of
   TyNumber -> True
   TyBool -> True
   TyAny -> True
+  TyUnion ts -> all stringifiable ts
   _ -> False

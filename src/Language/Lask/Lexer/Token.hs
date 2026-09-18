@@ -128,6 +128,9 @@ data Token
     -- this is its own lexeme and is never read as two 'OpNot's.
     TBangBang
   | TEllipsis
+  | -- | @|@, the union separator of a type (spec 4.2). Lexed after
+    -- @|>@ and @||@, so it is never a piece of either.
+    TPipe
   | TNewline
   deriving (Show, Eq, Ord)
 

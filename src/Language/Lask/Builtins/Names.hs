@@ -112,6 +112,7 @@ builtinValueNames =
       "sort_by",
       "contains_array",
       "index_of_array",
+      "find",
       "find_index",
       "every",
       "any",
@@ -151,6 +152,7 @@ builtinValueNames =
       "md5",
       -- 15.9 environment access / secret marking
       "get_env",
+      "find_env",
       "has_env",
       "get_env_or",
       "mark_secret",

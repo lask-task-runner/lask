@@ -340,8 +340,19 @@ validateParamOrder = go (0 :: Int)
 
 -- Types -------------------------------------------------------------------------
 
+-- | A type, which is a union of one or more single types (spec 4.2).
+-- A union of one member is that member, so nothing downstream sees an
+-- 'SUnion' unless a @|@ was written.
 pType :: P SType
-pType = choice [pQualifiedNamed, pUnqualified]
+pType = do
+  t <- pSingleType
+  ts <- many (sym TPipe *> pSingleType)
+  pure $ case ts of
+    [] -> t
+    _ -> SType (stypeSpan t <> stypeSpan (last ts)) (SUnion (t : ts))
+
+pSingleType :: P SType
+pSingleType = choice [pQualifiedNamed, pUnqualified]
   where
     -- Dispatches purely on the leading token (TLowerId vs TUpperId), so
     -- no other Type alternative can be mistaken for this one and no
@@ -625,14 +636,22 @@ pCaseExpr = do
   e <- sym TRBrace
   pure (Expr (s <> e) (ECase scrut arms))
 
+-- | One arm. The head kind is decided by the leading token alone
+-- (spec 6.4): an @upper_id@ begins a type head, and nothing else can,
+-- because no expression begins with one. A type head is a single type,
+-- never a union: alternatives in one arm are written with @,@.
 pCaseArm :: P CaseArm
 pCaseArm = do
   (hsp, heads) <-
     choice
       [ (\sp -> (sp, Nothing)) <$> try (kw KElse <* lookAhead (sym TArrow)),
         do
+          _ <- lookAhead upperId
+          ts <- sepBy1 pSingleType (sym TComma)
+          pure (foldr1 (<>) (map stypeSpan ts), Just (TypeHeads ts)),
+        do
           hs <- sepBy1 pExpr (sym TComma)
-          pure (foldr1 (<>) (map exprSpan hs), Just hs)
+          pure (foldr1 (<>) (map exprSpan hs), Just (ValueHeads hs))
       ]
   _ <- sym TArrow
   body <- pExpr
