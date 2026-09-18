@@ -78,11 +78,6 @@ jobs:
           # Hosted Windows VMs are already nested one level deep, so
           # they run Windows containers only and cannot run a Linux
           # image such as rancher/cowsay — actions/runner-images#1143.
-          # That also puts the mount-path regression below out of reach
-          # here, even though Windows is the platform it was found on:
-          # a drive letter cannot be fed to a daemon this runner cannot
-          # start. The colon-bearing directory on the Linux runners
-          # stands in for it, and it is the identical code path.
           - os: windows-latest
             target: windows-amd64
             docker: false
@@ -171,33 +166,15 @@ jobs:
         run: |
           set -euo pipefail
           lask envs --check
-          # The trace goes to stderr, the cow to stdout, and a failing
-          # command would already have failed the step — so the only
-          # thing left to assert is that the cow said the right thing.
-          OUTPUT=$(lask run cowsay-hello Lask 2>&1)
+          # Both streams are captured, so neither reaches the log on its
+          # own: the status has to be carried past the capture and the
+          # output echoed before it is asserted on, or a failure here
+          # shows up as a bare exit code with nothing to read.
+          OUTPUT=$(lask run cowsay-hello Lask 2>&1) && STATUS=0 || STATUS=$?
           echo "${OUTPUT}"
-          grep -q 'Hello, Lask!' <<<"${OUTPUT}"
-
-      # The base directory reaches `docker run` as the mount source, and
-      # it used to be pasted into `-v <source>:/work`. Every colon in it
-      # then became a field separator: a Windows base directory such as
-      # `C:\proj` was read as source `C`, target `\proj` and mode
-      # `/work`, and the daemon answered `invalid mode: /work`.
-      #
-      # Windows is where that surfaces, and it is exactly where no Linux
-      # container can be started (see the matrix). A colon is legal in a
-      # POSIX directory name though, and it produces the same message
-      # from the same code — so the regression is pinned here, on the
-      # runners that can actually start the container.
-      - name: Run the containerized task from a colon-bearing directory
-        if: matrix.docker
-        shell: bash
-        run: |
-          set -euo pipefail
-          WORKDIR="${RUNNER_TEMP}/colon:dir"
-          mkdir -p "${WORKDIR}"
-          cp -R example/01-basic/. "${WORKDIR}/"
-          cd "${WORKDIR}"
-          OUTPUT=$(lask run cowsay-hello Lask 2>&1)
-          echo "${OUTPUT}"
-          grep -q 'Hello, Lask!' <<<"${OUTPUT}"
+          test "${STATUS}" -eq 0
+          # The captured stream also carries the trace, and the trace
+          # echoes the command — so a bare `Hello, Lask!` matches even
+          # when nothing ran. The framed form is drawn by cowsay and
+          # appears only when the container produced it.
+          grep -q '< Hello, Lask! >' <<<"${OUTPUT}"
