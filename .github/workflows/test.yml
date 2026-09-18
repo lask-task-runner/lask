@@ -45,6 +45,36 @@ jobs:
       - name: Run doctests
         run: stack exec doctest app src
 
+      # The base directory reaches `docker run` as the mount source, and
+      # it used to be pasted into `-v <source>:/work`, where every colon
+      # in it became a field separator. A Windows base directory splits
+      # at its drive letter — `C:\proj` was read as source `C`, target
+      # `\proj` and mode `/work` — and a POSIX directory whose name
+      # holds a colon splits the same way, which is what makes the
+      # regression reachable on this runner at all.
+      #
+      # EnvironmentSpec already asserts the argument vector, including
+      # the Windows case. Only the daemon can say whether it accepts
+      # what we build, so that assertion is worth this container.
+      - name: Run a containerized task from a colon-bearing directory
+        run: |
+          set -euo pipefail
+          LASK="$(stack path --local-install-root)/bin/lask"
+          WORKDIR="${RUNNER_TEMP}/colon:dir"
+          mkdir -p "${WORKDIR}"
+          cp -R example/01-basic/. "${WORKDIR}/"
+          cd "${WORKDIR}"
+          # Capturing both streams hides them from the log, so the
+          # status is carried past the capture and the output echoed
+          # before anything is asserted on it.
+          OUTPUT=$("${LASK}" run cowsay-hello Lask 2>&1) && STATUS=0 || STATUS=$?
+          echo "${OUTPUT}"
+          test "${STATUS}" -eq 0
+          # The trace echoes the command, so a bare `Hello, Lask!`
+          # matches even on a failed run. The framed form is drawn by
+          # cowsay and appears only when the container produced it.
+          grep -q '< Hello, Lask! >' <<<"${OUTPUT}"
+
       # The generated completion scripts are shell code, so the only
       # place their quoting and word splitting can be checked is a
       # shell. A shell that is missing is skipped, not failed.
