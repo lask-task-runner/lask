@@ -24,7 +24,9 @@ import Language.Lask.Diagnostic (Diagnostic)
 import Language.Lask.Elaborate (CoreProgram (..))
 import Language.Lask.Module.Loader (fileReader)
 import Language.Lask.Obs.CommandLog (newLineWriter, textCommandLog)
-import Language.Lask.Runtime.Environment (mkCommandRunner)
+import Language.Lask.Builtins.Impl (RtHooks (..))
+import Language.Lask.Obs.ExecLog (textLogSink)
+import Language.Lask.Runtime.Environment (mkCommandRunner, mkFileRunner)
 import Language.Lask.Runtime.Eval (mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue)
@@ -98,7 +100,8 @@ evalSession modulePath source = do
           baseDir = takeDirectory (normalise modulePath)
       writeErr <- newLineWriter stderr
       runner <- mkCommandRunner baseDir (textCommandLog writeErr)
-      ctx <- mkRtCtx core "" runner
+      fileRunner <- mkFileRunner baseDir
+      ctx <- mkRtCtx core "" (RtHooks runner fileRunner (textLogSink writeErr))
       result <- try (topValue ctx (cpEntry core, resultName))
       pure (Right result)
 

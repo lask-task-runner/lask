@@ -1679,6 +1679,7 @@ elabCall ctx path locals sp fn args mExpected = do
                 Just expT -> either (const Map.empty) id (unifyE (schemeRet scheme) expT Map.empty)
                 Nothing -> Map.empty
           (cores, subst) <- goArgs subst0 [] (zip posExprs params)
+          builtinSideCondition name sp subst
           retTy <- case applySubst subst (schemeRet scheme) of
             t | isGround t -> pure t
             t -> case mExpected of
@@ -1735,6 +1736,33 @@ castable t = case t of
 -- Type variable substitution / matching -------------------------------------------------------
 
 type Subst = Map Text Type
+
+-- | Restrictions a built-in's signature cannot state, checked against
+-- the instantiated type variables at the call site (spec 15.4).
+--
+-- This is the same shape of rule as @==@ (6.2): the type system has
+-- no constraints, so a polymorphic built-in that only works for some
+-- element types has that condition checked where it is called.
+builtinSideCondition :: Text -> Span -> Subst -> TC ()
+builtinSideCondition name sp subst = case name of
+  "sort" -> needs orderable "T" "ordered"
+  "sort_by" -> needs orderable "U" "ordered"
+  "contains_array" -> needs comparable "T" "compared"
+  "index_of_array" -> needs comparable "T" "compared"
+  "unique" -> needs comparable "T" "compared"
+  _ -> pure ()
+  where
+    needs ok var verb = case Map.lookup var subst of
+      Just t
+        | not (ok t) ->
+            () <$ abort (diag ETypeMismatch sp (message t verb))
+      _ -> pure ()
+    message t verb =
+      "'" <> name <> "' cannot be used here: values of type "
+        <> renderType t
+        <> " cannot be "
+        <> verb
+        <> (if verb == "ordered" then " (only Number and String can)" else "")
 
 applySubst :: Subst -> Type -> Type
 applySubst s t = case t of

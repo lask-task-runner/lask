@@ -6,7 +6,9 @@ import Control.Exception (try)
 import Data.Either (isRight)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Language.Lask.Builtins.Impl (CommandRunner)
+import qualified Data.Vector as V
+import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner, RtHooks (..))
+import Language.Lask.Obs.ExecLog (noLogSink)
 import Language.Lask.Diagnostic (diagCode)
 import Language.Lask.Elaborate (elaborateProgram)
 import Language.Lask.ErrorCode
@@ -27,6 +29,20 @@ mockRunner _env cmd
   | cmd == "unreachable" = pure (Left (ioFailure EIoEnvResolve "cannot resolve environment"))
   | otherwise = pure (Right (0, "", ""))
 
+-- | Mock filesystem runner: the unit tests exercise dispatch and
+-- typing of the built-ins of 15.11, not the real filesystem, which
+-- "Language.Lask.Runtime.EnvironmentSpec" covers against a temp dir.
+mockFileRunner :: FileRunner
+mockFileRunner _env op = pure $ case op of
+  FileRead "greeting.txt" -> Right (VString "hello\n")
+  FileRead p -> Left (ioFailure EIoFs ("no such file: '" <> p <> "'"))
+  FileExists p -> Right (VBool (p == "greeting.txt"))
+  FileListDir _ -> Right (VArray (V.fromList [VString "a.txt", VString "b.txt"]))
+  FileGlob _ -> Right (VArray (V.fromList [VString "src/main.lask"]))
+  FileWrite {} -> Right VVoid
+  FileRemove _ -> Right VVoid
+  FileMakeDir _ -> Right VVoid
+
 -- | Compile main.lask, evaluate declaration @name@; a closure result
 -- is applied to zero arguments. Result is canonical JSON.
 run :: Text -> Text -> IO (Either (Maybe ErrorCode, Text) Text)
@@ -39,7 +55,7 @@ run src name = do
       Right scopes -> case elaborateProgram prog scopes of
         Left ds -> pure (Left (Nothing, T.pack (show (map diagCode ds))))
         Right cp -> do
-          ctx <- mkRtCtx cp "in-data\n" mockRunner
+          ctx <- mkRtCtx cp "in-data\n" (RtHooks mockRunner mockFileRunner noLogSink)
           out <- try $ do
             v <- topValue ctx ("main.lask", name)
             case v of
@@ -53,6 +69,15 @@ run src name = do
 
 evalsTo :: Text -> Text -> Text -> Expectation
 evalsTo src name expected = run src name >>= (`shouldBe` Right expected)
+
+-- | Rejected before evaluation: 'run' reports static diagnostics with
+-- no runtime error code.
+failsToCompile :: Text -> Text -> Expectation
+failsToCompile src name = do
+  r <- run src name
+  case r of
+    Left (Nothing, _) -> pure ()
+    other -> expectationFailure ("expected a static rejection, got " <> show other)
 
 failsWith :: Text -> Text -> ErrorCode -> Expectation
 failsWith src name code = do
@@ -316,3 +341,210 @@ spec = do
       out <- masksAfterEval "f() = do { k!! = get_env(\"LASK_TEST_SECRET_VAR\")\n  k }" "f"
       unsetEnv "LASK_TEST_SECRET_VAR"
       pure out
+
+  describe "filesystem functions (spec 15.11)" $ do
+    it "reads a file from the environment it names" $
+      evalsTo "f() = read_file(\"greeting.txt\", #local)" "f" "\"hello\\n\""
+    it "returns Void from write_file (spec 13.1 tags it)" $
+      evalsTo "f() = write_file(\"out.txt\", \"x\", #local)" "f" "{\"$type\":\"Void\"}"
+    it "answers file_exists as a Bool" $
+      evalsTo "f() = file_exists(\"absent.txt\", #local)" "f" "false"
+    it "returns list_dir and glob as arrays of String" $ do
+      evalsTo "f() = list_dir(\".\", #local)" "f" "[\"a.txt\",\"b.txt\"]"
+      evalsTo "f() = glob(\"src/**/*.lask\", #local)" "f" "[\"src/main.lask\"]"
+    it "propagates a filesystem failure as E-IO-FS" $
+      failsWith "f() = read_file(\"absent.txt\", #local)" "f" EIoFs
+    it "is catchable like any other failure (spec 6.9)" $
+      evalsTo
+        "f() = try { read_file(\"absent.txt\", #local) } catch (e) { \"fallback\" }"
+        "f"
+        "\"fallback\""
+    it "requires the environment argument (spec 15.11)" $
+      failsToCompile "f() = read_file(\"greeting.txt\")" "f"
+    it "rejects a non-Environment second argument" $
+      failsToCompile "f() = read_file(\"greeting.txt\", \"local\")" "f"
+
+  describe "numeric additions (spec 15.2)" $ do
+    it "compares, sums and raises" $ do
+      evalsTo "f() = min(3, 1) + max(2, 5)" "f" "6"
+      evalsTo "f() = sum([1, 2, 3])" "f" "6"
+      evalsTo "f() = sum([])" "f" "0"
+      evalsTo "f() = pow(2, 10)" "f" "1024"
+      evalsTo "f() = sqrt(9)" "f" "3"
+    it "clamps into the given bounds" $ do
+      evalsTo "f() = clamp(5, 0, 3)" "f" "3"
+      evalsTo "f() = clamp(0 - 1, 0, 3)" "f" "0"
+    it "rejects arguments outside the domain with E-RUNTIME-VALUE" $ do
+      failsWith "f() = sqrt(0 - 1)" "f" ERuntimeValue
+      failsWith "f() = clamp(1, 3, 0)" "f" ERuntimeValue
+
+  describe "string additions (spec 15.3)" $ do
+    it "searches without a substring hack" $ do
+      evalsTo "f() = contains(\"abc\", \"b\")" "f" "true"
+      evalsTo "f() = starts_with(\"abc\", \"ab\")" "f" "true"
+      evalsTo "f() = ends_with(\"abc\", \"bc\")" "f" "true"
+      evalsTo "f() = index_of(\"abcb\", \"b\")" "f" "1"
+    it "reports an absent needle as -1 rather than failing" $
+      evalsTo "f() = index_of(\"abc\", \"z\")" "f" "-1"
+    it "slices with clamped endpoints and never fails" $ do
+      evalsTo "f() = substring(\"abcdef\", 1, 3)" "f" "\"bc\""
+      evalsTo "f() = substring(\"abc\", 0, 99)" "f" "\"abc\""
+      evalsTo "f() = substring(\"abc\", 2, 1)" "f" "\"\""
+    it "pads and repeats" $ do
+      evalsTo "f() = pad_start(\"7\", 3, \"0\")" "f" "\"007\""
+      evalsTo "f() = pad_end(\"7\", 3, \".\")" "f" "\"7..\""
+      evalsTo "f() = repeat(\"ab\", 3)" "f" "\"ababab\""
+      evalsTo "f() = repeat(\"ab\", 0)" "f" "\"\""
+    it "splits command output into lines, CRLF included" $ do
+      evalsTo "f() = lines(\"a\\nb\\n\")" "f" "[\"a\",\"b\"]"
+      evalsTo "f() = lines(\"a\\r\\nb\")" "f" "[\"a\",\"b\"]"
+      evalsTo "f() = lines(\"\")" "f" "[]"
+    it "converts between String and Number" $ do
+      evalsTo "f() = to_string(42)" "f" "\"42\""
+      evalsTo "f() = to_string(true)" "f" "\"true\""
+      evalsTo "f() = to_number(\" 42 \")" "f" "42"
+    it "reports unrenderable and unparsable values" $ do
+      failsWith "f() = to_string([1])" "f" ERuntimeValue
+      failsWith "f() = to_number(\"seven\")" "f" EIoDataDecode
+
+  describe "regular expressions (spec 15.3)" $ do
+    it "tests, captures and replaces" $ do
+      evalsTo "f() = regex_test(\"go1.22\", \"[0-9]+\")" "f" "true"
+      evalsTo "f() = regex_match(\"v1.22\", \"v([0-9]+)\")" "f" "[\"v1\",\"1\"]"
+      evalsTo "f() = regex_replace(\"a1b2\", \"[0-9]\", \"-\")" "f" "\"a-b-\""
+    it "expands group references in the replacement" $
+      evalsTo "f() = regex_replace(\"k=v\", \"([a-z]+)=([a-z]+)\", \"$2=$1\")" "f" "\"v=k\""
+    it "returns an empty array for no match, not a null" $
+      evalsTo "f() = regex_match(\"abc\", \"[0-9]+\")" "f" "[]"
+    it "supports the escapes POSIX lacks" $
+      evalsTo "f() = regex_match(\"x42\", '(\\d+)')" "f" "[\"42\",\"42\"]"
+    it "reports a malformed pattern as E-RUNTIME-REGEX" $
+      failsWith "f() = regex_test(\"a\", \"(\")" "f" ERuntimeRegex
+
+  describe "array additions (spec 15.4)" $ do
+    it "measures without folding by hand" $ do
+      evalsTo "f() = size([1, 2, 3])" "f" "3"
+      evalsTo "f() = is_empty([])" "f" "true"
+    it "takes ends, and fails on an empty array like an index would" $ do
+      evalsTo "f() = first([1, 2])" "f" "1"
+      evalsTo "f() = last([1, 2])" "f" "2"
+      failsWith "f() = first([])" "f" ERuntimeAccess
+    it "slices, takes, drops and reverses with clamping" $ do
+      evalsTo "f() = slice([1, 2, 3, 4], 1, 3)" "f" "[2,3]"
+      evalsTo "f() = take([1, 2, 3], 99)" "f" "[1,2,3]"
+      evalsTo "f() = drop([1, 2, 3], 1)" "f" "[2,3]"
+      evalsTo "f() = reverse([1, 2, 3])" "f" "[3,2,1]"
+    it "sorts numbers and strings" $ do
+      evalsTo "f() = sort([3, 1, 2])" "f" "[1,2,3]"
+      evalsTo "f() = sort([\"b\", \"a\"])" "f" "[\"a\",\"b\"]"
+    it "sorts by a key, stably" $
+      evalsTo
+        "f() = sort_by([{n: \"b\", k: 1}, {n: \"a\", k: 1}], \\(x: Record<n: String, k: Number>) -> x.k)"
+        "f"
+        "[{\"k\":1,\"n\":\"b\"},{\"k\":1,\"n\":\"a\"}]"
+    it "searches by value and by predicate" $ do
+      evalsTo "f() = contains_array([1, 2], 2)" "f" "true"
+      evalsTo "f() = index_of_array([1, 2], 3)" "f" "-1"
+      evalsTo "f() = find_index([1, 2, 3], \\(x: Number) -> x > 1)" "f" "1"
+      evalsTo "f() = find_index([1], \\(x: Number) -> x > 9)" "f" "-1"
+    it "quantifies, with the empty-array conventions" $ do
+      evalsTo "f() = every([2, 4], \\(x: Number) -> mod(x, 2) == 0)" "f" "true"
+      evalsTo "f() = any([1, 3], \\(x: Number) -> mod(x, 2) == 0)" "f" "false"
+      evalsTo "xs: Array<Number> = []\nf() = every(xs, \\(x: Number) -> false)" "f" "true"
+      evalsTo "xs: Array<Number> = []\nf() = any(xs, \\(x: Number) -> true)" "f" "false"
+    it "reshapes" $ do
+      evalsTo "f() = flatten([[1], [2, 3]])" "f" "[1,2,3]"
+      evalsTo "f() = flat_map([1, 2], \\(x: Number) -> [x, x])" "f" "[1,1,2,2]"
+      evalsTo "f() = unique([1, 2, 1])" "f" "[1,2]"
+      evalsTo "f() = zip([1], [\"a\"])" "f" "[{\"first\":1,\"second\":\"a\"}]"
+    it "counts and indexes, which for has no form for" $ do
+      evalsTo "f() = range(0, 3)" "f" "[0,1,2]"
+      evalsTo "f() = range(2, 2)" "f" "[]"
+      evalsTo "f() = enumerate([\"a\"])" "f" "[{\"index\":0,\"value\":\"a\"}]"
+    it "rejects an element type that cannot be ordered, statically" $
+      failsToCompile "f() = sort([true, false])" "f"
+    it "rejects an element type that cannot be compared, statically" $
+      failsToCompile "f() = unique([\\(x: Number) -> x])" "f"
+
+  describe "map additions (spec 15.4)" $ do
+    it "updates without mutating" $ do
+      evalsTo "m: Map<Number> = {\"a\": 1}\nf() = set(m, \"b\", 2)" "f" "{\"a\":1,\"b\":2}"
+      evalsTo "m: Map<Number> = {\"a\": 1}\nf() = remove(m, \"a\")" "f" "{}"
+      evalsTo "m: Map<Number> = {\"a\": 1}\nf() = m" "f" "{\"a\":1}"
+    it "merges with the right operand winning" $
+      evalsTo
+        "a: Map<Number> = {\"k\": 1}\nb: Map<Number> = {\"k\": 2}\nf() = merge(a, b)"
+        "f"
+        "{\"k\":2}"
+    it "reads a missing key without failing" $
+      evalsTo "m: Map<Number> = {}\nf() = get_or(m, \"absent\", 0)" "f" "0"
+    it "moves between a map and an array of entries" $ do
+      evalsTo "m: Map<Number> = {\"a\": 1}\nf() = entries(m)" "f" "[{\"key\":\"a\",\"value\":1}]"
+      evalsTo
+        "es: Array<Record<key: String, value: Number>> = [{key: \"a\", value: 1}]\nf(): Map<Number> = from_entries(es)"
+        "f"
+        "{\"a\":1}"
+    it "maps the values and keeps the keys" $
+      evalsTo
+        "m: Map<Number> = {\"a\": 1}\nf() = map_values(m, \\(v: Number) -> v + 1)"
+        "f"
+        "{\"a\":2}"
+
+  describe "shell quoting (spec 15.5)" $
+    it "wraps a value as one shell word" $ do
+      evalsTo "f() = shell_quote(\"a b\")" "f" "\"'a b'\""
+      evalsTo "f() = shell_quote(\"it's\")" "f" "\"'it'\\\\''s'\""
+
+  describe "encodings and digests (spec 15.8)" $ do
+    it "round-trips base64" $ do
+      evalsTo "f() = base64_encode(\"hello\")" "f" "\"aGVsbG8=\""
+      evalsTo "f() = base64_decode(\"aGVsbG8=\")" "f" "\"hello\""
+      evalsTo "f() = base64_decode(\"aGVsbG8\")" "f" "\"hello\""
+    it "rejects input that is not base64" $
+      failsWith "f() = base64_decode(\"!!!\")" "f" EIoDataDecode
+    it "digests as lowercase hex" $ do
+      evalsTo "f() = sha256(\"abc\")" "f" "\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""
+      evalsTo "f() = md5(\"abc\")" "f" "\"900150983cd24fb0d6963f7d28e17f72\""
+    it "decodes the added formats" $ do
+      evalsTo "f(): Map<String> = cast(decode(\"A=1\\n\", \"dotenv\"))" "f" "{\"A\":\"1\"}"
+      evalsTo "f(): Record<name: String> = cast(decode(\"name: lask\\n\", \"yaml\"))" "f" "{\"name\":\"lask\"}"
+      evalsTo "f(): Record<name: String> = cast(decode('name = \"lask\"', \"toml\"))" "f" "{\"name\":\"lask\"}"
+
+  describe "environment access (spec 15.9)" $ do
+    it "answers whether a variable is set" $ do
+      setEnv "LASK_TEST_PRESENT" "x"
+      unsetEnv "LASK_TEST_ABSENT"
+      evalsTo "f() = has_env(\"LASK_TEST_PRESENT\")" "f" "true"
+      evalsTo "f() = has_env(\"LASK_TEST_ABSENT\")" "f" "false"
+    it "falls back without ever yielding a null" $ do
+      unsetEnv "LASK_TEST_ABSENT"
+      evalsTo "f() = get_env_or(\"LASK_TEST_ABSENT\", \"fallback\")" "f" "\"fallback\""
+
+  describe "path operations (spec 15.10)" $
+    it "are lexical and POSIX" $ do
+      evalsTo "f() = path_join([\"a\", \"b\"])" "f" "\"a/b\""
+      evalsTo "f() = dirname(\"a/b/c\")" "f" "\"a/b\""
+      evalsTo "f() = basename(\"a/b/c.txt\")" "f" "\"c.txt\""
+      evalsTo "f() = extname(\"a/c.tar.gz\")" "f" "\".gz\""
+      evalsTo "f() = normalize_path(\"a/./b/../c\")" "f" "\"a/c\""
+      evalsTo "f() = is_absolute_path(\"/a\")" "f" "true"
+
+  describe "nondeterministic generation (spec 15.13)" $ do
+    it "generates a version 4 uuid in canonical form" $ do
+      r <- run "f() = uuid()" "f"
+      case r of
+        Right t -> do
+          T.length t `shouldBe` 38 -- 36 characters plus the JSON quotes
+          T.isInfixOf "-4" t `shouldBe` True
+        Left e -> expectationFailure (show e)
+    it "generates a string of the asked-for length" $ do
+      r <- run "f() = random_string(12)" "f"
+      case r of
+        Right t -> T.length t `shouldBe` 14
+        Left e -> expectationFailure (show e)
+    it "does not repeat itself" $ do
+      a <- run "f() = uuid()" "f"
+      b <- run "f() = uuid()" "f"
+      (a == b) `shouldBe` False
+    it "rejects a negative length" $
+      failsWith "f() = random_string(0 - 1)" "f" ERuntimeValue

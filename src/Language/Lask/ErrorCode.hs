@@ -46,6 +46,8 @@ data ErrorCode
   | ERuntimeAwaitFailed
   | ERuntimeAccess
   | ERuntimeCast
+  | ERuntimeValue
+  | ERuntimeRegex
   | EIoStdinRead
   | EIoEnvResolve
   | EIoImageMissing
@@ -99,6 +101,8 @@ codeText c = case c of
   ERuntimeAwaitFailed -> "E-RUNTIME-AWAIT-FAILED"
   ERuntimeAccess -> "E-RUNTIME-ACCESS"
   ERuntimeCast -> "E-RUNTIME-CAST"
+  ERuntimeValue -> "E-RUNTIME-VALUE"
+  ERuntimeRegex -> "E-RUNTIME-REGEX"
   EIoStdinRead -> "E-IO-STDIN-READ"
   EIoEnvResolve -> "E-IO-ENV-RESOLVE"
   EIoImageMissing -> "E-IO-IMAGE-MISSING"

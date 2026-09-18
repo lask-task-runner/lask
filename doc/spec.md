@@ -6,125 +6,131 @@ This specification is intended to serve as the reference for implementation, ver
 
 ## Table of Contents
 
-- [1. Introduction](#1-introduction)
-  - [1.1 Purpose](#11-purpose)
-  - [1.2 Intended Audience](#12-intended-audience)
-  - [1.3 Scope of the Specification](#13-scope-of-the-specification)
-  - [1.4 Out of Scope](#14-out-of-scope)
-  - [1.5 Relationship to the Requirements Definition Document](#15-relationship-to-the-requirements-definition-document)
-  - [1.6 Terminology](#16-terminology)
-- [2. Notation](#2-notation)
-- [3. Lexical Specification](#3-lexical-specification)
-  - [3.1 Comments](#31-comments)
-  - [3.2 Identifiers](#32-identifiers)
-  - [3.3 Literals and Environment Tokens](#33-literals-and-environment-tokens)
-- [4. Type System](#4-type-system)
-  - [4.1 Classification of Types](#41-classification-of-types)
-  - [4.2 Type Syntax](#42-type-syntax)
-  - [4.3 Type Annotations and Inference](#43-type-annotations-and-inference)
-  - [4.4 Type Semantics](#44-type-semantics)
-  - [4.5 Serializable and Non-serializable Types](#45-serializable-and-non-serializable-types)
-- [5. Declarations and Modules](#5-declarations-and-modules)
-- [6. Expressions](#6-expressions)
-  - [6.1 Function Parameters, Lambda Expressions, and Higher-Order Functions](#61-function-parameters-lambda-expressions-and-higher-order-functions)
-  - [6.2 Operators](#62-operators)
-  - [6.3 Asynchronous Invocation and Awaiting](#63-asynchronous-invocation-and-awaiting)
-  - [6.4 Control Structures](#64-control-structures)
-  - [6.5 Procedural Notation](#65-procedural-notation)
-  - [6.6 Command Execution Expressions](#66-command-execution-expressions)
-  - [6.7 Environment Expressions](#67-environment-expressions)
-  - [6.8 Accessor Expressions](#68-accessor-expressions)
-  - [6.9 Error Handling Expressions](#69-error-handling-expressions)
-  - [6.10 Secret Bindings](#610-secret-bindings)
-- [7. Static Semantics](#7-static-semantics)
-  - [7.1 Verification Context](#71-verification-context)
-  - [7.2 Name Resolution Order](#72-name-resolution-order)
-  - [7.3 Scope and Shadowing](#73-scope-and-shadowing)
-  - [7.4 Integration of Type Annotations and Inference](#74-integration-of-type-annotations-and-inference)
-  - [7.5 Call Consistency](#75-call-consistency)
-  - [7.6 Static Expansion Order of Syntactic Sugar](#76-static-expansion-order-of-syntactic-sugar)
-  - [7.7 Static Errors](#77-static-errors)
-- [8. Dynamic Semantics](#8-dynamic-semantics)
-  - [8.1 Evaluation Relation](#81-evaluation-relation)
-  - [8.2 Values and Closures](#82-values-and-closures)
-  - [8.3 Function Application](#83-function-application)
-  - [8.4 Sequential Execution of `do`](#84-sequential-execution-of-do)
-  - [8.5 Control Structures (Core Functions)](#85-control-structures-core-functions)
-  - [8.6 Asynchrony (Core Functions)](#86-asynchrony-core-functions)
-  - [8.7 Command Execution (Core Function)](#87-command-execution-core-function)
-  - [8.8 Evaluation of Environment Expressions (Core Expression)](#88-evaluation-of-environment-expressions-core-expression)
-  - [8.9 Evaluation of Accessor Expressions (Core Expression)](#89-evaluation-of-accessor-expressions-core-expression)
-  - [8.10 Failure Propagation and Recovery](#810-failure-propagation-and-recovery)
-- [9. Standard I/O and Data Flow](#9-standard-io-and-data-flow)
-  - [9.1 I/O Channel Model](#91-io-channel-model)
-  - [9.2 Ingestion of Standard Input](#92-ingestion-of-standard-input)
-  - [9.3 Standard Input Reference Variable](#93-standard-input-reference-variable)
-  - [9.4 Standard Input Decoding](#94-standard-input-decoding)
-  - [9.5 Role of Standard Output](#95-role-of-standard-output)
-  - [9.6 Role of Standard Error](#96-role-of-standard-error)
-  - [9.7 Inter-Function Data Flow and Pipes](#97-inter-function-data-flow-and-pipes)
-- [10. Execution Environments](#10-execution-environments)
-  - [10.1 The `Environment` Type and Environment Expressions](#101-the-environment-type-and-environment-expressions)
-  - [10.2 Target Environment Profiles and Environment Constructor Signatures](#102-target-environment-profiles-and-environment-constructor-signatures)
-  - [10.3 Container Image Resolution and Materialization](#103-container-image-resolution-and-materialization)
-  - [10.4 Environment Resolution Rules](#104-environment-resolution-rules)
-  - [10.5 Working Directory Rules](#105-working-directory-rules)
-  - [10.6 Environment Variable Rules](#106-environment-variable-rules)
-  - [10.7 Permission Boundary](#107-permission-boundary)
-  - [10.8 Responsibilities for Absorbing Environment Differences](#108-responsibilities-for-absorbing-environment-differences)
-  - [10.9 Command Dispatch](#109-command-dispatch)
-- [11. CLI Specification](#11-cli-specification)
-  - [11.1 Subcommands](#111-subcommands)
-  - [11.2 Function Invocation](#112-function-invocation)
-  - [11.3 Input/Output Contract](#113-inputoutput-contract)
-  - [11.4 Environment Check (`envs`)](#114-environment-check-envs)
-  - [11.5 Dependency Management (`deps`)](#115-dependency-management-deps)
-  - [11.6 Help Display (`--help`)](#116-help-display---help)
-  - [11.7 Environment Materialization (`env`)](#117-environment-materialization-env)
-  - [11.8 Command Invocation (`cmd`)](#118-command-invocation-cmd)
-- [12. Observability](#12-observability)
-  - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
-  - [12.2 Execution Log](#122-execution-log)
-  - [12.3 Command Execution Log](#123-command-execution-log)
-  - [12.4 Stack Traces](#124-stack-traces)
-  - [12.5 Trace Identifier](#125-trace-identifier)
-  - [12.6 Execution Event Output](#126-execution-event-output)
-  - [12.7 In-flight Diagnostics](#127-in-flight-diagnostics)
-  - [12.8 Protection of Sensitive Information and Retention Policy](#128-protection-of-sensitive-information-and-retention-policy)
-- [13. Serialization Conventions](#13-serialization-conventions)
-  - [13.1 Data Values](#131-data-values)
-  - [13.2 Function Values](#132-function-values)
-  - [13.3 Execution Events](#133-execution-events)
-- [14. Error System](#14-error-system)
-  - [14.1 Error Classification](#141-error-classification)
-  - [14.2 Error Code Conventions](#142-error-code-conventions)
-  - [14.3 Minimum Requirements for Diagnostic Information](#143-minimum-requirements-for-diagnostic-information)
-  - [14.4 Static Errors](#144-static-errors)
-  - [14.5 Runtime Errors](#145-runtime-errors)
-  - [14.6 External I/O Errors](#146-external-io-errors)
-  - [14.7 Recoverability and Propagation Rules](#147-recoverability-and-propagation-rules)
-  - [14.8 Correspondence to CLI Exit Codes](#148-correspondence-to-cli-exit-codes)
-- [15. Built-in Library](#15-built-in-library)
-  - [15.1 Provision Policy](#151-provision-policy)
-  - [15.2 Numeric Operations](#152-numeric-operations)
-  - [15.3 String Operations](#153-string-operations)
-  - [15.4 Array, Map, and Record Operations](#154-array-map-and-record-operations)
-  - [15.5 Command Execution Functions](#155-command-execution-functions)
-  - [15.6 Parallel and Asynchronous Helper Functions](#156-parallel-and-asynchronous-helper-functions)
-  - [15.7 Error Handling Functions](#157-error-handling-functions)
-  - [15.8 Serialization and Type-Migration Helper Functions](#158-serialization-and-type-migration-helper-functions)
-  - [15.9 Environment Access and Secret Marking Functions](#159-environment-access-and-secret-marking-functions)
-  - [15.10 Error Contract](#1510-error-contract)
-- [16. Examples](#16-examples)
-  - [16.1 Minimal Program](#161-minimal-program)
-  - [16.2 Functions with Type Annotations](#162-functions-with-type-annotations)
-  - [16.3 Higher-Order Functions and Composition](#163-higher-order-functions-and-composition)
-  - [16.4 Arrays, Maps, and Records](#164-arrays-maps-and-records)
-  - [16.5 Procedural Notation and Command Execution with Environments](#165-procedural-notation-and-command-execution-with-environments)
-  - [16.6 Asynchronous Execution](#166-asynchronous-execution)
-  - [16.7 CLI Execution Examples](#167-cli-execution-examples)
-  - [16.8 Execution Event Example](#168-execution-event-example)
-  - [16.9 Error Handling and Exit Codes](#169-error-handling-and-exit-codes)
+- [Lask Language Specification](#lask-language-specification)
+  - [Table of Contents](#table-of-contents)
+  - [1. Introduction](#1-introduction)
+    - [1.1 Purpose](#11-purpose)
+    - [1.2 Intended Audience](#12-intended-audience)
+    - [1.3 Scope of the Specification](#13-scope-of-the-specification)
+    - [1.4 Out of Scope](#14-out-of-scope)
+    - [1.5 Relationship to the Requirements Definition Document](#15-relationship-to-the-requirements-definition-document)
+    - [1.6 Terminology](#16-terminology)
+  - [2. Notation](#2-notation)
+  - [3. Lexical Specification](#3-lexical-specification)
+    - [3.1 Comments](#31-comments)
+    - [3.2 Identifiers](#32-identifiers)
+    - [3.3 Literals and Environment Tokens](#33-literals-and-environment-tokens)
+  - [4. Type System](#4-type-system)
+    - [4.1 Classification of Types](#41-classification-of-types)
+    - [4.2 Type Syntax](#42-type-syntax)
+    - [4.3 Type Annotations and Inference](#43-type-annotations-and-inference)
+    - [4.4 Type Semantics](#44-type-semantics)
+    - [4.5 Serializable and Non-serializable Types](#45-serializable-and-non-serializable-types)
+  - [5. Declarations and Modules](#5-declarations-and-modules)
+  - [6. Expressions](#6-expressions)
+    - [6.1 Function Parameters, Lambda Expressions, and Higher-Order Functions](#61-function-parameters-lambda-expressions-and-higher-order-functions)
+    - [6.2 Operators](#62-operators)
+    - [6.3 Asynchronous Invocation and Awaiting](#63-asynchronous-invocation-and-awaiting)
+    - [6.4 Control Structures](#64-control-structures)
+    - [6.5 Procedural Notation](#65-procedural-notation)
+    - [6.6 Command Execution Expressions](#66-command-execution-expressions)
+    - [6.7 Environment Expressions](#67-environment-expressions)
+    - [6.8 Accessor Expressions](#68-accessor-expressions)
+    - [6.9 Error Handling Expressions](#69-error-handling-expressions)
+    - [6.10 Secret Bindings](#610-secret-bindings)
+  - [7. Static Semantics](#7-static-semantics)
+    - [7.1 Verification Context](#71-verification-context)
+    - [7.2 Name Resolution Order](#72-name-resolution-order)
+    - [7.3 Scope and Shadowing](#73-scope-and-shadowing)
+    - [7.4 Integration of Type Annotations and Inference](#74-integration-of-type-annotations-and-inference)
+    - [7.5 Call Consistency](#75-call-consistency)
+    - [7.6 Static Expansion Order of Syntactic Sugar](#76-static-expansion-order-of-syntactic-sugar)
+    - [7.7 Static Errors](#77-static-errors)
+  - [8. Dynamic Semantics](#8-dynamic-semantics)
+    - [8.1 Evaluation Relation](#81-evaluation-relation)
+    - [8.2 Values and Closures](#82-values-and-closures)
+    - [8.3 Function Application](#83-function-application)
+    - [8.4 Sequential Execution of `do`](#84-sequential-execution-of-do)
+    - [8.5 Control Structures (Core Functions)](#85-control-structures-core-functions)
+    - [8.6 Asynchrony (Core Functions)](#86-asynchrony-core-functions)
+    - [8.7 Command Execution (Core Function)](#87-command-execution-core-function)
+    - [8.8 Evaluation of Environment Expressions (Core Expression)](#88-evaluation-of-environment-expressions-core-expression)
+    - [8.9 Evaluation of Accessor Expressions (Core Expression)](#89-evaluation-of-accessor-expressions-core-expression)
+    - [8.10 Failure Propagation and Recovery](#810-failure-propagation-and-recovery)
+  - [9. Standard I/O and Data Flow](#9-standard-io-and-data-flow)
+    - [9.1 I/O Channel Model](#91-io-channel-model)
+    - [9.2 Ingestion of Standard Input](#92-ingestion-of-standard-input)
+    - [9.3 Standard Input Reference Variable](#93-standard-input-reference-variable)
+    - [9.4 Standard Input Decoding](#94-standard-input-decoding)
+    - [9.5 Role of Standard Output](#95-role-of-standard-output)
+    - [9.6 Role of Standard Error](#96-role-of-standard-error)
+    - [9.7 Inter-Function Data Flow and Pipes](#97-inter-function-data-flow-and-pipes)
+  - [10. Execution Environments](#10-execution-environments)
+    - [10.1 The `Environment` Type and Environment Expressions](#101-the-environment-type-and-environment-expressions)
+    - [10.2 Target Environment Profiles and Environment Constructor Signatures](#102-target-environment-profiles-and-environment-constructor-signatures)
+    - [10.3 Container Image Resolution and Materialization](#103-container-image-resolution-and-materialization)
+    - [10.4 Environment Resolution Rules](#104-environment-resolution-rules)
+    - [10.5 Working Directory Rules](#105-working-directory-rules)
+    - [10.6 Environment Variable Rules](#106-environment-variable-rules)
+    - [10.7 Permission Boundary](#107-permission-boundary)
+    - [10.8 Responsibilities for Absorbing Environment Differences](#108-responsibilities-for-absorbing-environment-differences)
+    - [10.9 Command Dispatch](#109-command-dispatch)
+  - [11. CLI Specification](#11-cli-specification)
+    - [11.1 Subcommands](#111-subcommands)
+    - [11.2 Function Invocation](#112-function-invocation)
+    - [11.3 Input/Output Contract](#113-inputoutput-contract)
+    - [11.4 Environment Check (`envs`)](#114-environment-check-envs)
+    - [11.5 Dependency Management (`deps`)](#115-dependency-management-deps)
+    - [11.6 Help Display (`--help`)](#116-help-display---help)
+    - [11.7 Environment Materialization (`env`)](#117-environment-materialization-env)
+    - [11.8 Command Invocation (`cmd`)](#118-command-invocation-cmd)
+  - [12. Observability](#12-observability)
+    - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
+    - [12.2 Execution Log](#122-execution-log)
+    - [12.3 Command Execution Log](#123-command-execution-log)
+    - [12.4 Stack Traces](#124-stack-traces)
+    - [12.5 Trace Identifier](#125-trace-identifier)
+    - [12.6 Execution Event Output](#126-execution-event-output)
+    - [12.7 In-flight Diagnostics](#127-in-flight-diagnostics)
+    - [12.8 Protection of Sensitive Information and Retention Policy](#128-protection-of-sensitive-information-and-retention-policy)
+  - [13. Serialization Conventions](#13-serialization-conventions)
+    - [13.1 Data Values](#131-data-values)
+    - [13.2 Function Values](#132-function-values)
+    - [13.3 Execution Events](#133-execution-events)
+  - [14. Error System](#14-error-system)
+    - [14.1 Error Classification](#141-error-classification)
+    - [14.2 Error Code Conventions](#142-error-code-conventions)
+    - [14.3 Minimum Requirements for Diagnostic Information](#143-minimum-requirements-for-diagnostic-information)
+    - [14.4 Static Errors](#144-static-errors)
+    - [14.5 Runtime Errors](#145-runtime-errors)
+    - [14.6 External I/O Errors](#146-external-io-errors)
+    - [14.7 Recoverability and Propagation Rules](#147-recoverability-and-propagation-rules)
+    - [14.8 Correspondence to CLI Exit Codes](#148-correspondence-to-cli-exit-codes)
+  - [15. Built-in Library](#15-built-in-library)
+    - [15.1 Provision Policy](#151-provision-policy)
+    - [15.2 Numeric Operations](#152-numeric-operations)
+    - [15.3 String Operations](#153-string-operations)
+    - [15.4 Array, Map, and Record Operations](#154-array-map-and-record-operations)
+    - [15.5 Command Execution Functions](#155-command-execution-functions)
+    - [15.6 Parallel and Asynchronous Helper Functions](#156-parallel-and-asynchronous-helper-functions)
+    - [15.7 Error Handling Functions](#157-error-handling-functions)
+    - [15.8 Serialization and Type-Migration Helper Functions](#158-serialization-and-type-migration-helper-functions)
+    - [15.9 Environment Access and Secret Marking Functions](#159-environment-access-and-secret-marking-functions)
+    - [15.10 Path Operations](#1510-path-operations)
+    - [15.11 Filesystem Functions](#1511-filesystem-functions)
+    - [15.12 Diagnostic Output Functions](#1512-diagnostic-output-functions)
+    - [15.13 Nondeterministic Functions](#1513-nondeterministic-functions)
+    - [15.14 Error Contract](#1514-error-contract)
+  - [16. Examples](#16-examples)
+    - [16.1 Minimal Program](#161-minimal-program)
+    - [16.2 Functions with Type Annotations](#162-functions-with-type-annotations)
+    - [16.3 Higher-Order Functions and Composition](#163-higher-order-functions-and-composition)
+    - [16.4 Arrays, Maps, and Records](#164-arrays-maps-and-records)
+    - [16.5 Procedural Notation and Command Execution with Environments](#165-procedural-notation-and-command-execution-with-environments)
+    - [16.6 Asynchronous Execution](#166-asynchronous-execution)
+    - [16.7 CLI Execution Examples](#167-cli-execution-examples)
+    - [16.8 Execution Event Example](#168-execution-event-example)
+    - [16.9 Error Handling and Exit Codes](#169-error-handling-and-exit-codes)
 
 ## 1. Introduction
 
@@ -1986,7 +1992,7 @@ Rules:
 
 - stderr is the destination for all logs. At least the following must be output to stderr.
   - Command execution logs (real-time relay of the child process's standard output and standard error; 12.3)
-  - Execution logs (12.2)
+  - Execution logs (12.2), including the lines emitted by the built-in `log` (15.12)
   - Error diagnostics for syntax, static verification, and runtime failures (Chapter 14)
 - The contents of stderr may include machine-readable error codes (Chapter 14) in addition to human-readable messages.
 - The presence or absence of output to stderr must not affect the meaning of stdout (the main result).
@@ -2169,6 +2175,7 @@ Rules:
 
 - `local` is bounded above by the calling process's privileges.
 - `docker` is bounded above by the privileges within the container isolation boundary.
+- The filesystem functions (15.11) are bounded by the same boundary as command execution in the environment they are given: they see exactly the filesystem that environment's commands see, and never the host's filesystem by default. There is no filesystem access that does not name an environment.
 - If execution is impossible due to insufficient privileges, it is a runtime error, and the cause must be reported in a diagnosable form.
 
 Security requirements:
@@ -3163,8 +3170,11 @@ Representative codes:
 - `E-RUNTIME-AWAIT-FAILED`
 - `E-RUNTIME-ACCESS`
 - `E-RUNTIME-CAST`
+- `E-RUNTIME-VALUE`
+- `E-RUNTIME-REGEX`
 - `E-IO-STDIN-READ`
 - `E-IO-ENV-RESOLVE`
+- `E-IO-FS`
 - `E-IO-DATA-DECODE`
 - `E-CLI-USAGE`
 
@@ -3175,6 +3185,7 @@ Advisory codes:
 - Representative codes:
   - `W-DOC-PARAM-UNKNOWN`: an `@param` in a documentation comment (3.1) names a parameter the declaration does not have.
   - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
+  - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
 - Reporting advisory diagnostics is optional. `check` and `serve` are the expected places to report them.
 
 ### 14.3 Minimum Requirements for Diagnostic Information
@@ -3252,6 +3263,8 @@ Representative examples:
 - `E-RUNTIME-AWAIT-FAILED`: `await` re-raises a failed state
 - `E-RUNTIME-ACCESS`: index out of range or missing key (8.9)
 - `E-RUNTIME-CAST`: failure of the runtime type check of `cast` (15.8)
+- `E-RUNTIME-VALUE`: a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13)
+- `E-RUNTIME-REGEX`: a malformed regular expression pattern (15.3)
 
 Rules:
 
@@ -3269,7 +3282,7 @@ Representative examples:
 - `E-IO-IMAGE-MISSING`: a required container image has not been materialized (10.3)
 - `E-IO-IMAGE-DIGEST`: a pulled image's digest does not match the pinned digest (10.3)
 - `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
-- `E-IO-FS`: filesystem access failure
+- `E-IO-FS`: filesystem access failure (the filesystem functions of 15.11)
 - `E-IO-DATA-DECODE`: failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8)
 
 Rules:
@@ -3322,7 +3335,9 @@ The built-in library is the set of built-in symbols usable without explicit impo
 Policy:
 
 - Referentially transparent pure functions are preferred.
-- Functions with external side effects are clearly distinguished by name and contract.
+- Functions with external side effects are clearly distinguished by name and contract, and are grouped into sections of their own: command execution (15.5), filesystem access (15.11), diagnostic output (15.12), and nondeterministic generation (15.13). Every other section of this chapter is pure.
+- Access to the filesystem is never implicit. Every function that reads or writes it takes the target `Environment` as its last positional argument (15.11), just as `run_command` does, so the filesystem a program touches is always the one it names.
+- There is no overloading: one built-in name has exactly one signature, because a name resolves to a single type scheme (4.4). Where the same operation is wanted for both `String` and `Array<T>`, the array form carries the `_array` suffix (`concat_array`, `contains_array`, `index_of_array`), and where the same operation is wanted for both `Array<T>` and `Map<T>`, the map case is written by composing with `keys` / `values` / `entries` rather than by a second function.
 
 Publication rules:
 
@@ -3346,12 +3361,23 @@ The built-in library provides at least the following functions.
 - `floor`: `Function<Number, Number>`
 - `ceil`: `Function<Number, Number>`
 - `round`: `Function<Number, Number>`
+- `min`: `Function<Number, Number, Number>`
+- `max`: `Function<Number, Number, Number>`
+- `sum`: `Function<Array<Number>, Number>`
+- `pow`: `Function<Number, Number, Number>`
+- `sqrt`: `Function<Number, Number>`
+- `clamp`: `Function<Number, Number, Number, Number>`
 
 Semantics:
 
 - `add`/`sub`/`mul`/`div`/`mod` have meaning equivalent to the arithmetic operators of 6.2.
 - If the divisor of `div` is 0, it is `E-RUNTIME-DIV-BY-ZERO`.
 - If the right-hand side of `mod` is 0, it is also `E-RUNTIME-DIV-BY-ZERO`.
+- `min`/`max` return the smaller and the larger of the two arguments respectively, and return the left argument when they are equal.
+- `sum(xs)` adds the elements from left to right. The sum of an empty array is `0`.
+- `pow(base, exponent)` raises `base` to `exponent`. The exponent need not be an integer, and `pow(0, 0)` is `1`. A result that is not a real number (for example a negative base with a fractional exponent) is `E-RUNTIME-VALUE`.
+- `sqrt(x)` for a negative `x` is `E-RUNTIME-VALUE`.
+- `clamp(value, low, high)` returns `low` when `value < low`, `high` when `value > high`, and `value` otherwise. `low > high` is `E-RUNTIME-VALUE`.
 
 ### 15.3 String Operations
 
@@ -3365,14 +3391,48 @@ The built-in library provides at least the following functions.
 - `split`: `Function<String, String, Array<String>>`
 - `join`: `Function<Array<String>, String, String>`
 - `replace`: `Function<String, String, String, String>`
+- `contains`: `Function<String, String, Bool>`
+- `starts_with`: `Function<String, String, Bool>`
+- `ends_with`: `Function<String, String, Bool>`
+- `index_of`: `Function<String, String, Number>`
+- `substring`: `Function<String, Number, Number, String>`
+- `pad_start`: `Function<String, Number, String, String>`
+- `pad_end`: `Function<String, Number, String, String>`
+- `repeat`: `Function<String, Number, String>`
+- `lines`: `Function<String, Array<String>>`
+- `to_string`: `Function<Any, String>`
+- `to_number`: `Function<String, Number>`
+- `regex_test`: `Function<String, String, Bool>`
+- `regex_match`: `Function<String, String, Array<String>>`
+- `regex_replace`: `Function<String, String, String, String>`
 
 Semantics:
 
 - Strings are treated as UTF-8.
-- `length` may count in units of characters, but the implementation must keep the counting rule consistent.
+- `length` may count in units of characters, but the implementation must keep the counting rule consistent. `index_of` and `substring` count in the same unit as `length`.
 - The behavior of `split`/`join` when the delimiter string is empty may be implementation-defined.
 - `concat` concatenates 2 strings. To concatenate 3 or more, use nested applications of `concat` or `join`.
 - String concatenation is done with `concat` (or `join`). `+` is exclusive to `Number`, and applying it to `String` is a type error (6.2).
+- `contains(s, needle)` is true when `needle` occurs anywhere in `s`. An empty `needle` is always true.
+- `starts_with(s, prefix)` / `ends_with(s, suffix)` test the ends of `s`. An empty argument is always true.
+- `index_of(s, needle)` returns the zero-based position of the first occurrence of `needle`, or `-1` when it does not occur. An empty `needle` returns `0`. The absent case is a value and not a failure, because the language has no option type.
+- `substring(s, start, end)` returns the half-open range `[start, end)`. Both endpoints are clamped to `[0, length(s)]`, and an `end` at or before `start` yields the empty string, so `substring` never fails. Non-integer endpoints are truncated toward zero.
+- `pad_start(s, width, pad)` / `pad_end(s, width, pad)` prepend or append repetitions of `pad` until the result reaches `width` characters, truncating the last repetition as needed. When `length(s)` is already at least `width`, or `pad` is empty, `s` is returned unchanged.
+- `repeat(s, n)` concatenates `n` copies of `s`. `n` is truncated toward zero, and `n <= 0` yields the empty string.
+- `lines(s)` splits `s` on `\n` and removes one trailing `\r` from each line, so both LF and CRLF text split identically. A trailing newline does not produce a final empty element, and the empty string yields the empty array. This is the form to use on the `stdout` of a `CommandResult` (6.6).
+- `to_string(v)` produces the same text that interpolating `v` into a string would (6.6): a `String` unchanged, a `Number` in the canonical form of 13.1, and a `Bool` as `true` or `false`. A runtime value of any other kind, `Null` included, is `E-RUNTIME-VALUE`; use `to_json` (15.8) for structured values.
+- `to_number(s)` decodes `s`, ignoring surrounding whitespace, as a number in the JSON number grammar (13.1). Any other text is `E-IO-DATA-DECODE`. This is the form to use on a number read out of command output, and it replaces going through `from_json` and `cast`.
+
+Regular expressions:
+
+- The pattern argument of `regex_test` / `regex_match` / `regex_replace` is a POSIX extended regular expression (ERE): literal characters, `.`, bracket expressions `[...]` including the named classes `[:digit:]` and the like, the anchors `^` and `$`, alternation `|`, groups `(...)`, and the quantifiers `*`, `+`, `?` and `{m,n}`. In addition, the escapes `\d` `\w` `\s` `\D` `\W` `\S`, which POSIX itself does not have, stand for the classes they conventionally denote; `\d` `\w` `\s` may also appear inside a bracket expression, while their negated forms may not, because a bracket expression has no way to express them.
+- Backreferences, lookaround and the lazy `?` quantifier suffix are deliberately not provided: every one of them requires backtracking. Matching is therefore linear in the length of the input whatever the pattern is. An implementation must not extend the syntax with a construct that makes matching super-linear — a task definition runs unattended, and a pattern that backtracked catastrophically would stall the run rather than report a diagnosable error.
+- Matching is POSIX leftmost-longest, not leftmost-first: among the matches that start at the earliest position, the longest one is chosen, so `a|ab` matches `ab` in the subject `ab`. Quantifiers are greedy for the same reason, and a pattern that relies on a lazy quantifier is written with a negated class instead — `"([^\"]*)"` in place of `"(.*?)"`.
+- `regex_test(s, pattern)` is true when the pattern matches anywhere in `s`.
+- `regex_match(s, pattern)` returns, for the leftmost-longest match, an array whose element `0` is the whole matched text and whose element `i` is the text of the `i`-th capture group, with a group that did not participate yielding the empty string. When there is no match it returns the empty array, so a caller tests with `is_empty` (15.4) rather than against a null.
+- `regex_replace(s, pattern, replacement)` replaces every non-overlapping match from left to right. In `replacement`, `$0` to `$9` stand for the whole match and the capture groups, and `$$` stands for a literal `$`. A match of the empty string advances one character before the next attempt.
+- A pattern is normally written as a raw string (3.3), which performs no escape processing: `regex_match(s, '(\\d+)')`. In an interpreted string every backslash of the pattern has to be doubled.
+- A malformed pattern is `E-RUNTIME-REGEX`. When the pattern is a string literal containing no interpolation, an implementation may additionally report it statically as the advisory `W-REGEX-PATTERN` (14.2), since the call is then certain to fail.
 
 ### 15.4 Array, Map, and Record Operations
 
@@ -3388,6 +3448,34 @@ The built-in library provides at least the following functions.
 - `has_key`: `Function<Map<T>, String, Bool>`
 - `keys`: `Function<Map<T>, Array<String>>`
 - `values`: `Function<Map<T>, Array<T>>`
+- `size`: `Function<Array<T>, Number>`
+- `is_empty`: `Function<Array<T>, Bool>`
+- `first`: `Function<Array<T>, T>`
+- `last`: `Function<Array<T>, T>`
+- `slice`: `Function<Array<T>, Number, Number, Array<T>>`
+- `take`: `Function<Array<T>, Number, Array<T>>`
+- `drop`: `Function<Array<T>, Number, Array<T>>`
+- `reverse`: `Function<Array<T>, Array<T>>`
+- `sort`: `Function<Array<T>, Array<T>>`
+- `sort_by`: `Function<Array<T>, Function<T, U>, Array<T>>`
+- `contains_array`: `Function<Array<T>, T, Bool>`
+- `index_of_array`: `Function<Array<T>, T, Number>`
+- `find_index`: `Function<Array<T>, Function<T, Bool>, Number>`
+- `every`: `Function<Array<T>, Function<T, Bool>, Bool>`
+- `any`: `Function<Array<T>, Function<T, Bool>, Bool>`
+- `flatten`: `Function<Array<Array<T>>, Array<T>>`
+- `flat_map`: `Function<Array<T>, Function<T, Array<U>>, Array<U>>`
+- `zip`: `Function<Array<T>, Array<U>, Array<Record<first: T, second: U>>>`
+- `unique`: `Function<Array<T>, Array<T>>`
+- `range`: `Function<Number, Number, Array<Number>>`
+- `enumerate`: `Function<Array<T>, Array<Record<index: Number, value: T>>>`
+- `set`: `Function<Map<T>, String, T, Map<T>>`
+- `remove`: `Function<Map<T>, String, Map<T>>`
+- `merge`: `Function<Map<T>, Map<T>, Map<T>>`
+- `get_or`: `Function<Map<T>, String, T, T>`
+- `entries`: `Function<Map<T>, Array<Record<key: String, value: T>>>`
+- `from_entries`: `Function<Array<Record<key: String, value: T>>, Map<T>>`
+- `map_values`: `Function<Map<T>, Function<T, U>, Map<U>>`
 
 Semantics:
 
@@ -3395,19 +3483,76 @@ Semantics:
 - `reduce` requires an initial value.
 - `for_each` discards each application result and returns `Void`. It is used for iteration whose purpose is side effects.
 - `map`, `filter`, `reduce`, and `for_each` are core functions that include the normalization targets of the control structures of 6.4, and must not be overridden by user code (subject to the exception provision of 15.1).
-- `get` results in a runtime error (`E-RUNTIME-ACCESS`) when the key is absent. This is the same failure contract as index access `m[k]` (6.8, 8.9). To tolerate a missing key, check in advance with `has_key`.
+- `get` results in a runtime error (`E-RUNTIME-ACCESS`) when the key is absent. This is the same failure contract as index access `m[k]` (6.8, 8.9). To tolerate a missing key, use `get_or`, or check in advance with `has_key`.
+- Every function in this section is pure and returns a new value. No built-in mutates the array, map, or record it is given (8.2).
+
+Size and emptiness:
+
+- `size(xs)` is the number of elements, and `is_empty(xs)` is `size(xs) == 0`. Both are array-only: the number of entries in a map is `size(keys(m))` and its emptiness `is_empty(keys(m))`, because the built-in library has no overloading (15.1). The number of characters in a string is `length` (15.3).
+
+Element access:
+
+- `first(xs)` / `last(xs)` return the first and last element. On an empty array both are `E-RUNTIME-ACCESS`, the same failure contract as `xs[0]` (8.9).
+- `slice(xs, start, end)` returns the half-open range `[start, end)`, clamping both endpoints to `[0, size(xs)]`, so it never fails. `take(xs, n)` is `slice(xs, 0, n)` and `drop(xs, n)` is `slice(xs, n, size(xs))`; both clamp `n` likewise and never fail.
+- `reverse(xs)` returns the elements in the opposite order.
+
+Ordering:
+
+- `sort(xs)` returns the elements in ascending order. The element type must be `Number` or `String`; any other element type is a static error (`E-TYPE-MISMATCH`). As with `==` (6.2), this condition is checked at the call site against the instantiated element type, not expressed in the signature.
+- `sort_by(xs, key)` sorts by the value of `key` applied once to each element, under the same restriction on the key type `U`, and is stable: elements with equal keys keep their input order.
+- `String` ordering is lexicographic by Unicode code point. This definition is local to `sort` / `sort_by`, and does not extend the ordering operators `<` `<=` `>` `>=` of 6.2, which remain `Number`-only.
+
+Searching:
+
+- `contains_array(xs, v)` and `index_of_array(xs, v)` compare with the structural equality of `==` (6.2), so the element type must be a comparable type; any other element type is a static error (`E-TYPE-MISMATCH`). `index_of_array` returns `-1` when the value does not occur.
+- `find_index(xs, p)` returns the index of the first element for which `p` is true, or `-1`. `p` is applied from left to right and no further element is tested once one is true.
+- There is no function that returns the found element itself, because the language has no option type and no data constructors (6.4): a search that finds nothing has no value to return. Write `xs[find_index(xs, p)]` after testing the index against `-1`.
+- `every(xs, p)` is true when `p` holds for every element, and is true for an empty array. `any(xs, p)` is true when `p` holds for at least one element, and is false for an empty array. Both stop applying `p` at the first element that decides the result.
+- The name `all` is not used for `every`, because it is already the asynchronous helper of 15.6.
+
+Reshaping:
+
+- `flatten(xss)` concatenates the inner arrays in order, removing exactly one level of nesting.
+- `flat_map(xs, f)` is `flatten(map(xs, f))`, with `f` applied left to right.
+- `zip(xs, ys)` pairs elements at equal positions into records `{first: ..., second: ...}`, and truncates to the shorter of the two inputs.
+- `unique(xs)` removes later elements equal to an earlier one, keeping the first occurrence and the original order. It compares with `==`, so the element type must be comparable, under the same rule as `contains_array`.
+- `range(start, end)` returns the ascending integers from `start` up to but not including `end`, and the empty array when `end <= start`. Both arguments must be integers; a non-integer is `E-RUNTIME-VALUE`. It is how a `for` expression (6.4) iterates a number of times, since `for` traverses an array and has no numeric form.
+- `enumerate(xs)` pairs each element with its zero-based index as records `{index: ..., value: ...}`. It is how a `for` expression iterates with an index available, since the body of `for` receives only the element.
+
+Map operations:
+
+- `set(m, k, v)`, `remove(m, k)`, and `merge(m1, m2)` return new maps and leave their arguments unchanged. `set` replaces the value when the key is already present; `remove` returns the map unchanged when the key is absent; `merge` gives the right operand priority on a key present in both.
+- `get_or(m, k, fallback)` returns the value bound to `k`, or `fallback` when the key is absent. It never fails, and it is the form to prefer over testing with `has_key` and then calling `get`, which looks the key up twice.
+- `entries(m)` returns one record `{key: ..., value: ...}` per entry, and `from_entries(es)` is its inverse, giving a later element priority on a duplicate key. The two exist so that a map can be traversed with `map` / `filter` / `reduce`, which take arrays.
+- `entries` and `keys` traverse in ascending Unicode code point order of the key, so that a traversal of a map is deterministic. `values(m)` is `map(entries(m), \(e) -> e.value)` and follows the same order.
+- `map_values(m, f)` applies `f` to every value and keeps the keys unchanged.
 
 ### 15.5 Command Execution Functions
 
 The built-in library provides at least the following functions.
 
 - `run_command`: `Function<String, Environment, CommandResult>`
+- `shell_quote`: `Function<String, String>`
 
 Contract:
 
 - Follows the rules of 6.6, 8.7, and Chapter 10. `CommandResult` is the built-in type alias defined in 6.6.
 - `run_command` succeeds regardless of the exit code as long as the command completes. The diagnostic code for failures caused by a non-zero exit of the command execution expressions `$`, `$1`, and `$2` (6.6) is `E-RUNTIME-COMMAND-NONZERO`.
 - Environment resolution failure is `E-IO-ENV-RESOLVE`.
+
+Quoting:
+
+- `shell_quote(s)` returns a single POSIX shell word that expands to exactly `s`: the value wrapped in single quotes, with every embedded `'` rewritten as `'\''`.
+- A command execution expression substitutes an interpolation hole into the command string without escaping it (6.6), and the result is handed to a shell. A value that may contain whitespace, a quotation character, or any other shell metacharacter must therefore pass through `shell_quote` before it is interpolated, or the command it forms is not the command the author wrote.
+
+```lask
+upload(src: String, dst: String) =
+  $ aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}
+```
+
+- The result is already one word, and must not be quoted again by the caller: writing `"'#{shell_quote(v)}'"` produces a literal quotation character in the argument.
+- `shell_quote` is a pure function, and is placed here rather than among the string operations of 15.3 because its contract is about command construction.
+- Masking (12.8) matches registered values as exact substrings. Because quoting only wraps the value, a registered secret is still a substring of the quoted result and is still masked, unless the value itself contains `'`, which quoting rewrites.
 
 ### 15.6 Parallel and Asynchronous Helper Functions
 
@@ -3461,10 +3606,21 @@ The built-in library provides at least the following functions.
 - `encode`: `Function<Any, String, String>`
 - `decode`: `Function<String, String, Any>`
 - `cast`: `Function<Any, T>`
+- `base64_encode`: `Function<String, String>`
+- `base64_decode`: `Function<String, String>`
+- `sha256`: `Function<String, String>`
+- `md5`: `Function<String, String>`
 
 Format arguments:
 
-- The 2nd argument of `encode`/`decode` is a format specification string, and at least `json` and `pretty-json` are accepted.
+- The 2nd argument of `encode`/`decode` is a format specification string, and at least `json`, `pretty-json`, `yaml`, `toml`, `csv`, and `dotenv` are accepted.
+- `yaml` follows the YAML 1.2 core schema. Decoding maps scalars to values by the same rules the JSON list below gives, and encoding emits a block-style document.
+- `toml` decodes a table to an object under the same rule as a JSON object, and decodes a date or time as a `String`, since the language has no date type. Encoding is defined only when the top-level value is an object.
+- `csv` follows RFC 4180 with a header row. Decoding yields an array of objects keyed by the header, in which every value is a `String`; no type is inferred from the text. Encoding takes an array of objects, uses the field set of the first element as the header, and requires every element to carry that same field set with only `String`, `Number`, or `Bool` values.
+- `dotenv` decodes `NAME=value` lines to an object whose values are all `String`, ignoring blank lines and lines whose first non-space character is `#`, and stripping one layer of surrounding quotation from a value. Only the first `=` of a line separates the name from the value, so a value may contain further ones. Encoding emits one `NAME=value` line per entry, quoting a value that needs it, and is defined only for string-valued objects.
+- A value that the requested format cannot represent is `E-RUNTIME-VALUE`; input that is not well-formed in the requested format is `E-IO-DATA-DECODE`.
+- The format argument selects a syntax, not a schema. Every format decodes to the ordinary value kinds of 4.1, and a decoded value is moved to a concrete type with `cast`, exactly as for `json`.
+- Every format represents a decoded object the same way `from_json` does. The choice between `Record<...>` and `Map<Any>` is the implementation's (see the JSON conversion rules below), but one implementation must make it identically for every format, so that `cast` behaves the same whichever syntax the data arrived in.
 
 JSON conversion rules of `from_json` / `decode`:
 
@@ -3492,6 +3648,13 @@ Runtime type check rules for `cast`:
 - Positions of `Any` within the target type pass without checking.
 - If the check fails, it is a runtime error (`E-RUNTIME-CAST`). The diagnostics should include the failing position (field path, index).
 
+Encoding and digests:
+
+- `base64_encode(s)` encodes the UTF-8 bytes of `s` in standard base64 with padding (RFC 4648 section 4). `base64_decode(s)` accepts both the standard and the URL-safe alphabet, with or without padding, and is `E-IO-DATA-DECODE` on input that is not valid base64 or that decodes to bytes that are not valid UTF-8.
+- `sha256(s)` and `md5(s)` return the digest of the UTF-8 bytes of `s` as lowercase hexadecimal, 64 and 32 characters respectively.
+- `md5` is provided only for interoperating with external tools that require it, such as checksum and entity-tag comparison. It must not be used where collision resistance matters; use `sha256`.
+- A digest or an encoding of a registered secret (12.8) is a new value that no longer contains the registered one as a substring, and is therefore not masked.
+
 Contract:
 
 - Follows the Serialization Conventions of Chapter 13.
@@ -3503,17 +3666,118 @@ Contract:
 The built-in library provides at least the following functions.
 
 - `get_env`: `Function<String, String>`
+- `has_env`: `Function<String, Bool>`
+- `get_env_or`: `Function<String, String, String>`
 - `mark_secret`: `Function<String, String>`
 
 Semantics:
 
 - `get_env(name)` returns the value of the process environment variable `name`, or `Null` if it is not set. `get_env` is a core function (7.2) and must not be directly declared or overridden by user code.
-- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked.
+- `has_env(name)` is true when `name` is set in the process environment, including when it is set to the empty string.
+- `get_env_or(name, fallback)` returns the value of `name` when it is set, and `fallback` when it is not. It always returns a `String`, so it is the form to prefer wherever a missing variable has a sensible default, and it makes the null case of `get_env` explicit at the call site.
+- All three read the process environment of the Lask process itself. They do not read the variables of an execution `Environment` (10.6); a command reads those through the shell it runs in.
+- `has_env` and `get_env_or` are ordinary built-in symbols and may be shadowed by a user definition (15.1). Only `get_env` and `mark_secret` are core functions.
+- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `get_env_or` behaves the same way.
 - `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged.
 - `mark_secret` is a core function and must not be directly declared or overridden by user code (7.2). It is the desugaring target of `!!` secret bindings (6.10); user code may also call it directly to register a value that isn't declared with `!!`.
 - Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out) and no effect on control flow: it is not a source of failure.
 
-### 15.10 Error Contract
+### 15.10 Path Operations
+
+The built-in library provides at least the following functions.
+
+- `path_join`: `Function<Array<String>, String>`
+- `dirname`: `Function<String, String>`
+- `basename`: `Function<String, String>`
+- `extname`: `Function<String, String>`
+- `normalize_path`: `Function<String, String>`
+- `is_absolute_path`: `Function<String, Bool>`
+
+Semantics:
+
+- These are pure, lexical operations on strings. They never consult the filesystem, and therefore take no `Environment`: `dirname` of a path that does not exist is still its parent, and `normalize_path` never resolves a symbolic link.
+- Paths are POSIX paths whatever the host operating system is: `/` is the only separator, and no drive letter or backslash is recognized. A path computed on the host therefore still means the same thing inside a container, which is the case these functions exist for (10.8).
+- `path_join(parts)` joins the parts with a single `/`, dropping empty parts, and normalizes the result. A part that is absolute discards everything before it. An empty array yields the empty string.
+- `dirname(p)` returns everything before the final component: `"a/b/c"` gives `"a/b"`, a path with no separator gives `"."`, and a child of the root gives `"/"`.
+- `basename(p)` returns the final component, ignoring trailing separators: `"a/b/c.txt"` gives `"c.txt"` and `"a/b/"` gives `"b"`.
+- `extname(p)` returns the final extension of the final component, including the dot: `"a/b/c.tar.gz"` gives `".gz"`. A final component with no dot, or one whose only dot is its first character, gives the empty string, so `".env"` gives `""`.
+- `normalize_path(p)` collapses repeated separators and resolves `.` and `..` lexically. A leading `/` is preserved, a `..` that would ascend past the root of an absolute path is dropped, and a leading `..` in a relative path is preserved because there is no way to resolve it without touching the filesystem.
+- `is_absolute_path(p)` is true when `p` begins with `/`.
+- The name `path_join` carries its prefix because `join` is already the string operation of 15.3 and the library has no overloading (15.1).
+
+### 15.11 Filesystem Functions
+
+The built-in library provides at least the following functions.
+
+- `read_file`: `Function<String, Environment, String>`
+- `write_file`: `Function<String, String, Environment, Void>`
+- `file_exists`: `Function<String, Environment, Bool>`
+- `remove_file`: `Function<String, Environment, Void>`
+- `make_dir`: `Function<String, Environment, Void>`
+- `list_dir`: `Function<String, Environment, Array<String>>`
+- `glob`: `Function<String, Environment, Array<String>>`
+
+The environment argument:
+
+- Every function in this section takes the target `Environment` as its last positional argument, and acts on the filesystem that environment sees: the host's filesystem for `#local`, and the container's filesystem for a container environment. There is no filesystem access that does not name an environment, and there is no default one (10.1) — an unqualified read would otherwise mean the host, which is exactly the silent fall back to the host that this specification rejects for commands (10.1, 10.4).
+- The argument is positional and required. It is not a keyword parameter, because a keyword parameter must have a default (6.1) and no default is admissible here.
+- Command dispatch (10.9) never applies to these functions. Dispatch selects an environment from the program a command string invokes, and these calls contain no command word, so the environment is always written out.
+- Relative paths resolve against the working directory of the given environment (10.5).
+- Every access is bounded by that environment's permission boundary (10.7). A container environment reaches only what was mounted into it, so a path that exists on the host is not readable through a container environment unless it was mounted there.
+- These functions are effectful and are not referentially transparent (15.1). Two reads of the same path in the same environment may differ, and the order of their evaluation within a `do` block is the order they are written in (6.5, 8.4).
+
+Semantics:
+
+- `read_file(path, env)` returns the entire contents of the file decoded as UTF-8. Contents that are not valid UTF-8 are `E-IO-DATA-DECODE`, because the language has no binary value type (4.1); move bytes with a command, or with `base64_encode` (15.8) applied on the side that produces them.
+- `write_file(path, contents, env)` creates the file, or truncates it when it already exists, and writes `contents` as UTF-8 with no trailing newline added. It creates no parent directory: a missing parent is `E-IO-FS`, and `make_dir` is how one is created.
+- `file_exists(path, env)` is true when a file or a directory exists at the path. It follows symbolic links, and it returns false rather than failing when a component of the path is missing.
+- `remove_file(path, env)` removes a file. Removing a path that does not exist succeeds and does nothing, so cleanup needs no prior test; a path that is a directory is `E-IO-FS`. There is deliberately no recursive removal function: a destructive traversal stays an explicit command, where it is visible in the command execution log (12.3).
+- `make_dir(path, env)` creates the directory together with every missing parent. An existing directory succeeds and changes nothing; an existing non-directory is `E-IO-FS`.
+- `list_dir(path, env)` returns the names of the entries directly inside the directory, not their paths, excluding `.` and `..`. A path that is not a directory is `E-IO-FS`.
+- `glob(pattern, env)` returns the paths that match the pattern, expressed relative to the environment's working directory when the pattern is relative. The pattern syntax is `*` for any run of characters within one component, `?` for a single character within one component, `[...]` for a character class, and `**` for any number of components, valid only as a whole component. A pattern that matches nothing returns the empty array and is not a failure. A component beginning with `.` matches only a pattern component that also begins with `.`.
+- `list_dir` and `glob` return their results sorted in ascending Unicode code point order, so that a program that reads a directory produces the same result on every machine. Relying on the order a filesystem happens to return entries in is a common source of pipelines that are reproducible only by accident.
+
+Failure rules:
+
+- Environment resolution failure is `E-IO-ENV-RESOLVE`, as it is for `run_command` (15.5).
+- Every failure of the access itself — a missing path, a permission denial, an exhausted disk — is `E-IO-FS`. The diagnostic must identify the path and the environment (14.3).
+- The contents of a file must never be placed in a diagnostic. A path is not treated as confidential, but the data at it is.
+- These calls emit no command execution log (12.3), because no command is executed. An implementation may record them in the execution log (12.2) with the minimum auditable information: the operation, the path, and the environment summary, mirroring the stance of 10.7 on command execution requests.
+- Masking (12.8) applies to logs and diagnostics as it does elsewhere. It does not apply to the contents of a file: writing a registered secret with `write_file` writes it in the clear, which is the correct behavior for a file a later command must read, and a hazard for a file that outlives the run.
+
+### 15.12 Diagnostic Output Functions
+
+The built-in library provides at least the following functions.
+
+- `log`: `Function<String, Void>`
+
+Semantics:
+
+- `log(message)` emits one execution log line (12.2) at the informational level and returns `Void`. Its destination is stderr (9.6).
+- The built-in library provides no function that writes to stdout. Stdout carries the evaluation result and nothing else (9.5), and a function that could write to it would break that contract for every caller that consumes a task's output.
+- `log` is how a task reports its progress. It needs no execution environment, unlike `$ echo`, which is a command and therefore must name an environment to run in (10.1) — an entire container materialized to print one line.
+- Because `run` does not print the evaluation result (9.5, 11.3), `log` is also how an intermediate value is observed during `run`, where `eval` is not what is being used.
+- The output is subject to secret masking (12.8): a registered value appearing as a substring of `message` is masked.
+- The line format follows 12.2 and is implementation-defined. In the JSON log format the argument appears as the `message` field.
+- `log` is effectful and is not referentially transparent (15.1). Its position within a `do` block determines when its line is emitted (6.5, 8.4), and a `log` in a branch that is not taken emits nothing.
+
+### 15.13 Nondeterministic Functions
+
+The built-in library provides at least the following functions.
+
+- `uuid`: `Function<String>`
+- `random_string`: `Function<Number, String>`
+
+Semantics:
+
+- `uuid()` returns a newly generated version 4 UUID in the canonical lowercase hyphenated form of 36 characters.
+- `random_string(n)` returns `n` characters drawn uniformly from `0-9` and `a-z`. `n` must be a non-negative integer; anything else is `E-RUNTIME-VALUE`.
+- Both must draw from a cryptographically secure source of randomness. A generated name is frequently used where a collision would be a failure of the run, and a weak generator makes those collisions correlated across machines.
+- Both are nondeterministic: they are the only built-in functions whose result differs between calls with the same arguments without any external input. They are separated into this section for that reason (15.1).
+- They exist for names that must not collide — a generated file written into a directory that a concurrent run also writes to, a temporary resource suffix, an invalidation token. Without them, such a name has to be a constant, and two runs of the same task race for it.
+- A generated value must not be treated as a secret merely because it is unpredictable. Use `mark_secret` (15.9) when a value is to be masked.
+
+### 15.14 Error Contract
 
 Functions of the built-in library must be consistent with the Error System of Chapter 14.
 
