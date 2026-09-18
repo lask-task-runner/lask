@@ -114,8 +114,9 @@ jobs:
           Maintainer: Lask maintainers <maintainers@lask.dev>
           Description: Lask is a task runner based on functional programming.
           EOF
-          dpkg-deb --build "${PKGROOT}" "lask_${VERSION}_amd64.deb"
-          sha256sum "lask_${VERSION}_amd64.deb" > "lask_${VERSION}_amd64.deb.sha256"
+          DEB="lask-v${VERSION}-${{ matrix.target }}.deb"
+          dpkg-deb --build "${PKGROOT}" "${DEB}"
+          sha256sum "${DEB}" > "${DEB}.sha256"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -124,9 +125,8 @@ jobs:
           path: |
             lask-*.tar.gz
             lask-*.zip
-            lask_*.deb
+            lask-*.deb
             lask-*.sha256
-            lask_*.sha256
 
   publish:
     needs: build
