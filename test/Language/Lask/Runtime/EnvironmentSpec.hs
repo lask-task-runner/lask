@@ -60,7 +60,7 @@ spec = do
     it "builds docker run arguments with mounted workdir" $
       dockerArgs "/proj" "alpine:3.20" (Map.fromList [("memory", VString "4g")]) "uname -a"
         `shouldBe` [ "run", "--rm",
-                     "-v", "/proj:/work",
+                     "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
                      "--memory", "4g",
@@ -72,11 +72,36 @@ spec = do
       dockerShellArgs "/proj" "alpine:3.20" Map.empty True "cat > 'out.txt'"
         `shouldBe` [ "run", "--rm",
                      "-i",
-                     "-v", "/proj:/work",
+                     "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
                      "alpine:3.20",
                      "-c", "cat > 'out.txt'"
+                   ]
+
+    -- A Windows base directory always carries a drive letter, so the
+    -- colon-separated `-v` form read `C` as the source and `/work` as
+    -- the mode, and the daemon answered `invalid mode: /work`.
+    it "keeps a Windows drive letter in the source, not in the mount separator" $
+      dockerArgs "C:\\proj" "alpine:3.20" Map.empty "uname -a"
+        `shouldBe` [ "run", "--rm",
+                     "--mount", "type=bind,source=C:\\proj,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "alpine:3.20",
+                     "-c", "uname -a"
+                   ]
+
+    -- The same defect on a POSIX host: a colon is legal in a directory
+    -- name there, so this is reachable without Windows at all.
+    it "keeps a colon inside a POSIX base directory out of the mount separator" $
+      dockerArgs "/tmp/a:b" "alpine:3.20" Map.empty "uname -a"
+        `shouldBe` [ "run", "--rm",
+                     "--mount", "type=bind,source=/tmp/a:b,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "alpine:3.20",
+                     "-c", "uname -a"
                    ]
 
   describe "local execution (spec 8.7, real process)" $ do
