@@ -122,6 +122,35 @@ envLogInfo _ resolved = (summary, json)
       ResolvedRecipe df _ opts -> EnvValue "docker" (Map.insert "dockerfile" (VString df) opts)
     json = valueToJson (VEnv resolvedEnvValue)
 
+-- | The path the base directory is mounted at inside the container.
+containerWorkdir :: String
+containerWorkdir = "/work"
+
+-- | Mount the base directory as the container working directory
+-- (spec 10.5).
+--
+-- @--mount@ rather than @-v@, because @-v@ packs source, target and
+-- mode into one colon-separated field. A Windows base directory such
+-- as @C:\\proj@ is then read as source @C@, target @\\proj@ and mode
+-- @\/work@, and the daemon rejects it with @invalid mode: \/work@; a
+-- POSIX directory whose name contains a colon breaks the same way.
+-- @--mount@ names each part, so the separator never has to be guessed
+-- — which is what 10.5 asks for when it requires implementations to
+-- absorb path separator differences.
+--
+-- Two consequences are deliberate. @--mount@ refuses a source that
+-- does not exist where @-v@ would silently create it, which is the
+-- better failure for a base directory. And its fields are split on
+-- commas, so a base directory containing one is still out of reach;
+-- that is rarer than a drive letter, which every Windows path has.
+workdirMountArgs :: FilePath -> [String]
+workdirMountArgs baseDir =
+  [ "--mount",
+    "type=bind,source=" <> baseDir <> ",target=" <> containerWorkdir,
+    "-w",
+    containerWorkdir
+  ]
+
 -- | Arguments for @docker run@ (spec 10.5: base directory mounted as
 -- the working directory inside the container).
 dockerArgs :: FilePath -> Text -> Map Text Value -> Text -> [String]
@@ -134,7 +163,8 @@ dockerShellArgs :: FilePath -> Text -> Map Text Value -> Bool -> Text -> [String
 dockerShellArgs baseDir image opts wantStdin cmd =
   ["run", "--rm"]
     <> (if wantStdin then ["-i"] else [])
-    <> ["-v", baseDir <> ":/work", "-w", "/work", "--entrypoint", "/bin/sh"]
+    <> workdirMountArgs baseDir
+    <> ["--entrypoint", "/bin/sh"]
     <> dockerOptArgs opts
     <> [T.unpack image, "-c", T.unpack cmd]
 
@@ -160,7 +190,8 @@ dockerExecArgs :: FilePath -> Text -> Map Text Value -> Bool -> Text -> [Text] -
 dockerExecArgs baseDir image opts interactive prog argv =
   ["run", "--rm"]
     <> (if interactive then ["-i", "-t"] else [])
-    <> ["-v", baseDir <> ":/work", "-w", "/work", "--entrypoint", T.unpack prog]
+    <> workdirMountArgs baseDir
+    <> ["--entrypoint", T.unpack prog]
     <> dockerOptArgs opts
     <> [T.unpack image]
     <> map T.unpack argv
