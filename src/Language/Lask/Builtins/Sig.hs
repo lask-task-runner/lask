@@ -47,6 +47,10 @@ entryType t = TyRecord (Map.fromList [("key", TyString), ("value", t)])
 tv :: Text -> Type
 tv = TyVar
 
+-- | @T | Null@, the result of a search that may come up empty (15.1).
+orNull :: Type -> Type
+orNull t = mkUnion t [TyNull]
+
 builtinSchemes :: Map Text Scheme
 builtinSchemes =
   Map.fromList
@@ -115,6 +119,7 @@ builtinSchemes =
       ("sort_by", Scheme ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] (TyArray (tv "T"))),
       ("contains_array", Scheme ["T"] [TyArray (tv "T"), tv "T"] TyBool),
       ("index_of_array", Scheme ["T"] [TyArray (tv "T"), tv "T"] TyNumber),
+      ("find", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] (orNull (tv "T"))),
       ("find_index", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] TyNumber),
       ("every", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] TyBool),
       ("any", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] TyBool),
@@ -156,6 +161,7 @@ builtinSchemes =
       ("md5", mono [TyString] TyString),
       -- 15.9 environment access / secret marking
       ("get_env", mono [TyString] TyString),
+      ("find_env", mono [TyString] (orNull TyString)),
       ("has_env", mono [TyString] TyBool),
       ("get_env_or", mono [TyString, TyString] TyString),
       ("mark_secret", mono [TyString] TyString),

@@ -986,6 +986,7 @@ typeText (AST.SType _ f) = case f of
   AST.SAsyncHandle t -> "AsyncHandle<" <> typeText t <> ">"
   AST.SFunction ps rt -> "(" <> T.intercalate ", " (map typeText ps) <> ") => " <> typeText rt
   AST.SNamed ns n -> maybe n (\q -> q <> "." <> n) ns
+  AST.SUnion ts -> T.intercalate " | " (map typeText ts)
 
 -- | What survives a module that does not parse: the head of every
 -- top-level declaration, and the keyword parameters written in its

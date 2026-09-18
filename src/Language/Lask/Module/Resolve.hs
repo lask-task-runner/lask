@@ -299,6 +299,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       SAsyncHandle t -> checkType t
       SRecord fs -> concatMap (checkType . snd) fs
       SFunction ps r -> concatMap checkType ps <> checkType r
+      SUnion ts -> concatMap checkType ts
       _ -> []
 
     checkExpr :: Scope -> Expr -> [Diagnostic]
@@ -336,7 +337,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       ECase scrut arms ->
         maybe [] (checkExpr sc) scrut
           <> concat
-            [ concatMap (checkExpr sc) (concat hs) <> checkExpr sc body
+            [ concatMap (checkExpr sc) (valueHeads hs) <> checkExpr sc body
             | CaseArm _ hs body <- arms
             ]
       EFor (Spanned xsp x) xs body ->
@@ -387,6 +388,12 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
 
 -- Type alias cycle detection (spec 4.2) --------------------------------------
 
+-- | The expressions a case arm's heads hold. Type heads hold none
+-- (spec 6.4), so they contribute no names to resolve.
+valueHeads :: Maybe CaseHeads -> [Expr]
+valueHeads (Just (ValueHeads es)) = es
+valueHeads _ = []
+
 aliasCycleDiags :: Program -> Map FilePath GlobalScope -> [Diagnostic]
 aliasCycleDiags prog scopes =
   [ mkDiagnostic ETypeIllformed StageStatic sp $
@@ -436,6 +443,7 @@ aliasCycleDiags prog scopes =
       SAsyncHandle t -> namedRefs t
       SRecord fs -> concatMap (namedRefs . snd) fs
       SFunction ps r -> concatMap namedRefs ps <> namedRefs r
+      SUnion ts -> concatMap namedRefs ts
       _ -> []
 
     reachesSelf start = go Set.empty (Map.findWithDefault [] start edges)

@@ -60,10 +60,13 @@ block :: [StmtF] -> Block
 block = Block NoSpan . map stmt
 
 carm :: [Expr] -> Expr -> CaseArm
-carm hs = CaseArm NoSpan (Just hs)
+carm hs = CaseArm NoSpan (Just (ValueHeads hs))
 
 celse :: Expr -> CaseArm
 celse = CaseArm NoSpan Nothing
+
+tarm :: [STypeF] -> Expr -> CaseArm
+tarm hs = CaseArm NoSpan (Just (TypeHeads (map ty hs)))
 
 spec :: Spec
 spec = do
@@ -199,6 +202,35 @@ spec = do
     it "parses Function<R> as a nullary function type" $
       pModule "f: Function<Number> = g"
         `shouldBe` Right [DValue "f" Public (Just (ty (SFunction [] (ty SNumber)))) (var "g")]
+
+    it "parses a union type (spec 4.2)" $
+      pModule "f: String | Null = g"
+        `shouldBe` Right
+          [DValue "f" Public (Just (ty (SUnion [ty SString, ty SNull]))) (var "g")]
+
+    it "parses a union inside a type argument" $
+      pModule "xs: Array<String | Null> = g"
+        `shouldBe` Right
+          [ DValue
+              "xs"
+              Public
+              (Just (ty (SArray (ty (SUnion [ty SString, ty SNull])))))
+              (var "g")
+          ]
+
+    it "parses a union as the last argument of a function type" $
+      pModule "f: Function<String, String | Null> = g"
+        `shouldBe` Right
+          [ DValue
+              "f"
+              Public
+              (Just (ty (SFunction [ty SString] (ty (SUnion [ty SString, ty SNull])))))
+              (var "g")
+          ]
+
+    it "keeps | and || apart" $
+      pModule "b = x || y"
+        `shouldBe` Right [DValue "b" Public Nothing (ex (EBin OpOr (var "x") (var "y")))]
 
     it "parses >= splitting after a generic type" $
       pModule "m: Map<String>= x" `shouldBe` Right [DValue "m" Public (Just (ty (SMap (ty SString)))) (var "x")]
@@ -355,6 +387,20 @@ spec = do
     it "parses several heads in one arm" $
       pExpr "case (x) {\n  \"a\", \"b\" -> 1\n  else -> 2\n}"
         `shouldBe` Right (ECase (Just (var "x")) [carm [str "a", str "b"] (num 1), celse (num 2)])
+
+    it "parses type heads (spec 6.4)" $
+      pExpr "case (x) {\n  Null -> 1\n  else -> 2\n}"
+        `shouldBe` Right (ECase (Just (var "x")) [tarm [SNull] (num 1), celse (num 2)])
+
+    it "parses several type heads in one arm" $
+      pExpr "case (x) {\n  Number, String -> 1\n  else -> 2\n}"
+        `shouldBe` Right
+          (ECase (Just (var "x")) [tarm [SNumber, SString] (num 1), celse (num 2)])
+
+    it "parses a composite type head" $
+      pExpr "case (x) {\n  Array<String> -> 1\n  else -> 2\n}"
+        `shouldBe` Right
+          (ECase (Just (var "x")) [tarm [SArray (ty SString)] (num 1), celse (num 2)])
 
     it "parses the condition form without a scrutinee" $
       pExpr "case {\n  c -> 1\n  else -> 2\n}"
