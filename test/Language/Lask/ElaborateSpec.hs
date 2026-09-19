@@ -138,6 +138,22 @@ spec = do
     it "lets fail stand in an argument a sibling determines (spec 15.7)" $
       accepts
         "f(e: Record<code: Number, message: String>, xs: Array<Number>): Number = reduce(xs, fail(e), \\(a: Number, x: Number) -> a)"
+    it "refuses an Any argument in a polymorphic position (spec 4.4)" $ do
+      -- The element type came from the lambda, so the array was typed
+      -- Array<String> while holding numbers, with no cast in sight.
+      rejects
+        "f(): String = do {\n  ys = filter(from_json(\"[1,2,3]\"), \\(s: String) -> length(s) > 0)\n  join(ys, \",\")\n}"
+        ETypeMismatch
+      rejects "f(): Number = size(from_json(\"[1]\"))" ETypeMismatch
+      rejects "f(): Array<Any> = do {\n  xs = from_json(\"[1]\")\n  for (x : xs) { x }\n}" ETypeMismatch
+    it "takes the same value once it has been cast (spec 15.8)" $ do
+      accepts
+        "f(): String = join(filter(cast(from_json(\"[1]\")), \\(s: String) -> length(s) > 0), \",\")"
+      accepts "f(): Number = do {\n  xs: Array<Any> = cast(from_json(\"[1]\"))\n  size(xs)\n}"
+    it "keeps taking Any where Any is what the position requires" $ do
+      accepts "f(v: Any): String = to_json(v)"
+      accepts "f(v: Any): Number = cast(v)"
+      accepts "f(v: Any): Array<Any> = append([], v)"
     it "still reports an argument nothing can determine" $ do
       rejects "f(): Number = size(cast(from_json(\"[1]\")))" ETypeMismatch
       rejects
