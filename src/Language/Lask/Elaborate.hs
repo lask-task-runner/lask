@@ -1836,7 +1836,7 @@ elabCall ctx path locals sp fn args mExpected = do
           let subst0 = case mExpected of
                 Just expT -> either (const Map.empty) id (unifyE (schemeRet scheme) expT Map.empty)
                 Nothing -> Map.empty
-          (cores, subst) <- goArgs subst0 [] (zip posExprs params)
+          (cores, subst) <- goArgs subst0 (zip posExprs params)
           builtinSideCondition name sp subst
           let wellFormedRet t =
                 unless (wellFormed t) $
@@ -1852,7 +1852,7 @@ elabCall ctx path locals sp fn args mExpected = do
                   then wellFormedRet t' >> pure t'
                   else inferenceFailure
               Nothing -> inferenceFailure
-          pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) (reverse cores) (kwEnvOf kwCores)), retTy)
+          pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) cores (kwEnvOf kwCores)), retTy)
       where
         kwEnvOf = id
         castNeedsType =
@@ -1861,19 +1861,52 @@ elabCall ctx path locals sp fn args mExpected = do
           abort . diag ETypeMismatch sp $
             "cannot instantiate the type of builtin '" <> name <> "'; add a type annotation"
 
-        goArgs subst acc [] = pure (acc, subst)
-        goArgs subst acc ((argExpr, pat) : rest) = do
+        -- Arguments are elaborated in source order, except that one
+        -- which cannot be typed on its own is set aside and retried
+        -- once the others have determined the variables of its
+        -- position. Instantiation comes from the argument types and
+        -- the expected type in no particular order (spec 4.4), so a
+        -- context-typed call such as @cast@ (15.8) or @fail@ (15.7)
+        -- may sit in any argument whose type another one fixes. Each
+        -- argument is still elaborated exactly once, because a
+        -- deferred attempt commits nothing ('tryTC'), and each keeps
+        -- its place in the result, so evaluation order is untouched
+        -- (8.3).
+        goArgs subst argSlots = do
+          (done, deferred, subst') <- firstPass subst Map.empty [] (zip [0 :: Int ..] argSlots)
+          (done', subst'') <- retryPass subst' done deferred
+          pure (Map.elems done', subst'')
+
+        firstPass subst done deferred [] = pure (done, reverse deferred, subst)
+        firstPass subst done deferred (slot@(i, (argExpr, pat)) : rest) = do
           let p = applySubst subst pat
-          (c, subst') <-
-            if isGround p
-              then do
-                c <- check ctx path locals argExpr p
-                pure (c, subst)
-              else do
-                (c, t) <- inferWithHint argExpr p
-                s <- unifyOrFail (exprSpan argExpr) p t subst
-                pure (c, s)
-          goArgs subst' (c : acc) rest
+          if isGround p
+            then do
+              c <- check ctx path locals argExpr p
+              firstPass subst (Map.insert i c done) deferred rest
+            else do
+              r <- tryTC (inferWithHint argExpr p)
+              case r of
+                Right (c, t) -> do
+                  subst' <- unifyOrFail (exprSpan argExpr) p t subst
+                  firstPass subst' (Map.insert i c done) deferred rest
+                Left _ -> firstPass subst done (slot : deferred) rest
+
+        -- A retried argument whose position is now concrete is checked
+        -- against it, which is what gives @cast@ its target. One still
+        -- undetermined is elaborated as before, so its own diagnostic
+        -- is the report.
+        retryPass subst done [] = pure (done, subst)
+        retryPass subst done ((i, (argExpr, pat)) : rest) = do
+          let p = applySubst subst pat
+          if isGround p
+            then do
+              c <- check ctx path locals argExpr p
+              retryPass subst (Map.insert i c done) rest
+            else do
+              (c, t) <- inferWithHint argExpr p
+              subst' <- unifyOrFail (exprSpan argExpr) p t subst
+              retryPass subst' (Map.insert i c done) rest
 
         -- A lambda argument adopts concrete parameter types from the
         -- (partially instantiated) pattern.
