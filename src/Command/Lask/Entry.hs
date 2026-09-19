@@ -50,7 +50,7 @@ import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
-import Language.Lask.Serialize (encodeValue, encodeValuePretty, renderValueText)
+import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..))
@@ -128,21 +128,19 @@ cmdRunEval printResult runOpts = do
     Right as -> pure as
     Left e -> usageError opts e
 
-  (posVals, kwVals) <- do
-    r <- case cdParams cd of
-      Just params -> bindCliArgs params (runArgDecode runOpts) cliArgs
-      Nothing -> case cdType cd of
-        TyFun paramTys _ ->
-          -- A function-typed value declaration: positional only
-          -- (spec 11.2, example 16.3).
+  let orUsageError = either (usageError opts) pure
+  (posVals, kwVals) <- case cdParams cd of
+    Just params -> orUsageError (bindCliArgs params (runArgDecode runOpts) cliArgs)
+    Nothing -> case cdType cd of
+      TyFun paramTys _ ->
+        -- A function-typed value declaration: positional only
+        -- (spec 11.2, example 16.3).
+        orUsageError $
           bindCliArgs
             (StaticParams (zip (map (const "arg") paramTys) paramTys) Nothing [])
             (runArgDecode runOpts)
             cliArgs
-        _ -> pure (Left ("'" <> fnName <> "' is not a callable function"))
-    case r of
-      Right bound -> pure bound
-      Left e -> usageError opts e
+      _ -> usageError opts ("'" <> fnName <> "' is not a callable function")
 
   stdinText <- readStdinOrExit opts
   traceId <- maybe newTraceId pure (optTraceId opts)
@@ -302,9 +300,7 @@ failureExit opts traceId lf = do
           | c `elem` [EIoStdinRead, EIoEnvResolve, EIoImageMissing, EIoImageDigest, EIoFs, EIoDataDecode] ->
               StageIo
         _ -> StageRuntime
-      msg = case lfError lf of
-        VRecord m | Just (VString s) <- Map.lookup "message" m -> s
-        other -> encodeValue other
+      msg = failureMessage lf
   if optJsonFormat opts
     then
       hPutStrLn stderr . T.unpack . TE.decodeUtf8 . BL.toStrict . A.encode $

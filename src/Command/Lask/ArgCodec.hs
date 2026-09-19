@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | CLI argument decoding and binding (spec 11.2): kebab-to-snake
 -- name mapping, @--arg-decode@ modes and binding against the static
@@ -16,15 +15,14 @@ module Command.Lask.ArgCodec
   )
 where
 
-import Control.Exception (try)
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Language.Lask.Elaborate (StaticParams (..))
-import Language.Lask.Runtime.Eval (castValue)
-import Language.Lask.Runtime.Value (LaskFailure, Value (VString))
+import Language.Lask.Runtime.Eval (castValueEither, renderCastMismatch)
+import Language.Lask.Runtime.Value (Value (VString))
 import Language.Lask.Serialize (valueFromJson)
 import Language.Lask.Types (Type (TyEnvironment))
 import Language.Lask.Utils (kebabToSnake)
@@ -93,78 +91,72 @@ bindCliArgs ::
   StaticParams ->
   ArgDecodeMode ->
   [CliArg] ->
-  IO (Either Text ([Value], [(Text, Value)]))
-bindCliArgs params mode cliArgs = do
+  Either Text ([Value], [(Text, Value)])
+bindCliArgs params mode cliArgs =
   let posRaw = [v | CliPos v <- cliArgs]
       kwRaw = [(n, v) | CliKw n v <- cliArgs]
       positional = spPositional params
       nPos = length positional
-
-  if any (\(_, t) -> t == TyEnvironment) positional
-    then pure (Left "functions with Environment positional parameters cannot be called from the CLI")
-    else
-      if length posRaw < nPos
-        then
-          pure . Left $
-            "missing positional arguments: expected "
-              <> tshow nPos
-              <> ", got "
-              <> tshow (length posRaw)
+   in if any (\(_, t) -> t == TyEnvironment) positional
+        then Left "functions with Environment positional parameters cannot be called from the CLI"
         else
-          if length posRaw > nPos && spVariadic params == Nothing
+          if length posRaw < nPos
             then
-              pure . Left $
-                "too many positional arguments: expected "
+              Left $
+                "missing positional arguments: expected "
                   <> tshow nPos
                   <> ", got "
                   <> tshow (length posRaw)
-            else do
-              let (boundRaw, extraRaw) = splitAt nPos posRaw
-                  posTyped =
-                    zip boundRaw (map snd positional)
-                      <> case spVariadic params of
-                        Just (_, elemTy) -> map (\v -> (v, elemTy)) extraRaw
-                        Nothing -> []
-              posVals <- mapM (decodeAndCheck "argument") posTyped
-              kwVals <- bindKw [] kwRaw
-              pure ((,) <$> sequence posVals <*> kwVals)
+            else
+              if length posRaw > nPos && spVariadic params == Nothing
+                then
+                  Left $
+                    "too many positional arguments: expected "
+                      <> tshow nPos
+                      <> ", got "
+                      <> tshow (length posRaw)
+                else
+                  let (boundRaw, extraRaw) = splitAt nPos posRaw
+                      posTyped =
+                        zip boundRaw (map snd positional)
+                          <> case spVariadic params of
+                            Just (_, elemTy) -> map (\v -> (v, elemTy)) extraRaw
+                            Nothing -> []
+                   in (,)
+                        <$> mapM (decodeAndCheck "argument") posTyped
+                        <*> bindKw [] kwRaw
   where
     tshow :: Show a => a -> Text
     tshow = T.pack . show
     kwTypes = spKeywords params
 
-    bindKw acc [] = pure (Right (reverse acc))
+    bindKw acc [] = Right (reverse acc)
     bindKw acc ((n, raw) : rest)
-      | n `elem` map fst acc = pure (Left ("duplicate keyword argument: '--" <> n <> "'"))
+      | n `elem` map fst acc = Left ("duplicate keyword argument: '--" <> n <> "'")
       | otherwise = case lookup n kwTypes of
-          Nothing -> pure (Left ("unknown keyword argument: '--" <> n <> "'"))
+          Nothing -> Left ("unknown keyword argument: '--" <> n <> "'")
           Just t
             | t == TyEnvironment ->
-                pure (Left ("keyword parameter '--" <> n <> "' has type Environment and cannot be set from the CLI"))
+                Left ("keyword parameter '--" <> n <> "' has type Environment and cannot be set from the CLI")
             | otherwise -> do
-                r <- decodeAndCheck ("keyword argument '--" <> n <> "'") (raw, t)
-                case r of
-                  Left e -> pure (Left e)
-                  Right v -> bindKw ((n, v) : acc) rest
+                v <- decodeAndCheck ("keyword argument '--" <> n <> "'") (raw, t)
+                bindKw ((n, v) : acc) rest
 
-    decodeAndCheck what (raw, ty) = case decodeArgValue mode raw of
-      Left e -> pure (Left e)
-      Right v -> do
-        r <- try (castValue ty v)
-        case r of
-          Right v' -> pure (Right v')
-          Left lf
-            -- Auto mode decodes JSON without knowing the declared
-            -- type, so a value like `true` or an all-digit string
-            -- can decode to a non-String even when the parameter
-            -- wants `String`. Spec 11.2: "in auto mode, when
-            -- ambiguous, String takes precedence" - so retry as the
-            -- literal raw text before giving up.
-            | mode == DecodeAuto -> do
-                r2 <- try (castValue ty (VString raw))
-                pure $ case r2 of
-                  Right v2 -> Right v2
-                  Left (_ :: LaskFailure) ->
-                    Left (what <> " '" <> raw <> "' does not fit the parameter type: " <> tshow (lf :: LaskFailure))
-            | otherwise ->
-                pure (Left (what <> " '" <> raw <> "' does not fit the parameter type: " <> tshow (lf :: LaskFailure)))
+    decodeAndCheck what (raw, ty) = do
+      v <- decodeArgValue mode raw
+      case castValueEither ty v of
+        Right v' -> Right v'
+        Left cm
+          -- Auto mode decodes JSON without knowing the declared
+          -- type, so a value like `true` or an all-digit string
+          -- can decode to a non-String even when the parameter
+          -- wants `String`. Spec 11.2: "in auto mode, when
+          -- ambiguous, String takes precedence" - so retry as the
+          -- literal raw text before giving up.
+          | mode == DecodeAuto,
+            Right v2 <- castValueEither ty (VString raw) ->
+              Right v2
+          -- The mismatch is worded here rather than reused from
+          -- `cast`: the user wrote a command line, not a cast.
+          | otherwise ->
+              Left (what <> " '" <> raw <> "' does not fit the parameter type" <> renderCastMismatch cm)
