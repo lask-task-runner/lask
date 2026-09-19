@@ -8,6 +8,9 @@ module Language.Lask.Runtime.Eval
     applyValue,
     topValue,
     castValue,
+    castValueEither,
+    CastMismatch (..),
+    renderCastMismatch,
   )
 where
 
@@ -254,9 +257,37 @@ binOp _ op a b = case op of
 -- mutually accepted (structural conversion); @Any@ positions are
 -- unchecked; failure is @E-RUNTIME-CAST@ with a path.
 castValue :: Type -> Value -> IO Value
-castValue = go []
+castValue ty v = case castValueEither ty v of
+  Right v' -> pure v'
+  Left cm -> throwIO (runtimeFailure ERuntimeCast ("cast failed" <> renderCastMismatch cm))
+
+-- | Why a value does not satisfy a type check: the path to the
+-- innermost offending part (empty when the value itself is of the
+-- wrong kind), the type expected there, and the value found.
+data CastMismatch = CastMismatch
+  { cmPath :: [Text],
+    cmExpected :: Type,
+    cmGot :: Value
+  }
+
+-- | A mismatch as the tail of a message, written after a lead-in that
+-- names the check that failed: @ at PATH@ when nested, then
+-- @: expected T, got U@.
+renderCastMismatch :: CastMismatch -> Text
+renderCastMismatch cm =
+  (if null (cmPath cm) then "" else " at " <> T.intercalate "." (cmPath cm))
+    <> ": expected "
+    <> renderType (cmExpected cm)
+    <> ", got "
+    <> typeNameOf (cmGot cm)
+
+-- | The check and conversion of 'castValue' without its failure, for
+-- callers that are not a @cast@ the user wrote and word the mismatch
+-- themselves (spec 11.2).
+castValueEither :: Type -> Value -> Either CastMismatch Value
+castValueEither = go []
   where
-    go :: [Text] -> Type -> Value -> IO Value
+    go :: [Text] -> Type -> Value -> Either CastMismatch Value
     go path ty v = case (ty, v) of
       (TyAny, _) -> pure v
       (TyNumber, VNumber _) -> pure v
@@ -287,15 +318,8 @@ castValue = go []
       | otherwise =
           castFail path (TyRecord fields) (VRecord m)
 
-    castFail :: [Text] -> Type -> Value -> IO a
-    castFail path ty v =
-      throwIO . runtimeFailure ERuntimeCast $
-        "cast failed"
-          <> (if null path then "" else " at " <> T.intercalate "." path)
-          <> ": expected "
-          <> renderType ty
-          <> ", got "
-          <> typeNameOf v
+    castFail :: [Text] -> Type -> Value -> Either CastMismatch a
+    castFail path ty v = Left (CastMismatch path ty v)
 
 -- | The check of 'castValue' as a predicate: the condition of a @case@
 -- type head (spec 6.4), which tests without converting or failing.

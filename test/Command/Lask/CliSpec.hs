@@ -158,6 +158,29 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", src)] $ \dir -> do
         r <- runLask lask dir ["eval", "add", "1"] ""
         resExit r `shouldBe` 4
+    -- Issue #28: the type mismatch was reported by interpolating the
+    -- `Show` output of the internal failure record, so the one fact
+    -- the user needs arrived wrapped in Haskell syntax. The message
+    -- is worded by the CLI rather than reused from `cast`, because
+    -- the user wrote a command line and not a cast.
+    it "reports an argument that does not fit its parameter type in the user's terms" $ \lask ->
+      withProject [("main.lask", "f(n: Number): Number = n\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f", "abc"] ""
+        resExit r `shouldBe` 4
+        resErr r
+          `shouldBe` "E-CLI-USAGE: argument 'abc' does not fit the parameter type: expected Number, got String\n"
+    it "reports a keyword argument that does not fit its parameter type in the user's terms" $ \lask ->
+      withProject [("main.lask", "g(--n: Number = 1): Number = n\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "g", "--n", "abc"] ""
+        resExit r `shouldBe` 4
+        resErr r
+          `shouldBe` "E-CLI-USAGE: keyword argument '--n' 'abc' does not fit the parameter type: expected Number, got String\n"
+    it "points at the offending field when the mismatch is nested" $ \lask ->
+      withProject [("main.lask", "h(r: Record<a: String>): String = r.a\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "h", "{\"a\": 1}"] ""
+        resExit r `shouldBe` 4
+        resErr r
+          `shouldBe` "E-CLI-USAGE: argument '{\"a\": 1}' does not fit the parameter type at a: expected String, got Number\n"
     it "arg-decode text keeps arguments as strings" $ \lask ->
       withProject [("main.lask", "id2(x: String): String = x\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "--arg-decode", "text", "id2", "5"] ""

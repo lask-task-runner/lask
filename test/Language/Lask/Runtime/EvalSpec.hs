@@ -271,6 +271,19 @@ spec = do
         "pick(r: Record<a: Number>): Number = r.a\nf() = pick(cast(from_json(\"{\\\"a\\\": \\\"s\\\"}\")))"
         "f"
         ERuntimeCast
+    -- Issue #28 split this message so the CLI can write its own
+    -- lead-in before the same tail (spec 11.2). The `cast failed`
+    -- lead-in belongs to this side alone, so it is pinned here.
+    it "names the path and the two types in the cast failure message" $ do
+      r <-
+        run
+          "pick(r: Record<a: Number>): Number = r.a\nf() = pick(cast(from_json(\"{\\\"a\\\": \\\"s\\\"}\")))"
+          "f"
+      r
+        `shouldBe` Left
+          ( Just ERuntimeCast,
+            "{\"code\":2,\"message\":\"cast failed at a: expected Number, got String\"}"
+          )
     it "casts records to maps" $
       evalsTo
         "v: Any = {a: 1, b: 2}\nm: Map<Number> = cast(v)\nf() = get(m, \"a\")"

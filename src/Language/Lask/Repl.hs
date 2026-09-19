@@ -15,7 +15,6 @@ where
 
 import Control.Exception (try)
 import Control.Monad.IO.Class (liftIO)
-import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -29,7 +28,7 @@ import Language.Lask.Obs.ExecLog (textLogSink)
 import Language.Lask.Runtime.Environment (mkCommandRunner, mkFileRunner)
 import Language.Lask.Runtime.Eval (mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
-import Language.Lask.Serialize (encodeValue)
+import Language.Lask.Serialize (encodeValue, failureMessage)
 import Language.Lask.Syntax.Parser (parseExpr)
 import Language.Lask.Utils (Pretty (pretty))
 import System.Console.Haskeline
@@ -106,8 +105,4 @@ evalSession modulePath source = do
       pure (Right result)
 
 renderFailure :: LaskFailure -> String
-renderFailure lf = case lfError lf of
-  VRecord m
-    | Just (VString s) <- Map.lookup "message" m ->
-        "error: " <> T.unpack s
-  other -> "error: " <> T.unpack (encodeValue other)
+renderFailure lf = "error: " <> T.unpack (failureMessage lf)
