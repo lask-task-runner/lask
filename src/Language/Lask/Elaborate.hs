@@ -1885,11 +1885,15 @@ elabCall ctx path locals sp fn args mExpected = do
               c <- check ctx path locals argExpr p
               firstPass subst (Map.insert i c done) deferred rest
             else do
-              r <- tryTC (inferWithHint argExpr p)
+              r <- tryTC $ do
+                (c, t) <- inferWithHint argExpr p
+                subst' <- unifyOrFail (exprSpan argExpr) p t subst
+                pure (c, subst')
               case r of
-                Right (c, t) -> do
-                  subst' <- unifyOrFail (exprSpan argExpr) p t subst
-                  firstPass subst' (Map.insert i c done) deferred rest
+                Right (c, subst') -> firstPass subst' (Map.insert i c done) deferred rest
+                -- Deferred rather than reported: another argument may
+                -- yet make this position concrete, and if none does,
+                -- the retry reports it against the type it ended with.
                 Left _ -> firstPass subst done (slot : deferred) rest
 
         -- A retried argument whose position is now concrete is checked
@@ -1905,8 +1909,21 @@ elabCall ctx path locals sp fn args mExpected = do
               retryPass subst (Map.insert i c done) rest
             else do
               (c, t) <- inferWithHint argExpr p
+              when (t == TyAny) (anyArgument (exprSpan argExpr) p)
               subst' <- unifyOrFail (exprSpan argExpr) p t subst
               retryPass subst' (Map.insert i c done) rest
+
+        -- An Any value may be placed only where Any is required (spec
+        -- 4.4). Said in the terms of the call, since the position is a
+        -- built-in's parameter and not something the source names.
+        anyArgument asp p =
+          abort . withExpectedActual (renderType p) "Any" . diag ETypeMismatch asp $
+            "'"
+              <> name
+              <> "' expects "
+              <> renderType p
+              <> " here, and an Any value cannot be placed there; move it to a"
+              <> " concrete type first with cast (15.8) or case (6.4)"
 
         -- A lambda argument adopts concrete parameter types from the
         -- (partially instantiated) pattern.
@@ -1999,7 +2016,6 @@ unifyE pat actual s = case (pat, actual) of
         unifyE ar br s'
   (a, b)
     | a == b -> Right s
-    | b == TyAny -> Right s -- an Any value may flow into any pattern position
     | otherwise -> Left (renderType a <> " does not match " <> renderType b)
 
 unifyOrFail :: Span -> Type -> Type -> Subst -> TC Subst
