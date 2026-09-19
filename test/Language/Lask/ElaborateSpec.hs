@@ -128,6 +128,21 @@ spec = do
       rejects "v: Any = 1\nn = cast(v)" ETypeMismatch
     it "rejects cast to non-data types" $
       rejects "v: Any = 1\nf: Function<Number> = cast(v)" ETypeIllformed
+    it "instantiates from a later argument, not only from the left" $ do
+      hasType
+        "f() = filter(cast(from_json(\"[1]\")), \\(s: String) -> length(s) > 0)"
+        "f"
+        "Function<Array<String>>"
+      accepts "f(): Array<Number> = append(cast(from_json(\"[1]\")), 2)"
+      accepts "f(m: Map<Number>): Number = get_or(m, \"k\", cast(from_json(\"1\")))"
+    it "lets fail stand in an argument a sibling determines (spec 15.7)" $
+      accepts
+        "f(e: Record<code: Number, message: String>, xs: Array<Number>): Number = reduce(xs, fail(e), \\(a: Number, x: Number) -> a)"
+    it "still reports an argument nothing can determine" $ do
+      rejects "f(): Number = size(cast(from_json(\"[1]\")))" ETypeMismatch
+      rejects
+        "f(): Number = size(concat_array(cast(from_json(\"[1]\")), cast(from_json(\"[2]\"))))"
+        ETypeMismatch
 
   describe "operators (spec 6.2)" $ do
     it "types arithmetic as Number" $ hasType "x = 1 + 2 * 3" "x" "Number"

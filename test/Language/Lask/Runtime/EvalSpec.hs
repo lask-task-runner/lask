@@ -446,6 +446,10 @@ spec = do
       evalsTo "f() = first([1, 2])" "f" "1"
       evalsTo "f() = last([1, 2])" "f" "2"
       failsWith "f() = first([])" "f" ERuntimeAccess
+    it "keeps argument order when one argument was checked out of order" $
+      -- append(array, element): the deferred first argument has to end
+      -- up first, or the call would receive its arguments swapped.
+      evalsTo "f(): Array<Number> = append(cast(from_json(\"[1]\")), 2)" "f" "[1,2]"
     it "returns the element it found, or null (15.1)" $ do
       evalsTo "f(): String | Null = find([\"a\", \"bb\"], \\(s: String) -> length(s) == 2)" "f" "\"bb\""
       evalsTo "f(): String | Null = find([\"a\"], \\(s: String) -> length(s) == 9)" "f" "null"
