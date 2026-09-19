@@ -60,11 +60,11 @@ localsAt path (Module ds _) pos = nub (concat (reverse (concatMap goDecl ds)))
         go acc (Stmt ssp sf : rest)
           | at ssp = acc : goStmt sf
           | otherwise = go (acc <> bound sf) rest
-        bound (SBind n _ _) = [n]
+        bound (SBind n _ _ _) = [n]
         bound _ = []
 
     goStmt sf = case sf of
-      SBind _ _ e -> goExpr e
+      SBind _ _ _ e -> goExpr e
       SExpr e -> goExpr e
       SReturn e -> goExpr e
       SGuard c b -> goExpr c <> goBlock b
@@ -140,7 +140,7 @@ blockExprs :: Block -> [Expr]
 blockExprs (Block _ ss) = concatMap stmtExprs ss
   where
     stmtExprs (Stmt _ sf) = case sf of
-      SBind _ _ e -> [e]
+      SBind _ _ _ e -> [e]
       SExpr e -> [e]
       SReturn e -> [e]
       SGuard c b -> c : blockExprs b

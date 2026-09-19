@@ -710,13 +710,17 @@ pStmt =
       pGuardStmt
     ]
 
+-- | A binding, optionally annotated, in the same shape as a
+-- @ValueDecl@ (spec 5, 6.5): the @!!@ marker attaches to the name and
+-- the annotation follows it.
 pBindStmt :: P Stmt
 pBindStmt = do
   Spanned sp n <- lowerId
   sec <- pSecrecy
+  ann <- optional (sym TColon *> pType)
   _ <- sym TAssign
   e <- pExpr
-  pure (Stmt (sp <> exprSpan e) (SBind n sec e))
+  pure (Stmt (sp <> exprSpan e) (SBind n sec ann e))
 
 -- | Statement-position @if@ without @else@ (spec 6.5 GuardStmt). Only
 -- reached when the expression parser failed, i.e. there is no @else@.

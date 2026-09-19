@@ -376,8 +376,9 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       where
         go _ [] = []
         go sc@(layer : rest0) (Stmt sp f : rest) = case f of
-          SBind n _ e ->
-            checkExpr sc e
+          SBind n _ t e ->
+            maybe [] checkType t
+              <> checkExpr sc e
               <> [dupDiag sp n | n `Set.member` layer]
               <> [coreDiag sp n | isUnbindableName n]
               <> go (Set.insert n layer : rest0) rest

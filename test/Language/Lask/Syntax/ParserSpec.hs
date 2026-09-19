@@ -332,15 +332,36 @@ spec = do
   describe "do blocks and statements" $ do
     it "parses do blocks with binds and trailing expression" $
       pExpr "do {\n  a = 1\n  a\n}"
-        `shouldBe` Right (EDo (block [SBind "a" Public (num 1), SExpr (var "a")]))
+        `shouldBe` Right (EDo (block [SBind "a" Public Nothing (num 1), SExpr (var "a")]))
 
     it "parses semicolon-separated statements" $
       pExpr "do { a = 1; a }"
-        `shouldBe` Right (EDo (block [SBind "a" Public (num 1), SExpr (var "a")]))
+        `shouldBe` Right (EDo (block [SBind "a" Public Nothing (num 1), SExpr (var "a")]))
 
     it "parses the !! secret marker on a bind statement (spec 6.10)" $
       pExpr "do { a!! = \"s\"; a }"
-        `shouldBe` Right (EDo (block [SBind "a" Secret (str "s"), SExpr (var "a")]))
+        `shouldBe` Right (EDo (block [SBind "a" Secret Nothing (str "s"), SExpr (var "a")]))
+
+    it "parses a type annotation on a bind statement (spec 6.5)" $
+      pExpr "do { a: Number = 1; a }"
+        `shouldBe` Right
+          (EDo (block [SBind "a" Public (Just (ty SNumber)) (num 1), SExpr (var "a")]))
+
+    it "parses a union annotation on a bind statement" $
+      pExpr "do { a: String | Null = null; a }"
+        `shouldBe` Right
+          ( EDo
+              ( block
+                  [ SBind "a" Public (Just (ty (SUnion [ty SString, ty SNull]))) (ex ENull),
+                    SExpr (var "a")
+                  ]
+              )
+          )
+
+    it "parses the !! marker before the annotation, as a ValueDecl does" $
+      pExpr "do { a!!: String = \"s\"; a }"
+        `shouldBe` Right
+          (EDo (block [SBind "a" Secret (Just (ty SString)) (str "s"), SExpr (var "a")]))
 
     it "parses empty do blocks" $
       pExpr "do {}" `shouldBe` Right (EDo (block []))
@@ -415,7 +436,7 @@ spec = do
         `shouldBe` Right
           ( ECase
               (Just (var "x"))
-              [ carm [num 1] (ex (EDo (block [SBind "a" Public (num 1), SExpr (var "a")]))),
+              [ carm [num 1] (ex (EDo (block [SBind "a" Public Nothing (num 1), SExpr (var "a")]))),
                 celse (num 2)
               ]
           )

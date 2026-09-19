@@ -282,6 +282,26 @@ spec = do
         "f(x: String): String = do {\n  y = case (x) {\n    \"a\" -> do { return \"e\" }\n    else -> \"z\"\n  }\n  y\n}"
         ESyntaxReturnPosition
 
+  describe "local binding annotations (spec 6.5)" $ do
+    it "takes the annotation as the declared type" $
+      hasType "f() = do {\n  x: Any = 1\n  x\n}" "f" "Function<Any>"
+    it "checks the right-hand side against the annotation" $
+      rejects "f() = do {\n  x: Number = \"a\"\n  x\n}" ETypeMismatch
+    it "gives an expected type to an expression that needs one (spec 15.8)" $
+      accepts "f(v: Any): String = do {\n  s: String = cast(v)\n  s\n}"
+    it "gives a union to a binding whose right-hand side does not determine it" $
+      accepts "f(): String = do {\n  p: String | Null = null\n  case (p) {\n    Null -> \"n\"\n    else -> p\n  }\n}"
+    it "checks an annotated last statement against what the block owes" $
+      rejects "f(): Number = do {\n  x: String = \"a\"\n}" ETypeMismatch
+    it "rejects a Void annotation (spec 4.2)" $
+      rejects "f(): Number = do {\n  x: Void = 1\n  2\n}" ETypeIllformed
+    it "keeps the !! rule on the declared type (spec 6.10)" $ do
+      accepts "f(): Number = do {\n  p!!: String = \"s\"\n  length(p)\n}"
+      rejects "f(): Number = do {\n  p!!: Number = 1\n  p\n}" ETypeSecretNonString
+    it "resolves a named type in the annotation" $ do
+      accepts "type Name = String\nf(): Name = do {\n  x: Name = \"a\"\n  x\n}"
+      rejects "f(): Number = do {\n  x: Nope = 1\n  1\n}" ENameUndefined
+
   describe "early return (spec 6.5)" $ do
     it "accepts guard + return in function bodies" $
       accepts
