@@ -376,9 +376,11 @@ RecordType        = "Record" "<" [ RecordFieldType { "," RecordFieldType } ] ">"
 RecordFieldType   = ( lower_id | string_lit ) ":" Type .
 AsyncHandleType   = "AsyncHandle" "<" Type ">" .
 FunctionType      = "Function" "<" Type { "," Type } ">" .
-NamedType         = upper_id | QualifiedNamedType .
+NamedType         = ( upper_id | QualifiedNamedType ) [ TypeArgs ] .
 QualifiedNamedType = lower_id "." upper_id .
-TypeAliasDecl     = "type" upper_id "=" Type .
+TypeArgs          = "<" Type { "," Type } ">" .
+TypeParams        = "<" upper_id { "," upper_id } ">" .
+TypeAliasDecl     = "type" upper_id [ TypeParams ] "=" Type .
 ```
 
 Representation of Function types:
@@ -390,10 +392,27 @@ Representation of Function types:
 Definition of named types:
 
 - Named types are defined by the type alias declaration `type`.
-- The form is `type TypeName = Type`.
-- A type alias defined in another module is referenced either by its bare name (`upper_id`), after bringing it in with a named import, or, when the defining module is brought in with a namespace import (5), qualified as `namespace.TypeName` (`QualifiedNamedType`). The two forms name the same declaration; a module may use either, or both, for the same type. `namespace` must be a namespace bound by a `NamespaceImport` in the current module, and `TypeName` must be a public type alias of the module that namespace refers to (5, "Public scope and visibility"); otherwise it is an undefined reference error. `QualifiedNamedType` is recognized only in type-annotation position (wherever `Type` appears in this grammar) — it does not extend to a namespace chain (`m.n.TypeName`) and does not change how `namespace.symbol` is resolved as a value or function reference (7.2).
+- The form is `type TypeName = Type`, or `type TypeName<A, B> = Type` for an alias with parameters (below).
+- A type alias defined in another module is referenced either by its bare name (`upper_id`), after bringing it in with a named import, or, when the defining module is brought in with a namespace import (5), qualified as `namespace.TypeName` (`QualifiedNamedType`). Either form takes type arguments where the alias has parameters (`m.Pair<Number, String>`). The two forms name the same declaration; a module may use either, or both, for the same type. `namespace` must be a namespace bound by a `NamespaceImport` in the current module, and `TypeName` must be a public type alias of the module that namespace refers to (5, "Public scope and visibility"); otherwise it is an undefined reference error. `QualifiedNamedType` is recognized only in type-annotation position (wherever `Type` appears in this grammar) — it does not extend to a namespace chain (`m.n.TypeName`) and does not change how `namespace.symbol` is resolved as a value or function reference (7.2).
 - Example: `type Strings = Array<String>`
 - Example: given `import * as m from "./lib.lask"` and a public `type Config = Record<...>` in `lib.lask`, `m.Config` denotes that type.
+
+Type parameters:
+
+- A function declaration (5) and a type alias may declare type parameters, written `<T>` or `<A, B>` after the name. Within their scope, each stands for a type that the use site determines.
+- An `upper_id` in type position resolves to a type parameter when one of that name is in scope, and to a `NamedType` otherwise. A qualified `namespace.TypeName` is never a type parameter.
+- A type parameter's scope is: for a function, its parameter types, its return type, and the type annotations inside its body (6.5); for a type alias, the right-hand side of the alias.
+- Declaring a type parameter whose name is that of a type alias visible at the declaration is a duplicate definition error (`E-NAME-DUPLICATE`). Shadowing is not permitted, so a type name means one thing throughout a declaration.
+- A type parameter that appears in no position is permitted. Nothing determines it and nothing needs to.
+- Type parameters are not written at a use site: a call instantiates them from the argument types and the expected type (4.4), and there is no syntax for giving them explicitly.
+
+Parameterised type aliases:
+
+- `type Pair<A, B> = Record<first: A, second: B>` declares an alias with parameters, referenced as `Pair<Number, String>`.
+- The number of type arguments must equal the number of declared parameters. A parameterised alias referenced without arguments, a plain alias referenced with them, and a count mismatch are all static errors (`E-TYPE-ARITY`).
+- A reference expands by substituting the arguments for the parameters, and well-formedness (below) is checked on the result, so that `type Bad<A> = Array<A>` is legal while `Bad<Void>` is `E-TYPE-ILLFORMED` at the position that wrote it.
+- The prohibition on a self-referencing alias (below) is unchanged and applies to the alias name however many parameters it takes.
+- Examples: `type Opt<A> = A | Null`, `type Table<V> = Map<Array<V>>`.
 
 Union types:
 
@@ -429,7 +448,7 @@ Record field names:
 Type well-formedness rules:
 
 - `Void` may appear only in the return-value position of a function type (`Function<..., Void>`) and as the type argument of `AsyncHandle<Void>`. Its appearance as a type argument of `Array` or `Map`, as a record field type, as a member of a union, or in a parameter position of a function type is a static error (`E-TYPE-ILLFORMED`).
-- All types constructed during type checking, including instantiations of the type variables of built-in polymorphism (4.4), must satisfy these well-formedness rules (e.g. an instantiation making the result type of `map` be `Array<Void>` is `E-TYPE-ILLFORMED`; constructing `AsyncHandle<Void>` via `spawn` is legal).
+- All types constructed during type checking, including every instantiation of a type variable (4.4), must satisfy these well-formedness rules (e.g. an instantiation making the result type of `map` be `Array<Void>` is `E-TYPE-ILLFORMED`; constructing `AsyncHandle<Void>` via `spawn` is legal).
 - A type alias (`TypeAliasDecl`) must not reference itself directly or indirectly (recursion and mutual recursion are prohibited). A violation is a static error (`E-TYPE-ILLFORMED`). This rule guarantees that expansion of `NamedType` (4.3) always terminates in a finite number of steps.
 
 Examples:
@@ -488,7 +507,8 @@ Type annotations are optional, and the following type inference rules apply wher
 - In the form `Function<T1, T2, ..., R>`, the last type argument is the return type, and the preceding ones are the positional parameter types.
 - A `NamedType` is expanded into its `TypeAliasDecl` before type checking, and inference is performed on the expanded type.
 - Overloading is not supported. One symbol has one function type.
-- Abstract types (type classes, etc.) are not supported. Declaring type variables and polymorphic type annotations in user code are also not supported. Only built-in symbols follow the built-in polymorphism rules of 4.4.
+- Abstract types (type classes, etc.) are not supported, and a type parameter carries no constraint: there is no way to require that it be comparable, ordered or stringifiable. A function needing such an operation takes it as an argument instead (15.1).
+- A declaration may declare type parameters (4.2), and its annotations — including those on bindings inside its body — may mention them. They are instantiated per call by the rules of 4.4.
 
 Diagnostic rules on inference failure:
 
@@ -555,10 +575,10 @@ The meaning of types is defined by the following rules.
 - Because overloading is not permitted, multiple function types must not be assigned to a single function symbol at the same time.
 - A `NamedType` is treated as equivalent to the type obtained after expanding the corresponding `TypeAliasDecl`.
 
-Polymorphic types of built-in symbols (built-in polymorphism):
+Polymorphic types:
 
-- The type syntax of this specification (4.2) has no type variables, and user code cannot declare polymorphic types. A `NamedType` appearing in a type annotation in user code — whether a bare `upper_id` or a qualified `namespace.upper_id` (4.2) — is always resolved as a type alias reference, and if there is no corresponding declaration (for the qualified form: no such namespace, or no public type alias of that name in the module it refers to), it is an undefined reference error.
-- However, only built-in symbols defined by this specification (core functions and functions of the built-in library; Chapters 6 and 15) may have polymorphic types whose signatures contain type variables (single uppercase names such as `T`, `U`, `R`).
+- A signature contains type variables when it belongs to a built-in symbol defined by this specification (core functions and functions of the built-in library; chapters 6 and 15), or to a declaration that declares type parameters (4.2). The two are checked by one set of rules, given below.
+- An `upper_id` in a type annotation that is not a type parameter in scope is a `NamedType`, resolved as a type alias reference; if there is no corresponding declaration (for the qualified form: no such namespace, or no public type alias of that name in the module it refers to), it is an undefined reference error.
 - A signature containing type variables is treated as a type scheme, and is instantiated to concrete types independently for each call and then checked. Within a single call, type variables of the same name must be bound to the same concrete type.
 - Instantiation is determined from the argument types and the contextual expected type. If a single concrete type cannot be determined, it is an inference failure error (4.3).
 - Instantiation does not depend on the order of the arguments. An argument whose own type comes from its position — a `cast` (15.8), or a `fail` (15.7) — is therefore checked once the other arguments and the expected type have determined the type variables of the position it sits in, and may stand in any argument position whose type they determine. Where nothing determines it, it remains an inference failure. This governs checking only: the arguments of a call are still evaluated from left to right (8.3).
@@ -566,8 +586,17 @@ Polymorphic types of built-in symbols (built-in polymorphism):
 - Matching an argument against a union pattern follows the rule above for unions on both sides: the members the two have in common are dropped, and a variable left facing a single member is bound to it. An argument that is not a union at all is matched once the other positions have made the pattern concrete. So for a signature `Function<T | Null, T, T>`, an argument of type `String | Null` binds `T` to `String` by the first route and an argument of type `String` by the second.
 - A union in a parameter position that mentions no type variable is an ordinary ground type and is checked by conformance like any other.
 - When the contextual expected type is used to instantiate a union return type, identical members of the expected type and of the signature's union are removed from both; if exactly one member remains on each side and the signature's is a type variable, it is bound to the other (`T | Null` against an expected `String | Null` binds `T` to `String`). In every other case the expected type contributes no binding, and the instantiation must come from the arguments or it is an inference failure error.
-- When a built-in polymorphic function is referenced as a function value in a position other than a call (binding to a variable, passing as an argument, etc.), the type variables must be uniquely instantiable from the expected type at the reference position. If instantiation is not possible, it is a type error. Example: `m: Function<Array<Number>, Function<Number, Number>, Array<Number>> = map` can be instantiated via the expected-type annotation, but `m = map` without an annotation is an inference failure error.
-- Implementations may realize built-in polymorphism by any internal mechanism, but must satisfy the observable type-checking results above. Polymorphism must not be extended to user-defined symbols.
+- When a polymorphic function is referenced as a function value in a position other than a call (binding to a variable, passing as an argument, etc.), the type variables must be uniquely instantiable from the expected type at the reference position. A function value has no type variables of its own, so the whole of its type — parameters and result alike — has to be determined there. If instantiation is not possible, it is a type error. Example: `m: Function<Array<Number>, Function<Number, Number>, Array<Number>> = map` can be instantiated via the expected-type annotation, but `m = map` without an annotation is an inference failure error.
+- A reference whose expected type is not fully determined is written as a lambda instead, which requires only its parameter types: the body is then a call, and a call instantiates from its arguments. So where `map(xss, reverse)` has no type to instantiate `reverse` at — `map`'s result variable being fixed by nothing — `map(xss, \(xs) -> reverse(xs))` is well-typed, and the result type flows out of the lambda rather than being demanded by it. The two forms are not interchangeable in general: a value reference also loses the declaration parameter information a call keeps (7.5), so keyword arguments and default completion are available in the second and not in the first. An implementation must not silently rewrite one into the other.
+- Implementations may realize polymorphism by any internal mechanism, but must satisfy the observable type-checking results above.
+
+Type parameters within the body of their declaration (rigidity):
+
+- Within the body of a declaration that declares type parameters, each type parameter is an opaque type, distinct from every other type including every other type parameter. It conforms only to itself and to `Any`.
+- It is therefore not a comparable type (6.2), not ordered (15.4), not stringifiable (6.6), not a legal target of `cast` (15.8), and not a legal `case` type head (6.4), being neither a union nor `Any`.
+- A value of a type parameter's type can be bound, passed, returned, placed in an `Array` / `Map` / `Record`, and serialized through `Any` — and nothing else. A body that needs an operation on such a value takes the operation as an argument (`Function<T, Number>` as a sort key, `Function<T, T, Bool>` as an equality), which is also how the built-in library states the conditions its own signatures cannot (15.1).
+- A type parameter is opaque only inside the body. At a call site it is instantiated to a concrete type, and the result is that concrete type.
+- This rule has no counterpart for built-in symbols, which have no body in this specification.
 
 ### 4.5 Serializable and Non-serializable Types
 
@@ -592,10 +621,10 @@ TopLevelDecl  = ( ImportDecl | ExportDecl | CommandDecl
                 | [ Visibility ] ( TypeAliasDecl | Declaration ) ) decl_end .
 decl_end      = newline | ";" .
 Visibility    = "export" | "internal" .
-TypeAliasDecl = "type" upper_id "=" Type .
+TypeAliasDecl = "type" upper_id [ TypeParams ] "=" Type .
 Declaration = ValueDecl | FunctionDecl .
 ValueDecl   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
-FunctionDecl = lower_id "(" [ FunctionParameterList ] ")" [ ":" Type ] "=" Expression .
+FunctionDecl = lower_id [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" Type ] "=" Expression .
 
 CommandDecl   = "command" command_names "on" Expression .
 command_names = string_lit { "," string_lit } .
@@ -616,6 +645,8 @@ Declaration termination rules:
 - `as` and `from` are not continuation tokens (6.5). An `import` declaration must be written on one line, except inside the braces of `NamedImports` (which may span multiple lines by the open-bracket continuation rule). The closing `}` and the `from` clause must be placed on the same line.
 - A line-leading `(` or `[` does not continue the preceding declaration and is interpreted as the start of a new declaration. Since a top-level declaration begins with `import`, `type`, or an identifier, this case results in a syntax error.
 - The optional `!!` marker on a `ValueDecl` name declares a secret binding (6.10); it does not affect parsing of the rest of the declaration.
+- A `<` following the name of a `FunctionDecl` or a `TypeAliasDecl` begins its type parameters (4.2), and needs no lookahead to recognize: the name of a declaration is otherwise followed by `(`, `!!`, `:` or `=`, and a declaration never begins with an expression, so `<` can be nothing else there. A `ValueDecl` takes no type parameters, having no place to instantiate them.
+- Type parameters are not part of a declaration's name. `first<T>` declares the symbol `first`, which is what an import, an export and a duplicate-definition check see.
 - `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
 
@@ -851,6 +882,7 @@ Meaning of the parameter notation:
 - At declaration time, each parameter is clearly distinguished as a positional parameter (`name`), a variadic parameter (`...name`), or a keyword parameter (`--name`). The declaration order is: the sequence of positional parameters, the variadic parameter (at most one), then the sequence of keyword parameters (enforced by the grammar).
 - Positional parameters are bound only by positional arguments. All are required and cannot have default values.
 - Keyword parameters are bound only by name (`name = expression` in in-language calls, `--name <value>` on the CLI; 11.2). They must have a default value expression, and when unspecified they are completed with the default value.
+- A default value expression is checked once, at the declaration, against the declared type of its parameter. Where the declaration has type parameters (4.2) they are opaque during that check, as everywhere else in the declaration (4.4), so the default has to be one that holds for every instantiation. This admits `--y: T = x` where `x` is a preceding parameter of type `T` (the evaluation environment of a default includes the parameters bound before it, 8.3), `--xs: Array<T> = []`, `--m: Map<T> = {}`, `--y: T | Null = null` and an identity lambda, and rejects `--y: T = 1`, whose type would otherwise depend on the instantiation. No rule forbids a default on a parameter whose type mentions a type parameter; conformance decides it.
 - Binding a positional parameter by name, and binding a keyword parameter by position, are not possible (`E-TYPE-KEYWORD`).
 - `--` is a lexeme that appears only as the declaration marker of a keyword parameter, and is not interpreted as a sequence of the operator `-`.
 - Parameter names are used for references within the function body and for the binding interface of keyword parameters (references within the body use `name` for every kind).
@@ -1068,7 +1100,7 @@ Typing rules:
 - `map` is typed as `Function<Array<T>, Function<T, U>, Array<U>>`.
 - `filter` is typed as `Function<Array<T>, Function<T, Bool>, Array<T>>`.
 - `reduce` is typed as `Function<Array<T>, U, Function<U, T, U>, U>`.
-- `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because conformance of function types is limited to identity (4.4), in order to accept bodies of arbitrary return type through instantiation of built-in polymorphism).
+- `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because conformance of function types is limited to identity (4.4), in order to accept bodies of arbitrary return type through instantiation).
 - An `IfExpr` is well-typed only when the condition expression is `Bool` and the types of the two branch blocks are the same `T`, and the type of the whole expression is `T`.
 - An `if` without `else` is not an expression. It appears solely as the `return` guard statement (the `GuardStmt` of 6.5), only in statement position.
 - A `CaseExpr` with a scrutinee is well-typed only when every value head's type conforms (4.4) to the type `S` of the scrutinee, and, when the expression has at least one value head, `S` is a comparable type (6.2). These are exactly the rules of `==`, because the expansion of a value head is a chain of `==`. A scrutinee of type `Any` is therefore a type error in a `case` having any value head, because `Any` is not comparable: dispatch on its type with type heads (below), or move to a concrete type with `cast` (15.8) first.
@@ -1553,7 +1585,7 @@ Desugaring rules:
 Typing rules:
 
 - `recover` is typed as `Function<Function<T>, Function<Error, T>, T>`.
-- `fail` is typed as `Function<Error, T>`. The return type `T` is instantiated from the context's expected type by built-in polymorphism (4.4).
+- `fail` is typed as `Function<Error, T>`. The return type `T` is instantiated from the context's expected type (4.4).
 - A `TryExpr` with `catch` is well-typed only when the types of the body block and the `catch` block are the same `T`, and the type of the whole expression is `T`.
 - The `e` of `catch (e)` is in effect only inside the `catch` block, with type `Error`.
 - The type of the `finally` block is arbitrary, and its value is discarded. The expression type of `try B finally F` is the type of the body block.
@@ -1713,7 +1745,8 @@ The relationship between type annotations and inference is as follows.
 
 Supplementary rules:
 
-- A `NamedType` is expanded to its `TypeAliasDecl` before checking.
+- A `NamedType` is expanded to its `TypeAliasDecl` before checking, substituting its type arguments for the alias's parameters where it has them (4.2).
+- An `upper_id` that is a type parameter of the enclosing declaration is not expanded. Within the body it stands for itself (4.4); at a call it is instantiated.
 - Because overloading is not permitted, one symbol has only one function type.
 - `Any` is broadly accepted on the receiving side (any type conforms to `Any`), but the transition from `Any` to a concrete type can only be performed by a runtime type check: `cast` (15.8), or the type dispatch of `case` (6.4) (4.4).
 
@@ -1753,7 +1786,9 @@ Consistency of helper functions (normalization targets of syntactic sugar):
 - `fail`: `Function<Error, T>`
 - `run_command`: `Function<String, Environment, CommandResult>`
 
-Type variables in signatures (`T`, `U`, etc.) are instantiated and checked per call according to the built-in polymorphism rules of 4.4, including the restriction that a type variable may occur inside a union only in a return type.
+Type variables in signatures (`T`, `U`, etc.) are instantiated and checked per call according to the polymorphism rules of 4.4. This applies to a call of a declaration that declares type parameters exactly as it does to a built-in: the argument binding of this section is unchanged, and each bound argument is checked against its parameter type with the instantiation applied. Keyword parameters and variadic collection are unaffected by instantiation, being declaration parameter information rather than part of the function type.
+
+Where a variadic parameter's element type is a type parameter, the first collected argument determines it and the remaining ones are checked against it. A union is never inferred (4.3), so mixed arguments require the union to be written — on the declaration (`...xs: Array<String | Number>`) or as the expected type of the call.
 
 `async` / `if` / `case` / `for` / `$ ...` are statically verified as sugar over the helper functions above. `await e` is verified as an application of the core function `await`.
 
@@ -1793,7 +1828,7 @@ The error kinds reported by static verification include at least the following.
 - `E-NAME-AMBIGUOUS`: ambiguous reference
 - `E-NAME-DUPLICATE`: duplicate definition
 - `E-TYPE-MISMATCH`: type mismatch
-- `E-TYPE-ARITY`: function argument count mismatch (shortage or excess of positional arguments; 7.5)
+- `E-TYPE-ARITY`: function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2)
 - `E-TYPE-KEYWORD`: invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5)
 - `E-TYPE-CALL`: invalid call (calling a non-function value, etc.)
 - `E-TYPE-COMMAND-ENV`: invalid command execution environment type
@@ -2519,6 +2554,7 @@ Type conformance rules:
 - In `auto` mode, when ambiguous, `String` takes precedence.
 - A parameter whose type is a union is bound when the decoded value conforms to one of its members (4.4); no member is preferred over another, and the decoding mode alone decides what the token becomes. So for a parameter of type `Number | Null`, `--n 8080` binds a `Number` and `--n null` binds `Null` under `auto` or `json`, while under `text` both are `String` and neither conforms.
 - Decoding failure or type mismatch must be reported as an error before function evaluation begins.
+- A function that declares type parameters (4.2) is invoked with every type parameter instantiated at `Any`, and its arguments are decoded and checked against the resulting types. This is sound because a type parameter is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
 - Functions with positional parameters of type `Environment` are excluded from direct CLI invocation (since no decoding mode can construct an `Environment` value, this is a pre-execution error). Keyword parameters of type `Environment` are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive it as `String` etc. and construct the environment expression inside the function.
 
 Difference between `run` and `eval`:
@@ -2696,6 +2732,7 @@ lask eval [--module <path>] [lask options ...] --help
 - Only `run` and `eval` provide function help. As in 11.2, the two are identical in this respect.
 - When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module.
 - Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
+- A function that declares type parameters (4.2) is displayed with them, as `first<T>`, wherever its name is shown. The same holds of every other surface that shows a declaration rather than a value: completion (11.7) and editor hovers. A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
 - The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
 - If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. An implementation may report the advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2).
 - Help display takes precedence over argument binding. Binding errors (11.2) are not reported when `--help` is present: `lask run build --out_dir 1 --help` displays the help and exits `0`.
@@ -3493,7 +3530,7 @@ Publication rules:
 
 Typing rules:
 
-- Type variables appearing in the signatures of this chapter (`T`, `U`, etc.) follow the built-in polymorphism rules of 4.4. Only built-in symbols can have polymorphic types; type variables cannot be used in the signatures of user-defined functions.
+- Type variables appearing in the signatures of this chapter (`T`, `U`, etc.) follow the polymorphism rules of 4.4, which a declaration with type parameters (4.2) follows equally. What remains particular to this chapter is the naming of the absent case above, and the conditions a signature cannot state: a built-in may carry one, checked at the call site (`sort`, 15.4), where user code has no way to write one and takes the operation as an argument instead.
 
 ### 15.2 Numeric Operations
 
@@ -3752,7 +3789,7 @@ Semantics:
 
 - `recover` / `fail` follow the rules of 6.9 and 8.10. Both are core functions and must not be overridden by user code (7.2).
 - `error(code, message)` is a helper function that constructs an `Error` value equivalent to `{code: code, message: message}`.
-- The return type `T` of `fail` is concretized from the context's expected type via built-in polymorphism (4.4).
+- The return type `T` of `fail` is concretized from the context's expected type (4.4).
 
 Failure rules:
 
@@ -3796,7 +3833,7 @@ JSON conversion rules of `from_json` / `decode`:
 Type migration via `cast`:
 
 - `cast(v)` checks at runtime whether the value `v` conforms to the target type `T`, and if it conforms, returns `v` as a value of type `T`. Together with the type dispatch of `case` (6.4), which runs the same check without failing, it is one of the two means of migration from `Any` or from a union to a concrete type (4.4). Use `cast` where any other kind of value is an error, and `case` where the other kinds are to be handled.
-- The target type `T` must be uniquely concretized from the expected type at the reference position via built-in polymorphism (4.4) (e.g., `user: Record<name: String> = cast(from_json(stdin))`).
+- The target type `T` must be uniquely concretized from the expected type at the reference position (4.4) (e.g., `user: Record<name: String> = cast(from_json(stdin))`).
 - The target type `T` is limited to data types (`Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, `Array`/`Map`/`Record` composed of them, and unions of those). A `cast` to a type containing `Void`, `Function`, or `AsyncHandle` is a static error (`E-TYPE-ILLFORMED`). Every well-formed union is a legal target, because 4.2 already restricts a union's members to this same set.
 - `cast` is also the way out of a union when only one member is expected and any other is an error: `cast(v)` at target `String` on a `v: String | Null` succeeds when the value is a string and fails with `E-RUNTIME-CAST` when it is null. When the absent case is to be handled rather than rejected, use `case` (6.4), which tests without failing.
 
