@@ -349,7 +349,7 @@ wrapSecretParams names body =
   Expr sp (EDo (Block sp (map bind names <> [Stmt sp (SExpr body)])))
   where
     sp = exprSpan body
-    bind n = Stmt sp (SBind n Public (call n))
+    bind n = Stmt sp (SBind n Public Nothing (call n))
     call n =
       Expr sp (ECall (Expr sp (EVar "mark_secret")) [Arg sp (APos (Expr sp (EVar n)))])
 
@@ -976,27 +976,46 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
           abort (diag ETypeMismatch bsp ("an empty block has type Void, expected " <> renderType t))
       | otherwise = pure ([], TyVoid)
     go locals [Stmt ssp f] = case f of
-      SBind n sec e -> do
-        (c, t) <- inferOrCheck locals e
-        c' <- applySecrecy ssp n sec t c
-        pure ([CSBind n c'], t)
+      SBind n sec ann e -> do
+        (c, t) <- elabBind locals ssp n sec ann e (inferOrCheck locals e)
+        -- The value of the block is the value of its last statement
+        -- (6.5), so an annotation there has to fit what the block owes
+        -- its context; without one, 'inferOrCheck' has already checked.
+        case mExpected of
+          Just u | not (conformsTo t u) -> mismatch ssp u t
+          _ -> pure ([CSBind n c], t)
       SExpr e -> do
         (c, t) <- inferOrCheck locals e
         pure ([CSExpr c], t)
       SReturn _ -> returnErr
       SGuard _ _ -> returnErr
     go locals (Stmt ssp f : rest) = case f of
-      SBind n sec e -> do
-        (c, t) <- infer ctx path locals e
-        c' <- applySecrecy ssp n sec t c
+      SBind n sec ann e -> do
+        (c, t) <- elabBind locals ssp n sec ann e (infer ctx path locals e)
         (cs, ty) <- go (Map.insert n t locals) rest
-        pure (CSBind n c' : cs, ty)
+        pure (CSBind n c : cs, ty)
       SExpr e -> do
         (c, _) <- infer ctx path locals e
         (cs, ty) <- go locals rest
         pure (CSExpr c : cs, ty)
       SReturn _ -> returnErr
       SGuard _ _ -> returnErr
+
+    -- An annotation is the expected type for the right-hand side and
+    -- the declared type of the binding (spec 4.3, 6.5); without one,
+    -- the binding adopts the type of its right-hand side.
+    elabBind locals ssp n sec ann e unannotated = do
+      annTy <- traverse (typeFromS ctx path) ann
+      (c, t) <- case annTy of
+        Just t -> do
+          when (t == TyVoid) $
+            abort . diag ETypeIllformed ssp $
+              "'" <> n <> "' cannot be annotated Void: a Void value cannot be bound"
+          c <- check ctx path locals e t
+          pure (c, t)
+        Nothing -> unannotated
+      c' <- applySecrecy ssp n sec t c
+      pure (c', t)
 
     inferOrCheck locals e = case mExpected of
       Just t -> do

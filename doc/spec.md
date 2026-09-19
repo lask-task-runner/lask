@@ -1174,7 +1174,7 @@ summarize(): String = do {
 ```ebnf
 DoExpr     = "do" Block .
 DoStmt     = ( BindStmt | ExprStmt | ReturnStmt | GuardStmt ) stmt_end .
-BindStmt   = lower_id [ "!!" ] "=" Expression .
+BindStmt   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 ExprStmt   = Expression .
 ReturnStmt = "return" Expression .
 GuardStmt  = "if" "(" Expression ")" Block .
@@ -1182,6 +1182,14 @@ stmt_end   = newline | ";" .
 ```
 
 Here `Block` is the block defined in 6.4 (`"{" { DoStmt } "}"`), and `newline` is the newline token defined in 3.3. Immediately before the block terminator `}`, `stmt_end` may be omitted.
+
+Binding annotations:
+
+- A `BindStmt` takes an optional type annotation, in the same shape as a `ValueDecl` (5): the `!!` marker attaches to the name and the annotation follows it, as in `a!!: String = e`.
+- The annotation is the expected type for the right-hand side and the declared type of the binding, by the rules of 4.3. The right-hand side must conform to it (4.4). Without an annotation the binding adopts the type of its right-hand side, as before.
+- The annotation follows the type well-formedness rules of 4.2, and `Void` is not among the positions those rules allow: a binding cannot be annotated `Void` (`E-TYPE-ILLFORMED`), because a `Void` value must not be used as a value (4.4).
+- When the annotated binding is the last statement of the block, its declared type is the type of the block, and so must conform to whatever the block's context requires.
+- This is how an expression that needs an expected type gets one inside a block. `cast` (15.8) is the case that motivates it: `cfg: Record<name: String> = cast(from_json(stdin))` concretizes the target from the annotation, where an unannotated binding would have nowhere to state it.
 The block forms of `if` / `case` / `for` are expressions (the `IfExpr` / `CaseExpr` / `ForExpr` of 6.4), so no dedicated statement forms exist. They appear as an `ExprStmt` or as the right-hand side of a `BindStmt`.
 
 Statement termination rules:

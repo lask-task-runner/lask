@@ -191,8 +191,8 @@ data Stmt = Stmt {stmtSpan :: Span, stmtF :: StmtF}
   deriving (Show, Eq)
 
 data StmtF
-  = -- | @name[!!] = expr@
-    SBind Text Secrecy Expr
+  = -- | @name[!!] [: Type] = expr@
+    SBind Text Secrecy (Maybe SType) Expr
   | SExpr Expr
   | SReturn Expr
   | -- | @if (cond) { ... }@ without @else@ in statement position.
@@ -272,7 +272,7 @@ stripBlock (Block _ ss) = Block NoSpan (map stripStmt ss)
 
 stripStmt :: Stmt -> Stmt
 stripStmt (Stmt _ f) = Stmt NoSpan $ case f of
-  SBind n sec e -> SBind n sec (stripSpansExpr e)
+  SBind n sec t e -> SBind n sec (fmap stripSpansType t) (stripSpansExpr e)
   SExpr e -> SExpr (stripSpansExpr e)
   SReturn e -> SReturn (stripSpansExpr e)
   SGuard c b -> SGuard (stripSpansExpr c) (stripBlock b)
