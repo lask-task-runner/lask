@@ -218,6 +218,15 @@ spec = do
       rejects "f(x: Function<Number, Number> | Null): Number = 1" ETypeIllformed
       rejects "f(x: AsyncHandle<Number> | Null): Number = 1" ETypeIllformed
       rejects "f(x: Void | Null): Number = 1" ETypeIllformed
+    it "determines a union from the expected type (spec 4.4)" $ do
+      -- What a signature with a union in a parameter position relies
+      -- on: the variable is fixed by whichever position fixes it, and
+      -- the arguments are then checked against the concrete union.
+      accepts "g(): Array<String | Number> = append([1], \"a\")"
+      rejects "g() = append([1], \"a\")" ETypeMismatch
+    it "accepts a mixed variadic where the union is written down" $ do
+      accepts "f(...xs: Array<String | Number>): Number = size(xs)\ng(): Number = f(1, \"a\")"
+      rejects "f(...xs: Array<Number>): Number = size(xs)\ng(): Number = f(1, \"a\")" ETypeMismatch
     it "casts to a union (spec 15.8)" $
       accepts "f(v: Any): String | Null = cast(v)"
     it "instantiates a union return type from an argument (spec 4.4)" $
