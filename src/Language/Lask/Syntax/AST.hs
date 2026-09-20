@@ -53,12 +53,14 @@ data DeclF
     DImportNamed [ImportSpec] Text
   | -- | @import * as m from "path"@
     DImportNamespace Text Text
-  | -- | @type Name = Type@
-    DTypeAlias Text SType
+  | -- | @type Name = Type@, or @type Name\<A, B\> = Type@ with type
+    -- parameters (spec 4.2).
+    DTypeAlias Text [Spanned Text] SType
   | -- | @name[!!] [: Type] = expr@
     DValue Text Secrecy (Maybe SType) Expr
-  | -- | @name(params) [: Type] = expr@ (sugar for a lambda binding)
-    DFunction Text [Param] (Maybe SType) Expr
+  | -- | @name(params) [: Type] = expr@ (sugar for a lambda binding),
+    -- with the type parameters it declares (spec 4.2).
+    DFunction Text [Spanned Text] [Param] (Maybe SType) Expr
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
@@ -111,7 +113,9 @@ data STypeF
   | -- | @Nothing@: bare @upper_id@. @Just ns@: qualified @ns.TypeName@,
     -- a reference to a public type alias of the module the namespace
     -- import @ns@ refers to (spec 4.2 QualifiedNamedType).
-    SNamed (Maybe Text) Text
+    -- Type arguments are given where the alias takes parameters
+    -- (@Pair\<Number, String\>@); the list is empty otherwise.
+    SNamed (Maybe Text) Text [SType]
   | -- | @T1 | T2 | ...@ as written, with at least two members (spec
     -- 4.2). Canonicalization happens when it becomes a semantic type.
     SUnion [SType]
@@ -209,10 +213,15 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DImportNamed specs path -> DImportNamed (map stripSpec specs) path
   DImportNamespace a p -> DImportNamespace a p
   DExportFrom specs path -> DExportFrom (map stripSpec specs) path
-  DTypeAlias n t -> DTypeAlias n (stripSpansType t)
+  DTypeAlias n ps t -> DTypeAlias n [Spanned NoSpan v | Spanned _ v <- ps] (stripSpansType t)
   DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
-  DFunction n ps t e ->
-    DFunction n (map stripParam ps) (fmap stripSpansType t) (stripSpansExpr e)
+  DFunction n tps ps t e ->
+    DFunction
+      n
+      [Spanned NoSpan v | Spanned _ v <- tps]
+      (map stripParam ps)
+      (fmap stripSpansType t)
+      (stripSpansExpr e)
   DCommand ns e -> DCommand [Spanned NoSpan n | Spanned _ n <- ns] (stripSpansExpr e)
   where
     stripSpec (ImportSpec _ n a) = ImportSpec NoSpan n a
@@ -231,6 +240,7 @@ stripSpansType (SType _ f) = SType NoSpan $ case f of
   SAsyncHandle t -> SAsyncHandle (stripSpansType t)
   SFunction ps r -> SFunction (map stripSpansType ps) (stripSpansType r)
   SUnion ts -> SUnion (map stripSpansType ts)
+  SNamed q n as -> SNamed q n (map stripSpansType as)
   other -> other
 
 stripSpansExpr :: Expr -> Expr

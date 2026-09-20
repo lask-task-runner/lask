@@ -160,6 +160,72 @@ spec = do
         "f(): Number = size(concat_array(cast(from_json(\"[1]\")), cast(from_json(\"[2]\"))))"
         ETypeMismatch
 
+  describe "user type parameters (spec 4.2, 4.4)" $ do
+    it "instantiates a declaration per call" $ do
+      hasType
+        "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\ng() = first_or([1], 0)"
+        "g"
+        "Function<Number>"
+      hasType
+        "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\ng() = first_or([\"a\"], \"z\")"
+        "g"
+        "Function<String>"
+    it "requires the arguments to agree on the instantiation" $
+      rejects
+        "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\ng(): Number = first_or([1], \"a\")"
+        ETypeMismatch
+    it "keeps keyword arguments and variadics (spec 7.5)" $ do
+      accepts
+        "tag<T>(x: T, --label: String = \"v\"): Record<label: String, value: T> = {label: label, value: x}\ng(): Record<label: String, value: Number> = tag(1, label = \"n\")"
+      accepts "listy<T>(...xs: Array<T>): Array<T> = xs\ng(): Array<Number> = listy(1, 2, 3)"
+      rejects "listy<T>(...xs: Array<T>): Array<T> = xs\ng(): Array<Number> = listy(1, \"a\")" ETypeMismatch
+    it "treats a type parameter as opaque in the body (rigidity)" $ do
+      rejects "eq<T>(a: T, b: T): Bool = a == b" ETypeMismatch
+      rejects "show<T>(x: T): String = \"v=#{x}\"" ETypeMismatch
+      rejects "render<T>(x: T): String = to_string(x)" ETypeMismatch
+      rejects "sorted<T>(xs: Array<T>): Array<T> = sort(xs)" ETypeMismatch
+      rejects "narrow<T>(x: T): Number = case (x) {\n  Number -> 1\n  else -> 0\n}" ETypeMismatch
+    it "lets a type parameter be moved around, which is all it can be" $ do
+      accepts "ident<T>(x: T): T = x"
+      accepts "pair<T>(x: T): Array<T> = [x, x]"
+      accepts "wrap<T>(x: T): Record<value: T> = {value: x}"
+      accepts "encode<T>(x: T): String = to_json(x)"
+      accepts "pick<T>(xs: Array<T>, p: Function<T, Bool>): T | Null = find(xs, p)"
+    it "scopes a type parameter over body annotations (spec 6.5)" $
+      accepts "head<T>(xs: Array<T>): T = do {\n  x: T = xs[0]\n  x\n}"
+    it "instantiates a reference as a value only from the expected type" $ do
+      accepts "ident<T>(x: T): T = x\nf: Function<Number, Number> = ident"
+      rejects "ident<T>(x: T): T = x\nf = ident" ETypeMismatch
+      accepts "ident<T>(x: T): T = x\nf(xs: Array<Number>): Array<Number> = map(xs, ident)"
+    it "rejects a type parameter that collides with an alias" $
+      rejects "type T = Number\nf<T>(x: T): T = x" ENameDuplicate
+    it "allows a type parameter that appears nowhere" $
+      accepts "f<T>(x: Number): Number = x"
+    it "checks a default against the rigid parameter (spec 6.1)" $ do
+      accepts "f<T>(x: T, --y: T = x): T = y"
+      accepts "f<T>(--xs: Array<T> = []): Array<T> = xs"
+      accepts "f<T>(--y: T | Null = null): T | Null = y"
+      rejects "f<T>(--y: T = 1): T = y" ETypeMismatch
+    it "supports recursion with a return annotation" $
+      accepts
+        "countdown<T>(n: Number, x: T): T = if (n > 0) { countdown(n - 1, x) } else { x }\ng(): Number = countdown(3, 7)"
+
+  describe "parameterised type aliases (spec 4.2)" $ do
+    it "expands by substituting the type arguments" $
+      hasType
+        "type Pair<A, B> = Record<first: A, second: B>\nf(p: Pair<Number, String>): String = p.second"
+        "f"
+        "Function<Record<first: Number, second: String>, String>"
+    it "gives a name to an optional" $
+      accepts
+        "type Opt<A> = A | Null\nf(x: Opt<String>): String = case (x) {\n  Null -> \"n\"\n  else -> x\n}"
+    it "requires the argument count to match" $ do
+      rejects "type Pair<A, B> = Record<first: A, second: B>\nf(p: Pair<Number>): Number = p.first" ETypeArity
+      rejects "type Strings = Array<String>\nf(x: Strings<Number>): Number = 1" ETypeArity
+      rejects "type Pair<A, B> = Record<first: A, second: B>\nf(p: Pair): Number = 1" ETypeArity
+    it "checks well-formedness after expansion" $
+      rejects "type Bad<A> = Array<A>\nf(x: Bad<Void>): Number = 1" ETypeIllformed
+
   describe "operators (spec 6.2)" $ do
     it "types arithmetic as Number" $ hasType "x = 1 + 2 * 3" "x" "Number"
     it "rejects string operands of +" $ rejects "x = \"a\" + \"b\"" ETypeMismatch

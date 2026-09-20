@@ -456,7 +456,8 @@ hoverAt path src (Position pl pc) = do
         _ -> do
           let hi = minimumBy (comparing (spanSize . hiSpan)) hits
           docs <- declDocs compiled path src (hiDecl hi)
-          pure (Just (mkHover (hiName hi) (renderType (hiType hi)) docs (hiSpan hi)))
+          let shown = hiName hi <> typeParamsOf compiled (hiDecl hi)
+          pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
   where
     spanContains (S.Span (S.Position f l1 c1) (S.Position _ l2 c2)) line col =
       normalise f == normalise path
@@ -507,6 +508,25 @@ hoverMarkdown name typeText docs =
 
 -- | The documentation of a declaration: the contiguous block of
 -- comments directly above it, with comment markers stripped.
+-- | The binder of a declaration that has type parameters, as it is
+-- written (spec 4.2, 11.6): @\<T\>@ for @first\<T\>@, empty otherwise.
+typeParamsOf :: Compiled -> Maybe (FilePath, Text) -> Text
+typeParamsOf _ Nothing = ""
+typeParamsOf compiled (Just (declPath, name)) =
+  case [ tps
+       | lm <- maybeToList (Map.lookup key modules),
+         AST.Decl _ (AST.DFunction n tps _ _ _) <- AST.moduleDecls (lmModule lm),
+         n == name,
+         not (null tps)
+       ] of
+    (tps : _) -> "<" <> T.intercalate ", " [v | Tok.Spanned _ v <- tps] <> ">"
+    [] -> ""
+  where
+    modules = progModules (compiledProgram compiled)
+    key = case [k | k <- Map.keys modules, normalise k == normalise declPath] of
+      (k : _) -> k
+      [] -> declPath
+
 declDocs :: Compiled -> FilePath -> Text -> Maybe (FilePath, Text) -> IO (Maybe Text)
 declDocs _ _ _ Nothing = pure Nothing
 declDocs compiled docPath docSrc (Just (declPath, name)) = do
@@ -528,7 +548,7 @@ declDocs compiled docPath docSrc (Just (declPath, name)) = do
       lm <- Map.lookup (normalisedKey declPath) modules
       let matches d = case AST.declF d of
             AST.DValue n _ _ _ -> n == name
-            AST.DFunction n _ _ _ -> n == name
+            AST.DFunction n _ _ _ _ -> n == name
             _ -> False
       case [AST.declSpan d | d <- AST.moduleDecls (lmModule lm), matches d] of
         (S.Span (S.Position _ l _) _ : _) -> Just l
@@ -779,7 +799,7 @@ completionAt path src (Position pl pc)
 
     declParams m declName =
       listToMaybe $
-        [ps | AST.Decl _ (AST.DFunction n ps _ _) <- AST.moduleDecls m, n == declName]
+        [ps | AST.Decl _ (AST.DFunction n _ ps _ _) <- AST.moduleDecls m, n == declName]
           <> [ ps
              | AST.Decl _ (AST.DValue n _ _ (AST.Expr _ (AST.ELambda ps _ _))) <- AST.moduleDecls m,
                n == declName
@@ -790,7 +810,7 @@ completionAt path src (Position pl pc)
       | AST.Decl _ f <- AST.moduleDecls m,
         n <- case f of
           AST.DValue n' _ _ _ -> [n']
-          AST.DFunction n' _ _ _ -> [n']
+          AST.DFunction n' _ _ _ _ -> [n']
           _ -> []
       ]
 

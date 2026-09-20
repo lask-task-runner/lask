@@ -10,9 +10,11 @@ module Language.Lask.Types
     dataType,
     renderType,
     conformsTo,
+    applySubst,
     comparable,
     orderable,
     isGround,
+    typeVars,
     wellFormed,
     errorType,
     commandResultType,
@@ -144,6 +146,23 @@ renderType t = case t of
     identChar c =
       c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
 
+-- | Substitute type variables (spec 4.4 instantiation, 4.2 alias
+-- expansion). Unions are rebuilt through 'mkUnion': a substitution can
+-- make two members the same, or bring an @Any@ in.
+applySubst :: Map Text Type -> Type -> Type
+applySubst s t = case t of
+  TyVar v -> Map.findWithDefault t v s
+  TyArray e -> TyArray (applySubst s e)
+  TyMap e -> TyMap (applySubst s e)
+  TyRecord fs -> TyRecord (Map.map (applySubst s) fs)
+  TyAsync e -> TyAsync (applySubst s e)
+  TyFun ps r -> TyFun (map (applySubst s) ps) (applySubst s r)
+  -- Rebuilt through 'mkUnion': substitution can make two members the
+  -- same, or bring an Any in, and the result has to stay canonical.
+  TyUnion (u : us) -> mkUnion (applySubst s u) (map (applySubst s) us)
+  _ -> t
+
+
 -- | @conformsTo t u@: an expression of type @t@ may be placed where
 -- @u@ is required (spec 4.4). Reflexive structural identity, plus
 -- @Any@ as the sole top type. No variance.
@@ -180,6 +199,18 @@ orderable t = case t of
   TyNumber -> True
   TyString -> True
   _ -> False
+
+-- | The type variables a type mentions, in no particular order.
+typeVars :: Type -> [Text]
+typeVars t = case t of
+  TyVar v -> [v]
+  TyArray e -> typeVars e
+  TyMap e -> typeVars e
+  TyRecord fs -> concatMap typeVars (Map.elems fs)
+  TyAsync e -> typeVars e
+  TyFun ps r -> concatMap typeVars ps <> typeVars r
+  TyUnion ts -> concatMap typeVars ts
+  _ -> []
 
 -- | No type variables remain.
 isGround :: Type -> Bool
