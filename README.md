@@ -61,7 +61,9 @@ Beyond the snippet above: [example/03-terraform](example/03-terraform) drives Te
 
 ## Why Lask
 
-Lask makes automation *verifiable*, *portable*, *programmable*, *reusable*, *runnable* and *discoverable*.
+Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, *reusable*, *runnable* and *discoverable*.
+
+**Approachable**. A directory with one `.lask` file in it is already a project: no scaffolding, no config file, nothing to install but Lask and Docker. The surface is small, and most of it is borrowed from languages you already write — C-family braces and calls, `try` / `catch`, `async` / `await`, TypeScript's type notation — so `Array<String>`, `String | Null` and `--name: String = "World"` need no explanation. Ten minutes with the [Quick Reference](doc/quick-reference.md) covers the whole language and CLI — one page that a coding model can hold in context too, instead of an SDK's worth of API surface.
 
 **Verifiable**. `lask check` resolves every name, argument and type before a single command runs — over the very definitions CI will execute, with no second copy in YAML to drift out of sync. The same errors appear in your editor as you type, so a typo costs seconds instead of a red CI log.
 
@@ -128,6 +130,20 @@ Uninstall with `sudo rm /usr/local/bin/lask`.
 </details>
 
 <details>
+<summary><b>Debian / Ubuntu</b> &middot; .deb package</summary>
+
+```bash
+$ VERSION=$(curl -fsSL https://api.github.com/repos/lask-task-runner/lask/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f4)
+$ curl -fsSL -o lask.deb "https://github.com/lask-task-runner/lask/releases/download/${VERSION}/lask-${VERSION}-linux-amd64.deb"
+$ sudo dpkg -i lask.deb
+```
+
+amd64 only; on another architecture, take the tarball above. Uninstall with
+`sudo apt remove lask`.
+
+</details>
+
+<details>
 <summary><b>Windows</b> &middot; PowerShell</summary>
 
 ```powershell
@@ -153,9 +169,9 @@ $ stack --local-bin-path /usr/local/bin/ install
 
 </details>
 
-Verify with `lask --help`. Archives for every platform are on the
-[latest release](https://github.com/lask-task-runner/lask/releases/latest); APT and
-Chocolatey support is planned.
+Verify with `lask --help`. Archives and packages for every platform are on the
+[latest release](https://github.com/lask-task-runner/lask/releases/latest); an APT
+repository and Chocolatey support are planned.
 
 <details>
 <summary><b>Shell completion</b> &middot; bash, zsh, fish</summary>
@@ -266,9 +282,12 @@ $ lask serve                       # language server (LSP)
 $ lask version                     # print the lask version
 ```
 
+The [Quick Reference](doc/quick-reference.md) covers the whole language and CLI
+in ten minutes; [doc/spec.md](doc/spec.md) is the full specification behind it.
+
 ## Status
 
-Lask is pre-1.0: features are `experimental` until the first tagged release, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released.
+Lask is pre-1.0: features are `experimental` until 1.0, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released.
 
 ## Development
 
