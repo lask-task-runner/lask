@@ -106,7 +106,9 @@ data STypeF
   | SEnvironment
   | SArray SType
   | SMap SType
-  | SRecord [(Spanned Text, SType)]
+  | -- | Fields as written: name, whether it carries the optional
+    -- marker @?@ (spec 4.2), and its type.
+    SRecord [(Spanned Text, Bool, SType)]
   | SAsyncHandle SType
   | -- | Parameter types and return type.
     SFunction [SType] SType
@@ -236,7 +238,7 @@ stripSpansType :: SType -> SType
 stripSpansType (SType _ f) = SType NoSpan $ case f of
   SArray t -> SArray (stripSpansType t)
   SMap t -> SMap (stripSpansType t)
-  SRecord fs -> SRecord [(Spanned NoSpan n, stripSpansType t) | (Spanned _ n, t) <- fs]
+  SRecord fs -> SRecord [(Spanned NoSpan n, opt, stripSpansType t) | (Spanned _ n, opt, t) <- fs]
   SAsyncHandle t -> SAsyncHandle (stripSpansType t)
   SFunction ps r -> SFunction (map stripSpansType ps) (stripSpansType r)
   SUnion ts -> SUnion (map stripSpansType ts)

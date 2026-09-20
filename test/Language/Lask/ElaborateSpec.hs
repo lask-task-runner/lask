@@ -210,6 +210,28 @@ spec = do
       accepts
         "countdown<T>(n: Number, x: T): T = if (n > 0) { countdown(n - 1, x) } else { x }\ng(): Number = countdown(3, 7)"
 
+  describe "optional record fields (spec 4.2)" $ do
+    it "lets a literal omit an optional key and no other" $ do
+      accepts "f(): Record<a: Number, b?: String> = {a: 1}"
+      rejects "f(): Record<a: Number, b: String> = {a: 1}" ETypeMismatch
+      rejects "f(): Record<a: Number, b?: String> = {a: 1, c: 2}" ETypeMismatch
+    it "keeps the key question and the value question apart" $ do
+      -- b?: String says the key may be absent, not that the value may
+      -- be null; b?: String | Null says both.
+      rejects "f(): Record<a: Number, b?: String> = {a: 1, b: null}" ETypeMismatch
+      accepts "f(): Record<a: Number, b?: String | Null> = {a: 1, b: null}"
+    it "reads an optional field as T | Null (spec 6.8)" $ do
+      hasType "f(r: Record<a?: String>) = r.a" "f" "Function<Record<a?: String>, String | Null>"
+      hasType "f(r: Record<a: String>) = r.a" "f" "Function<Record<a: String>, String>"
+      hasType "f(r: Record<a?: String>) = r[\"a\"]" "f" "Function<Record<a?: String>, String | Null>"
+    it "makes optionality part of the type (spec 4.4)" $ do
+      rejects "f(r: Record<a: String>): Record<a?: String> = r" ETypeMismatch
+      rejects "f(r: Record<a?: String>): Record<a: String> = r" ETypeMismatch
+    it "never infers an optional field" $
+      rejects "f(): Record<a?: Number> = do {\n  r = {a: 1}\n  r\n}" ETypeMismatch
+    it "renders the marker on the key" $
+      hasType "f(r: Record<a?: String, b: Number>): Number = 1" "f" "Function<Record<a?: String, b: Number>, Number>"
+
   describe "parameterised type aliases (spec 4.2)" $ do
     it "expands by substituting the type arguments" $
       hasType

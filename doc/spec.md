@@ -373,7 +373,7 @@ BaseType          = "Any" | "Number" | "String" | "Bool" | "Null" | "Void" | "En
 ArrayType         = "Array" "<" Type ">" .
 MapType           = "Map" "<" Type ">" .
 RecordType        = "Record" "<" [ RecordFieldType { "," RecordFieldType } ] ">" .
-RecordFieldType   = ( lower_id | string_lit ) ":" Type .
+RecordFieldType   = ( lower_id | string_lit ) [ "?" ] ":" Type .
 AsyncHandleType   = "AsyncHandle" "<" Type ">" .
 FunctionType      = "Function" "<" Type { "," Type } ">" .
 NamedType         = ( upper_id | QualifiedNamedType ) [ TypeArgs ] .
@@ -436,6 +436,21 @@ Well-formedness of a union:
 - Every member of a union must be a data type: `Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, and `Array` / `Map` / `Record` composed of them — the same set that `cast` may target (15.8). A union having a member that contains `Function<...>` or `AsyncHandle<T>` is a static error (`E-TYPE-ILLFORMED`).
 - The reason for the second rule is that a union is only useful if a program can get back out of it, and both ways out — the runtime type check of `cast` (15.8) and the type dispatch of `case` (6.4) — are defined for data types alone. A type such as `Function<Number, Number> | Null` would be inhabited but unusable, and it is rejected where it is written rather than where it is used.
 
+Optional fields:
+
+- A `?` after a field name declares the field **optional**: the key may be absent from the value. Without it the key must be present. The marker qualifies the key, and the field's type qualifies the value, so the two questions a record field raises are asked separately and answered separately.
+
+| Written | Key | Value |
+| --- | --- | --- |
+| `a: String` | must be present | a `String` |
+| `a: String \| Null` | must be present | a `String` or null |
+| `a?: String` | may be absent | a `String` when present |
+| `a?: String \| Null` | may be absent | a `String` or null when present |
+
+- An absent key and a null value are different things and stay different: an absent optional key is not a null, and a null is not an absent key. Where the difference is observable is at the two boundaries — `cast` accepts a value whose optional keys are missing and rejects one whose required keys are (15.8), and serialization omits an absent optional field while writing an explicit `null` for a null one (13.1).
+- `?` may be written on a field name in either form, `a?: String` or `"X-Api-Key"?: String`, and nowhere else: it is not a type suffix.
+- Reading an optional field yields `T | Null`, an absent key reading as null (6.8). In memory, then, a program sees the two cases the same way; a program that must tell them apart moves the record to a `Map<T>` with `cast` and asks `has_key` (15.4).
+
 Record field names:
 
 - Field names may be written in identifier form (`lower_id`) or string literal form (`string_lit`). Identity is determined by comparison as strings, and `Record<name: String>` and `Record<"name": String>` denote the same type.
@@ -489,13 +504,14 @@ Type annotations are optional, and the following type inference rules apply wher
 - When an annotation is given, the annotation takes precedence, and the inferred type must conform (per the conformance relation of 4.4) to the annotated type.
 - Type annotations (on variables, parameters, and return values) and the argument types of a callee propagate as the expected type for the corresponding expression, and are used for the expected-type-directed checking of literals (described below).
 - A number literal is `Number`, a string literal is `String`, a boolean literal is `Bool`, and the `null` literal is `Null`. An environment expression `#...` (6.7) is `Environment`.
+- An optional field is never inferred: a record literal with no expected type infers every key it gives as required (`{a: 1}` is `Record<a: Number>`), so an optional field, like a union, appears only where it was written.
 - A union type is never inferred. It is the type of an expression only where an annotation or a callee's signature says so, and the rules below are unchanged by the existence of unions: a heterogeneous array literal is still `Array<Any>` and not an array of a union, and two branches of differing types are still a type error rather than a union of the two. This keeps every union in a program one that someone wrote.
 - For an array literal `[e1, e2, ...]` with no expected type, the type of each element is inferred; if all are the same type `T`, the literal is `Array<T>`, and if heterogeneous, it is `Array<Any>`.
 - When the expected type is `Array<T>`, if every element expression conforms to `T`, the literal's type is `Array<T>`. If any element does not conform, it is a type error (conformance is invariant (4.4), but literals can promote element-wise to `Any` etc. via expected-type-directed checking).
 - The empty array `[]` follows the expected type if one exists; with no expected type it is `Array<Any>`.
 - For an object literal `{k1: e1, ...}` with no expected type, it is inferred as `Record<k1: T1, ...>` (`Ti` is the inferred type of each `ei`). When a key is a string literal, that string is the field name (per the record field name rules of 4.2).
 - An object literal with an expected type is checked for consistency with the expected type by the following rules.
-  - When the expected type is `Record<...>`: the literal's key set must match the expected type's field set (key identity follows the field name rules of 4.2), and each value expression must conform to the corresponding field type. Missing or extra keys and type nonconformance are type errors.
+  - When the expected type is `Record<...>`: the literal must give every required field, may give any of the optional fields (4.2), and must give nothing else (key identity follows the field name rules of 4.2); each value expression must conform to the corresponding field type. A missing required key, an extra key and type nonconformance are type errors. A key written as `b?: String` may be omitted, and when written must hold a `String` -- `{b: null}` is a type error unless the field is `b?: String | Null`.
   - When the expected type is `Map<T>`: when every value expression conforms to `T`, the literal's type is `Map<T>`. If any value does not conform, it is a type error (keys are always treated as `String`. 4.4).
   - When the expected type is `Any`: inferred as `Record<...>` in the same way as when there is no expected type.
   - Any other expected type is a type error.
@@ -551,7 +567,7 @@ Invariance (no variance):
 
 - Conformance is not lifted into the interior of type constructors (invariant). `Array<Number>` does not conform to `Array<Any>` (element types must be identical). The same applies to `Map` and `AsyncHandle`.
 - The union rules are likewise not lifted: `Array<String>` does not conform to `Array<String | Null>`, and `Record<a: String>` does not conform to `Record<a: String | Null>`. A union describes one position, never the interior of a constructor at that position. An array or object literal can still be written directly at the union element type through expected-type-directed checking (4.3), as in `xs: Array<String | Null> = ["a", null]`.
-- `Record` has no width or depth subtyping. It conforms only when the field set and each field type are identical.
+- `Record` has no width or depth subtyping. It conforms only when the required field set, the optional field set (4.2) and each field type are identical. `Record<a: String>` therefore does not conform to `Record<a?: String>`, nor the reverse: whether a key has to be there is part of the type.
 - Function types conform only when identical. No variance (contravariance or covariance) is introduced for argument positions or return-value positions.
 - Under this definition, the soundness conditions of variance associated with subtyping (contravariance in function argument positions, etc.) do not arise.
 
@@ -1519,10 +1535,10 @@ Distinction from module namespace references:
 
 Typing rules for field access:
 
-- `e.f` is well-typed only when the type of `e` is `Record<..., f: T, ...>` (a record type having the field `f`), and the type of the expression is `T`.
+- `e.f` is well-typed only when the type of `e` is `Record<..., f: T, ...>` (a record type having the field `f`), and the type of the expression is `T`. Where the field is optional (`f?: T`, 4.2), the type of the expression is `T | Null`: an absent key reads as null, which is what keeps field access from failing.
 - If the target record type does not have the field `f`, or if the target's type is other than `Record` (including `Map`, `Any`, and a union), it is a static error (`E-TYPE-ACCESS`). A value of type `Any` or of a union type is referenced after moving to a concrete type, with `cast` (15.8) or by narrowing with `case` (6.4) — and that holds for a union even when every member of it has the field.
 - Only field names in identifier form (`lower_id`) can be referenced with `.f`. Field names not conforming to `lower_id` (4.2) are referenced with a string-literal index (described below).
-- Value retrieval from a `Map` uses `[...]` or `get` (15.4). Because the field set of a `Record` is statically fixed (4.4), field access does not fail at runtime.
+- Value retrieval from a `Map` uses `[...]` or `get` (15.4). Because the field set of a `Record` is statically fixed (4.4) and an absent optional key reads as null, field access does not fail at runtime.
 
 Typing rules for index access:
 
@@ -3139,7 +3155,7 @@ For `json` / `pretty-json`, the following mapping rules must be satisfied.
 - `Environment`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Environment","kind":"<environment kind>","params":{...}}`. `kind` is the environment kind name, and `params` is the normalized parameter set (e.g., `{"$type":"Environment","kind":"docker","params":{"image":"alpine:3.20"}}`). Parameters containing secret information are masked according to the rules in Chapter 12.
 - `Array<T>`: maps to a JSON array preserving element order.
 - `Map<T>`: maps to a JSON object with string keys.
-- `Record<...>`: maps to a JSON object with field names as keys.
+- `Record<...>`: maps to a JSON object with field names as keys. An optional field (4.2) that is absent contributes no key at all; one that is present contributes its key, including when its value is null. This is where the difference between an absent key and a null value is written down.
 
 Rules for unions:
 
@@ -3842,7 +3858,7 @@ Runtime type check rules for `cast`:
 - Basic types: the kind of the runtime value matches the target type.
 - `Array<T>`: the value is an array value and every element conforms at runtime to `T`.
 - `Map<T>`: every value conforms at runtime to `T`.
-- `Record<...>`: the key set matches the field set of the target type, and each value conforms at runtime to the corresponding field type.
+- `Record<...>`: every required field of the target type is present, no key outside its field set is present, and each value conforms at runtime to the corresponding field type. An optional field (4.2) may be absent, and is checked only when present. A missing required key fails, as it always has.
 - Record values and map values are mutually acceptable. When the structural conditions are satisfied, the implementation converts to the target type's representation (record or map) as needed (to absorb the implementation choice for JSON objects in `from_json`).
 - `T1 | T2 | ...`: the value conforms when it conforms to some member. Members are tried in the canonical order of 4.2 and the first that matches decides the result, which matters only where two members can accept one value, as `Record<...>` and `Map<T>` can by the rule above.
 - Positions of `Any` within the target type pass without checking.

@@ -32,17 +32,17 @@ mono = Scheme []
 
 -- | @Record<first: T, second: U>@, the result element of @zip@.
 pairType :: Type -> Type -> Type
-pairType a b = TyRecord (Map.fromList [("first", a), ("second", b)])
+pairType a b = TyRecord (Map.fromList [("first", requiredField a), ("second", requiredField b)])
 
 -- | @Record<index: Number, value: T>@, the result element of
 -- @enumerate@.
 indexedType :: Type -> Type
-indexedType t = TyRecord (Map.fromList [("index", TyNumber), ("value", t)])
+indexedType t = TyRecord (Map.fromList [("index", requiredField TyNumber), ("value", requiredField t)])
 
 -- | @Record<key: String, value: T>@, the element @entries@ produces
 -- and @from_entries@ consumes.
 entryType :: Type -> Type
-entryType t = TyRecord (Map.fromList [("key", TyString), ("value", t)])
+entryType t = TyRecord (Map.fromList [("key", requiredField TyString), ("value", requiredField t)])
 
 tv :: Text -> Type
 tv = TyVar
@@ -137,7 +137,7 @@ builtinSchemes =
       ("from_entries", Scheme ["T"] [TyArray (entryType (tv "T"))] (TyMap (tv "T"))),
       ("map_values", Scheme ["T", "U"] [TyMap (tv "T"), TyFun [tv "T"] (tv "U")] (TyMap (tv "U"))),
       -- 15.5 command execution. The environment is positional and
-      -- required: there is no default execution environment (spec 10.1),
+      -- requiredField: there is no default execution environment (spec 10.1),
       -- and a keyword parameter must have a default (spec 6.1).
       ("run_command", mono [TyString, TyEnvironment] commandResultType),
       ("shell_quote", mono [TyString] TyString),
@@ -173,7 +173,7 @@ builtinSchemes =
       ("normalize_path", mono [TyString] TyString),
       ("is_absolute_path", mono [TyString] TyBool),
       -- 15.11 filesystem. As with run_command the environment is
-      -- positional and required (spec 10.1, 15.11): there is no
+      -- positional and requiredField (spec 10.1, 15.11): there is no
       -- filesystem access that does not name an environment.
       ("read_file", mono [TyString, TyEnvironment] TyString),
       ("write_file", mono [TyString, TyString, TyEnvironment] TyVoid),

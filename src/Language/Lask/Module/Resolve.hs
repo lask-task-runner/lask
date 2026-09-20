@@ -313,7 +313,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       SArray t -> checkType t
       SMap t -> checkType t
       SAsyncHandle t -> checkType t
-      SRecord fs -> concatMap (checkType . snd) fs
+      SRecord fs -> concatMap (\(_, _, t) -> checkType t) fs
       SFunction ps r -> concatMap checkType ps <> checkType r
       SUnion ts -> concatMap checkType ts
       _ -> []
@@ -458,7 +458,7 @@ aliasCycleDiags prog scopes =
       SArray t -> namedRefs t
       SMap t -> namedRefs t
       SAsyncHandle t -> namedRefs t
-      SRecord fs -> concatMap (namedRefs . snd) fs
+      SRecord fs -> concatMap (\(_, _, t) -> namedRefs t) fs
       SFunction ps r -> concatMap namedRefs ps <> namedRefs r
       SUnion ts -> concatMap namedRefs ts
       _ -> []
