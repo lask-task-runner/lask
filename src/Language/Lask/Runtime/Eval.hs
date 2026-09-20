@@ -21,6 +21,7 @@ import Data.Time.Clock (getCurrentTime)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -31,7 +32,7 @@ import Language.Lask.ErrorCode
 import Language.Lask.Obs.Events
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (functionRefJson)
-import Language.Lask.Types (Type (..), renderType)
+import Language.Lask.Types (Field (..), Type (..), renderType, requiredNames)
 
 data RtCtx = RtCtx
   { rtProgram :: CoreProgram,
@@ -92,7 +93,9 @@ evalCore ctx scope (Core _ f) = case f of
     case v of
       VRecord m -> case Map.lookup fld m of
         Just x -> pure x
-        Nothing -> internal ("missing record field: " <> fld)
+        -- The checker admits a missing key only for an optional field
+        -- (spec 4.2), which reads as null (6.8).
+        Nothing -> pure VNull
       _ -> internal "field access on a non-record"
   CIndex kind c i -> do
     container <- evalCore ctx scope c
@@ -309,11 +312,15 @@ castValueEither = go []
         [] -> castFail path ty v
       _ -> castFail path ty v
 
+    -- Every required field present, nothing outside the field set, and
+    -- each value checked (spec 15.8). An optional field may be absent
+    -- and is checked only where it is (4.2).
     castRecord path fields m
-      | Map.keysSet fields == Map.keysSet m =
+      | requiredNames fields `Set.isSubsetOf` Map.keysSet m,
+        Map.keysSet m `Set.isSubsetOf` Map.keysSet fields =
           VRecord
             <$> Map.traverseWithKey
-              (\k x -> go (path <> [k]) (fields Map.! k) x)
+              (\k x -> go (path <> [k]) (fieldType (fields Map.! k)) x)
               m
       | otherwise =
           castFail path (TyRecord fields) (VRecord m)
@@ -340,8 +347,9 @@ matchesType ty v = case (ty, v) of
   _ -> False
   where
     recordMatches fields m =
-      Map.keysSet fields == Map.keysSet m
-        && and (Map.elems (Map.intersectionWith matchesType fields m))
+      requiredNames fields `Set.isSubsetOf` Map.keysSet m
+        && Map.keysSet m `Set.isSubsetOf` Map.keysSet fields
+        && and (Map.elems (Map.intersectionWith (matchesType . fieldType) fields m))
 
 internal :: Text -> IO a
 internal msg =

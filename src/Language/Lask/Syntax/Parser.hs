@@ -427,12 +427,15 @@ pSingleType = choice [pQualifiedNamed, pUnqualified]
       e <- closeAngle
       pure (SType (sp <> e) (f t))
 
-pRecordField :: P (Spanned Text, SType)
+-- | One field of a record type. A @?@ after the name makes the key
+-- optional (spec 4.2); it qualifies the key, not the type.
+pRecordField :: P (Spanned Text, Bool, SType)
 pRecordField = do
   key <- lowerId <|> stringLit "field name"
+  optional' <- option False (True <$ sym TQuestion)
   _ <- sym TColon
   t <- pType
-  pure (key, t)
+  pure (key, optional', t)
 
 -- Expressions ---------------------------------------------------------------------
 

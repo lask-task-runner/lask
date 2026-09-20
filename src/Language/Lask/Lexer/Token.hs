@@ -131,6 +131,8 @@ data Token
   | -- | @|@, the union separator of a type (spec 4.2). Lexed after
     -- @|>@ and @||@, so it is never a piece of either.
     TPipe
+  | -- | @?@, the optional marker on a record field name (spec 4.2).
+    TQuestion
   | TNewline
   deriving (Show, Eq, Ord)
 

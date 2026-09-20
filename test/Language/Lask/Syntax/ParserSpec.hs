@@ -76,6 +76,10 @@ dalias n = DTypeAlias n []
 named :: Maybe Text -> Text -> STypeF
 named q n = SNamed q n []
 
+-- | A record field whose key must be present (spec 4.2).
+fld :: Text -> SType -> (Spanned Text, Bool, SType)
+fld n t = (sp n, False, t)
+
 tarm :: [STypeF] -> Expr -> CaseArm
 tarm hs = CaseArm NoSpan (Just (TypeHeads (map ty hs)))
 
@@ -201,7 +205,26 @@ spec = do
           [ DValue
               "u"
               Public
-              (Just (ty (SRecord [(sp "name", ty SString), (sp "X-Api-Key", ty SString)])))
+              (Just (ty (SRecord [fld "name" (ty SString), fld "X-Api-Key" (ty SString)])))
+              (var "u2")
+          ]
+
+    it "parses the optional marker on a field name (spec 4.2)" $
+      pModule "u: Record<a?: String, \"X-Key\"?: Number, c: Bool> = u2"
+        `shouldBe` Right
+          [ DValue
+              "u"
+              Public
+              ( Just
+                  ( ty
+                      ( SRecord
+                          [ (sp "a", True, ty SString),
+                            (sp "X-Key", True, ty SNumber),
+                            fld "c" (ty SBool)
+                          ]
+                      )
+                  )
+              )
               (var "u2")
           ]
 
@@ -244,7 +267,7 @@ spec = do
           [ DTypeAlias
               "Pair"
               [Spanned NoSpan "A", Spanned NoSpan "B"]
-              (ty (SRecord [(sp "first", ty (named Nothing "A")), (sp "second", ty (named Nothing "B"))]))
+              (ty (SRecord [fld "first" (ty (named Nothing "A")), fld "second" (ty (named Nothing "B"))]))
           ]
       pModule "p: Pair<Number, String> = x"
         `shouldBe` Right

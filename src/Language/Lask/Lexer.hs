@@ -337,6 +337,7 @@ pPunct =
       TLBrace <$ char '{',
       TRBrace <$ char '}',
       TPipe <$ char '|',
+      TQuestion <$ char '?',
       TComma <$ char ',',
       TColon <$ char ':',
       TSemi <$ char ';',

@@ -589,6 +589,34 @@ spec = do
     it "serializes a union as the member the value is (spec 13.1)" $
       evalsTo "f(): Array<String | Null> = [\"a\", null]" "f" "[\"a\",null]"
 
+  describe "optional record fields (spec 4.2)" $ do
+    it "casts a value whose optional key is absent, and not one whose required key is" $ do
+      evalsTo
+        "f(): String = do {\n  r: Record<a: String, b?: String> = cast(from_json(\"{\\\"a\\\": \\\"x\\\"}\"))\n  r.a\n}"
+        "f"
+        "\"x\""
+      failsWith
+        "f(): String = do {\n  r: Record<a: String, b?: String> = cast(from_json(\"{\\\"b\\\": \\\"y\\\"}\"))\n  r.a\n}"
+        "f"
+        ERuntimeCast
+    it "rejects a null in a field that is optional but not nullable" $ do
+      failsWith
+        "f(): String = do {\n  r: Record<a: String, b?: String> = cast(from_json(\"{\\\"a\\\": \\\"x\\\", \\\"b\\\": null}\"))\n  r.a\n}"
+        "f"
+        ERuntimeCast
+      evalsTo
+        "f(): String = do {\n  r: Record<a: String, b?: String | Null> = cast(from_json(\"{\\\"a\\\": \\\"x\\\", \\\"b\\\": null}\"))\n  r.a\n}"
+        "f"
+        "\"x\""
+    it "reads an absent optional key as null" $
+      evalsTo
+        "f(): String = do {\n  r: Record<a: String, b?: String> = cast(from_json(\"{\\\"a\\\": \\\"x\\\"}\"))\n  b = r.b\n  case (b) {\n    Null -> \"absent\"\n    else -> b\n  }\n}"
+        "f"
+        "\"absent\""
+    it "omits an absent optional field from the output, and writes a null (spec 13.1)" $ do
+      evalsTo "f(): Record<a: Number, b?: String> = {a: 1}" "f" "{\"a\":1}"
+      evalsTo "f(): Record<a: Number, b?: String | Null> = {a: 1, b: null}" "f" "{\"a\":1,\"b\":null}"
+
   describe "user type parameters (spec 4.2, 4.4)" $ do
     it "runs one body at every instantiation" $ do
       evalsTo

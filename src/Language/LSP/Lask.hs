@@ -56,7 +56,7 @@ import Language.Lask (Compiled (..), Partial (..), checkText, compileText, compi
 import Language.Lask.Builtins.Sig (builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
 import Language.Lask.Doc (docBlockAbove)
-import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..))
+import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..), readFieldType)
 import Language.Lask.ErrorCode (codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
 import qualified Language.Lask.Lexer.Token as Tok
@@ -738,9 +738,11 @@ completionAt path src (Position pl pc)
       ]
 
     recordCands p =
-      [ Cand n CompletionItemKind_Field (Just (renderType t)) Nothing 4
+      -- An optional field reads as T | Null (spec 6.8), which is what
+      -- the completion should show for it.
+      [ Cand n CompletionItemKind_Field (Just (renderType (readFieldType f))) Nothing 4
       | TyRecord fields <- maybeToList (receiverType p),
-        (n, t) <- Map.toList fields
+        (n, f) <- Map.toList fields
       ]
 
     -- The type elaboration recorded for the innermost expression

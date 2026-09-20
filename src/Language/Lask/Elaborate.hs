@@ -11,6 +11,7 @@ module Language.Lask.Elaborate
   ( CoreProgram (..),
     CommandUse (..),
     CoreDecl (..),
+    readFieldType,
     Key,
     StaticParams (..),
     HoverInfo (..),
@@ -425,11 +426,11 @@ typeFromS ctx path st = do
         tys <- foldM addField Map.empty fields
         pure (TyRecord tys)
         where
-          addField acc (Spanned fsp k, t) = do
+          addField acc (Spanned fsp k, opt, t) = do
             when (Map.member k acc) $
               abort (diag ETypeFieldDuplicate fsp ("duplicate field: '" <> k <> "'"))
             t' <- go t
-            pure (Map.insert k t' acc)
+            pure (Map.insert k (Field opt t') acc)
       -- An upper_id that is a type parameter of the enclosing
       -- declaration is that parameter; anything else is an alias
       -- reference (spec 4.2, 4.4).
@@ -623,7 +624,7 @@ infer ctx path locals (Expr sp f) = case f of
     pure (Core sp (CArray (map fst elems)), TyArray elemTy)
   EObject kvs -> do
     fields <- objectFields ctx path locals kvs
-    let recTy = TyRecord (Map.fromList [(k, t) | (k, _, t) <- fields])
+    let recTy = TyRecord (Map.fromList [(k, requiredField t) | (k, _, t) <- fields])
     pure (Core sp (CRecordLit [(k, c) | (k, c, _) <- fields]), recTy)
   ELambda ps rt body -> do
     (lam, ty, _) <- elabLambda ctx path locals sp Nothing ps rt body
@@ -820,7 +821,7 @@ typeToS sp t = SType sp $ case t of
   TyEnvironment -> SEnvironment
   TyArray e -> SArray (typeToS sp e)
   TyMap e -> SMap (typeToS sp e)
-  TyRecord fs -> SRecord [(Spanned sp k, typeToS sp v) | (k, v) <- Map.toList fs]
+  TyRecord fs -> SRecord [(Spanned sp k, fieldOptional f, typeToS sp (fieldType f)) | (k, f) <- Map.toList fs]
   TyAsync e -> SAsyncHandle (typeToS sp e)
   TyFun psL r -> SFunction (map (typeToS sp) psL) (typeToS sp r)
   TyUnion ts -> SUnion (map (typeToS sp) ts)
@@ -909,13 +910,15 @@ checkObject ctx path locals sp kvs expected = case expected of
     checkDuplicateKeys kvs
     let litKeys = Set.fromList [k | (Spanned _ k, _) <- kvs]
         expKeys = Map.keysSet fieldTys
-    unless (litKeys == expKeys) $
+    -- Every required field has to be given, any optional one may be,
+    -- and nothing outside the field set (spec 4.3, 4.2).
+    unless (requiredNames fieldTys `Set.isSubsetOf` litKeys && litKeys `Set.isSubsetOf` expKeys) $
       abort . withExpectedActual (renderType expected) (renderKeys litKeys) $
         diag ETypeMismatch sp "object literal keys do not match the expected record fields"
     fields <-
       mapM
         ( \(Spanned _ k, v) -> do
-            c <- check ctx path locals v (fieldTys Map.! k)
+            c <- check ctx path locals v (fieldType (fieldTys Map.! k))
             pure (k, c)
         )
         kvs
@@ -955,7 +958,7 @@ elabDot ctx path locals sp inner fsp fld = case exprF inner of
     (c, t) <- infer ctx path locals inner
     case t of
       TyRecord fields -> case Map.lookup fld fields of
-        Just fieldTy -> pure (Core sp (CDot c fld), fieldTy)
+        Just f -> pure (Core sp (CDot c fld), readFieldType f)
         Nothing ->
           abort (diag ETypeAccess fsp ("record has no field '" <> fld <> "': " <> renderType t))
       other ->
@@ -976,8 +979,8 @@ elabIndex ctx path locals sp inner idx = do
       pure (Core sp (CIndex IdxMap c i), valTy)
     TyRecord fields -> case literalString idx of
       Just k -> case Map.lookup k fields of
-        Just fieldTy ->
-          pure (Core sp (CDot c k), fieldTy)
+        Just f ->
+          pure (Core sp (CDot c k), readFieldType f)
         Nothing ->
           abort (diag ETypeAccess (exprSpan idx) ("record has no field '" <> k <> "'"))
       Nothing ->
@@ -2090,6 +2093,13 @@ elabCall ctx path locals sp fn args mExpected = do
         -- deferred attempt commits nothing ('tryTC'), and each keeps
         -- its place in the result, so evaluation order is untouched
         -- (8.3).
+-- | The type a field read yields (spec 6.8): an optional field may be
+-- absent, and an absent key reads as null, so it is @T | Null@.
+readFieldType :: Field -> Type
+readFieldType f
+  | fieldOptional f = mkUnion (fieldType f) [TyNull]
+  | otherwise = fieldType f
+
 -- | Legal target of @cast@ (spec 15.8): a data type, fully
 -- instantiated. A union is one when all of its members are, which
 -- 'dataType' already requires of every union (4.2).
@@ -2151,8 +2161,12 @@ unifyE pat actual s = case (pat, actual) of
           ([p], [a]) -> unifyE p a s
           _ -> Left (renderType pat <> " does not match " <> renderType actual)
   (TyRecord as, TyRecord bs)
-    | Map.keysSet as == Map.keysSet bs ->
-        foldM (\acc (a, b) -> unifyE a b acc) s (zip (Map.elems as) (Map.elems bs))
+    | Map.keysSet as == Map.keysSet bs,
+      map fieldOptional (Map.elems as) == map fieldOptional (Map.elems bs) ->
+        foldM
+          (\acc (a, b) -> unifyE (fieldType a) (fieldType b) acc)
+          s
+          (zip (Map.elems as) (Map.elems bs))
   (TyFun aps ar, TyFun bps br)
     | length aps == length bps -> do
         s' <- foldM (\acc (a, b) -> unifyE a b acc) s (zip aps bps)
