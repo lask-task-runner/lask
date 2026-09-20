@@ -2732,7 +2732,7 @@ lask eval [--module <path>] [lask options ...] --help
 - Only `run` and `eval` provide function help. As in 11.2, the two are identical in this respect.
 - When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module.
 - Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
-- A function that declares type parameters (4.2) is displayed with them, as `first<T>`, wherever its name is shown. The same holds of every other surface that shows a declaration rather than a value: completion (11.7) and editor hovers. A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
+- A function that declares type parameters (4.2) is displayed with them, as `first<T>`, where its declaration is being described: the heading of its help, the list of a module's functions, and an editor hover. Where the name is instead something to type — the usage line, a completion candidate, the function argument of `lask run` — it appears plain, since the type parameters are not written at a use site (4.2). A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
 - The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
 - If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. An implementation may report the advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2).
 - Help display takes precedence over argument binding. Binding errors (11.2) are not reported when `--help` is present: `lask run build --out_dir 1 --help` displays the help and exits `0`.
@@ -4085,6 +4085,46 @@ $ lask eval incThenDouble 3
 
 - `incThenDouble` is a top-level declaration of a function value, and can be invoked from the CLI just like a function declaration. Since this is application of a value of function type, binding is by positional arguments only (7.5).
 - `applyTwice` has a parameter of function type, so it cannot be invoked directly from the CLI (no decoding scheme can construct a function value, so it becomes a pre-execution error due to type mismatch). Calling `applyTwice(inc, 3)` from within the language returns `5`.
+
+A declaration that declares type parameters (4.2) is written and used the same way, with the parameters instantiated per call.
+
+```lask
+type Opt<A> = A | Null
+
+first_or<T>(xs: Array<T>, fallback: T): T =
+  if (is_empty(xs)) { fallback } else { xs[0] }
+
+find_first<T>(xs: Array<T>, p: Function<T, Bool>): Opt<T> = find(xs, p)
+
+shortest(words: Array<String>): String = first_or(sort_by(words, length), "")
+
+flag_of(args: Array<String>): String = do {
+  hit = find_first(args, \(a: String) -> starts_with(a, "--"))
+  case (hit) {
+    Null -> "(none)"
+    else -> hit
+  }
+}
+```
+
+```text
+$ lask eval first_or '[1,2]' 0
+1
+
+$ lask eval first_or '[]' '"none"'
+"none"
+
+$ lask eval shortest '["bb","a","ccc"]'
+"a"
+
+$ lask eval flag_of '["x","--v","y"]'
+"--v"
+```
+
+- `first_or` is instantiated at `Number` in the first call and at `String` in the second. Both calls run the same body: within it, `T` is opaque (4.4), which is why the body can return an element or the fallback but cannot compare, order or interpolate one.
+- `shortest` and `flag_of` call generic functions without naming a type anywhere: the instantiation comes from the argument types (4.4).
+- `lask eval first_or ...` instantiates `T` at `Any` (11.2), which is sound for the same reason: the body only moves the value it is given.
+- `Opt<A>` is a parameterised type alias, and `find_first` returns `Opt<T>`, which expands to `T | Null` (4.2).
 
 ### 16.4 Arrays, Maps, and Records
 

@@ -162,8 +162,8 @@ pModule = do
   where
     declaredName d = case declF d of
       DValue n _ _ _ -> Just n
-      DFunction n _ _ _ -> Just n
-      DTypeAlias n _ -> Just n
+      DFunction n _ _ _ _ -> Just n
+      DTypeAlias n _ _ -> Just n
       _ -> Nothing
 
 -- | One top-level declaration and whether it carries @internal@.
@@ -249,22 +249,43 @@ pTypeAliasDecl :: P Decl
 pTypeAliasDecl = do
   s <- kw KType
   Spanned _ name <- upperId
+  tps <- pTypeParams
   _ <- sym TAssign
   t <- pType
-  pure (Decl (s <> stypeSpan t) (DTypeAlias name t))
+  pure (Decl (s <> stypeSpan t) (DTypeAlias name tps t))
+
+-- | The type parameters a declaration binds (spec 4.2). A @\<@ after
+-- the name of a declaration can begin nothing else, so no lookahead is
+-- needed (spec 5).
+pTypeParams :: P [Spanned Text]
+pTypeParams = option [] $ do
+  _ <- op OpLt
+  vs <- sepBy1 upperId (sym TComma)
+  _ <- closeAngle
+  pure vs
 
 pValueOrFunction :: P Decl
 pValueOrFunction = do
   Spanned sp name <- lowerId
   choice
     [ do
+        _ <- lookAhead (op OpLt)
+        tps <- pTypeParams
         _ <- sym TLParen
         ps <- pParamList
         _ <- sym TRParen
         rt <- optional (sym TColon *> pType)
         _ <- sym TAssign
         e <- pExpr
-        pure (Decl (sp <> exprSpan e) (DFunction name ps rt e)),
+        pure (Decl (sp <> exprSpan e) (DFunction name tps ps rt e)),
+      do
+        _ <- sym TLParen
+        ps <- pParamList
+        _ <- sym TRParen
+        rt <- optional (sym TColon *> pType)
+        _ <- sym TAssign
+        e <- pExpr
+        pure (Decl (sp <> exprSpan e) (DFunction name [] ps rt e)),
       do
         sec <- pSecrecy
         t <- optional (sym TColon *> pType)
@@ -361,7 +382,8 @@ pSingleType = choice [pQualifiedNamed, pUnqualified]
       Spanned sp1 ns <- lowerId
       _ <- sym TDot
       Spanned sp2 name <- upperId
-      pure (SType (sp1 <> sp2) (SNamed (Just ns) name))
+      (args, e) <- pTypeArgs
+      pure (SType (sp1 <> maybe sp2 id e) (SNamed (Just ns) name args))
 
     pUnqualified = do
       Spanned sp name <- upperId
@@ -386,7 +408,18 @@ pSingleType = choice [pQualifiedNamed, pUnqualified]
           ts <- sepBy1 pType (sym TComma)
           e <- closeAngle
           pure (SType (sp <> e) (SFunction (init ts) (last ts)))
-        _ -> pure (SType sp (SNamed Nothing name))
+        _ -> do
+          (args, e) <- pTypeArgs
+          pure (SType (sp <> maybe sp id e) (SNamed Nothing name args))
+
+    -- The type arguments of a named type, where the alias it refers to
+    -- takes parameters (spec 4.2).
+    pTypeArgs =
+      option ([], Nothing) $ do
+        _ <- op OpLt
+        as <- sepBy1 pType (sym TComma)
+        e <- closeAngle
+        pure (as, Just e)
 
     pGeneric1 sp f = do
       _ <- op OpLt

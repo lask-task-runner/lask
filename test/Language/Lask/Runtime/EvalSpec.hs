@@ -589,6 +589,28 @@ spec = do
     it "serializes a union as the member the value is (spec 13.1)" $
       evalsTo "f(): Array<String | Null> = [\"a\", null]" "f" "[\"a\",null]"
 
+  describe "user type parameters (spec 4.2, 4.4)" $ do
+    it "runs one body at every instantiation" $ do
+      evalsTo
+        "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\ng() = first_or([1, 2], 0)"
+        "g"
+        "1"
+      evalsTo
+        "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\ng() = first_or([], \"none\")"
+        "g"
+        "\"none\""
+    it "keeps keyword defaults and variadic collection" $ do
+      evalsTo
+        "tag<T>(x: T, --label: String = \"v\"): String = concat(label, to_json(x))\ng() = tag(1)"
+        "g"
+        "\"v1\""
+      evalsTo "listy<T>(...xs: Array<T>): Number = size(xs)\ng() = listy(1, 2, 3)" "g" "3"
+    it "evaluates a parameterised alias like the type it expands to" $
+      evalsTo
+        "type Pair<A, B> = Record<first: A, second: B>\nmk(): Pair<Number, String> = {first: 1, second: \"a\"}"
+        "mk"
+        "{\"first\":1,\"second\":\"a\"}"
+
   describe "path operations (spec 15.10)" $
     it "are lexical and POSIX" $ do
       evalsTo "f() = path_join([\"a\", \"b\"])" "f" "\"a/b\""

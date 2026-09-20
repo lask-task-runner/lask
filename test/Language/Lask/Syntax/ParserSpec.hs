@@ -65,6 +65,17 @@ carm hs = CaseArm NoSpan (Just (ValueHeads hs))
 celse :: Expr -> CaseArm
 celse = CaseArm NoSpan Nothing
 
+-- | A function declaration with no type parameters, and a plain type
+-- alias: the shapes almost every test wants (spec 4.2).
+dfun :: Text -> [Param] -> Maybe SType -> Expr -> DeclF
+dfun n = DFunction n []
+
+dalias :: Text -> SType -> DeclF
+dalias n = DTypeAlias n []
+
+named :: Maybe Text -> Text -> STypeF
+named q n = SNamed q n []
+
 tarm :: [STypeF] -> Expr -> CaseArm
 tarm hs = CaseArm NoSpan (Just (TypeHeads (map ty hs)))
 
@@ -81,7 +92,7 @@ spec = do
     it "parses a function declaration" $
       pModule "add(x: Number, y: Number): Number = x + y"
         `shouldBe` Right
-          [ DFunction
+          [ dfun
               "add"
               [ Param NoSpan (PPositional "x" Public (Just (ty SNumber))),
                 Param NoSpan (PPositional "y" Public (Just (ty SNumber)))
@@ -93,7 +104,7 @@ spec = do
     it "parses variadic and keyword parameters" $
       pModule "f(a, ...xs: Array<Number>, --n: Number = 3) = a"
         `shouldBe` Right
-          [ DFunction
+          [ dfun
               "f"
               [ Param NoSpan (PPositional "a" Public Nothing),
                 Param NoSpan (PVariadic "xs" (Just (ty (SArray (ty SNumber))))),
@@ -116,7 +127,7 @@ spec = do
     it "parses !! on positional and keyword parameters (spec 6.10)" $
       pModule "f(a!!: String, --n!!: String = \"d\") = a"
         `shouldBe` Right
-          [ DFunction
+          [ dfun
               "f"
               [ Param NoSpan (PPositional "a" Secret (Just (ty SString))),
                 Param NoSpan (PKeyword "n" Secret (Just (ty SString)) (str "d"))
@@ -130,7 +141,7 @@ spec = do
 
     it "parses a type alias" $
       pModule "type Strings = Array<String>"
-        `shouldBe` Right [DTypeAlias "Strings" (ty (SArray (ty SString)))]
+        `shouldBe` Right [dalias "Strings" (ty (SArray (ty SString)))]
 
     it "parses named imports with rename" $
       pModule "import { add, mul as times } from \"lib/math.lask\""
@@ -151,7 +162,7 @@ spec = do
       pModule "export a = 1" `shouldBe` Right [DValue "a" Public Nothing (num 1)]
       pModule "internal a = 1" `shouldBe` Right [DValue "a" Public Nothing (num 1)]
       pModule "internal type Strings = Array<String>"
-        `shouldBe` Right [DTypeAlias "Strings" (ty (SArray (ty SString)))]
+        `shouldBe` Right [dalias "Strings" (ty (SArray (ty SString)))]
 
     it "records which names are marked internal (spec 5)" $ do
       pInternal "internal a = 1\nb = 2\ninternal c() = 3" `shouldBe` Right ["a", "c"]
@@ -203,6 +214,47 @@ spec = do
       pModule "f: Function<Number> = g"
         `shouldBe` Right [DValue "f" Public (Just (ty (SFunction [] (ty SNumber)))) (var "g")]
 
+    it "parses type parameters on a function declaration (spec 4.2)" $
+      pModule "first<T>(xs: Array<T>): T = xs[0]"
+        `shouldBe` Right
+          [ DFunction
+              "first"
+              [Spanned NoSpan "T"]
+              [Param NoSpan (PPositional "xs" Public (Just (ty (SArray (ty (named Nothing "T"))))))]
+              (Just (ty (named Nothing "T")))
+              (ex (EIndex (var "xs") (num 0)))
+          ]
+
+    it "parses several type parameters" $
+      pModule "pair<A, B>(a: A, b: B): A = a"
+        `shouldBe` Right
+          [ DFunction
+              "pair"
+              [Spanned NoSpan "A", Spanned NoSpan "B"]
+              [ Param NoSpan (PPositional "a" Public (Just (ty (named Nothing "A")))),
+                Param NoSpan (PPositional "b" Public (Just (ty (named Nothing "B"))))
+              ]
+              (Just (ty (named Nothing "A")))
+              (var "a")
+          ]
+
+    it "parses type parameters on a type alias, and arguments on a reference" $ do
+      pModule "type Pair<A, B> = Record<first: A, second: B>"
+        `shouldBe` Right
+          [ DTypeAlias
+              "Pair"
+              [Spanned NoSpan "A", Spanned NoSpan "B"]
+              (ty (SRecord [(sp "first", ty (named Nothing "A")), (sp "second", ty (named Nothing "B"))]))
+          ]
+      pModule "p: Pair<Number, String> = x"
+        `shouldBe` Right
+          [ DValue
+              "p"
+              Public
+              (Just (ty (SNamed Nothing "Pair" [ty SNumber, ty SString])))
+              (var "x")
+          ]
+
     it "parses a union type (spec 4.2)" $
       pModule "f: String | Null = g"
         `shouldBe` Right
@@ -236,16 +288,16 @@ spec = do
       pModule "m: Map<String>= x" `shouldBe` Right [DValue "m" Public (Just (ty (SMap (ty SString)))) (var "x")]
 
     it "parses a bare named type" $
-      pModule "u: Config = 1" `shouldBe` Right [DValue "u" Public (Just (ty (SNamed Nothing "Config"))) (num 1)]
+      pModule "u: Config = 1" `shouldBe` Right [DValue "u" Public (Just (ty (named Nothing "Config"))) (num 1)]
 
     it "parses a namespace-qualified named type (spec 4.2 QualifiedNamedType)" $
       pModule "u: tf.TfOutputs = 1"
-        `shouldBe` Right [DValue "u" Public (Just (ty (SNamed (Just "tf") "TfOutputs"))) (num 1)]
+        `shouldBe` Right [DValue "u" Public (Just (ty (named (Just "tf") "TfOutputs"))) (num 1)]
 
     it "parses a namespace-qualified type nested inside a generic" $
       pModule "xs: Array<tf.TfOutputs> = []"
         `shouldBe` Right
-          [DValue "xs" Public (Just (ty (SArray (ty (SNamed (Just "tf") "TfOutputs"))))) (ex (EArray []))]
+          [DValue "xs" Public (Just (ty (SArray (ty (named (Just "tf") "TfOutputs"))))) (ex (EArray []))]
 
   describe "expressions" $ do
     it "parses operator precedence: * over +" $
@@ -486,7 +538,7 @@ spec = do
   describe "spec 16 style programs" $ do
     it "parses the minimal program (16.1)" $
       pModule "hello() = \"hello, lask\""
-        `shouldBe` Right [DFunction "hello" [] Nothing (str "hello, lask")]
+        `shouldBe` Right [dfun "hello" [] Nothing (str "hello, lask")]
 
     it "parses a multi-line procedural function (16.5 style)" $
       pModule

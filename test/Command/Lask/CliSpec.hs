@@ -62,6 +62,30 @@ withProject files action =
 
 spec :: Spec
 spec = beforeAll findLask $ do
+  describe "generic functions from the CLI (spec 11.2)" $ do
+    let proj =
+          [ ( "main.lask",
+              "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\n"
+            )
+          ]
+
+    it "instantiates every type parameter at Any" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "first_or", "[1,2]", "0"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "1\n"
+        r2 <- runLask lask dir ["eval", "first_or", "[]", "\"none\""] ""
+        resExit r2 `shouldBe` 0
+        resOut r2 `shouldBe` "\"none\"\n"
+
+    it "shows the type parameters where it describes the declaration" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "first_or", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "first_or<T>"
+        -- but not in the line the user is meant to type
+        resOut r `shouldContain` "lask run first_or <xs> <fallback>"
+
   describe "cmd (spec 11.8)" $ do
     let proj =
           [ ( "main.lask",

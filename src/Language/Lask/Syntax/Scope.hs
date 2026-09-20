@@ -28,7 +28,7 @@ localsAt path (Module ds _) pos = nub (concat (reverse (concatMap goDecl ds)))
       | not (at sp) = []
       | otherwise = case f of
           DValue _ _ _ e -> goExpr e
-          DFunction _ ps _ body ->
+          DFunction _ _ ps _ body ->
             [map paramName ps] <> concatMap goExpr (paramDefaults ps) <> goExpr body
           _ -> []
 
@@ -97,7 +97,7 @@ enclosingExprs path (Module ds _) pos = concatMap goDecl ds
       | not (at sp) = []
       | otherwise = case f of
           DValue _ _ _ e -> descend e
-          DFunction _ ps _ body -> concatMap descend (paramDefaults ps <> [body])
+          DFunction _ _ ps _ body -> concatMap descend (paramDefaults ps <> [body])
           _ -> []
 
     descend e@(Expr sp _)

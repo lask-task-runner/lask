@@ -117,9 +117,9 @@ modulePublics lm =
     reTypes = Set.fromList (filter startsUpper reexported)
     startsUpper t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
     valueName (DValue n _ _ _) = Just n
-    valueName (DFunction n _ _ _) = Just n
+    valueName (DFunction n _ _ _ _) = Just n
     valueName _ = Nothing
-    typeName (DTypeAlias n _) = Just n
+    typeName (DTypeAlias n _ _) = Just n
     typeName _ = Nothing
 
 -- Scope construction ---------------------------------------------------------
@@ -142,8 +142,8 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
     go gs ds [] = (gs, reverse ds)
     go gs ds (Decl sp f : rest) = case f of
       DValue n _ _ _ -> goValue gs ds rest sp n
-      DFunction n _ _ _ -> goValue gs ds rest sp n
-      DTypeAlias n _ ->
+      DFunction n _ _ _ _ -> goValue gs ds rest sp n
+      DTypeAlias n _ _ ->
         let dups =
               [ dupDiag sp n
                 | userType n (gsTypes gs) || n `Set.member` builtinTypeAliasNames
@@ -240,13 +240,28 @@ inScope n = any (Set.member n)
 checkModule :: Map FilePath Publics -> GlobalScope -> LoadedModule -> [Diagnostic]
 checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
   where
+    -- Every type parameter name the module binds anywhere (spec 4.2).
+    -- A parameter is scoped to its own declaration, but resolving that
+    -- is the elaborator's job: it checks each declaration against its
+    -- own parameters and reports one used outside them. This pass only
+    -- needs to know that such a name is not simply undefined.
+    typeParams =
+      Set.fromList
+        [ v
+        | Decl _ f <- moduleDecls (lmModule lm),
+          v <- case f of
+            DFunction _ tps _ _ _ -> [n | Spanned _ n <- tps]
+            DTypeAlias _ tps _ -> [n | Spanned _ n <- tps]
+            _ -> []
+        ]
+
     checkDecl (Decl _ f) = case f of
       DValue _ _ t e -> maybe [] checkType t <> checkExpr [] e
-      DFunction _ ps t body ->
+      DFunction _ _ ps t body ->
         checkParams [] ps
           <> maybe [] checkType t
           <> checkExpr [paramNames ps] body
-      DTypeAlias _ t -> checkType t
+      DTypeAlias _ _ t -> checkType t
       -- The environment of a command declaration is checked for
       -- static resolvability in "Language.Lask.Elaborate" (spec ch. 5);
       -- here only its name references are resolved.
@@ -280,20 +295,21 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
 
     checkType :: SType -> [Diagnostic]
     checkType (SType sp f) = case f of
-      SNamed Nothing n
-        | Map.member n (gsTypes gs) -> []
+      SNamed Nothing n as
+        | Map.member n (gsTypes gs) || n `Set.member` typeParams -> concatMap checkType as
         | otherwise ->
             [mkDiagnostic ENameUndefined StageStatic sp ("undefined type: '" <> n <> "'")]
-      SNamed (Just ns) n -> case Map.lookup ns (gsNamespaces gs) of
-        Just key -> case Map.lookup key publics of
-          Just pub
-            | n `Set.member` pubTypes pub -> []
-          _ ->
-            [ mkDiagnostic ENameUndefined StageStatic sp $
-                "namespace '" <> ns <> "' has no public type alias '" <> n <> "'"
-            ]
-        Nothing ->
-          [mkDiagnostic ENameUndefined StageStatic sp ("undefined namespace: '" <> ns <> "'")]
+      SNamed (Just ns) n as ->
+        concatMap checkType as <> case Map.lookup ns (gsNamespaces gs) of
+          Just key -> case Map.lookup key publics of
+            Just pub
+              | n `Set.member` pubTypes pub -> []
+            _ ->
+              [ mkDiagnostic ENameUndefined StageStatic sp $
+                  "namespace '" <> ns <> "' has no public type alias '" <> n <> "'"
+              ]
+          Nothing ->
+            [mkDiagnostic ENameUndefined StageStatic sp ("undefined namespace: '" <> ns <> "'")]
       SArray t -> checkType t
       SMap t -> checkType t
       SAsyncHandle t -> checkType t
@@ -407,7 +423,7 @@ aliasCycleDiags prog scopes =
       [ (lmPath lm, n, declSpan d)
       | lm <- Map.elems (progModules prog),
         d <- moduleDecls (lmModule lm),
-        DTypeAlias n _ <- [declF d]
+        DTypeAlias n _ _ <- [declF d]
       ]
 
     edges :: Map (FilePath, Text) [(FilePath, Text)]
@@ -416,7 +432,7 @@ aliasCycleDiags prog scopes =
         [ ((lmPath lm, n), targets (lmPath lm) t)
         | lm <- Map.elems (progModules prog),
           d <- moduleDecls (lmModule lm),
-          DTypeAlias n t <- [declF d]
+          DTypeAlias n _ t <- [declF d]
         ]
 
     targets path t = [tgt | ref <- namedRefs t, Just tgt <- [resolveType path ref]]
@@ -438,7 +454,7 @@ aliasCycleDiags prog scopes =
     aliasOf _ = Nothing
 
     namedRefs (SType _ f) = case f of
-      SNamed q n -> [(q, n)]
+      SNamed q n as -> (q, n) : concatMap namedRefs as
       SArray t -> namedRefs t
       SMap t -> namedRefs t
       SAsyncHandle t -> namedRefs t
