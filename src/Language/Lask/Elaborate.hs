@@ -275,10 +275,10 @@ tshowInt = T.pack . show
 -- name means one thing throughout a declaration.
 typeVarsOf :: Ctx -> FilePath -> [Spanned Text] -> TC [Text]
 typeVarsOf ctx path tps = do
-  mapM_ check tps
+  mapM_ distinct tps
   pure [v | Spanned _ v <- tps]
   where
-    check (Spanned vsp v)
+    distinct (Spanned vsp v)
       | Just _ <- Map.lookup path (ctxScopes ctx) >>= Map.lookup v . gsTypes =
           abort . diag ENameDuplicate vsp $
             "type parameter '" <> v <> "' has the name of a type alias in scope"
