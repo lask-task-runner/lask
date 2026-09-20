@@ -57,7 +57,7 @@ replaceAll re replacement s = go 0 (matchAllText re s)
   where
     go from [] = T.drop from s
     go from (groups : rest) =
-      let (whole, (off, len)) = groups ! 0
+      let (_, (off, len)) = groups ! 0
           before = T.take (off - from) (T.drop from s)
           expanded = expand groups
        in if len == 0
