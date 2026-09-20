@@ -15,6 +15,7 @@ import Data.Text (Text)
 data ErrorCode
   = ESyntaxUnexpectedToken
   | ESyntaxReturnPosition
+  | ESyntaxCaseElse
   | ENameUndefined
   | ENameAmbiguous
   | ENameDuplicate
@@ -30,6 +31,7 @@ data ErrorCode
   | ETypeEnvConstruct
   | ETypeAccess
   | ETypeFieldDuplicate
+  | ETypeCaseDuplicate
   | ETypeKeyword
   | ETypeIllformed
   | ETypeSecretNonString
@@ -44,6 +46,8 @@ data ErrorCode
   | ERuntimeAwaitFailed
   | ERuntimeAccess
   | ERuntimeCast
+  | ERuntimeValue
+  | ERuntimeRegex
   | EIoStdinRead
   | EIoEnvResolve
   | EIoImageMissing
@@ -66,6 +70,7 @@ codeText :: ErrorCode -> Text
 codeText c = case c of
   ESyntaxUnexpectedToken -> "E-SYNTAX-UNEXPECTED-TOKEN"
   ESyntaxReturnPosition -> "E-SYNTAX-RETURN-POSITION"
+  ESyntaxCaseElse -> "E-SYNTAX-CASE-ELSE"
   ENameUndefined -> "E-NAME-UNDEFINED"
   ENameAmbiguous -> "E-NAME-AMBIGUOUS"
   ENameDuplicate -> "E-NAME-DUPLICATE"
@@ -81,6 +86,7 @@ codeText c = case c of
   ETypeEnvConstruct -> "E-TYPE-ENV-CONSTRUCT"
   ETypeAccess -> "E-TYPE-ACCESS"
   ETypeFieldDuplicate -> "E-TYPE-FIELD-DUPLICATE"
+  ETypeCaseDuplicate -> "E-TYPE-CASE-DUPLICATE"
   ETypeKeyword -> "E-TYPE-KEYWORD"
   ETypeIllformed -> "E-TYPE-ILLFORMED"
   ETypeSecretNonString -> "E-TYPE-SECRET-NON-STRING"
@@ -95,6 +101,8 @@ codeText c = case c of
   ERuntimeAwaitFailed -> "E-RUNTIME-AWAIT-FAILED"
   ERuntimeAccess -> "E-RUNTIME-ACCESS"
   ERuntimeCast -> "E-RUNTIME-CAST"
+  ERuntimeValue -> "E-RUNTIME-VALUE"
+  ERuntimeRegex -> "E-RUNTIME-REGEX"
   EIoStdinRead -> "E-IO-STDIN-READ"
   EIoEnvResolve -> "E-IO-ENV-RESOLVE"
   EIoImageMissing -> "E-IO-IMAGE-MISSING"

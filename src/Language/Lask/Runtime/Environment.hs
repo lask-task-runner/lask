@@ -16,30 +16,53 @@ module Language.Lask.Runtime.Environment
   ( ResolvedEnv (..),
     resolveEnv,
     mkCommandRunner,
+    mkFileRunner,
     runLoggedProcess,
     runDeclaredCommand,
     envLogInfo,
     dockerArgs,
+    dockerShellArgs,
   )
 where
 
 import Control.Concurrent.Async (concurrently)
 import Control.Exception (IOException, try)
-import Control.Monad (unless)
+import Control.Monad (forM, unless)
 import Data.IORef (atomicModifyIORef', newIORef)
 import qualified Data.Aeson as A
+import qualified Data.ByteString as BS
+import Data.List (sort)
 import Data.Map.Strict (Map)
+import qualified Data.Vector as V
+import Language.Lask.Runtime.Glob (globPrefix, matchGlob)
 import Language.Lask.Runtime.Image (imageExists, recipeTag)
-import System.Directory (makeAbsolute)
-import System.FilePath (takeDirectory)
+import System.Directory
+  ( createDirectoryIfMissing,
+    doesDirectoryExist,
+    doesFileExist,
+    listDirectory,
+    makeAbsolute,
+    pathIsSymbolicLink,
+    removeFile,
+  )
+import System.FilePath (takeDirectory, (</>))
+import System.IO.Error
+  ( ioeGetErrorString,
+    isAlreadyExistsError,
+    isDoesNotExistError,
+    isFullError,
+    isPermissionError,
+  )
 import qualified Data.Map.Strict as Map
 import Data.Scientific (formatScientific, isInteger)
 import qualified Data.Scientific as Sci
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.IO as TIO
 import Data.Time.Clock (getCurrentTime)
-import Language.Lask.Builtins.Impl (CommandRunner)
+import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner)
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Runtime.Secrets (maskSecrets)
@@ -99,11 +122,49 @@ envLogInfo _ resolved = (summary, json)
       ResolvedRecipe df _ opts -> EnvValue "docker" (Map.insert "dockerfile" (VString df) opts)
     json = valueToJson (VEnv resolvedEnvValue)
 
+-- | The path the base directory is mounted at inside the container.
+containerWorkdir :: String
+containerWorkdir = "/work"
+
+-- | Mount the base directory as the container working directory
+-- (spec 10.5).
+--
+-- @--mount@ rather than @-v@, because @-v@ packs source, target and
+-- mode into one colon-separated field. A Windows base directory such
+-- as @C:\\proj@ is then read as source @C@, target @\\proj@ and mode
+-- @\/work@, and the daemon rejects it with @invalid mode: \/work@; a
+-- POSIX directory whose name contains a colon breaks the same way.
+-- @--mount@ names each part, so the separator never has to be guessed
+-- — which is what 10.5 asks for when it requires implementations to
+-- absorb path separator differences.
+--
+-- Two consequences are deliberate. @--mount@ refuses a source that
+-- does not exist where @-v@ would silently create it, which is the
+-- better failure for a base directory. And its fields are split on
+-- commas, so a base directory containing one is still out of reach;
+-- that is rarer than a drive letter, which every Windows path has.
+workdirMountArgs :: FilePath -> [String]
+workdirMountArgs baseDir =
+  [ "--mount",
+    "type=bind,source=" <> baseDir <> ",target=" <> containerWorkdir,
+    "-w",
+    containerWorkdir
+  ]
+
 -- | Arguments for @docker run@ (spec 10.5: base directory mounted as
 -- the working directory inside the container).
 dockerArgs :: FilePath -> Text -> Map Text Value -> Text -> [String]
-dockerArgs baseDir image opts cmd =
-  ["run", "--rm", "-v", baseDir <> ":/work", "-w", "/work", "--entrypoint", "/bin/sh"]
+dockerArgs baseDir image opts = dockerShellArgs baseDir image opts False
+
+-- | As 'dockerArgs', with @-i@ when the shell is to be fed on stdin
+-- (the filesystem runner writes a file that way, so no file content
+-- has to fit on a command line).
+dockerShellArgs :: FilePath -> Text -> Map Text Value -> Bool -> Text -> [String]
+dockerShellArgs baseDir image opts wantStdin cmd =
+  ["run", "--rm"]
+    <> (if wantStdin then ["-i"] else [])
+    <> workdirMountArgs baseDir
+    <> ["--entrypoint", "/bin/sh"]
     <> dockerOptArgs opts
     <> [T.unpack image, "-c", T.unpack cmd]
 
@@ -129,7 +190,8 @@ dockerExecArgs :: FilePath -> Text -> Map Text Value -> Bool -> Text -> [Text] -
 dockerExecArgs baseDir image opts interactive prog argv =
   ["run", "--rm"]
     <> (if interactive then ["-i", "-t"] else [])
-    <> ["-v", baseDir <> ":/work", "-w", "/work", "--entrypoint", T.unpack prog]
+    <> workdirMountArgs baseDir
+    <> ["--entrypoint", T.unpack prog]
     <> dockerOptArgs opts
     <> [T.unpack image]
     <> map T.unpack argv
@@ -274,25 +336,37 @@ mkCommandRunner baseDir0 sink = do
                 Right (code, out, errOut)
                   | Just code == infraExit -> Left (ioFailure infraCode (T.strip errOut))
                   | otherwise -> Right (code, out, errOut)
-        case resolved of
-          ResolvedLocal ->
+        img <- materializedImage baseDir resolved
+        case img of
+          Left failure -> pure (Left failure)
+          Right Nothing ->
             run EIoEnvResolve ((shell (T.unpack cmd)) {cwd = Just baseDir}) Nothing
-          ResolvedDocker image opts ->
+          Right (Just (image, opts)) ->
             -- docker exit code 125 = daemon/run infrastructure error.
             run EIoEnvResolve (proc "docker" (dockerArgs baseDir image opts cmd)) (Just 125)
-          ResolvedRecipe df ctx opts -> do
-            -- A recipe resolves to its content-addressed tag; building
-            -- is never implicit (spec 10.3).
-            tagE <- recipeTag baseDir df ctx
-            case tagE of
-              Left e -> pure (Left (ioFailure EIoImageMissing e))
-              Right tag -> do
-                ok <- imageExists tag
-                if not ok
-                  then
-                    pure . Left . ioFailure EIoImageMissing $
-                      "image for recipe '" <> df <> "' is not materialized; run 'lask env build'"
-                  else run EIoEnvResolve (proc "docker" (dockerArgs baseDir tag opts cmd)) (Just 125)
+
+-- | The image a resolved environment runs in, or 'Nothing' for the
+-- local one. A recipe resolves to its content-addressed tag; building
+-- is never implicit (spec 10.3), so an unmaterialized recipe is a
+-- failure rather than a silent build.
+materializedImage ::
+  FilePath ->
+  ResolvedEnv ->
+  IO (Either LaskFailure (Maybe (Text, Map Text Value)))
+materializedImage baseDir resolved = case resolved of
+  ResolvedLocal -> pure (Right Nothing)
+  ResolvedDocker image opts -> pure (Right (Just (image, opts)))
+  ResolvedRecipe df ctx opts -> do
+    tagE <- recipeTag baseDir df ctx
+    case tagE of
+      Left e -> pure (Left (ioFailure EIoImageMissing e))
+      Right tag -> do
+        ok <- imageExists tag
+        if not ok
+          then
+            pure . Left . ioFailure EIoImageMissing $
+              "image for recipe '" <> df <> "' is not materialized; run 'lask env build'"
+          else pure (Right (Just (tag, opts)))
 
 -- | Run a process, relaying its output line by line to the command
 -- execution log (spec 12.3) while capturing both streams verbatim.
@@ -359,3 +433,257 @@ runLoggedProcess sink summary envJson execNo cmd cp = do
               go (chunk : rawAcc) pending'
         relayLine line = maskSecrets (stripCR line) >>= emit maskedCmd . ClLine fd
         stripCR = T.dropWhileEnd (== '\r')
+
+-- | Build the filesystem runner behind the built-ins of spec 15.11.
+--
+-- Every operation acts on the filesystem of the environment it is
+-- given: the host for @local@, and the container's own filesystem for
+-- a container environment, where the base directory is mounted at
+-- @\/work@ exactly as it is for commands (10.5). No path reaches a
+-- filesystem the program did not name.
+--
+-- No command execution log is emitted (15.11): nothing here is a
+-- command execution expression, and a read is not something the user
+-- wrote a command for.
+mkFileRunner :: FilePath -> IO FileRunner
+mkFileRunner baseDir0 = do
+  baseDir <- makeAbsolute baseDir0
+  pure $ \envValue op ->
+    case resolveEnv envValue of
+      Left failure -> pure (Left failure)
+      Right resolved -> do
+        img <- materializedImage baseDir resolved
+        -- The environment belongs in the diagnostic (spec 15.11): a
+        -- path that is absent in a container is often present on the
+        -- host, and the message has to say which filesystem was read.
+        let (summary, _) = envLogInfo envValue resolved
+        case img of
+          Left failure -> pure (Left failure)
+          Right Nothing -> localFileOp summary baseDir op
+          Right (Just (image, opts)) -> containerFileOp summary baseDir image opts op
+
+-- | Resolve a path written by the program against the base directory
+-- (spec 10.5). An absolute path is taken as it stands.
+localPath :: FilePath -> Text -> FilePath
+localPath baseDir p
+  | T.isPrefixOf "/" p = T.unpack p
+  | otherwise = baseDir </> T.unpack p
+
+-- | Perform an operation on the host filesystem.
+localFileOp :: Text -> FilePath -> FileOp -> IO (Either LaskFailure Value)
+localFileOp summary baseDir op = case op of
+  FileRead p -> guarded p $ \fp -> do
+    bs <- BS.readFile fp
+    pure $ case TE.decodeUtf8' bs of
+      Left _ -> Left (ioFailure EIoDataDecode (notUtf8 summary p))
+      Right t -> Right (VString t)
+  FileWrite p contents -> guarded p $ \fp -> do
+    BS.writeFile fp (TE.encodeUtf8 contents)
+    pure (Right VVoid)
+  -- A missing component is false, not a failure (spec 15.11).
+  FileExists p -> do
+    let fp = localPath baseDir p
+    isFile <- doesFileExist fp
+    isDir <- doesDirectoryExist fp
+    pure (Right (VBool (isFile || isDir)))
+  FileRemove p -> guarded p $ \fp -> do
+    isFile <- doesFileExist fp
+    if isFile
+      then removeFile fp >> pure (Right VVoid)
+      else do
+        isDir <- doesDirectoryExist fp
+        pure $
+          if isDir
+            then Left (fsFailure summary p "path is a directory")
+            else -- Removing what is not there succeeds (spec 15.11),
+            -- so a cleanup path needs no prior test.
+              Right VVoid
+  FileMakeDir p -> guarded p $ \fp -> do
+    createDirectoryIfMissing True fp
+    pure (Right VVoid)
+  FileListDir p -> guarded p $ \fp -> do
+    isDir <- doesDirectoryExist fp
+    if not isDir
+      then pure (Left (fsFailure summary p "not a directory"))
+      else do
+        entries <- listDirectory fp
+        pure (Right (textArray (sort (map T.pack entries))))
+  FileGlob pat -> do
+    let root = localPath baseDir (globRoot pat)
+    isDir <- doesDirectoryExist root
+    if not isDir
+      then -- A pattern rooted at a directory that does not exist
+      -- matches nothing; that is not a failure (spec 15.11).
+        pure (Right (textArray []))
+      else do
+        r <- try (walkTree root)
+        pure $ case r of
+          Left e -> Left (fsFailure summary pat (ioMessage e))
+          Right rels -> Right (globResult pat rels)
+  where
+    guarded p act = do
+      r <- try (act (localPath baseDir p))
+      pure $ case r of
+        Left e -> Left (fsFailure summary p (ioMessage e))
+        Right v -> v
+
+-- | Every path under a root, relative to it, directories included.
+-- A symbolic link is reported but never descended into, so a link
+-- cycle cannot make the traversal diverge.
+walkTree :: FilePath -> IO [Text]
+walkTree root = go ""
+  where
+    go rel = do
+      let dir = if T.null rel then root else root </> T.unpack rel
+      entries <- listDirectory dir
+      fmap concat . forM (sort entries) $ \e -> do
+        let child = if T.null rel then T.pack e else rel <> "/" <> T.pack e
+            fp = dir </> e
+        isDir <- doesDirectoryExist fp
+        link <- pathIsSymbolicLink fp
+        rest <- if isDir && not link then go child else pure []
+        pure (child : rest)
+
+-- | Perform an operation inside a container, through one short shell
+-- command. The base directory is mounted at @\/work@ and is the
+-- working directory, so a relative path means the same thing it does
+-- for a command in the same environment (spec 10.5).
+containerFileOp ::
+  Text ->
+  FilePath ->
+  Text ->
+  Map Text Value ->
+  FileOp ->
+  IO (Either LaskFailure Value)
+containerFileOp summary baseDir image opts op = case op of
+  FileRead p ->
+    interpret p (shCmd ["cat", "--", shQuote p]) Nothing $ \_ out ->
+      case TE.decodeUtf8' out of
+        Left _ -> Left (ioFailure EIoDataDecode (notUtf8 summary p))
+        Right t -> Right (VString t)
+  -- The content travels on stdin, so no file has to fit on a command
+  -- line and no quoting of the content is involved.
+  FileWrite p contents ->
+    interpret p (shCmd ["cat", ">", shQuote p]) (Just contents) $ \_ _ ->
+      Right VVoid
+  FileExists p ->
+    run (shCmd ["test", "-e", shQuote p]) Nothing >>= \r -> pure $ case r of
+      Left failure -> Left failure
+      Right (code, _, _) -> Right (VBool (code == 0))
+  FileRemove p ->
+    interpret p (shCmd ["rm", "-f", "--", shQuote p]) Nothing $ \_ _ -> Right VVoid
+  FileMakeDir p ->
+    interpret p (shCmd ["mkdir", "-p", "--", shQuote p]) Nothing $ \_ _ -> Right VVoid
+  FileListDir p ->
+    let q = shQuote p
+        cmd = "if [ -d " <> q <> " ]; then ls -A -- " <> q <> "; else exit 2; fi"
+     in interpret p cmd Nothing $ \_ out ->
+          Right (textArray (sort (lines' out)))
+  FileGlob pat ->
+    let root = globRoot pat
+        q = shQuote (if T.null root then "." else root)
+        -- A root that is not there matches nothing, so the command
+        -- succeeds with no output rather than failing.
+        cmd = "if [ -e " <> q <> " ]; then find " <> q <> " -print; fi"
+     in interpret pat cmd Nothing $ \_ out ->
+          Right (globResult pat (map stripDot (lines' out)))
+  where
+    run cmd mStdin = do
+      let args = dockerShellArgs baseDir image opts (mStdin /= Nothing) cmd
+      r <- try (runQuietProcess (proc "docker" args) mStdin)
+      pure $ case r of
+        Left e ->
+          Left (ioFailure EIoEnvResolve ("cannot launch docker: " <> T.pack (show (e :: IOException))))
+        -- docker exit code 125 = daemon/run infrastructure error.
+        Right (125, _, err) -> Left (ioFailure EIoEnvResolve (T.strip err))
+        Right ok -> Right ok
+
+    -- Run, and turn a non-zero exit into E-IO-FS carrying the
+    -- command's own diagnosis of the path (spec 15.11). The contents
+    -- of a file never reach a diagnostic: only stderr does.
+    interpret p cmd mStdin f = do
+      r <- run cmd mStdin
+      pure $ case r of
+        Left failure -> Left failure
+        Right (code, out, err)
+          | code == 0 -> f code out
+          | otherwise -> Left (fsFailure summary p (T.strip err))
+
+    shCmd = T.unwords
+
+    lines' = filter (not . T.null) . T.lines . TE.decodeUtf8With TEE.lenientDecode
+
+    stripDot t = maybe t id (T.stripPrefix "./" t)
+
+-- | Run a process without emitting a command execution log, capturing
+-- stdout as bytes so the caller decides how to decode it.
+runQuietProcess :: CreateProcess -> Maybe Text -> IO (Int, BS.ByteString, Text)
+runQuietProcess cp mStdin = do
+  (mIn, mOut, mErr, ph) <-
+    createProcess cp {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
+  -- Feeding stdin runs alongside the reads: a child that writes while
+  -- it is still being written to would otherwise deadlock.
+  (_, (out, err)) <- concurrently (feed mIn) (concurrently (readAll mOut) (readAll mErr))
+  exitCode <- waitForProcess ph
+  let code = case exitCode of
+        ExitSuccess -> 0
+        ExitFailure n -> n
+  pure (code, out, TE.decodeUtf8With TEE.lenientDecode err)
+  where
+    feed Nothing = pure ()
+    feed (Just h) = do
+      case mStdin of
+        Just t -> BS.hPut h (TE.encodeUtf8 t)
+        Nothing -> pure ()
+      hClose h
+    readAll Nothing = pure BS.empty
+    readAll (Just h) = BS.hGetContents h
+
+-- | Quote one value as a single POSIX shell word.
+shQuote :: Text -> Text
+shQuote s = "'" <> T.replace "'" "'\\''" s <> "'"
+
+-- | The directory a glob traversal starts from: the leading literal
+-- components of the pattern, keeping it rooted where the pattern is.
+globRoot :: Text -> Text
+globRoot pat = (if T.isPrefixOf "/" pat then "/" else "") <> globPrefix pat
+
+-- | Select the paths matching the pattern out of a traversal, sorted
+-- so that the same pattern yields the same order in every environment
+-- (spec 15.11).
+globResult :: Text -> [Text] -> Value
+globResult pat rels = textArray (sort (filter (matchGlob pat) (map logical rels)))
+  where
+    root = globRoot pat
+    logical rel
+      | T.null root = rel
+      | T.isPrefixOf (root <> "/") rel || rel == root = rel
+      | otherwise = root <> "/" <> rel
+
+textArray :: [Text] -> Value
+textArray = VArray . V.fromList . map VString
+
+notUtf8 :: Text -> Text -> Text
+notUtf8 summary p = "file is not valid UTF-8: '" <> p <> "' in " <> summary
+
+-- | A filesystem failure naming the path and the environment it was
+-- read in (spec 14.3, 15.11). The file's contents never appear here;
+-- only the path and the cause do.
+fsFailure :: Text -> Text -> Text -> LaskFailure
+fsFailure summary p detail =
+  ioFailure EIoFs $
+    "cannot access '" <> p <> "' in " <> summary <> ": " <> cause
+  where
+    cause
+      | T.null (T.strip detail) = "filesystem access failed"
+      | otherwise = T.strip detail
+
+-- | An IO exception as a short cause, without the GHC call detail
+-- that means nothing to someone reading a task's diagnostics.
+ioMessage :: IOException -> Text
+ioMessage e
+  | isDoesNotExistError e = "no such file or directory"
+  | isPermissionError e = "permission denied"
+  | isAlreadyExistsError e = "already exists"
+  | isFullError e = "no space left on device"
+  | otherwise = T.pack (ioeGetErrorString e)

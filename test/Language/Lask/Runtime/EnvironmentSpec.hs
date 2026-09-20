@@ -8,15 +8,32 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Vector as V
+import Language.Lask.Builtins.Impl (FileOp (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Runtime.Environment
 import Language.Lask.Runtime.Secrets (registerSecret, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
+import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
 env :: Text -> [(Text, Value)] -> EnvValue
 env k ps = EnvValue k (Map.fromList ps)
+
+-- | A successful operation returning Void. It cannot be compared with
+-- '==': Void is not a comparable type (spec 6.2), so 'Eq' 'Value'
+-- reports even two Voids unequal.
+returnsVoid :: Either LaskFailure Value -> Expectation
+returnsVoid r = case r of
+  Right VVoid -> pure ()
+  other -> expectationFailure ("expected Void, got " <> show other)
+
+failsWithFs :: Either LaskFailure Value -> Expectation
+failsWithFs r = case r of
+  Left lf -> lfCode lf `shouldBe` Just EIoFs
+  Right v -> expectationFailure ("expected E-IO-FS, got " <> show v)
 
 spec :: Spec
 spec = do
@@ -43,10 +60,46 @@ spec = do
     it "builds docker run arguments with mounted workdir" $
       dockerArgs "/proj" "alpine:3.20" (Map.fromList [("memory", VString "4g")]) "uname -a"
         `shouldBe` [ "run", "--rm",
-                     "-v", "/proj:/work",
+                     "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
                      "--memory", "4g",
+                     "alpine:3.20",
+                     "-c", "uname -a"
+                   ]
+
+    it "attaches stdin for a container write, so no content rides on the command line" $
+      dockerShellArgs "/proj" "alpine:3.20" Map.empty True "cat > 'out.txt'"
+        `shouldBe` [ "run", "--rm",
+                     "-i",
+                     "--mount", "type=bind,source=/proj,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "alpine:3.20",
+                     "-c", "cat > 'out.txt'"
+                   ]
+
+    -- A Windows base directory always carries a drive letter, so the
+    -- colon-separated `-v` form read `C` as the source and `/work` as
+    -- the mode, and the daemon answered `invalid mode: /work`.
+    it "keeps a Windows drive letter in the source, not in the mount separator" $
+      dockerArgs "C:\\proj" "alpine:3.20" Map.empty "uname -a"
+        `shouldBe` [ "run", "--rm",
+                     "--mount", "type=bind,source=C:\\proj,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "alpine:3.20",
+                     "-c", "uname -a"
+                   ]
+
+    -- The same defect on a POSIX host: a colon is legal in a directory
+    -- name there, so this is reachable without Windows at all.
+    it "keeps a colon inside a POSIX base directory out of the mount separator" $
+      dockerArgs "/tmp/a:b" "alpine:3.20" Map.empty "uname -a"
+        `shouldBe` [ "run", "--rm",
+                     "--mount", "type=bind,source=/tmp/a:b,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
                      "alpine:3.20",
                      "-c", "uname -a"
                    ]
@@ -151,3 +204,63 @@ spec = do
             (ResolvedRecipe "infra/Dockerfile" "infra" Map.empty)
         )
         `shouldBe` "#docker(dockerfile = \"infra/Dockerfile\")"
+
+  describe "filesystem functions (spec 15.11, real filesystem)" $ do
+    let withProject act = withSystemTempDirectory "lask-fs" $ \dir -> do
+          runner <- mkFileRunner dir
+          act dir (\op -> runner (env "local" []) op)
+
+    it "writes a file and reads it back" $ withProject $ \_ run -> do
+      run (FileWrite "note.txt" "hello\n") >>= returnsVoid
+      run (FileRead "note.txt") `shouldReturn` Right (VString "hello\n")
+
+    it "resolves a relative path against the base directory" $ withProject $ \dir run -> do
+      _ <- run (FileWrite "note.txt" "x")
+      doesFileExist (dir <> "/note.txt") `shouldReturn` True
+
+    it "reports a read of a missing file as E-IO-FS" $ withProject $ \_ run -> do
+      run (FileRead "absent.txt") >>= failsWithFs
+
+    it "answers file_exists without failing on a missing path" $ withProject $ \_ run -> do
+      run (FileExists "absent.txt") `shouldReturn` Right (VBool False)
+      _ <- run (FileWrite "there.txt" "x")
+      run (FileExists "there.txt") `shouldReturn` Right (VBool True)
+
+    it "creates parents with make_dir and refuses them in write_file" $ withProject $ \_ run -> do
+      run (FileWrite "sub/deep/note.txt" "x") >>= failsWithFs
+      run (FileMakeDir "sub/deep") >>= returnsVoid
+      run (FileWrite "sub/deep/note.txt" "x") >>= returnsVoid
+
+    it "removes a file, and removing what is absent succeeds" $ withProject $ \_ run -> do
+      _ <- run (FileWrite "gone.txt" "x")
+      run (FileRemove "gone.txt") >>= returnsVoid
+      run (FileRemove "gone.txt") >>= returnsVoid
+      run (FileExists "gone.txt") `shouldReturn` Right (VBool False)
+
+    it "refuses to remove a directory" $ withProject $ \_ run -> do
+      _ <- run (FileMakeDir "adir")
+      run (FileRemove "adir") >>= failsWithFs
+
+    it "lists a directory in a deterministic order" $ withProject $ \_ run -> do
+      _ <- run (FileMakeDir "d")
+      mapM_ (\n -> run (FileWrite ("d/" <> n) "x")) ["c.txt", "a.txt", "b.txt"]
+      run (FileListDir "d")
+        `shouldReturn` Right (VArray (V.fromList (map VString ["a.txt", "b.txt", "c.txt"])))
+
+    it "reports list_dir on a non-directory as E-IO-FS" $ withProject $ \_ run -> do
+      _ <- run (FileWrite "afile" "x")
+      run (FileListDir "afile") >>= failsWithFs
+
+    it "globs across components and hides dot entries" $ withProject $ \dir run -> do
+      createDirectoryIfMissing True (dir <> "/src/lib")
+      createDirectoryIfMissing True (dir <> "/.git")
+      mapM_ (\n -> run (FileWrite n "x"))
+        ["src/main.lask", "src/lib/util.lask", "src/notes.md", ".git/config.lask"]
+      run (FileGlob "src/**/*.lask")
+        `shouldReturn` Right (VArray (V.fromList (map VString ["src/lib/util.lask", "src/main.lask"])))
+      run (FileGlob "**/*.lask")
+        `shouldReturn` Right (VArray (V.fromList (map VString ["src/lib/util.lask", "src/main.lask"])))
+
+    it "returns no match as an empty array rather than a failure" $ withProject $ \_ run -> do
+      run (FileGlob "nowhere/*.lask") `shouldReturn` Right (VArray V.empty)
+      run (FileGlob "*.absent") `shouldReturn` Right (VArray V.empty)

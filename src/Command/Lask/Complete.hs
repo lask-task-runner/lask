@@ -960,7 +960,7 @@ globKind ws = case ws of
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
   AST.DValue n _ _ _ -> Just n
-  AST.DFunction n _ _ _ -> Just n
+  AST.DFunction n _ _ _ _ -> Just n
   _ -> Nothing
 
 isEnvType :: Maybe AST.SType -> Bool
@@ -985,7 +985,10 @@ typeText (AST.SType _ f) = case f of
   AST.SRecord _ -> "Record"
   AST.SAsyncHandle t -> "AsyncHandle<" <> typeText t <> ">"
   AST.SFunction ps rt -> "(" <> T.intercalate ", " (map typeText ps) <> ") => " <> typeText rt
-  AST.SNamed ns n -> maybe n (\q -> q <> "." <> n) ns
+  AST.SNamed ns n as ->
+    maybe n (\q -> q <> "." <> n) ns
+      <> (if null as then "" else "<" <> T.intercalate ", " (map typeText as) <> ">")
+  AST.SUnion ts -> T.intercalate " | " (map typeText ts)
 
 -- | What survives a module that does not parse: the head of every
 -- top-level declaration, and the keyword parameters written in its

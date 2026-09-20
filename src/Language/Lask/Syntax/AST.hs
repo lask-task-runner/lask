@@ -20,6 +20,8 @@ module Language.Lask.Syntax.AST
     Arg (..),
     ArgF (..),
     Block (..),
+    CaseArm (..),
+    CaseHeads (..),
     Stmt (..),
     StmtF (..),
     stripSpansModule,
@@ -51,12 +53,14 @@ data DeclF
     DImportNamed [ImportSpec] Text
   | -- | @import * as m from "path"@
     DImportNamespace Text Text
-  | -- | @type Name = Type@
-    DTypeAlias Text SType
+  | -- | @type Name = Type@, or @type Name\<A, B\> = Type@ with type
+    -- parameters (spec 4.2).
+    DTypeAlias Text [Spanned Text] SType
   | -- | @name[!!] [: Type] = expr@
     DValue Text Secrecy (Maybe SType) Expr
-  | -- | @name(params) [: Type] = expr@ (sugar for a lambda binding)
-    DFunction Text [Param] (Maybe SType) Expr
+  | -- | @name(params) [: Type] = expr@ (sugar for a lambda binding),
+    -- with the type parameters it declares (spec 4.2).
+    DFunction Text [Spanned Text] [Param] (Maybe SType) Expr
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
@@ -102,14 +106,21 @@ data STypeF
   | SEnvironment
   | SArray SType
   | SMap SType
-  | SRecord [(Spanned Text, SType)]
+  | -- | Fields as written: name, whether it carries the optional
+    -- marker @?@ (spec 4.2), and its type.
+    SRecord [(Spanned Text, Bool, SType)]
   | SAsyncHandle SType
   | -- | Parameter types and return type.
     SFunction [SType] SType
   | -- | @Nothing@: bare @upper_id@. @Just ns@: qualified @ns.TypeName@,
     -- a reference to a public type alias of the module the namespace
     -- import @ns@ refers to (spec 4.2 QualifiedNamedType).
-    SNamed (Maybe Text) Text
+    -- Type arguments are given where the alias takes parameters
+    -- (@Pair\<Number, String\>@); the list is empty otherwise.
+    SNamed (Maybe Text) Text [SType]
+  | -- | @T1 | T2 | ...@ as written, with at least two members (spec
+    -- 4.2). Canonicalization happens when it becomes a semantic type.
+    SUnion [SType]
   deriving (Show, Eq)
 
 data Expr = Expr {exprSpan :: Span, exprF :: ExprF}
@@ -135,6 +146,10 @@ data ExprF
     -- occurs for the statement-position guard form (spec 6.4/6.5).
     EIf Expr Block (Maybe Block)
   | EFor (Spanned Text) Expr Block
+  | -- | @case (e) { p -> b ... else -> b }@ (spec 6.4). 'Nothing' as
+    -- the scrutinee is the condition form, whose arm heads are @Bool@
+    -- conditions rather than values compared with the scrutinee.
+    ECase (Maybe Expr) [CaseArm]
   | -- | try body, optional catch (name, handler), optional finally.
     ETry Block (Maybe (Spanned Text, Block)) (Maybe Block)
   | EAsync Expr
@@ -152,6 +167,23 @@ data ExprF
 data TextPart = TPChunk Span Text | TPInterp Expr
   deriving (Show, Eq)
 
+-- | One arm of an 'ECase'. 'Nothing' as the heads marks the @else@
+-- arm, which the elaborator requires to be present exactly once and
+-- last (spec 6.4). An arm with several heads matches any of them.
+data CaseArm = CaseArm
+  { caseArmSpan :: Span,
+    caseArmHeads :: Maybe CaseHeads,
+    caseArmBody :: Expr
+  }
+  deriving (Show, Eq)
+
+-- | The heads of one arm (spec 6.4). A value head is compared with the
+-- scrutinee by equality; a type head dispatches on its runtime type.
+-- The two are never mixed within one arm: a head beginning with an
+-- @upper_id@ is a type, and an @upper_id@ cannot begin an expression.
+data CaseHeads = ValueHeads [Expr] | TypeHeads [SType]
+  deriving (Show, Eq)
+
 data Arg = Arg {argSpan :: Span, argF :: ArgF}
   deriving (Show, Eq)
 
@@ -165,8 +197,8 @@ data Stmt = Stmt {stmtSpan :: Span, stmtF :: StmtF}
   deriving (Show, Eq)
 
 data StmtF
-  = -- | @name[!!] = expr@
-    SBind Text Secrecy Expr
+  = -- | @name[!!] [: Type] = expr@
+    SBind Text Secrecy (Maybe SType) Expr
   | SExpr Expr
   | SReturn Expr
   | -- | @if (cond) { ... }@ without @else@ in statement position.
@@ -183,10 +215,15 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DImportNamed specs path -> DImportNamed (map stripSpec specs) path
   DImportNamespace a p -> DImportNamespace a p
   DExportFrom specs path -> DExportFrom (map stripSpec specs) path
-  DTypeAlias n t -> DTypeAlias n (stripSpansType t)
+  DTypeAlias n ps t -> DTypeAlias n [Spanned NoSpan v | Spanned _ v <- ps] (stripSpansType t)
   DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
-  DFunction n ps t e ->
-    DFunction n (map stripParam ps) (fmap stripSpansType t) (stripSpansExpr e)
+  DFunction n tps ps t e ->
+    DFunction
+      n
+      [Spanned NoSpan v | Spanned _ v <- tps]
+      (map stripParam ps)
+      (fmap stripSpansType t)
+      (stripSpansExpr e)
   DCommand ns e -> DCommand [Spanned NoSpan n | Spanned _ n <- ns] (stripSpansExpr e)
   where
     stripSpec (ImportSpec _ n a) = ImportSpec NoSpan n a
@@ -201,9 +238,11 @@ stripSpansType :: SType -> SType
 stripSpansType (SType _ f) = SType NoSpan $ case f of
   SArray t -> SArray (stripSpansType t)
   SMap t -> SMap (stripSpansType t)
-  SRecord fs -> SRecord [(Spanned NoSpan n, stripSpansType t) | (Spanned _ n, t) <- fs]
+  SRecord fs -> SRecord [(Spanned NoSpan n, opt, stripSpansType t) | (Spanned _ n, opt, t) <- fs]
   SAsyncHandle t -> SAsyncHandle (stripSpansType t)
   SFunction ps r -> SFunction (map stripSpansType ps) (stripSpansType r)
+  SUnion ts -> SUnion (map stripSpansType ts)
+  SNamed q n as -> SNamed q n (map stripSpansType as)
   other -> other
 
 stripSpansExpr :: Expr -> Expr
@@ -220,6 +259,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EDo b -> EDo (stripBlock b)
   EIf c t e -> EIf (stripSpansExpr c) (stripBlock t) (fmap stripBlock e)
   EFor (Spanned _ x) xs b -> EFor (Spanned NoSpan x) (stripSpansExpr xs) (stripBlock b)
+  ECase scrut arms -> ECase (fmap stripSpansExpr scrut) (map stripArm arms)
   ETry b c fin ->
     ETry
       (stripBlock b)
@@ -231,6 +271,9 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EEnv h as -> EEnv h (fmap (map stripArg) as)
   other -> other
   where
+    stripArm (CaseArm _ hs b) = CaseArm NoSpan (fmap stripHeads hs) (stripSpansExpr b)
+    stripHeads (ValueHeads es) = ValueHeads (map stripSpansExpr es)
+    stripHeads (TypeHeads ts) = TypeHeads (map stripSpansType ts)
     stripPart (TPChunk _ c) = TPChunk NoSpan c
     stripPart (TPInterp e) = TPInterp (stripSpansExpr e)
     stripArg (Arg _ (APos e)) = Arg NoSpan (APos (stripSpansExpr e))
@@ -241,7 +284,7 @@ stripBlock (Block _ ss) = Block NoSpan (map stripStmt ss)
 
 stripStmt :: Stmt -> Stmt
 stripStmt (Stmt _ f) = Stmt NoSpan $ case f of
-  SBind n sec e -> SBind n sec (stripSpansExpr e)
+  SBind n sec t e -> SBind n sec (fmap stripSpansType t) (stripSpansExpr e)
   SExpr e -> SExpr (stripSpansExpr e)
   SReturn e -> SReturn (stripSpansExpr e)
   SGuard c b -> SGuard (stripSpansExpr c) (stripBlock b)

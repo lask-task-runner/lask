@@ -1,0 +1,180 @@
+name: Install test
+
+# The README is the only install instruction users have, so it is worth
+# running: this workflow installs a released binary exactly the way the
+# README says to on each platform, then drives example/01-basic with it.
+# Manual trigger only — it tests a published release, not the commit.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to install (e.g. 0.4.0), or 'latest'"
+        required: true
+        type: string
+        default: latest
+      ref:
+        description: "Branch or tag to take example/01-basic from (blank = this branch)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  # Resolved once so every platform installs the same version, and so a
+  # version that was never released fails here instead of four times.
+  resolve:
+    runs-on: ubuntu-latest
+
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+
+    steps:
+      - name: Resolve the release tag
+        id: resolve
+        shell: bash
+        env:
+          # The README's curl is unauthenticated; the token is only here
+          # because a shared runner IP hits the anonymous rate limit.
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ "${INPUT_VERSION}" = "latest" ]; then
+            TAG=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+              https://api.github.com/repos/${{ github.repository }}/releases/latest \
+              | grep -m1 '"tag_name"' | cut -d '"' -f4)
+          else
+            # Accept 0.4.0 and v0.4.0 alike; release tags carry the v.
+            TAG="v${INPUT_VERSION#v}"
+          fi
+
+          test -n "${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Installing ${TAG}"
+
+  install:
+    needs: resolve
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Docker is already up on the hosted Linux runner.
+          - os: ubuntu-latest
+            target: linux-amd64
+            docker: true
+          # Lima needs nested virtualization, which Apple silicon
+          # runners do not expose — actions/runner-images#13505 was
+          # closed as not planned in January 2026 — so the arm64 job
+          # can only cover the part of the example that needs no
+          # container.
+          - os: macos-26
+            target: macos-arm64
+            docker: false
+          # The Intel runner does have it, so Docker is installed here.
+          - os: macos-26-intel
+            target: macos-amd64
+            docker: true
+          # Hosted Windows VMs are already nested one level deep, so
+          # they run Windows containers only and cannot run a Linux
+          # image such as rancher/cowsay — actions/runner-images#1143.
+          - os: windows-latest
+            target: windows-amd64
+            docker: false
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      TARGET: ${{ matrix.target }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      # README § Install — "macOS / Linux · download the binary".
+      - name: Install lask (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o lask.tar.gz \
+            "https://github.com/${{ github.repository }}/releases/download/${TAG}/lask-${TAG}-${TARGET}.tar.gz"
+          tar -xzf lask.tar.gz
+          sudo mv ./lask /usr/local/bin
+
+      # README § Install — "Windows · PowerShell". The README's `setx`
+      # only reaches later terminals, which a job does not have, so the
+      # same directory goes on the path the way Actions exposes it.
+      - name: Install lask (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/$env:TAG/lask-$env:TAG-$env:TARGET.zip" -OutFile lask.zip
+          Expand-Archive -Path lask.zip -DestinationPath "$env:LOCALAPPDATA\Programs\lask" -Force
+          "$env:LOCALAPPDATA\Programs\lask" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # Docker Desktop is not on the macOS image, so the daemon the
+      # example needs has to be brought up. The action installs Docker
+      # CE into a Lima VM and points DOCKER_HOST at it.
+      - name: Set up Docker
+        if: matrix.docker && runner.os == 'macOS'
+        uses: docker/setup-docker-action@v5
+        with:
+          # lask shells out to `docker`, so the daemon has to be
+          # reachable from a child process: DOCKER_HOST in the job
+          # environment says so outright, where the action's default
+          # leaves it to the current context in ~/.docker/config.json.
+          set-host: true
+
+      # README § Install — "Verify with `lask --help`".
+      - name: Verify the installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          lask --help
+          lask version
+
+      - name: Check example/01-basic
+        shell: bash
+        working-directory: example/01-basic
+        run: |
+          set -euo pipefail
+          lask check
+          lask envs
+
+      # `hello` is pure, so it is the part of the example that still runs
+      # on the two platforms where no Linux container can be started.
+      - name: Run the pure task
+        shell: bash
+        working-directory: example/01-basic
+        run: |
+          set -euo pipefail
+          OUTPUT=$(lask eval hello --name Lask)
+          echo "${OUTPUT}"
+          test "${OUTPUT}" = '"Hello, Lask!"'
+
+      # cowsay_hello runs in a Linux container, so this step covers every
+      # platform whose runner can start one — see the matrix for the two
+      # that cannot.
+      - name: Run the containerized task
+        if: matrix.docker
+        shell: bash
+        working-directory: example/01-basic
+        run: |
+          set -euo pipefail
+          lask envs --check
+          # Both streams are captured, so neither reaches the log on its
+          # own: the status has to be carried past the capture and the
+          # output echoed before it is asserted on, or a failure here
+          # shows up as a bare exit code with nothing to read.
+          OUTPUT=$(lask run cowsay-hello Lask 2>&1) && STATUS=0 || STATUS=$?
+          echo "${OUTPUT}"
+          test "${STATUS}" -eq 0
+          # The captured stream also carries the trace, and the trace
+          # echoes the command — so a bare `Hello, Lask!` matches even
+          # when nothing ran. The framed form is drawn by cowsay and
+          # appears only when the container produced it.
+          grep -q '< Hello, Lask! >' <<<"${OUTPUT}"

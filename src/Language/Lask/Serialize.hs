@@ -13,6 +13,7 @@ module Language.Lask.Serialize
     encodeValuePretty,
     functionRefJson,
     renderValueText,
+    failureMessage,
   )
 where
 
@@ -98,4 +99,15 @@ renderValueText v = case v of
   VBool True -> "true"
   VBool False -> "false"
   VNull -> "null"
+  other -> encodeValue other
+
+-- | The user-visible message of a failure: the @message@ field of the
+-- @Error@ record (spec 14.3), or the whole error value as JSON when
+-- @fail@ was given something else (8.10).
+--
+-- It lives here rather than beside 'LaskFailure' because the fallback
+-- needs 'encodeValue'.
+failureMessage :: LaskFailure -> Text
+failureMessage lf = case lfError lf of
+  VRecord m | Just (VString s) <- Map.lookup "message" m -> s
   other -> encodeValue other

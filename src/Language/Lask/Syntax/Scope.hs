@@ -28,7 +28,7 @@ localsAt path (Module ds _) pos = nub (concat (reverse (concatMap goDecl ds)))
       | not (at sp) = []
       | otherwise = case f of
           DValue _ _ _ e -> goExpr e
-          DFunction _ ps _ body ->
+          DFunction _ _ ps _ body ->
             [map paramName ps] <> concatMap goExpr (paramDefaults ps) <> goExpr body
           _ -> []
 
@@ -60,11 +60,11 @@ localsAt path (Module ds _) pos = nub (concat (reverse (concatMap goDecl ds)))
         go acc (Stmt ssp sf : rest)
           | at ssp = acc : goStmt sf
           | otherwise = go (acc <> bound sf) rest
-        bound (SBind n _ _) = [n]
+        bound (SBind n _ _ _) = [n]
         bound _ = []
 
     goStmt sf = case sf of
-      SBind _ _ e -> goExpr e
+      SBind _ _ _ e -> goExpr e
       SExpr e -> goExpr e
       SReturn e -> goExpr e
       SGuard c b -> goExpr c <> goBlock b
@@ -97,7 +97,7 @@ enclosingExprs path (Module ds _) pos = concatMap goDecl ds
       | not (at sp) = []
       | otherwise = case f of
           DValue _ _ _ e -> descend e
-          DFunction _ ps _ body -> concatMap descend (paramDefaults ps <> [body])
+          DFunction _ _ ps _ body -> concatMap descend (paramDefaults ps <> [body])
           _ -> []
 
     descend e@(Expr sp _)
@@ -118,6 +118,7 @@ childExprs (Expr _ f) = case f of
   EDo b -> blockExprs b
   EIf c t mElse -> c : blockExprs t <> maybe [] blockExprs mElse
   EFor _ xs b -> xs : blockExprs b
+  ECase scrut arms -> maybeToList scrut <> concatMap armExprs arms
   ETry b mCatch mFin ->
     blockExprs b
       <> maybe [] (blockExprs . snd) mCatch
@@ -128,11 +129,18 @@ childExprs (Expr _ f) = case f of
   EEnv _ as -> maybe [] (map argExpr) as
   _ -> []
 
+armExprs :: CaseArm -> [Expr]
+armExprs (CaseArm _ hs b) = headExprs hs <> [b]
+  where
+    -- Type heads hold no expressions; only value heads do.
+    headExprs (Just (ValueHeads es)) = es
+    headExprs _ = []
+
 blockExprs :: Block -> [Expr]
 blockExprs (Block _ ss) = concatMap stmtExprs ss
   where
     stmtExprs (Stmt _ sf) = case sf of
-      SBind _ _ e -> [e]
+      SBind _ _ _ e -> [e]
       SExpr e -> [e]
       SReturn e -> [e]
       SGuard c b -> c : blockExprs b

@@ -46,12 +46,14 @@ import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
 import Language.Lask.Runtime.Image (buildRecipe, imageExists, recipeTag)
+import Language.Lask.Builtins.Impl (RtHooks (..))
+import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
-import Language.Lask.Serialize (encodeValue, encodeValuePretty, renderValueText)
+import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
-import Language.Lask.Types (Type (..))
+import Language.Lask.Types (Type (..), applySubst)
 import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
 import Paths_lask (version)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
@@ -126,21 +128,33 @@ cmdRunEval printResult runOpts = do
     Right as -> pure as
     Left e -> usageError opts e
 
-  (posVals, kwVals) <- do
-    r <- case cdParams cd of
-      Just params -> bindCliArgs params (runArgDecode runOpts) cliArgs
-      Nothing -> case cdType cd of
-        TyFun paramTys _ ->
-          -- A function-typed value declaration: positional only
-          -- (spec 11.2, example 16.3).
+  let orUsageError = either (usageError opts) pure
+      instantiateAtAny vs ps
+        | null vs = ps
+        | otherwise =
+            let at = applySubst (Map.fromList [(v, TyAny) | v <- vs])
+             in StaticParams
+                  [(n, at t) | (n, t) <- spPositional ps]
+                  (fmap (fmap at) (spVariadic ps))
+                  [(n, at t) | (n, t) <- spKeywords ps]
+  (posVals, kwVals) <- case cdParams cd of
+    -- A declaration with type parameters is invoked with every one of
+    -- them at Any (spec 11.2): the CLI has no type to instantiate them
+    -- from, and the body cannot misuse what it is handed, a type
+    -- parameter being opaque inside it (4.4).
+    Just params ->
+      orUsageError
+        (bindCliArgs (instantiateAtAny (cdTypeVars cd) params) (runArgDecode runOpts) cliArgs)
+    Nothing -> case cdType cd of
+      TyFun paramTys _ ->
+        -- A function-typed value declaration: positional only
+        -- (spec 11.2, example 16.3).
+        orUsageError $
           bindCliArgs
             (StaticParams (zip (map (const "arg") paramTys) paramTys) Nothing [])
             (runArgDecode runOpts)
             cliArgs
-        _ -> pure (Left ("'" <> fnName <> "' is not a callable function"))
-    case r of
-      Right bound -> pure bound
-      Left e -> usageError opts e
+      _ -> usageError opts ("'" <> fnName <> "' is not a callable function")
 
   stdinText <- readStdinOrExit opts
   traceId <- maybe newTraceId pure (optTraceId opts)
@@ -153,7 +167,13 @@ cmdRunEval printResult runOpts = do
         | optJsonFormat opts = jsonCommandLog traceId writeErr
         | otherwise = textCommandLog writeErr
   runner <- mkCommandRunner baseDir cmdLogSink
-  ctx0 <- mkRtCtx core stdinText runner
+  fileRunner <- mkFileRunner baseDir
+  let -- `log` (spec 15.12) writes execution log lines to stderr,
+      -- through the same serialized writer as the command logs.
+      logSink
+        | optJsonFormat opts = jsonLogSink traceId writeErr
+        | otherwise = textLogSink writeErr
+  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner logSink)
   let sink
         | optJsonFormat opts = writeErr . encodeEvent
         | otherwise = noSink
@@ -251,7 +271,7 @@ cmdHelp subcommand runOpts = do
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
   AST.DValue n _ _ _ -> Just n
-  AST.DFunction n _ _ _ -> Just n
+  AST.DFunction n _ _ _ _ -> Just n
   _ -> Nothing
 
 -- | The documentation comment directly above a declaration (spec 3.1).
@@ -294,9 +314,7 @@ failureExit opts traceId lf = do
           | c `elem` [EIoStdinRead, EIoEnvResolve, EIoImageMissing, EIoImageDigest, EIoFs, EIoDataDecode] ->
               StageIo
         _ -> StageRuntime
-      msg = case lfError lf of
-        VRecord m | Just (VString s) <- Map.lookup "message" m -> s
-        other -> encodeValue other
+      msg = failureMessage lf
   if optJsonFormat opts
     then
       hPutStrLn stderr . T.unpack . TE.decodeUtf8 . BL.toStrict . A.encode $

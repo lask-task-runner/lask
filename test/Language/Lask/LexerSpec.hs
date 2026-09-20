@@ -53,15 +53,18 @@ spec = do
       lexed "Number x" `shouldBe` Right [TUpperId "Number", lid "x"]
 
     it "lexes keywords, not identifiers" $
-      lexed "if else do type import export internal from as async await for return try catch finally"
+      lexed "if else case do type import export internal from as async await for return try catch finally"
         `shouldBe` Right
           ( map
               TKw
-              [KIf, KElse, KDo, KType, KImport, KExport, KInternal, KFrom, KAs, KAsync, KAwait, KFor, KReturn, KTry, KCatch, KFinally]
+              [KIf, KElse, KCase, KDo, KType, KImport, KExport, KInternal, KFrom, KAs, KAsync, KAwait, KFor, KReturn, KTry, KCatch, KFinally]
           )
 
     it "keywords are matched whole-word only" $
       lexed "iffy forx exported internals" `shouldBe` Right [lid "iffy", lid "forx", lid "exported", lid "internals"]
+
+    it "does not lex case inside a longer identifier" $
+      lexed "cases lower_case" `shouldBe` Right [lid "cases", lid "lower_case"]
 
     it "lexes literal keywords" $
       lexed "true false null" `shouldBe` Right [TBool True, TBool False, TNull]
@@ -240,6 +243,30 @@ spec = do
           [ TKw KIf, TLParen, lid "c", TRParen, TLBrace,
             lid "a", TAssign, num 1, TNewline, lid "a", TRBrace,
             TKw KElse, TLBrace, num 2, TRBrace
+          ]
+
+    it "keeps newlines between case arms (spec 6.4)" $
+      laid "case (x) {\n  1 -> a\n  2 -> b\n}"
+        `shouldBe` Right
+          [ TKw KCase, TLParen, lid "x", TRParen, TLBrace,
+            num 1, TArrow, lid "a", TNewline, num 2, TArrow, lid "b", TRBrace
+          ]
+
+    it "opens a block for the condition form of case" $
+      laid "case {\n  c -> a\n  d -> b\n}"
+        `shouldBe` Right
+          [ TKw KCase, TLBrace,
+            lid "c", TArrow, lid "a", TNewline, lid "d", TArrow, lid "b", TRBrace
+          ]
+
+    -- The parser accepts an arm that carries no terminator before
+    -- `else`, so dropping this newline keeps both readings open
+    -- (spec 6.4).
+    it "still drops the newline before an else arm" $
+      laid "case (x) {\n  1 -> a\n  else -> b\n}"
+        `shouldBe` Right
+          [ TKw KCase, TLParen, lid "x", TRParen, TLBrace,
+            num 1, TArrow, lid "a", TKw KElse, TArrow, lid "b", TRBrace
           ]
 
     it "does not continue onto a leading ( — new statement instead" $

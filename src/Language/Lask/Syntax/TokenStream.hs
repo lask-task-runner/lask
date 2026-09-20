@@ -85,6 +85,8 @@ renderToken t = case t of
   TDashDash -> "--"
   TBangBang -> "!!"
   TEllipsis -> "..."
+  TPipe -> "|"
+  TQuestion -> "?"
   TNewline -> "newline"
 
 -- | Reserved words render by their single spelling table (spec 3.3).

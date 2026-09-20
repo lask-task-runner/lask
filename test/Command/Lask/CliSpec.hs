@@ -62,6 +62,30 @@ withProject files action =
 
 spec :: Spec
 spec = beforeAll findLask $ do
+  describe "generic functions from the CLI (spec 11.2)" $ do
+    let proj =
+          [ ( "main.lask",
+              "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\n"
+            )
+          ]
+
+    it "instantiates every type parameter at Any" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "first_or", "[1,2]", "0"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "1\n"
+        r2 <- runLask lask dir ["eval", "first_or", "[]", "\"none\""] ""
+        resExit r2 `shouldBe` 0
+        resOut r2 `shouldBe` "\"none\"\n"
+
+    it "shows the type parameters where it describes the declaration" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "first_or", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "first_or<T>"
+        -- but not in the line the user is meant to type
+        resOut r `shouldContain` "lask run first_or <xs> <fallback>"
+
   describe "cmd (spec 11.8)" $ do
     let proj =
           [ ( "main.lask",
@@ -158,6 +182,29 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", src)] $ \dir -> do
         r <- runLask lask dir ["eval", "add", "1"] ""
         resExit r `shouldBe` 4
+    -- Issue #28: the type mismatch was reported by interpolating the
+    -- `Show` output of the internal failure record, so the one fact
+    -- the user needs arrived wrapped in Haskell syntax. The message
+    -- is worded by the CLI rather than reused from `cast`, because
+    -- the user wrote a command line and not a cast.
+    it "reports an argument that does not fit its parameter type in the user's terms" $ \lask ->
+      withProject [("main.lask", "f(n: Number): Number = n\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f", "abc"] ""
+        resExit r `shouldBe` 4
+        resErr r
+          `shouldBe` "E-CLI-USAGE: argument 'abc' does not fit the parameter type: expected Number, got String\n"
+    it "reports a keyword argument that does not fit its parameter type in the user's terms" $ \lask ->
+      withProject [("main.lask", "g(--n: Number = 1): Number = n\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "g", "--n", "abc"] ""
+        resExit r `shouldBe` 4
+        resErr r
+          `shouldBe` "E-CLI-USAGE: keyword argument '--n' 'abc' does not fit the parameter type: expected Number, got String\n"
+    it "points at the offending field when the mismatch is nested" $ \lask ->
+      withProject [("main.lask", "h(r: Record<a: String>): String = r.a\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "h", "{\"a\": 1}"] ""
+        resExit r `shouldBe` 4
+        resErr r
+          `shouldBe` "E-CLI-USAGE: argument '{\"a\": 1}' does not fit the parameter type at a: expected String, got Number\n"
     it "arg-decode text keeps arguments as strings" $ \lask ->
       withProject [("main.lask", "id2(x: String): String = x\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "--arg-decode", "text", "id2", "5"] ""
@@ -355,6 +402,30 @@ spec = beforeAll findLask $ do
         let errLines = lines (resErr r)
         all (\l -> take 1 l == "{") errLines `shouldBe` True
         resErr r `shouldSatisfy` isInfixOf "\"stage\":\"static\""
+
+  describe "log (spec 15.12)" $ do
+    it "writes to stderr, leaving stdout to the result alone (9.5)" $ \lask ->
+      withProject [("main.lask", "f() = do {\n  log(\"building\")\n  \"done\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"done\"\n"
+        resErr r `shouldSatisfy` isInfixOf "building"
+    it "carries a level and a message as JSON under --format json (12.2)" $ \lask ->
+      withProject [("main.lask", "f() = do {\n  log(\"building\")\n  \"done\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "--format", "json", "f"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldSatisfy` isInfixOf "\"level\":\"info\""
+        resErr r `shouldSatisfy` isInfixOf "\"message\":\"building\""
+    it "masks a registered secret (12.8)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "f() = do {\n  token!! = \"s3cret\"\n  log(concat(\"using \", token))\n  \"done\"\n}\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["eval", "f"] ""
+          resExit r `shouldBe` 0
+          resErr r `shouldSatisfy` (not . isInfixOf "s3cret")
 
   describe "observability (spec 12, 13.3)" $ do
     let src =

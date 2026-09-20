@@ -59,6 +59,30 @@ stmt = Stmt NoSpan
 block :: [StmtF] -> Block
 block = Block NoSpan . map stmt
 
+carm :: [Expr] -> Expr -> CaseArm
+carm hs = CaseArm NoSpan (Just (ValueHeads hs))
+
+celse :: Expr -> CaseArm
+celse = CaseArm NoSpan Nothing
+
+-- | A function declaration with no type parameters, and a plain type
+-- alias: the shapes almost every test wants (spec 4.2).
+dfun :: Text -> [Param] -> Maybe SType -> Expr -> DeclF
+dfun n = DFunction n []
+
+dalias :: Text -> SType -> DeclF
+dalias n = DTypeAlias n []
+
+named :: Maybe Text -> Text -> STypeF
+named q n = SNamed q n []
+
+-- | A record field whose key must be present (spec 4.2).
+fld :: Text -> SType -> (Spanned Text, Bool, SType)
+fld n t = (sp n, False, t)
+
+tarm :: [STypeF] -> Expr -> CaseArm
+tarm hs = CaseArm NoSpan (Just (TypeHeads (map ty hs)))
+
 spec :: Spec
 spec = do
   describe "declarations" $ do
@@ -72,7 +96,7 @@ spec = do
     it "parses a function declaration" $
       pModule "add(x: Number, y: Number): Number = x + y"
         `shouldBe` Right
-          [ DFunction
+          [ dfun
               "add"
               [ Param NoSpan (PPositional "x" Public (Just (ty SNumber))),
                 Param NoSpan (PPositional "y" Public (Just (ty SNumber)))
@@ -84,7 +108,7 @@ spec = do
     it "parses variadic and keyword parameters" $
       pModule "f(a, ...xs: Array<Number>, --n: Number = 3) = a"
         `shouldBe` Right
-          [ DFunction
+          [ dfun
               "f"
               [ Param NoSpan (PPositional "a" Public Nothing),
                 Param NoSpan (PVariadic "xs" (Just (ty (SArray (ty SNumber))))),
@@ -107,7 +131,7 @@ spec = do
     it "parses !! on positional and keyword parameters (spec 6.10)" $
       pModule "f(a!!: String, --n!!: String = \"d\") = a"
         `shouldBe` Right
-          [ DFunction
+          [ dfun
               "f"
               [ Param NoSpan (PPositional "a" Secret (Just (ty SString))),
                 Param NoSpan (PKeyword "n" Secret (Just (ty SString)) (str "d"))
@@ -121,7 +145,7 @@ spec = do
 
     it "parses a type alias" $
       pModule "type Strings = Array<String>"
-        `shouldBe` Right [DTypeAlias "Strings" (ty (SArray (ty SString)))]
+        `shouldBe` Right [dalias "Strings" (ty (SArray (ty SString)))]
 
     it "parses named imports with rename" $
       pModule "import { add, mul as times } from \"lib/math.lask\""
@@ -142,7 +166,7 @@ spec = do
       pModule "export a = 1" `shouldBe` Right [DValue "a" Public Nothing (num 1)]
       pModule "internal a = 1" `shouldBe` Right [DValue "a" Public Nothing (num 1)]
       pModule "internal type Strings = Array<String>"
-        `shouldBe` Right [DTypeAlias "Strings" (ty (SArray (ty SString)))]
+        `shouldBe` Right [dalias "Strings" (ty (SArray (ty SString)))]
 
     it "records which names are marked internal (spec 5)" $ do
       pInternal "internal a = 1\nb = 2\ninternal c() = 3" `shouldBe` Right ["a", "c"]
@@ -181,7 +205,26 @@ spec = do
           [ DValue
               "u"
               Public
-              (Just (ty (SRecord [(sp "name", ty SString), (sp "X-Api-Key", ty SString)])))
+              (Just (ty (SRecord [fld "name" (ty SString), fld "X-Api-Key" (ty SString)])))
+              (var "u2")
+          ]
+
+    it "parses the optional marker on a field name (spec 4.2)" $
+      pModule "u: Record<a?: String, \"X-Key\"?: Number, c: Bool> = u2"
+        `shouldBe` Right
+          [ DValue
+              "u"
+              Public
+              ( Just
+                  ( ty
+                      ( SRecord
+                          [ (sp "a", True, ty SString),
+                            (sp "X-Key", True, ty SNumber),
+                            fld "c" (ty SBool)
+                          ]
+                      )
+                  )
+              )
               (var "u2")
           ]
 
@@ -194,20 +237,90 @@ spec = do
       pModule "f: Function<Number> = g"
         `shouldBe` Right [DValue "f" Public (Just (ty (SFunction [] (ty SNumber)))) (var "g")]
 
+    it "parses type parameters on a function declaration (spec 4.2)" $
+      pModule "first<T>(xs: Array<T>): T = xs[0]"
+        `shouldBe` Right
+          [ DFunction
+              "first"
+              [Spanned NoSpan "T"]
+              [Param NoSpan (PPositional "xs" Public (Just (ty (SArray (ty (named Nothing "T"))))))]
+              (Just (ty (named Nothing "T")))
+              (ex (EIndex (var "xs") (num 0)))
+          ]
+
+    it "parses several type parameters" $
+      pModule "pair<A, B>(a: A, b: B): A = a"
+        `shouldBe` Right
+          [ DFunction
+              "pair"
+              [Spanned NoSpan "A", Spanned NoSpan "B"]
+              [ Param NoSpan (PPositional "a" Public (Just (ty (named Nothing "A")))),
+                Param NoSpan (PPositional "b" Public (Just (ty (named Nothing "B"))))
+              ]
+              (Just (ty (named Nothing "A")))
+              (var "a")
+          ]
+
+    it "parses type parameters on a type alias, and arguments on a reference" $ do
+      pModule "type Pair<A, B> = Record<first: A, second: B>"
+        `shouldBe` Right
+          [ DTypeAlias
+              "Pair"
+              [Spanned NoSpan "A", Spanned NoSpan "B"]
+              (ty (SRecord [fld "first" (ty (named Nothing "A")), fld "second" (ty (named Nothing "B"))]))
+          ]
+      pModule "p: Pair<Number, String> = x"
+        `shouldBe` Right
+          [ DValue
+              "p"
+              Public
+              (Just (ty (SNamed Nothing "Pair" [ty SNumber, ty SString])))
+              (var "x")
+          ]
+
+    it "parses a union type (spec 4.2)" $
+      pModule "f: String | Null = g"
+        `shouldBe` Right
+          [DValue "f" Public (Just (ty (SUnion [ty SString, ty SNull]))) (var "g")]
+
+    it "parses a union inside a type argument" $
+      pModule "xs: Array<String | Null> = g"
+        `shouldBe` Right
+          [ DValue
+              "xs"
+              Public
+              (Just (ty (SArray (ty (SUnion [ty SString, ty SNull])))))
+              (var "g")
+          ]
+
+    it "parses a union as the last argument of a function type" $
+      pModule "f: Function<String, String | Null> = g"
+        `shouldBe` Right
+          [ DValue
+              "f"
+              Public
+              (Just (ty (SFunction [ty SString] (ty (SUnion [ty SString, ty SNull])))))
+              (var "g")
+          ]
+
+    it "keeps | and || apart" $
+      pModule "b = x || y"
+        `shouldBe` Right [DValue "b" Public Nothing (ex (EBin OpOr (var "x") (var "y")))]
+
     it "parses >= splitting after a generic type" $
       pModule "m: Map<String>= x" `shouldBe` Right [DValue "m" Public (Just (ty (SMap (ty SString)))) (var "x")]
 
     it "parses a bare named type" $
-      pModule "u: Config = 1" `shouldBe` Right [DValue "u" Public (Just (ty (SNamed Nothing "Config"))) (num 1)]
+      pModule "u: Config = 1" `shouldBe` Right [DValue "u" Public (Just (ty (named Nothing "Config"))) (num 1)]
 
     it "parses a namespace-qualified named type (spec 4.2 QualifiedNamedType)" $
       pModule "u: tf.TfOutputs = 1"
-        `shouldBe` Right [DValue "u" Public (Just (ty (SNamed (Just "tf") "TfOutputs"))) (num 1)]
+        `shouldBe` Right [DValue "u" Public (Just (ty (named (Just "tf") "TfOutputs"))) (num 1)]
 
     it "parses a namespace-qualified type nested inside a generic" $
       pModule "xs: Array<tf.TfOutputs> = []"
         `shouldBe` Right
-          [DValue "xs" Public (Just (ty (SArray (ty (SNamed (Just "tf") "TfOutputs"))))) (ex (EArray []))]
+          [DValue "xs" Public (Just (ty (SArray (ty (named (Just "tf") "TfOutputs"))))) (ex (EArray []))]
 
   describe "expressions" $ do
     it "parses operator precedence: * over +" $
@@ -294,15 +407,36 @@ spec = do
   describe "do blocks and statements" $ do
     it "parses do blocks with binds and trailing expression" $
       pExpr "do {\n  a = 1\n  a\n}"
-        `shouldBe` Right (EDo (block [SBind "a" Public (num 1), SExpr (var "a")]))
+        `shouldBe` Right (EDo (block [SBind "a" Public Nothing (num 1), SExpr (var "a")]))
 
     it "parses semicolon-separated statements" $
       pExpr "do { a = 1; a }"
-        `shouldBe` Right (EDo (block [SBind "a" Public (num 1), SExpr (var "a")]))
+        `shouldBe` Right (EDo (block [SBind "a" Public Nothing (num 1), SExpr (var "a")]))
 
     it "parses the !! secret marker on a bind statement (spec 6.10)" $
       pExpr "do { a!! = \"s\"; a }"
-        `shouldBe` Right (EDo (block [SBind "a" Secret (str "s"), SExpr (var "a")]))
+        `shouldBe` Right (EDo (block [SBind "a" Secret Nothing (str "s"), SExpr (var "a")]))
+
+    it "parses a type annotation on a bind statement (spec 6.5)" $
+      pExpr "do { a: Number = 1; a }"
+        `shouldBe` Right
+          (EDo (block [SBind "a" Public (Just (ty SNumber)) (num 1), SExpr (var "a")]))
+
+    it "parses a union annotation on a bind statement" $
+      pExpr "do { a: String | Null = null; a }"
+        `shouldBe` Right
+          ( EDo
+              ( block
+                  [ SBind "a" Public (Just (ty (SUnion [ty SString, ty SNull]))) (ex ENull),
+                    SExpr (var "a")
+                  ]
+              )
+          )
+
+    it "parses the !! marker before the annotation, as a ValueDecl does" $
+      pExpr "do { a!!: String = \"s\"; a }"
+        `shouldBe` Right
+          (EDo (block [SBind "a" Secret (Just (ty SString)) (str "s"), SExpr (var "a")]))
 
     it "parses empty do blocks" $
       pExpr "do {}" `shouldBe` Right (EDo (block []))
@@ -342,6 +476,72 @@ spec = do
               (block [SExpr (ex (ECall (var "concat") [posArg (str "item:"), posArg (var "x")]))])
           )
 
+    it "parses case expressions with a scrutinee (spec 6.4)" $
+      pExpr "case (x) {\n  \"a\" -> 1\n  else -> 2\n}"
+        `shouldBe` Right (ECase (Just (var "x")) [carm [str "a"] (num 1), celse (num 2)])
+
+    it "parses several heads in one arm" $
+      pExpr "case (x) {\n  \"a\", \"b\" -> 1\n  else -> 2\n}"
+        `shouldBe` Right (ECase (Just (var "x")) [carm [str "a", str "b"] (num 1), celse (num 2)])
+
+    it "parses type heads (spec 6.4)" $
+      pExpr "case (x) {\n  Null -> 1\n  else -> 2\n}"
+        `shouldBe` Right (ECase (Just (var "x")) [tarm [SNull] (num 1), celse (num 2)])
+
+    it "parses several type heads in one arm" $
+      pExpr "case (x) {\n  Number, String -> 1\n  else -> 2\n}"
+        `shouldBe` Right
+          (ECase (Just (var "x")) [tarm [SNumber, SString] (num 1), celse (num 2)])
+
+    it "parses a composite type head" $
+      pExpr "case (x) {\n  Array<String> -> 1\n  else -> 2\n}"
+        `shouldBe` Right
+          (ECase (Just (var "x")) [tarm [SArray (ty SString)] (num 1), celse (num 2)])
+
+    it "parses the condition form without a scrutinee" $
+      pExpr "case {\n  c -> 1\n  else -> 2\n}"
+        `shouldBe` Right (ECase Nothing [carm [var "c"] (num 1), celse (num 2)])
+
+    it "parses semicolon-separated arms" $
+      pExpr "case (x) { 1 -> \"a\"; else -> \"b\" }"
+        `shouldBe` Right (ECase (Just (var "x")) [carm [num 1] (str "a"), celse (str "b")])
+
+    it "parses a do block as an arm body" $
+      pExpr "case (x) {\n  1 -> do { a = 1; a }\n  else -> 2\n}"
+        `shouldBe` Right
+          ( ECase
+              (Just (var "x"))
+              [ carm [num 1] (ex (EDo (block [SBind "a" Public Nothing (num 1), SExpr (var "a")]))),
+                celse (num 2)
+              ]
+          )
+
+    it "reads an else on its own line as the else arm, not as an if branch" $
+      pExpr "case (x) {\n  1 -> if (c) { 1 } else { 2 }\n  else -> 3\n}"
+        `shouldBe` Right
+          ( ECase
+              (Just (var "x"))
+              [ carm [num 1] (ex (EIf (var "c") (block [SExpr (num 1)]) (Just (block [SExpr (num 2)])))),
+                celse (num 3)
+              ]
+          )
+
+    it "lets an arm body's if put its else block on the next line" $
+      pExpr "case (x) {\n  1 -> if (c) { 1 }\n  else { 2 }\n  else -> 3\n}"
+        `shouldBe` Right
+          ( ECase
+              (Just (var "x"))
+              [ carm [num 1] (ex (EIf (var "c") (block [SExpr (num 1)]) (Just (block [SExpr (num 2)])))),
+                celse (num 3)
+              ]
+          )
+
+    it "parses an empty case (the else arm is required later, in elaboration)" $
+      pExpr "case (x) { }" `shouldBe` Right (ECase (Just (var "x")) [])
+
+    it "rejects an arm without a body" $
+      pModule "x = case (a) { 1 -> }" `shouldSatisfy` isLeft
+
     it "parses try-catch-finally" $
       pExpr "try { a } catch (e) { b } finally { c }"
         `shouldBe` Right
@@ -361,7 +561,7 @@ spec = do
   describe "spec 16 style programs" $ do
     it "parses the minimal program (16.1)" $
       pModule "hello() = \"hello, lask\""
-        `shouldBe` Right [DFunction "hello" [] Nothing (str "hello, lask")]
+        `shouldBe` Right [dfun "hello" [] Nothing (str "hello, lask")]
 
     it "parses a multi-line procedural function (16.5 style)" $
       pModule

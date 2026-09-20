@@ -8,6 +8,9 @@ module Language.Lask.Runtime.Eval
     applyValue,
     topValue,
     castValue,
+    castValueEither,
+    CastMismatch (..),
+    renderCastMismatch,
   )
 where
 
@@ -18,32 +21,33 @@ import Data.Time.Clock (getCurrentTime)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
-import Language.Lask.Builtins.Impl (CommandRunner, callBuiltin)
+import Language.Lask.Builtins.Impl (RtHooks, callBuiltin)
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.Events
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (functionRefJson)
-import Language.Lask.Types (Type (..), renderType)
+import Language.Lask.Types (Field (..), Type (..), renderType, requiredNames)
 
 data RtCtx = RtCtx
   { rtProgram :: CoreProgram,
     rtTopCache :: IORef (Map (FilePath, Text) Value),
     rtStdin :: Text,
-    rtRunCommand :: CommandRunner,
+    rtHooks :: RtHooks,
     rtTraceId :: TraceId,
     rtEmit :: EventSink
   }
 
-mkRtCtx :: CoreProgram -> Text -> CommandRunner -> IO RtCtx
-mkRtCtx prog stdinText runner = do
+mkRtCtx :: CoreProgram -> Text -> RtHooks -> IO RtCtx
+mkRtCtx prog stdinText hooks = do
   cache <- newIORef Map.empty
   traceId <- newTraceId
-  pure (RtCtx prog cache stdinText runner traceId noSink)
+  pure (RtCtx prog cache stdinText hooks traceId noSink)
 
 -- | Top-level values are evaluated once, on first reference.
 topValue :: RtCtx -> (FilePath, Text) -> IO Value
@@ -89,7 +93,9 @@ evalCore ctx scope (Core _ f) = case f of
     case v of
       VRecord m -> case Map.lookup fld m of
         Just x -> pure x
-        Nothing -> internal ("missing record field: " <> fld)
+        -- The checker admits a missing key only for an optional field
+        -- (spec 4.2), which reads as null (6.8).
+        Nothing -> pure VNull
       _ -> internal "field access on a non-record"
   CIndex kind c i -> do
     container <- evalCore ctx scope c
@@ -164,6 +170,9 @@ evalCore ctx scope (Core _ f) = case f of
   CCast c ty -> do
     v <- evalCore ctx scope c
     castValue ty v
+  CIsType c ty -> do
+    v <- evalCore ctx scope c
+    pure (VBool (matchesType ty v))
   where
     evalKv (n, c) = (,) n <$> evalCore ctx scope c
 
@@ -198,7 +207,7 @@ applyValue ctx fv pos kw = case fv of
         scope2
         (lamKeywords lam)
     evalCore ctx scope3 (lamBody lam)
-  VBuiltin name -> callBuiltin (applyValue ctx) (rtRunCommand ctx) name pos kw
+  VBuiltin name -> callBuiltin (applyValue ctx) (rtHooks ctx) name pos kw
   other ->
     throwIO . runtimeFailure ERuntimeAccess $
       "cannot call a value of type " <> typeNameOf other
@@ -251,9 +260,37 @@ binOp _ op a b = case op of
 -- mutually accepted (structural conversion); @Any@ positions are
 -- unchecked; failure is @E-RUNTIME-CAST@ with a path.
 castValue :: Type -> Value -> IO Value
-castValue = go []
+castValue ty v = case castValueEither ty v of
+  Right v' -> pure v'
+  Left cm -> throwIO (runtimeFailure ERuntimeCast ("cast failed" <> renderCastMismatch cm))
+
+-- | Why a value does not satisfy a type check: the path to the
+-- innermost offending part (empty when the value itself is of the
+-- wrong kind), the type expected there, and the value found.
+data CastMismatch = CastMismatch
+  { cmPath :: [Text],
+    cmExpected :: Type,
+    cmGot :: Value
+  }
+
+-- | A mismatch as the tail of a message, written after a lead-in that
+-- names the check that failed: @ at PATH@ when nested, then
+-- @: expected T, got U@.
+renderCastMismatch :: CastMismatch -> Text
+renderCastMismatch cm =
+  (if null (cmPath cm) then "" else " at " <> T.intercalate "." (cmPath cm))
+    <> ": expected "
+    <> renderType (cmExpected cm)
+    <> ", got "
+    <> typeNameOf (cmGot cm)
+
+-- | The check and conversion of 'castValue' without its failure, for
+-- callers that are not a @cast@ the user wrote and word the mismatch
+-- themselves (spec 11.2).
+castValueEither :: Type -> Value -> Either CastMismatch Value
+castValueEither = go []
   where
-    go :: [Text] -> Type -> Value -> IO Value
+    go :: [Text] -> Type -> Value -> Either CastMismatch Value
     go path ty v = case (ty, v) of
       (TyAny, _) -> pure v
       (TyNumber, VNumber _) -> pure v
@@ -267,26 +304,52 @@ castValue = go []
       (TyMap t, VRecord m) -> VMap <$> Map.traverseWithKey (\k x -> go (path <> [k]) t x) m
       (TyRecord fields, VRecord m) -> castRecord path fields m
       (TyRecord fields, VMap m) -> castRecord path fields m
+      -- Members are tried in the canonical order of 4.2 and the first
+      -- that matches decides, which matters only where two of them can
+      -- accept one value, as Record and Map can.
+      (TyUnion ts, _) -> case filter (`matchesType` v) ts of
+        (t : _) -> go path t v
+        [] -> castFail path ty v
       _ -> castFail path ty v
 
+    -- Every required field present, nothing outside the field set, and
+    -- each value checked (spec 15.8). An optional field may be absent
+    -- and is checked only where it is (4.2).
     castRecord path fields m
-      | Map.keysSet fields == Map.keysSet m =
+      | requiredNames fields `Set.isSubsetOf` Map.keysSet m,
+        Map.keysSet m `Set.isSubsetOf` Map.keysSet fields =
           VRecord
             <$> Map.traverseWithKey
-              (\k x -> go (path <> [k]) (fields Map.! k) x)
+              (\k x -> go (path <> [k]) (fieldType (fields Map.! k)) x)
               m
       | otherwise =
           castFail path (TyRecord fields) (VRecord m)
 
-    castFail :: [Text] -> Type -> Value -> IO a
-    castFail path ty v =
-      throwIO . runtimeFailure ERuntimeCast $
-        "cast failed"
-          <> (if null path then "" else " at " <> T.intercalate "." path)
-          <> ": expected "
-          <> renderType ty
-          <> ", got "
-          <> typeNameOf v
+    castFail :: [Text] -> Type -> Value -> Either CastMismatch a
+    castFail path ty v = Left (CastMismatch path ty v)
+
+-- | The check of 'castValue' as a predicate: the condition of a @case@
+-- type head (spec 6.4), which tests without converting or failing.
+matchesType :: Type -> Value -> Bool
+matchesType ty v = case (ty, v) of
+  (TyAny, _) -> True
+  (TyNumber, VNumber _) -> True
+  (TyString, VString _) -> True
+  (TyBool, VBool _) -> True
+  (TyNull, VNull) -> True
+  (TyEnvironment, VEnv _) -> True
+  (TyArray t, VArray xs) -> V.all (matchesType t) xs
+  (TyMap t, VMap m) -> all (matchesType t) (Map.elems m)
+  (TyMap t, VRecord m) -> all (matchesType t) (Map.elems m)
+  (TyRecord fields, VRecord m) -> recordMatches fields m
+  (TyRecord fields, VMap m) -> recordMatches fields m
+  (TyUnion ts, _) -> any (`matchesType` v) ts
+  _ -> False
+  where
+    recordMatches fields m =
+      requiredNames fields `Set.isSubsetOf` Map.keysSet m
+        && Map.keysSet m `Set.isSubsetOf` Map.keysSet fields
+        && and (Map.elems (Map.intersectionWith (matchesType . fieldType) fields m))
 
 internal :: Text -> IO a
 internal msg =

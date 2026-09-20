@@ -24,10 +24,18 @@
 -- statement (spec 6.5), which is satisfied here simply because those
 -- tokens are not continuation tokens.
 --
+-- A @case@ block (spec 6.4) is a block in both senses: its arms are
+-- newline-terminated like statements, and a line-leading @else@ stays
+-- a continuation inside it. The parser accepts an arm that carries no
+-- terminator before @else@, so an @else@ arm may still begin a line,
+-- and a nested @IfExpr@ may still put its @else@ block on the next
+-- line.
+--
 -- Block braces are distinguished from object-literal braces by the
--- token immediately before @{@: @do@, @try@, @finally@, @else@ and
--- @)@ (the header close of @if@\/@for@\/@catch@) open blocks; braces
--- in any other position are object literals. The two can never occur
+-- token immediately before @{@: @do@, @try@, @finally@, @else@,
+-- @case@ (the condition form) and @)@ (the header close of
+-- @if@\/@for@\/@catch@\/@case@) open blocks; braces in any other
+-- position are object literals. The two can never occur
 -- in the same position in valid programs, because an expression can
 -- never directly follow another expression.
 module Language.Lask.Lexer.Layout
@@ -99,6 +107,7 @@ layout = go [] Nothing Nothing
     classifyBrace :: Maybe Token -> Delim
     classifyBrace prev = case prev of
       Just (TKw KDo) -> DBlock
+      Just (TKw KCase) -> DBlock -- the condition form: case { c -> e }
       Just (TKw KTry) -> DBlock
       Just (TKw KFinally) -> DBlock
       Just (TKw KElse) -> DBlock

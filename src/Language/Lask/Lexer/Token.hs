@@ -45,6 +45,7 @@ data Keyword
   | KAwait
   | KIf
   | KElse
+  | KCase
   | KFor
   | KReturn
   | KTry
@@ -127,6 +128,11 @@ data Token
     -- this is its own lexeme and is never read as two 'OpNot's.
     TBangBang
   | TEllipsis
+  | -- | @|@, the union separator of a type (spec 4.2). Lexed after
+    -- @|>@ and @||@, so it is never a piece of either.
+    TPipe
+  | -- | @?@, the optional marker on a record field name (spec 4.2).
+    TQuestion
   | TNewline
   deriving (Show, Eq, Ord)
 
@@ -165,6 +171,7 @@ keywordFromText t = case t of
   "await" -> Just KAwait
   "if" -> Just KIf
   "else" -> Just KElse
+  "case" -> Just KCase
   "for" -> Just KFor
   "return" -> Just KReturn
   "try" -> Just KTry
@@ -190,6 +197,7 @@ keywordText k = case k of
   KAwait -> "await"
   KIf -> "if"
   KElse -> "else"
+  KCase -> "case"
   KFor -> "for"
   KReturn -> "return"
   KTry -> "try"
