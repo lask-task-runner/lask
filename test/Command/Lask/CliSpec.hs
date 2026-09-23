@@ -209,7 +209,7 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", "id2(x: String): String = x\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "--arg-decode", "text", "id2", "5"] ""
         r `shouldBe` Result 0 "\"5\"\n" ""
-    -- Reproduces a report against example/04-webapp/main.lask:
+    -- Reproduces a report against example/01-projects/02-webapp-on-aws/main.lask:
     -- `--access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID")` works
     -- when the default (a get_env call, always a String) is used, but
     -- passing an explicit CLI value that happens to look like JSON

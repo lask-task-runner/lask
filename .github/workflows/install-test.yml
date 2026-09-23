@@ -2,7 +2,7 @@ name: Install test
 
 # The README is the only install instruction users have, so it is worth
 # running: this workflow installs a released binary exactly the way the
-# README says to on each platform, then drives example/01-basic with it.
+# README says to on each platform, then drives example/01-projects/01-hello-world with it.
 # Manual trigger only — it tests a published release, not the commit.
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ on:
         type: string
         default: latest
       ref:
-        description: "Branch or tag to take example/01-basic from (blank = this branch)"
+        description: "Branch or tag to take example/01-projects/01-hello-world from (blank = this branch)"
         required: false
         type: string
         default: ""
@@ -137,9 +137,9 @@ jobs:
           lask --help
           lask version
 
-      - name: Check example/01-basic
+      - name: Check example/01-projects/01-hello-world
         shell: bash
-        working-directory: example/01-basic
+        working-directory: example/01-projects/01-hello-world
         run: |
           set -euo pipefail
           lask check
@@ -149,7 +149,7 @@ jobs:
       # on the two platforms where no Linux container can be started.
       - name: Run the pure task
         shell: bash
-        working-directory: example/01-basic
+        working-directory: example/01-projects/01-hello-world
         run: |
           set -euo pipefail
           OUTPUT=$(lask eval hello --name Lask)
@@ -162,7 +162,7 @@ jobs:
       - name: Run the containerized task
         if: matrix.docker
         shell: bash
-        working-directory: example/01-basic
+        working-directory: example/01-projects/01-hello-world
         run: |
           set -euo pipefail
           lask envs --check

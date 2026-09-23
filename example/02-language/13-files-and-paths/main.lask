@@ -1,0 +1,109 @@
+// Files and paths
+//
+// Every filesystem call names the environment it acts in, as its last
+// argument: there is no default one, and no access that quietly means
+// the host.
+//
+//   lask run  write_report
+//   lask eval read_report
+//   lask eval same_path_two_worlds
+//   lask run  clean
+
+alpine = #alpine:3.22.2
+
+work_dir = "tmp"
+report_path = "tmp/report.json"
+
+// Break a path into its parts.
+//
+// Path helpers are pure string work — they touch no filesystem and so
+// name no environment.
+//
+// @param path  Any path at all.
+// @example lask eval describe-path tmp/report.json
+describe_path(path: String): Record<
+  dir: String,
+  base: String,
+  ext: String,
+  normalized: String,
+  absolute: Bool
+> = {
+  dir: dirname(path),
+  base: basename(path),
+  ext: extname(path),
+  normalized: normalize_path(path),
+  absolute: is_absolute_path(path)
+}
+
+// Assemble a path from segments.
+//
+// `path_join` takes the segments as an array, so a path is assembled
+// without guessing at separators.
+artifact_path(--name: String = "report", --ext: String = "json"): String =
+  path_join([work_dir, "artifacts", "#{name}.#{ext}"])
+
+// Write a file on the host.
+//
+// `make_dir` creates missing parents; `write_file` creates none, so the
+// directory comes first. Both take the environment last — `#local`
+// here, which is the host.
+write_report(): Void = do {
+  make_dir(work_dir, #local)
+  body = encode({ generated: "by lask", files: 1 }, "pretty-json")
+  write_file(report_path, body, #local)
+  log("wrote #{report_path}")
+}
+
+// Read it back, with the absent case handled rather than raised.
+//
+// `file_exists` returns false instead of failing when part of the path
+// is missing, so no prior check of the directory is needed.
+read_report(): String =
+  if (file_exists(report_path, #local)) {
+    read_file(report_path, #local)
+  } else {
+    "(run `lask run write-report` first)"
+  }
+
+// List what is there.
+//
+// `list_dir` returns bare entry names and `glob` returns paths, both
+// sorted in code point order — a directory read gives the same answer
+// on every machine, instead of whatever order the filesystem happened
+// to hand back.
+inventory(): Record<entries: Array<String>, lask_files: Array<String>> = {
+  entries: if (file_exists(work_dir, #local)) { list_dir(work_dir, #local) } else { [] },
+  lask_files: glob("*.lask", #local)
+}
+
+// Compare what two environments see at one path.
+//
+// A container sees only what was mounted into it, so this task writes
+// through the host and reads through the container to show that the
+// project directory is the one place both agree on.
+//
+// @return What each environment finds at the same relative path.
+same_path_two_worlds(): Record<host: Bool, container: Bool, container_only: Bool> = do {
+  make_dir(work_dir, #local)
+  write_file("tmp/host.txt", "written on the host", #local)
+  // /etc/hostname exists in the image and not on a macOS host: an
+  // absolute path is not shared ground either.
+  {
+    host: file_exists("tmp/host.txt", #local),
+    container: file_exists("tmp/host.txt", alpine),
+    container_only: file_exists("/etc/alpine-release", alpine)
+  }
+}
+
+// Remove what the tasks above created.
+//
+// `remove_file` succeeds on a path that is not there, so cleanup needs
+// no test first. There is deliberately no recursive delete: a
+// destructive traversal stays an explicit command, where the command
+// execution log records it.
+clean(): Void = do {
+  remove_file(report_path, #local)
+  remove_file("tmp/host.txt", #local)
+  $[alpine] rm -rf tmp
+  log("cleaned")
+}

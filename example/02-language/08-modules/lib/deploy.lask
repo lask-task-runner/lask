@@ -1,0 +1,16 @@
+// A second library, this one running commands.
+//
+// Command declarations are per module and are never imported: this
+// `command` line governs the `$` below and nothing in main.lask, which
+// has to declare whatever it runs itself.
+command "echo" on #alpine:3.22.2
+
+// @param target   Where to roll out to.
+// @param version  What to roll out.
+rollout(target: String, --version: String = "latest"): String = do {
+  out = $ echo "rolling out #{version} to #{target}"
+  trim(out)
+}
+
+// A module can expose values, not just functions.
+targets: Array<String> = ["staging", "production"]

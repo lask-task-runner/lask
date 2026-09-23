@@ -397,13 +397,14 @@ spec = do
             (name `elem` ls)
 
 -- | Real sources from the repository, each with a name it declares.
--- The terraform example does not resolve its dependency unless it has
--- been fetched, which is exactly the degraded state to cover.
+-- The dependencies example does not resolve its import unless the
+-- dependency has been fetched, which is exactly the degraded state to
+-- cover.
 realSources :: [(FilePath, Text)]
 realSources =
   [ ("main.lask", "doctest"),
-    ("example/01-basic/main.lask", "cowsay"),
-    ("example/03-terraform/main.lask", "as_string")
+    ("example/01-projects/01-hello-world/main.lask", "cowsay"),
+    ("example/02-language/09-dependencies/main.lask", "status")
   ]
 
 -- | Sources exercising the states a buffer passes through while it is

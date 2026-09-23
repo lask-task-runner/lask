@@ -6,7 +6,7 @@ You need **Lask** and **Docker**. Nothing else — no Python, no Node.js, no
 Terraform, no AWS CLI, and for this first step, not even an AWS account:
 
 ```bash
-cd example/04-webapp
+cd example/01-projects/02-webapp-on-aws
 lask deps sync   # one-time, needs network: fetches the terraform/aws modules main.lask imports
 lask run test
 ```
@@ -125,7 +125,7 @@ policies attached: `AWSLambda_FullAccess`, `AmazonRDSFullAccess`,
 Drop that user's credentials into a `.env` file in this directory:
 
 ```bash
-cd example/04-webapp
+cd example/01-projects/02-webapp-on-aws
 
 cat > .env <<'EOF'
 export AWS_DEFAULT_REGION=us-west-1
@@ -141,7 +141,7 @@ commit. Run `source .env` before the commands below — that's where the
 ## The full loop
 
 ```bash
-cd example/04-webapp
+cd example/01-projects/02-webapp-on-aws
 source .env
 
 lask run deploy       # infra, build, upload. grab a coffee

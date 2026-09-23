@@ -1,0 +1,116 @@
+// Functions
+//
+// A task is an ordinary function, and an ordinary function is a task:
+// there is no second concept. Pure, so `lask eval` needs no Docker.
+//
+//   lask eval greet alice --prefix hi
+//   lask eval tag_all v1 web api
+//   lask eval pipeline "  Lask  "
+
+// Greet someone by name.
+//
+// Positional parameters are required and take no default. Keyword
+// parameters are written `--name`, must have a default, and are bound
+// only by name.
+//
+// @param name    Who to greet. Positional, so `lask eval greet alice`.
+// @param prefix  The greeting itself.
+// @example lask eval greet alice --prefix hi
+greet(name: String, --prefix: String = "hello"): String =
+  "#{prefix}, #{name}"
+
+// Tag every image named on the command line.
+//
+// A variadic parameter comes right after the positional ones and
+// collects whatever is left over, as an `Array<T>`. At most one.
+//
+// @param version  The tag to apply.
+// @param names    Every remaining argument.
+// @example lask eval tag-all v1 web api worker
+tag_all(version: String, ...names: Array<String>, --registry: String = "ghcr.io"):
+  Array<String> =
+    map(names, \(n: String) -> "#{registry}/#{n}:#{version}")
+
+// Declaration order is enforced: positional, then variadic, then
+// keyword. The CLI maps `-` to `_`, so `tag_all` is `lask eval tag-all`.
+
+// Double a number.
+//
+// `f(x) = body` is sugar for `f = \(x) -> body`, so a function is just
+// a value and can be passed like one.
+double(x: Number): Number = x * 2
+
+// Add one.
+increment(x: Number): Number = x + 1
+
+// Apply a function to its own result.
+//
+// Higher-order functions take the function as an ordinary argument.
+apply_twice(f: Function<Number, Number>, x: Number): Number = f(f(x))
+
+// Greet a whole list, through a function value.
+//
+// Careful: calling *through a function value* loses the parameter list.
+// Only positional arguments pass, and every keyword parameter takes its
+// default — which is why `shout` below cannot set `prefix`.
+shout(names: Array<String>): Array<String> =
+  map(names, greet)
+
+// Turn free text into a slug, left to right.
+//
+// `|>` and `<|` apply, `>>` and `<<` compose. All four are
+// left-associative and sit at the bottom of the precedence table.
+//
+// @example lask eval pipeline "  Lask Task Runner  "
+pipeline(raw: String): String =
+  raw |> trim |> to_lower |> \(s: String) -> replace(s, " ", "-")
+
+// Double, then add one.
+//
+// `f >> g` is "f, then g"; `f << g` is "g, then f".
+bump: Function<Number, Number> = double >> increment
+
+// Add one, then double.
+bump_other: Function<Number, Number> = double << increment
+
+// Both compositions of the same pair.
+//
+// @return {forward: 2n+1, backward: 2(n+1)}
+compose_demo(n: Number): Record<forward: Number, backward: Number> = {
+  forward: bump(n),
+  backward: bump_other(n)
+}
+
+// Put an element in front of an array.
+//
+// A declaration may bind type parameters before its parameter list. A
+// default that mentions one has to hold for every instantiation, which
+// is why `--extra: Array<T> = []` is legal and `--extra: T = 1` is not.
+prepend<T>(x: T, xs: Array<T>, --extra: Array<T> = []): Array<T> =
+  concat_array(concat_array([x], xs), extra)
+
+// Instantiate `prepend` at Number.
+numbers(): Array<Number> = prepend(0, [1, 2])
+
+// Instantiate `prepend` at String, with a keyword argument.
+words(): Array<String> = prepend("a", ["b"], extra = ["z"])
+
+// Build a function that adds a fixed number.
+//
+// Lambdas are written `\(x) -> e`, and close over what is in scope.
+adder(n: Number): Function<Number, Number> = \(x: Number) -> x + n
+
+// Call a function another task returned.
+add_five(x: Number): Number = do {
+  f = adder(5)
+  f(x)
+}
+
+// `internal` keeps a helper out of other modules — and out of `lask`
+// listings — while leaving it callable from this file.
+internal secret_sauce(): String = "42"
+
+// @hidden keeps a public declaration out of listings without hiding it
+// from `--help` by name.
+// @hidden
+debug_sauce(): String = secret_sauce()
