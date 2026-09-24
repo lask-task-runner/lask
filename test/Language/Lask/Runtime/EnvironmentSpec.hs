@@ -2,7 +2,7 @@
 
 module Language.Lask.Runtime.EnvironmentSpec (spec) where
 
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
@@ -13,6 +13,7 @@ import Language.Lask.Builtins.Impl (FileOp (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Runtime.Environment
+import Language.Lask.Runtime.Image (recipeTag)
 import Language.Lask.Runtime.Secrets (registerSecret, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -103,6 +104,89 @@ spec = do
                      "alpine:3.20",
                      "-c", "uname -a"
                    ]
+
+  describe "container options (spec 10.2)" $ do
+    let opts ps = dockerArgs "/proj" "alpine:3.20" (Map.fromList ps) "uname -a"
+        -- Just the part between the fixed prologue (run, the mount,
+        -- the default -w and the entrypoint) and the image.
+        optionArgs ps = takeWhile (/= "alpine:3.20") (drop 8 (opts ps))
+
+    it "passes scalar options as one flag each" $
+      optionArgs
+        [ ("memory", VString "4g"),
+          ("cpus", VNumber 1.5),
+          ("pids_limit", VNumber 256),
+          ("user", VString "1000:1000"),
+          ("platform", VString "linux/amd64"),
+          ("network", VString "none")
+        ]
+        `shouldBe` [ "--cpus", "1.5",
+                     "--memory", "4g",
+                     "--network", "none",
+                     "--pids-limit", "256",
+                     "--platform", "linux/amd64",
+                     "--user", "1000:1000"
+                   ]
+
+    -- One environment value has to produce one argument vector, or a
+    -- container could differ between two runs of the same task.
+    it "emits options in name order, not in the order they were given" $
+      optionArgs [("memory", VString "4g"), ("cpus", VNumber 2)]
+        `shouldBe` optionArgs [("cpus", VNumber 2), ("memory", VString "4g")]
+
+    it "repeats the flag for a list option" $
+      optionArgs [("tmpfs", VArray (V.fromList [VString "/tmp", VString "/run"]))]
+        `shouldBe` ["--tmpfs", "/tmp", "--tmpfs", "/run"]
+
+    it "joins a table option into the form its flag expects" $ do
+      optionArgs [("env", VMap (Map.fromList [("CI", VString "1"), ("LANG", VString "C")]))]
+        `shouldBe` ["--env", "CI=1", "--env", "LANG=C"]
+      optionArgs [("add_hosts", VMap (Map.fromList [("api", VString "10.0.0.2")]))]
+        `shouldBe` ["--add-host", "api:10.0.0.2"]
+
+    it "says nothing for a switch left false, which is the daemon's own default" $ do
+      optionArgs [("init", VBool True), ("read_only", VBool True)]
+        `shouldBe` ["--init", "--read-only"]
+      optionArgs [("init", VBool False), ("read_only", VBool False)]
+        `shouldBe` []
+
+    -- 10.5 gives an explicit working directory precedence over the
+    -- default, and the daemon takes the last -w it is given.
+    it "puts an explicit workdir after the mounted default so it wins" $
+      opts [("workdir", VString "/work/web")]
+        `shouldBe` [ "run", "--rm",
+                     "--mount", "type=bind,source=/proj,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "-w", "/work/web",
+                     "alpine:3.20",
+                     "-c", "uname -a"
+                   ]
+
+    -- Build arguments belong to the recipe hash (10.3), not to the
+    -- container the image is then run in.
+    it "does not pass the image reference or build arguments as run options" $
+      optionArgs
+        [ ("image", VString "alpine:3.20"),
+          ("build_args", VMap (Map.fromList [("VERSION", VString "1.2.3")]))
+        ]
+        `shouldBe` []
+
+  describe "recipe hashing (spec 10.3)" $ do
+    let tagFor buildArgs = withSystemTempDirectory "lask-recipe" $ \dir -> do
+          writeFile (dir <> "/Dockerfile") "FROM alpine:3.20\n"
+          recipeTag dir "Dockerfile" "." buildArgs
+
+    it "covers the declared build arguments" $ do
+      a <- tagFor []
+      b <- tagFor [("VERSION", "1.2.3")]
+      a `shouldSatisfy` isRight
+      b `shouldNotBe` a
+
+    it "does not depend on the order the build arguments were written in" $ do
+      a <- tagFor [("VERSION", "1.2.3"), ("FLAVOUR", "slim")]
+      b <- tagFor [("FLAVOUR", "slim"), ("VERSION", "1.2.3")]
+      b `shouldBe` a
 
   describe "local execution (spec 8.7, real process)" $ do
     it "runs a local command and captures streams and exit code" $ do

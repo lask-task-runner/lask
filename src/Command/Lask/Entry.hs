@@ -29,6 +29,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
+import qualified Data.Vector as V
 import Data.Version (showVersion)
 import qualified Language.LSP.Lask as LSP
 import Language.Lask (Compiled (..), Partial (..), compileFile, compileFilePartial)
@@ -685,12 +686,12 @@ cmdEnvBuild opts = withRecipes opts $ \baseDir recipes -> do
     mapM_ (TIO.hPutStrLn stderr) failures
     exitWith (ExitFailure 3)
   where
-    buildOne baseDir (df, ctx) = do
-      tagE <- recipeTag baseDir df ctx
+    buildOne baseDir (df, ctx, buildArgs) = do
+      tagE <- recipeTag baseDir df ctx buildArgs
       case tagE of
         Left e -> pure (Left e)
         Right tag -> do
-          r <- buildRecipe baseDir df ctx tag
+          r <- buildRecipe baseDir df ctx buildArgs tag
           pure $ case r of
             Left e -> Left (df <> ": " <> e)
             Right () -> Right (df, tag)
@@ -699,8 +700,8 @@ cmdEnvBuild opts = withRecipes opts $ \baseDir recipes -> do
 -- it is present. Performs no network access and no build.
 cmdEnvList :: CommonOpts -> IO ()
 cmdEnvList opts = withRecipes opts $ \baseDir recipes ->
-  forM_ recipes $ \(df, ctx) -> do
-    tagE <- recipeTag baseDir df ctx
+  forM_ recipes $ \(df, ctx, buildArgs) -> do
+    tagE <- recipeTag baseDir df ctx buildArgs
     case tagE of
       Left e -> TIO.hPutStrLn stderr e
       Right tag -> do
@@ -782,7 +783,10 @@ imagePresent baseDir c = case coreF c of
       let ctx = case lookup "context" args of
             Just (Core _ (CStrLit x)) -> x
             _ -> T.pack (takeDirectory (T.unpack df))
-      tagE <- recipeTag baseDir df ctx
+          buildArgs = case lookup "build_args" args of
+            Just (Core _ (CMapLit kvs)) -> sort [(k, v) | (k, Core _ (CStrLit v)) <- kvs]
+            _ -> []
+      tagE <- recipeTag baseDir df ctx buildArgs
       either (const (pure False)) imageExists tagE
     _ -> pure False
   _ -> pure False
@@ -792,19 +796,22 @@ imagePresent baseDir c = case coreF c of
 -- this needs no evaluation context.
 envValueOrExit :: CommonOpts -> Core -> IO EnvValue
 envValueOrExit opts c = case coreF c of
-  CEnv kind args -> EnvValue kind . Map.fromList <$> mapM literal args
+  CEnv kind args -> EnvValue kind . Map.fromList <$> mapM entry args
   _ -> usageError opts "the command's environment is not a constant"
   where
-    literal (k, v) = case coreF v of
-      CStrLit t -> pure (k, VString t)
-      CNumber n -> pure (k, VNumber n)
-      CBool b -> pure (k, VBool b)
-      CNull -> pure (k, VNull)
+    entry (k, v) = (,) k <$> literal v
+    literal v = case coreF v of
+      CStrLit t -> pure (VString t)
+      CNumber n -> pure (VNumber n)
+      CBool b -> pure (VBool b)
+      CNull -> pure VNull
+      CArray es -> VArray . V.fromList <$> mapM literal es
+      CMapLit kvs -> VMap . Map.fromList <$> mapM entry kvs
       _ -> usageError opts "the command's environment is not a constant"
 
 -- | Load the target module and hand its recipe environments to the
 -- action, exiting on static errors.
-withRecipes :: CommonOpts -> (FilePath -> [(Text, Text)] -> IO ()) -> IO ()
+withRecipes :: CommonOpts -> (FilePath -> [(Text, Text, [(Text, Text)])] -> IO ()) -> IO ()
 withRecipes opts action = do
   compiled <- compileOrExit opts
   let core = compiledCore compiled

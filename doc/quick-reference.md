@@ -270,11 +270,20 @@ stringifiable value (`String | Null` is not one: resolve it first).
 #ubuntu@sha256:9cee...          // a digest works too
 #docker("alpine:3.20", memory = "4g")
 #docker(dockerfile = "infra/Dockerfile", context = ".")   // built from a recipe
+#docker("node:20-alpine", env = {"CI": "1"}, network = "none", read_only = true)
 ```
 
 A registry reference must carry a tag or a digest — a bare name is a static
 error. `dockerfile` and `context` must be literals inside the module's own tree,
 which is what makes every image enumerable and pinnable.
+
+The container is configured by further keyword arguments, each a literal or a
+list or table of literals: `memory`, `memory_swap`, `memory_reservation`,
+`cpus`, `cpu_shares`, `cpuset_cpus`, `cpuset_mems`, `pids_limit`, `shm_size`,
+`blkio_weight`, `ulimits`; `workdir`, `user`, `env`, `platform`, `hostname`,
+`init`; `read_only`, `tmpfs`, `cap_drop`; `network`, `dns`, `dns_search`,
+`add_hosts`, `publish`; `volumes`; and `build_args` on a recipe. Environment
+variable names are not `lower_id`, so quote them: `env = {"CI": "1"}`.
 → [10.2](spec.md#102-target-environment-profiles-and-environment-constructor-signatures)
 
 **Dispatch.** A `$` with no `[env]` gets its environment from the command words

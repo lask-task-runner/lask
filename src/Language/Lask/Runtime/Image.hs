@@ -18,6 +18,7 @@ where
 
 import Control.Exception (IOException, try)
 import qualified Data.ByteString as BS
+import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -27,17 +28,23 @@ import System.FilePath ((</>))
 import System.Process (proc, readCreateProcessWithExitCode)
 
 -- | The content-addressed tag of a recipe: @lask\/\<recipe hash\>@.
--- The hash covers the Dockerfile's contents and the context path, so
--- editing the Dockerfile yields a different tag.
-recipeTag :: FilePath -> Text -> Text -> IO (Either Text Text)
-recipeTag baseDir dockerfile context = do
+-- The hash covers the Dockerfile's contents, the context path and the
+-- declared build arguments (spec 10.3), so changing any of the three
+-- yields a different tag and cannot reuse a cached image.
+recipeTag :: FilePath -> Text -> Text -> [(Text, Text)] -> IO (Either Text Text)
+recipeTag baseDir dockerfile context buildArgs = do
   r <- try (BS.readFile (baseDir </> T.unpack dockerfile))
   pure $ case r of
     Left e ->
       Left ("cannot read Dockerfile '" <> dockerfile <> "': " <> T.pack (show (e :: IOException)))
     Right bytes ->
-      let key = hashBytes (bytes <> TE.encodeUtf8 ("\0" <> context))
+      let key = hashBytes (bytes <> TE.encodeUtf8 ("\0" <> context <> buildArgKey buildArgs))
        in Right ("lask/" <> T.replace "sha256-" "" key)
+
+-- | Build arguments in name order, so the hash does not depend on the
+-- order they were written in.
+buildArgKey :: [(Text, Text)] -> Text
+buildArgKey buildArgs = T.concat ["\0" <> k <> "=" <> v | (k, v) <- sortOn fst buildArgs]
 
 -- | Whether the tag is present on the target Docker daemon.
 imageExists :: Text -> IO Bool
@@ -51,16 +58,17 @@ imageExists tag = do
 -- | Build a recipe into its content-addressed tag. No host mount other
 -- than the declared context, no privileged mode, no host networking
 -- (spec 10.3).
-buildRecipe :: FilePath -> Text -> Text -> Text -> IO (Either Text ())
-buildRecipe baseDir dockerfile context tag = do
+buildRecipe :: FilePath -> Text -> Text -> [(Text, Text)] -> Text -> IO (Either Text ())
+buildRecipe baseDir dockerfile context buildArgs tag = do
   let args =
         [ "build",
           "-f",
           baseDir </> T.unpack dockerfile,
           "-t",
-          T.unpack tag,
-          baseDir </> T.unpack context
+          T.unpack tag
         ]
+          <> concat [["--build-arg", T.unpack (k <> "=" <> v)] | (k, v) <- sortOn fst buildArgs]
+          <> [baseDir </> T.unpack context]
   r <- try (readCreateProcessWithExitCode (proc "docker" args) "")
   pure $ case r of
     Left e -> Left ("cannot run docker build: " <> T.pack (show (e :: IOException)))

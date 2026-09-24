@@ -12,6 +12,7 @@ module Command.Lask.Envs
   )
 where
 
+import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -122,9 +123,10 @@ children c = case coreF c of
     stmtExpr (CSExpr e) = [e]
 
 -- | Every recipe environment the program constructs, as
--- (dockerfile, context) pairs (spec 10.2). The context defaults to the
--- Dockerfile's directory.
-collectRecipes :: CoreProgram -> [(Text, Text)]
+-- (dockerfile, context, build arguments) triples (spec 10.2). The
+-- context defaults to the Dockerfile's directory, and the build
+-- arguments are carried because the recipe hash covers them (10.3).
+collectRecipes :: CoreProgram -> [(Text, Text, [(Text, Text)])]
 collectRecipes core = concatMap fromDecl (Map.elems (cpDecls core)) <> concatMap go (commandEnvs core)
   where
     fromDecl cd = go (cdCore cd)
@@ -134,10 +136,14 @@ collectRecipes core = concatMap fromDecl (Map.elems (cpDecls core)) <> concatMap
           let ctx = case lookup "context" args of
                 Just (Core _ (CStrLit x)) -> x
                 _ -> defaultContext df
-           in [(df, ctx)]
+           in [(df, ctx, buildArgs args)]
         _ -> []
       CLam lam -> concatMap (go . snd) (lamKeywords lam) <> concatMap go (children c)
       _ -> concatMap go (children c)
+
+    buildArgs args = case lookup "build_args" args of
+      Just (Core _ (CMapLit kvs)) -> sortOn fst [(k, v) | (k, Core _ (CStrLit v)) <- kvs]
+      _ -> []
 
     defaultContext df =
       let parts = T.splitOn "/" df

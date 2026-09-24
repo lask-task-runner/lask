@@ -2244,11 +2244,30 @@ The environment kinds that can be used in environment expressions are the 2 kind
   - Signature: `docker(image: String, --dockerfile: String = "", --context: String = "", ...)`.
   - The image is given in exactly one of two forms. Giving both, or neither, is a static error (`E-TYPE-ENV-CONSTRUCT`).
     - **Registry reference**: the positional `image`, a reference to an image in a registry. It must not be an empty string, and it must carry a tag or a digest; a bare repository name (which would mean `:latest`) is a static error (`E-TYPE-ENV-CONSTRUCT`).
-    - **Recipe**: the keyword parameters `dockerfile` and `context`, naming a Dockerfile and its build context. `context` defaults to the directory containing the Dockerfile.
+    - **Recipe**: the keyword parameters `dockerfile` and `context`, naming a Dockerfile and its build context. `context` defaults to the directory containing the Dockerfile. `build_args` supplies the build arguments the recipe hash covers (10.3); giving it with a registry reference is a static error (`E-TYPE-ENV-CONSTRUCT`), because there is then no build for it to reach.
   - `dockerfile` and `context` must be string literals containing no interpolation, so that the set of images a module uses is statically determinable. Any other expression is a static error (`E-TYPE-ENV-CONSTRUCT`).
   - `dockerfile` and `context` must resolve inside the tree of the module in which the expression is written. A path escaping that tree is a static error (`E-TYPE-ENV-CONSTRUCT`). A recipe is therefore covered by the module's content hash (Chapter 5) and cannot be altered without invalidating the pin.
-  - Implementations may extend the signature with further keyword parameters (e.g. `--memory: String = implementation default`, `--cpus: Number = implementation default`). Unknown parameter names must be static errors (7.7).
+  - Implementations may extend the signature with further keyword parameters that configure the container (e.g. `--memory: String = implementation default`, `--cpus: Number = implementation default`). Unknown parameter names must be static errors (7.7).
+  - An extension parameter takes a literal, or a list or table of literals. The restriction is the one command declarations already place on the environments they name (Chapter 5): the configuration of a container must be readable without evaluating the module, or an environment carrying it is neither enumerable (11.4) nor declarable.
+  - The order keyword arguments are written in is not part of the value. Two environment expressions passing the same arguments under different orders are structurally equal (8.8), so dispatch does not see them as two environments (10.9).
+  - An extension parameter must not be able to unsettle what this chapter fixes elsewhere: the process launch method, the mount of the base directory (10.5), the streams (9.1, 11.8), or the rule that images are materialized only by `deps sync` and `env build` (10.3). A parameter that would override one of those is outside what the signature may be extended with.
   - Notation examples: `#docker("alpine:3.12", memory="4g")`, `#docker(dockerfile = "infra/Dockerfile", context = ".")`, sugar `#alpine:3.12`
+
+The parameters this implementation provides, beyond `image` / `dockerfile` / `context` / `build_args`:
+
+| Group | Parameters |
+| --- | --- |
+| Resource limits | `memory`, `memory_swap`, `memory_reservation`, `cpus`, `cpu_shares`, `cpuset_cpus`, `cpuset_mems`, `pids_limit`, `shm_size`, `blkio_weight`, `ulimits` |
+| Execution context | `workdir`, `user`, `env`, `platform`, `hostname`, `init` |
+| Confinement | `read_only`, `tmpfs`, `cap_drop` |
+| Network | `network`, `dns`, `dns_search`, `add_hosts`, `publish` |
+| Host filesystem | `volumes` |
+
+- `ulimits`, `tmpfs`, `cap_drop`, `dns`, `dns_search`, `publish` and `volumes` are `Array<String>`; `env`, `add_hosts` and `build_args` are `Map<String>`; `init` and `read_only` are `Bool`; `cpus`, `cpu_shares`, `pids_limit` and `blkio_weight` are `Number`; the rest are `String`.
+- `workdir` is the explicit working directory 10.5 gives precedence over the default.
+- `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
+- `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written.
+- A `Bool` parameter left `false` is the daemon's own default and is not passed; nothing is inferred from its absence.
   - The sugar `#image-name` expands to `#docker("image-name")` (7.6) and is therefore the registry-reference form; the tag-or-digest requirement applies to it unchanged. There is no sugar for the recipe form.
 
 Each profile has at least the following execution attributes.

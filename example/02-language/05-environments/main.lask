@@ -25,6 +25,20 @@ pinned = #alpine@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2
 // The constructor takes resource limits as keyword arguments.
 small = #docker("alpine:3.22.2", memory = "256m", cpus = 1)
 
+// It configures the rest of the container the same way: variables, the
+// network, and what the container may write to. Every argument is a
+// literal, or a list or table of literals, so the configuration can be
+// read without running the module. Variable names are not `lower_id`,
+// so they are written as strings.
+sealed = #docker(
+  "alpine:3.22.2",
+  env = {"LANG": "C.UTF-8"},
+  network = "none",
+  read_only = true,
+  tmpfs = ["/tmp"],
+  cap_drop = ["ALL"]
+)
+
 // The other form of an image: a recipe. `dockerfile` and `context` must
 // be literals inside this module's own tree, which is what keeps the
 // set of images a module uses enumerable and pinnable.
@@ -32,6 +46,7 @@ built = #docker(dockerfile = "Dockerfile", context = ".")
 
 command "uname" on host
 command "jq" on built
+command "id" on sealed
 
 // The kernel Lask itself is running on.
 //
@@ -43,6 +58,12 @@ kernel(): String = $ uname -s
 //
 // @return The version line of the pinned image.
 alpine_version(): String = $[alpine] cat /etc/alpine-release
+  |> trim
+
+// A container that reaches no network and writes nowhere but /tmp.
+//
+// @return The user the sealed container runs as.
+sealed_user(): String = $ id -un
   |> trim
 
 // The release of the digest-pinned image.
