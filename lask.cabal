@@ -30,6 +30,7 @@ library
       Command.Lask.Help
       Command.Lask.Options
       Language.Lask
+      Language.Lask.Builtins.Doc
       Language.Lask.Builtins.Format
       Language.Lask.Builtins.Impl
       Language.Lask.Builtins.Path
@@ -166,6 +167,7 @@ test-suite lask-test
   main-is: Spec.hs
   other-modules:
       Command.Lask.CliSpec
+      Language.Lask.Builtins.DocSpec
       Language.Lask.Builtins.FormatSpec
       Language.Lask.Builtins.PathSpec
       Language.Lask.Builtins.RegexSpec

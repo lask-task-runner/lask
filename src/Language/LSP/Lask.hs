@@ -53,7 +53,8 @@ import Data.Ord (comparing)
 import qualified Data.Set as Set
 import qualified Data.Text.IO as TIO
 import Language.Lask (Compiled (..), Partial (..), checkText, compileText, compileTextPartial)
-import Language.Lask.Builtins.Sig (builtinSchemes, schemeType)
+import Language.Lask.Builtins.Doc (builtinDocs, renderBuiltinDoc)
+import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
 import Language.Lask.Doc (docBlockAbove)
 import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..), readFieldType)
@@ -455,9 +456,15 @@ hoverAt path src (Position pl pc) = do
         [] -> declNameHover compiled path src line col
         _ -> do
           let hi = minimumBy (comparing (spanSize . hiSpan)) hits
-          docs <- declDocs compiled path src (hiDecl hi)
-          let shown = hiName hi <> typeParamsOf compiled (hiDecl hi)
-          pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
+          case hiBuiltin hi of
+            Just bn -> do
+              let docs = renderBuiltinDoc <$> Map.lookup bn builtinDocs
+                  shown = hiName hi <> builtinTypeParams bn (hiType hi)
+              pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
+            Nothing -> do
+              docs <- declDocs compiled path src (hiDecl hi)
+              let shown = hiName hi <> typeParamsOf compiled (hiDecl hi)
+              pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
   where
     spanContains (S.Span (S.Position f l1 c1) (S.Position _ l2 c2)) line col =
       normalise f == normalise path
@@ -505,6 +512,18 @@ hoverMarkdown name typeText docs =
     <> typeText
     <> "\n```"
     <> maybe "" ("\n\n---\n\n" <>) docs
+
+-- | The type parameters of a builtin, as they would be written on a
+-- declaration: @\<T, U\>@ for @map@. Only while the recorded type is
+-- still the scheme itself; a reference instantiated by its expected
+-- type (spec 4.4) has none left.
+builtinTypeParams :: Text -> Type -> Text
+builtinTypeParams bn t = case Map.lookup bn builtinSchemes of
+  Just sch
+    | not (null (schemeVars sch)),
+      schemeType sch == t ->
+        "<" <> T.intercalate ", " (schemeVars sch) <> ">"
+  _ -> ""
 
 -- | The documentation of a declaration: the contiguous block of
 -- comments directly above it, with comment markers stripped.
