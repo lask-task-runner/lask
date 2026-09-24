@@ -22,6 +22,7 @@ where
 import Control.Monad (foldM, unless, when)
 import Control.Monad.State.Strict (StateT (runStateT), evalStateT, get, gets, lift, modify, put)
 import Data.Maybe (isNothing)
+import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -1544,6 +1545,10 @@ staticEnv ctx path e = do
       CNumber _ -> True
       CBool _ -> True
       CNull -> True
+      -- An option whose value is a list or a table is still known
+      -- before execution as long as its elements are.
+      CArray es -> all literal es
+      CMapLit kvs -> all (literal . snd) kvs
       _ -> False
 
 -- | A canonical rendering of an environment value, for the structural
@@ -1551,11 +1556,17 @@ staticEnv ctx path e = do
 -- so two declarations naming the same environment agree.
 envKey :: Core -> Text
 envKey c = case coreF c of
-  CEnv kind args -> kind <> "(" <> T.intercalate "," [k <> "=" <> envKey v | (k, v) <- args] <> ")"
+  -- Arguments and table entries are keyed in name order, not in the
+  -- order they were written: two declarations that pass the same
+  -- options in a different order denote the same environment, and
+  -- selection compares environment values (10.9).
+  CEnv kind args -> kind <> "(" <> T.intercalate "," [k <> "=" <> envKey v | (k, v) <- sortOn fst args] <> ")"
   CStrLit t -> "\"" <> t <> "\""
   CNumber n -> T.pack (show n)
   CBool b -> if b then "true" else "false"
   CNull -> "null"
+  CArray es -> "[" <> T.intercalate "," (map envKey es) <> "]"
+  CMapLit kvs -> "{" <> T.intercalate "," [k <> ":" <> envKey v | (k, v) <- sortOn fst kvs] <> "}"
   other -> T.pack (show other)
 
 -- | The module's command words and the environments they name, built
@@ -1644,8 +1655,38 @@ elabEnv ctx path locals sp h mArgs = do
             [ ("image", TyString),
               ("dockerfile", TyString),
               ("context", TyString),
+              ("build_args", TyMap TyString),
+              -- Resource limits.
               ("memory", TyString),
-              ("cpus", TyNumber)
+              ("memory_swap", TyString),
+              ("memory_reservation", TyString),
+              ("cpus", TyNumber),
+              ("cpu_shares", TyNumber),
+              ("cpuset_cpus", TyString),
+              ("cpuset_mems", TyString),
+              ("pids_limit", TyNumber),
+              ("shm_size", TyString),
+              ("blkio_weight", TyNumber),
+              ("ulimits", TyArray TyString),
+              -- Execution context.
+              ("workdir", TyString),
+              ("user", TyString),
+              ("env", TyMap TyString),
+              ("platform", TyString),
+              ("hostname", TyString),
+              ("init", TyBool),
+              -- Confinement: these narrow the boundary of 10.7.
+              ("read_only", TyBool),
+              ("tmpfs", TyArray TyString),
+              ("cap_drop", TyArray TyString),
+              -- Network.
+              ("network", TyString),
+              ("dns", TyArray TyString),
+              ("dns_search", TyArray TyString),
+              ("add_hosts", TyMap TyString),
+              ("publish", TyArray TyString),
+              -- Host filesystem beyond the base directory mount (10.5).
+              ("volumes", TyArray TyString)
             ]
       named <-
         if hasPositional
@@ -1737,6 +1778,8 @@ elabEnv ctx path locals sp h mArgs = do
         (True, False) -> do
           when (present "context") $
             () <$ envErr "'context' is only valid together with 'dockerfile'"
+          when (present "build_args") $
+            () <$ envErr "'build_args' is only valid together with 'dockerfile'"
           case lookup "image" named >>= coreStrLit of
             -- A runtime image value stays permitted here; whether the
             -- owning module may use one is a trust-domain rule (16.1).

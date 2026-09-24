@@ -490,6 +490,15 @@ spec = do
       rejects "e = #docker(dockerfile = \"../D\")" ETypeEnvConstruct
     it "rejects a non-literal recipe path" $
       rejects "p = \"D\"\ne = #docker(dockerfile = \"#{p}\")" ETypeEnvConstruct
+    it "accepts the container options of 10.2" $
+      accepts
+        "e = #docker(\"alpine:3.20\", cpus = 2, ulimits = [\"nofile=1024:1024\"], env = {\"CI\": \"1\"}, init = true, tmpfs = [\"/tmp\"], publish = [\"8080:80\"], volumes = [\"c:/cache\"])"
+    it "accepts build arguments on a recipe" $
+      accepts "e = #docker(dockerfile = \"D\", build_args = {\"VERSION\": \"1.2.3\"})"
+    it "rejects build arguments on a registry reference" $
+      rejects "e = #docker(\"alpine:3.20\", build_args = {\"V\": \"1\"})" ETypeEnvConstruct
+    it "rejects a container option of the wrong type" $
+      rejects "e = #docker(\"alpine:3.20\", tmpfs = \"/tmp\")" ETypeMismatch
     it "rejects interpolating non-stringifiable values" $
       rejects "u = {a: 1}\ns = \"v=#{u}\"" ETypeMismatch
 
@@ -552,6 +561,27 @@ spec = do
         "command \"go\" on #golang:1.25\ncommand \"gofmt\" on #golang:1.25\nv() = $ gofmt -l . && go vet"
         "v"
         "Function<String>"
+
+    -- Selection compares environment values (10.9), so the order the
+    -- options were written in is not part of what is compared.
+    it "does not conflict when the same options are written in a different order" $
+      hasType
+        "command \"go\" on #docker(\"golang:1.25\", cpus = 2, memory = \"4g\")\ncommand \"gofmt\" on #docker(\"golang:1.25\", memory = \"4g\", cpus = 2)\nv() = $ gofmt -l . && go vet"
+        "v"
+        "Function<String>"
+
+    -- A list or a table is still known before execution, so an
+    -- environment carrying one stays declarable (ch. 5).
+    it "accepts an environment whose options are literal lists and tables" $
+      hasType
+        "command \"go\" on #docker(\"golang:1.25\", env = {\"CI\": \"1\"}, tmpfs = [\"/tmp\"])\nv() = $ go vet"
+        "v"
+        "Function<String>"
+
+    it "rejects an option that is not known before execution" $
+      rejects
+        "d = \"/tmp\"\ncommand \"go\" on #docker(\"golang:1.25\", tmpfs = [d])\nv() = $ go vet"
+        ETypeCommandDecl
 
     it "leaves an explicit environment specification alone" $
       hasType

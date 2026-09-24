@@ -22,10 +22,14 @@
 module Language.Lask.Runtime.Secrets
   ( registerSecret,
     maskSecrets,
+    maskSecretsJson,
     resetSecretRegistryForTests,
   )
 where
 
+import qualified Data.Aeson as A
+import qualified Data.Aeson.Key as AK
+import qualified Data.Aeson.KeyMap as KM
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sortOn)
 import Data.Ord (Down (..))
@@ -81,6 +85,22 @@ maskSecrets input = do
   secrets <- readIORef secretRegistry
   let ordered = sortOn (Down . T.length) secrets
   pure (foldl' (\acc s -> replaceAll s mask acc) input ordered)
+
+-- | 'maskSecrets' over every string in a JSON document, keys
+-- included. The environment metadata of a command execution log
+-- (spec 12.3, 13.1) carries the environment's own arguments, and a
+-- @docker@ environment may pass variables to the container, so a
+-- secret can reach the log through the environment value as easily as
+-- through the command string.
+maskSecretsJson :: A.Value -> IO A.Value
+maskSecretsJson v = case v of
+  A.String t -> A.String <$> maskSecrets t
+  A.Array xs -> A.Array <$> traverse maskSecretsJson xs
+  A.Object o ->
+    fmap (A.Object . KM.fromList) . traverse entry $ KM.toList o
+  _ -> pure v
+  where
+    entry (k, x) = (,) <$> (AK.fromText <$> maskSecrets (AK.toText k)) <*> maskSecretsJson x
 
 replaceAll :: Text -> Text -> Text -> Text
 replaceAll needle replacement haystack
