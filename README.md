@@ -57,7 +57,7 @@ release(--dry_run = false) = do {
 
 </details>
 
-Beyond the snippet above: [example/03-terraform](example/03-terraform) drives Terraform through hash-pinned shared tasks, and [example/04-webapp](example/04-webapp) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed.
+Beyond the snippet above: [example/02-language](example/02-language) is a tour of the whole language, one runnable module per topic, and [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed.
 
 ## Why Lask
 

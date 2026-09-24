@@ -1,0 +1,21 @@
+// A library module. One file is one module, and every top-level
+// declaration is public unless it is marked `internal`.
+
+// A type alias travels across the import boundary like any other name.
+type Slug = String
+
+// @param s  Free text to turn into a slug.
+slugify(s: String): Slug =
+  s |> trim |> to_lower |> dashes
+
+// `internal` keeps this one inside the module: importing it elsewhere
+// is a static error, and it stays out of `lask`'s listings.
+internal dashes(s: String): String = replace(s, " ", "-")
+
+titleize(s: String): String = do {
+  parts = split(s, "-")
+  join(map(parts, capitalize), " ")
+}
+
+internal capitalize(w: String): String =
+  concat(to_upper(substring(w, 0, 1)), substring(w, 1, length(w)))

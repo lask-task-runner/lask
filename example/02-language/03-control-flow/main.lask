@@ -1,0 +1,107 @@
+// Control flow
+//
+// `do`, `if`, `case` and `for` — all of them expressions, all pure here.
+//
+//   lask eval classify 404
+//   lask eval plan_release --dry-run true
+//   lask eval checklist
+
+// Release, or report what a release would do.
+//
+// A `do` block is a sequence whose value is that of its last statement.
+// Bindings are local to it and evaluated in the order they are written.
+//
+// @param dry_run  Report what would happen instead of doing it.
+// @example lask eval plan-release --dry-run true
+plan_release(--dry_run: Bool = false, --version: String = "1.0.0"): String = do {
+  target = "app:#{version}"
+  // `if` without `else` is not an expression. It exists in exactly one
+  // place: a guard whose body ends in `return`.
+  if (dry_run) { return "would release #{target}" }
+  note = stamp(target)
+  "released #{note}"
+}
+
+internal stamp(target: String): String = "#{target} (#{length(target)} chars)"
+
+// Say whether a number is even or odd.
+//
+// As an expression, `if` always needs its `else` — both branches have
+// to produce a value, and of the same type.
+parity(n: Number): String = if (mod(n, 2) == 0) { "even" } else { "odd" }
+
+// Map a shell name to its family.
+//
+// `case` over a value: the scrutinee is evaluated once, arms may list
+// several literals, and exactly one `else`, last, always. Exhaustiveness
+// is never inferred.
+//
+// @example lask eval family zsh
+family(shell: String): String = case (shell) {
+  "bash", "zsh", "sh" -> "posix"
+  "fish"              -> "fish"
+  else                -> fail(error(4, "unknown shell: #{shell}"))
+}
+
+// Classify an HTTP status code.
+//
+// `case` with no scrutinee dispatches on conditions, in place of the
+// chain of `else if` the language does not have.
+//
+// @example lask eval classify 503
+classify(status: Number): String = case {
+  status >= 500 -> "server error"
+  status >= 400 -> "client error"
+  status >= 300 -> "redirect"
+  else          -> "ok"
+}
+
+// Render a value that may be absent.
+//
+// `case` over a type narrows the scrutinee inside each arm — and it is
+// the only thing that narrows: `if (x == null)` narrows nothing. The
+// scrutinee has to be written as a plain local name for that to happen.
+render(v: Number | String | Null): String = case (v) {
+  Null   -> "(none)"
+  Number -> "#{v} items"      // v: Number here
+  else   -> v                 // v: String here, the only member left
+}
+
+// Classify a handful of codes at once.
+//
+// `for` is an expression too: it evaluates to an `Array<R>`.
+// It iterates arrays only.
+//
+// @return One label per status code.
+checklist(): Array<String> = for (s : [200, 302, 404, 500]) {
+  "#{s} -> #{classify(s)}"
+}
+
+// Number a list of strings.
+//
+// Counting is `range`, and an index comes from `enumerate` — `for`
+// itself has no numeric or indexed form.
+numbered(xs: Array<String>): Array<String> =
+  for (e : enumerate(xs)) { "#{e.index + 1}. #{e.value}" }
+
+// Number the build steps.
+steps(): Array<String> = numbered(["build", "test", "deploy"])
+
+// A map is traversed through `entries`, for the same reason.
+settings: Map<String> = { "region": "eu-west-1", "stage": "prod" }
+
+// Write every setting as `key=value`.
+dump(): Array<String> = for (e : entries(settings)) { "#{e.key}=#{e.value}" }
+
+// Classify a code and say what to do about it.
+//
+// An arm body is a single expression, so several statements go in a
+// `do` block. Note that `{` directly after `->` starts an object
+// literal, not a block.
+report(status: Number): Record<level: String, text: String> = case {
+  status >= 500 -> do {
+    level = "error"
+    { level: level, text: "#{status}: page someone" }
+  }
+  else -> { level: "info", text: "#{status}: nothing to do" }
+}

@@ -1,0 +1,137 @@
+// The built-in library
+//
+// One name, one signature — there is no overloading, which is why the
+// array and map functions have distinct names. Pure, so `lask eval`
+// runs all of it.
+//
+//   lask eval summary
+//   lask eval slug "  Release Notes, 2026  "
+
+// Arithmetic, and what `+` refuses to do.
+//
+// `+` is `Number`-only: it never concatenates strings. There is no
+// unary minus either, so a negative literal is written `0 - 1`.
+numbers(): Record<total: Number, mean: Number, span: Number> = do {
+  xs = [3, 1, 4, 1, 5, 9, 2, 6]
+  total = sum(xs)
+  { total: total, mean: div(total, size(xs)), span: sub(max(9, 6), min(1, 2)) }
+}
+
+// Rounding and clamping, for the arithmetic a task actually does.
+sizing(--replicas: Number = 7, --per_node: Number = 2): Record<nodes: Number, capped: Number> = {
+  nodes: ceil(div(replicas, per_node)),
+  capped: clamp(replicas, 1, 5)
+}
+
+// Strings join with `concat` or interpolation.
+//
+// `concat` takes exactly two arguments; three or more parts are joined
+// with `join`, or written as one interpolated string.
+//
+// @example lask eval slug "  Release Notes, 2026  "
+slug(raw: String): String =
+  raw
+  |> trim
+  |> to_lower
+  |> \(s: String) -> regex_replace(s, '[^a-z0-9]+', "-")
+  |> \(s: String) -> regex_replace(s, '(^-|-$)', "")
+
+// Regular expressions are POSIX ERE, matched leftmost-longest.
+//
+// `regex_match` returns the whole match at index 0 and each capture
+// group after it, or the empty array when nothing matched — so absence
+// is tested with `is_empty`, never against null.
+//
+// @param line  Something like `v1.4.0`.
+// @example lask eval version-parts v1.4.0
+version_parts(line: String): Array<String> = do {
+  m = regex_match(line, '^v(\d+)\.(\d+)\.(\d+)$')
+  if (is_empty(m)) { return [] }
+  drop(m, 1)
+}
+
+// Splitting, padding and the rest of the text work a task needs.
+table(): Array<String> = do {
+  rows = [{ key: "region", value: "eu-west-1" }, { key: "stage", value: "prod" }]
+  for (r : rows) { concat(pad_end(r.key, 8, " "), r.value) }
+}
+
+// Arrays are traversed with `map`, `filter` and `reduce`.
+//
+// Every one of them is pure: nothing here mutates the array it is given.
+pipeline(): Array<String> = do {
+  services = ["api", "web", "worker", "api"]
+  services
+  |> unique
+  |> \(xs: Array<String>) -> filter(xs, \(s: String) -> s != "worker")
+  |> sort
+  |> \(xs: Array<String>) -> map(xs, to_upper)
+}
+
+// Folding to a single value.
+longest(xs: Array<String>): String =
+  reduce(xs, "", \(acc: String, x: String) -> if (length(x) > length(acc)) { x } else { acc })
+
+// Absence is reported two ways on purpose: a function that returns a
+// position says `-1`, one that returns a value says `Null`.
+//
+// @return Both answers for the same search.
+lookup(--needle: String = "web"): Record<index: Number, value: String> = do {
+  xs = ["api", "web", "worker"]
+  i = find_index(xs, \(s: String) -> s == needle)
+  v = find(xs, \(s: String) -> s == needle)
+  { index: i, value: case (v) { Null -> "(none)"; else -> v } }
+}
+
+// Maps have their own names for the same ideas, since nothing is
+// overloaded: `size(keys(m))` for the number of entries, `entries` to
+// traverse, `get_or` for a lookup with a fallback.
+settings: Map<String> = { "region": "eu-west-1", "stage": "prod" }
+
+// Everything a map is for.
+map_work(): Record<count: Number, listed: Array<String>, stage: String, extended: Array<String>> = do {
+  extended = merge(settings, { "tier": "gold" })
+  {
+    count: size(keys(settings)),
+    listed: for (e : entries(settings)) { "#{e.key}=#{e.value}" },
+    stage: get_or(settings, "stage", "dev"),
+    extended: keys(extended)
+  }
+}
+
+// Pairing, flattening and zipping.
+reshape(): Record<pairs: Array<String>, flat: Array<Number>> = do {
+  names = ["api", "web"]
+  ports = [8080, 443]
+  {
+    pairs: for (p : zip(names, ports)) { "#{p.first}:#{p.second}" },
+    flat: flatten([[1, 2], [3], []])
+  }
+}
+
+// Everything above, in one value.
+summary(): Record<
+  numbers: Record<total: Number, mean: Number, span: Number>,
+  services: Array<String>,
+  settings: Array<String>
+> = {
+  numbers: numbers(),
+  services: pipeline(),
+  settings: for (e : entries(settings)) { "#{e.key}=#{e.value}" }
+}
+
+// Write one line to the log.
+//
+// `log` writes one line to stderr and returns Void. It is the only
+// diagnostic output the library has: stdout belongs to `eval`'s result
+// alone, so nothing in the library can write there.
+trace(): Number = do {
+  log("computing")
+  42
+}
+
+// Make an identifier for this run.
+//
+// `uuid` and `random_string` are the two functions here that give a
+// different answer every time.
+identifier(): String = concat("run-", random_string(8))

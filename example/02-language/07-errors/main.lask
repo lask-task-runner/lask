@@ -1,0 +1,110 @@
+// Errors
+//
+// A failure carries an `Error` — `{code, message}` — and an uncaught one
+// becomes the exit code of the process.
+//
+//   lask env build
+//   lask eval build_with_retry
+//   lask eval classify --path /nope   ; echo $?
+
+alpine = #alpine:3.22.2
+
+command "cat", "sh" on alpine
+
+// Build, retrying once when the disk was full.
+//
+// A command that exits non-zero raises, and the failure carries that
+// exit code. `try` catches it, `finally` runs on both paths.
+//
+// @return Which attempt succeeded.
+build_with_retry(): String = try {
+  attempt(fail_first = true)
+} catch (e) {
+  // e: Error = {code: Number, message: String}
+  if (e.code == 2) {
+    log("retrying after #{trim(e.message)}")
+    attempt(fail_first = false)
+  } else {
+    // Not ours: re-raise it unchanged.
+    fail(e)
+  }
+} finally {
+  // Runs exactly once, whichever path was taken. Its value is discarded.
+  log("cleaning up")
+}
+
+internal attempt(--fail_first: Bool = false): String = do {
+  if (fail_first) {
+    $[alpine] sh -c 'echo "no space left" 1>&2; exit 2'
+    return "unreachable"
+  }
+  "built"
+}
+
+// Turn an exit code into a decision.
+//
+// `fail` raises, and `error(code, message)` builds the value it raises.
+// The exit code of `lask run` is that `code`.
+//
+// @param path  A file that has to exist.
+// @example lask eval classify --path /etc/os-release
+classify(--path: String = "/etc/os-release"): String = do {
+  r = $* cat #{path}
+  case {
+    r.code == 0 -> "readable"
+    r.code == 1 -> fail(error(70, "cannot read #{path}"))
+    else        -> fail(error(r.code, "cat failed unexpectedly"))
+  }
+}
+
+// The size of a file, or 0 when it cannot be read.
+//
+// The body and the `catch` must have the same type, so a recovery
+// supplies a value of that type rather than a different shape.
+size_or_zero(--path: String = "/etc/os-release"): Number = try {
+  $[alpine] wc -c < #{path}
+  |> trim
+  |> to_number
+} catch (e) {
+  log("defaulting to 0: #{e.message}")
+  0
+}
+
+// `try` / `catch` written as a function call.
+//
+// `recover(body, handler)` is `try` / `catch` spelled as a function:
+// a zero-argument body and a handler taking the `Error`. The return
+// type of `fail` comes from its context, and a bare lambda gives it
+// none — hence the `: String` on this one.
+guarded(): String = recover(
+  \(): String -> fail(error(9, "boom")),
+  \(e: Error) -> "recovered from #{e.code}"
+)
+
+// Ask a yes/no question with a command.
+//
+// Not every failure deserves an exception. `$*` hands back the
+// `CommandResult` and never raises on an exit code, which is the form
+// to reach for when a non-zero code is an expected answer rather than
+// an error.
+has_user(--name: String = "root"): Bool = do {
+  r = $* sh -c 'grep -q "^#{name}:" /etc/passwd'
+  r.code == 0
+}
+
+// Fail from inside a `catch`.
+//
+// A failure raised inside `catch` or `finally` propagates outward — it
+// does not re-enter the same `catch`.
+//
+// @example lask run always-fails ; echo $?
+always_fails(): String = try {
+  fail(error(3, "first"))
+} catch (e) {
+  fail(error(4, "second, raised while handling #{e.code}"))
+}
+
+// Static errors are a different thing entirely: `lask check` reports
+// them before anything is evaluated, and no `try` can catch them. A
+// misspelled name, a wrong argument type or a command with no
+// environment never reaches run time at all.

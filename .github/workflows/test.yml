@@ -62,7 +62,7 @@ jobs:
           LASK="$(stack path --local-install-root)/bin/lask"
           WORKDIR="${RUNNER_TEMP}/colon:dir"
           mkdir -p "${WORKDIR}"
-          cp -R example/01-basic/. "${WORKDIR}/"
+          cp -R example/01-projects/01-hello-world/. "${WORKDIR}/"
           cd "${WORKDIR}"
           # Capturing both streams hides them from the log, so the
           # status is carried past the capture and the output echoed

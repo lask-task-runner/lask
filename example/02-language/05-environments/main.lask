@@ -1,0 +1,97 @@
+// Execution environments
+//
+// An environment is a value: it is declared once, passed around, stored
+// in a map and selected at runtime like anything else.
+//
+//   lask envs                  # every image this module can reach for
+//   lask envs --check          # …and whether each one is reachable
+//   lask env build             # materialize them (run/eval never pull)
+//   lask eval alpine_version
+//   lask eval tool_versions --env docker
+
+// The host itself. There is no default environment, so `#local` is
+// something you write — a command that names no environment at all is
+// a static error, never a quiet fall back to the host.
+host = #local
+
+// Sugar for #docker("alpine:3.22.2"). A registry reference must carry a
+// tag or a digest: a bare `#alpine` would mean `:latest` and is a
+// static error.
+alpine = #alpine:3.22.2
+
+// A digest pins the exact bytes, which no tag can promise.
+pinned = #alpine@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
+
+// The constructor takes resource limits as keyword arguments.
+small = #docker("alpine:3.22.2", memory = "256m", cpus = 1)
+
+// The other form of an image: a recipe. `dockerfile` and `context` must
+// be literals inside this module's own tree, which is what keeps the
+// set of images a module uses enumerable and pinnable.
+built = #docker(dockerfile = "Dockerfile", context = ".")
+
+command "uname" on host
+command "jq" on built
+
+// The kernel Lask itself is running on.
+//
+// @return The kernel of the machine Lask itself is running on.
+kernel(): String = $ uname -s
+  |> trim
+
+// The release of the tag-pinned image.
+//
+// @return The version line of the pinned image.
+alpine_version(): String = $[alpine] cat /etc/alpine-release
+  |> trim
+
+// The release of the digest-pinned image.
+//
+// The digest-pinned environment is the same image, named by content.
+pinned_version(): String = $[pinned] cat /etc/alpine-release
+  |> trim
+
+// The memory limit of a constrained container.
+//
+// Limits apply to the container this command runs in.
+memory_limit(): String = $[small] sh -c 'cat /sys/fs/cgroup/memory.max'
+  |> trim
+
+// The jq version of the image built from Dockerfile.
+//
+// jq is installed in no environment but the one built from Dockerfile,
+// and dispatch is what sends the command there.
+jq_version(): String = $ jq --version
+  |> trim
+
+// Environments in a map are chosen by name at runtime. `@complete`
+// then offers those names in the shell.
+envs: Map<Environment> = {
+  "alpine": alpine,
+  "built": built,
+  "local": host
+}
+
+// Run `uname` in whichever environment is named.
+//
+// @param env  Which environment to report on.
+// @complete env @keys envs
+// @example lask eval uname-in --env built
+uname_in(--env: String = "alpine"): String = $[envs[env]] uname -s
+  |> trim
+
+// The alpine release of any environment given.
+//
+// A task can also take an environment directly, since it is a value
+// with a type like any other.
+release_of(e: Environment): String = $[e] sh -c 'cat /etc/alpine-release 2>/dev/null || echo n/a'
+  |> trim
+
+// What every environment here reports about itself.
+//
+// @return What each environment reports about itself.
+tool_versions(): Record<host: String, alpine: String, built: String> = {
+  host: kernel(),
+  alpine: release_of(alpine),
+  built: jq_version()
+}
