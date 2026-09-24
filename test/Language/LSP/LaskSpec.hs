@@ -194,6 +194,20 @@ spec = do
     it "shows the type of local parameter references" $ do
       t <- hoverText 2 25 -- trailing `x` in the body
       t `shouldSatisfy` maybe False (T.isInfixOf "x: Number")
+    it "shows the documentation of a builtin" $ do
+      h <- hoverAt "test.lask" "f(xs: Array<Number>) = map(xs, \\(x: Number) -> x + 1)\n" (Position 0 24)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldSatisfy` maybe False (T.isInfixOf "map<T, U>: Function<Array<T>, Function<T, U>, Array<U>>")
+      t `shouldSatisfy` maybe False (T.isInfixOf "`map(xs, f)` applies `f`")
+      t `shouldSatisfy` maybe False (T.isInfixOf "spec 15.4")
+    it "does not take a local shadowing a builtin for the builtin" $ do
+      h <- hoverAt "test.lask" "f(size: Number): Number = size\n" (Position 0 26)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldBe` Just "```lask\nsize: Number\n```"
     it "returns nothing on blank positions" $ do
       t <- hoverText 3 1 -- whitespace after `y`
       t `shouldBe` Nothing

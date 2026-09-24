@@ -117,7 +117,10 @@ data HoverInfo = HoverInfo
   { hiSpan :: Span,
     hiName :: Text,
     hiType :: Type,
-    hiDecl :: Maybe Key
+    hiDecl :: Maybe Key,
+    -- | The builtin it refers to, when it refers to one: builtins
+    -- have no declaration to take documentation from.
+    hiBuiltin :: Maybe Text
   }
   deriving (Show, Eq)
 
@@ -177,7 +180,12 @@ renderEnvCore c = case coreF c of
 -- | Record a resolved name occurrence for hover (editor tooling).
 recordVar :: Span -> Text -> Type -> Maybe Key -> TC ()
 recordVar sp n t d =
-  modify (\s -> s {stHover = HoverInfo sp n t d : stHover s})
+  modify (\s -> s {stHover = HoverInfo sp n t d Nothing : stHover s})
+
+-- | Record a reference to the builtin @bn@ for hover.
+recordBuiltin :: Span -> Text -> Type -> Text -> TC ()
+recordBuiltin sp n t bn =
+  modify (\s -> s {stHover = HoverInfo sp n t Nothing (Just bn) : stHover s})
 
 -- | Local value bindings with their types.
 type Locals = Map Text Type
@@ -771,7 +779,7 @@ check ctx path locals e@(Expr sp f) expected = case f of
         let t = applySubst subst (schemeType scheme)
         unless (all (`Map.member` subst) (schemeVars scheme) && conformsTo t expected) $
           mismatch sp expected t
-        recordVar sp n t Nothing
+        recordBuiltin sp n t bn
         pure (Core sp (CVar (BuiltinRef bn)))
   EBin op a b | isEqOp op || expected == TyBool -> do
     (c, t) <- elabBin ctx path locals sp op a b (Just expected)
@@ -852,12 +860,12 @@ inferVar ctx path locals sp n = case Map.lookup n locals of
       recordVar sp n t (Just (defPath, defName))
       pure (Core sp (CVar (TopRef defPath defName)), t)
     Just (VBuiltin "stdin") -> do
-      recordVar sp n TyString Nothing
+      recordBuiltin sp n TyString "stdin"
       pure (Core sp (CVar (BuiltinRef "stdin")), TyString)
     Just (VBuiltin bn) -> case Map.lookup bn builtinSchemes of
       Just scheme
         | null (schemeVars scheme) -> do
-            recordVar sp n (schemeType scheme) Nothing
+            recordBuiltin sp n (schemeType scheme) bn
             pure (Core sp (CVar (BuiltinRef bn)), schemeType scheme)
         | otherwise ->
             abort . diag ETypeMismatch sp $
@@ -1867,7 +1875,7 @@ elabCall ctx path locals sp fn args mExpected = do
             Just (VTopLevel p dn) -> staticFromDecl (p, dn)
             Just (VBuiltin bn) -> case Map.lookup bn builtinSchemes of
               Just scheme -> do
-                recordVar (exprSpan fn) bn (schemeType scheme) Nothing
+                recordBuiltin (exprSpan fn) bn (schemeType scheme) bn
                 pure (CalleeBuiltin bn scheme)
               Nothing -> abort (diag ENameUndefined (exprSpan fn) ("undefined name: '" <> n <> "'"))
             Nothing -> abort (diag ENameUndefined (exprSpan fn) ("undefined name: '" <> n <> "'"))
