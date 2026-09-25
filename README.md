@@ -252,7 +252,10 @@ no environment is ever evaluated to answer a `<TAB>`.
   <img alt="Terminal recording: lask check reports an error in the module; once it is fixed, lask run cowsay-hello Lask pulls the image, traces the command it runs inside it, and prints the cow" src="doc/assets/lask-cowsay.gif" width="831">
 </div>
 
-An error `lask check` finds, and a task that runs.
+An error `lask check` finds, and a task that runs. Before a task first runs in a
+container, `lask env build` pulls its image and pins the digest in
+`lask.lock.json`; `lask run` itself never reaches the network, so every machine runs
+the image the lock names.
 
 Run a command in any image straight from the REPL, with nothing installed locally:
 

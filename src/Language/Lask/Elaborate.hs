@@ -1909,22 +1909,16 @@ elabEnv ctx path locals sp h mArgs = do
             -- A runtime image value stays permitted here; whether the
             -- owning module may use one is a trust-domain rule (16.1).
             Nothing -> pure ()
+            -- A reference without a tag names the repository's
+            -- `latest`; the lock pins whatever that resolved to when it
+            -- was materialized (10.3), so it cannot move under a run.
             Just img
               | T.null img -> () <$ envErr "the image reference must not be empty"
-              | not (hasTagOrDigest img) ->
-                  () <$ envErr ("the image reference must carry a tag or a digest: '" <> img <> "'")
               | otherwise -> pure ()
         (False, True) -> do
           _ <- requireTreePath named "dockerfile"
           _ <- requireTreePath named "context"
           requireLiteralTable named "build_args"
-
-    hasTagOrDigest ref =
-      T.isInfixOf "@" ref || maybe False (T.isInfixOf ":") (lastSegment ref)
-      where
-        lastSegment r = case reverse (T.splitOn "/" r) of
-          (x : _) -> Just x
-          [] -> Nothing
 
     -- Build arguments decide which image a recipe builds, and are part
     -- of its hash (10.3), so they are read before anything runs: by

@@ -165,6 +165,9 @@ jobs:
         working-directory: example/01-projects/01-hello-world
         run: |
           set -euo pipefail
+          # A task never pulls its image (spec 10.3): `env build` pulls
+          # it and pins its digest in lask.lock.json first.
+          lask env build
           lask envs --check
           # Both streams are captured, so neither reaches the log on its
           # own: the status has to be carried past the capture and the

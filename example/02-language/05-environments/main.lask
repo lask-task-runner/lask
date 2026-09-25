@@ -14,9 +14,9 @@
 // a static error, never a quiet fall back to the host.
 host = #local
 
-// Sugar for #docker("alpine:3.22.2"). A registry reference must carry a
-// tag or a digest: a bare `#alpine` would mean `:latest` and is a
-// static error.
+// Sugar for #docker("alpine:3.22.2"). A tag is optional — a bare
+// `#alpine` means `latest` — because `lask env build` pins the digest a
+// reference resolves to in lask.lock.json, and every run uses that.
 alpine = #alpine:3.22.2
 
 // A digest pins the exact bytes, which no tag can promise.

@@ -60,8 +60,141 @@ withProject files action =
       files
     action dir
 
+-- | A stand-in for the docker CLI, for tests of image pinning that must
+-- not need a daemon. Its state is files under @$FAKE_DOCKER_STATE@:
+-- @registry/<ref>@ holds the digest a tag resolves to upstream,
+-- @present/<name>@ an image on the daemon with its repository digests,
+-- and @calls@ every invocation.
+fakeDocker :: String
+fakeDocker =
+  unlines
+    [ "#!/bin/sh",
+      "S=\"$FAKE_DOCKER_STATE\"",
+      "mkdir -p \"$S/present\" \"$S/registry\"",
+      "echo \"$*\" >> \"$S/calls\"",
+      "key() { printf '%s' \"$1\" | tr '/:@' '___'; }",
+      "repo() { r=\"${1%@*}\"; last=\"${r##*/}\"; case \"$last\" in *:*) r=\"${r%:*}\";; esac; printf '%s' \"$r\"; }",
+      "case \"$1\" in",
+      "  version) echo 27.0.0 ;;",
+      "  pull)",
+      "    ref=\"$3\"",
+      "    case \"$ref\" in",
+      "      *@*) digest=\"${ref#*@}\" ;;",
+      "      *) [ -f \"$S/registry/$(key \"$ref\")\" ] || { echo \"manifest unknown: $ref\" >&2; exit 1; }",
+      "         digest=$(cat \"$S/registry/$(key \"$ref\")\") ;;",
+      "    esac",
+      "    name=\"$(repo \"$ref\")@$digest\"",
+      "    printf '[\"%s\"]' \"$name\" > \"$S/present/$(key \"$ref\")\"",
+      "    printf '[\"%s\"]' \"$name\" > \"$S/present/$(key \"$name\")\"",
+      "    echo \"$name\" ;;",
+      "  image)",
+      "    ref=\"$5\"; [ \"$3\" = \"--format\" ] || ref=\"$3\"",
+      "    f=\"$S/present/$(key \"$ref\")\"",
+      "    [ -f \"$f\" ] || { echo \"Error: No such image: $ref\" >&2; exit 1; }",
+      "    [ \"$3\" = \"--format\" ] && cat \"$f\"; exit 0 ;;",
+      "  run) echo ran ;;",
+      "  *) echo \"fake docker: unsupported: $*\" >&2; exit 2 ;;",
+      "esac"
+    ]
+
+-- | Run an action with the fake docker first on PATH and upstream
+-- @alpine:3.22.2@ resolving to @sha256:aaa@. The action receives the
+-- state directory and the extra environment to run lask with.
+withFakeDocker :: (FilePath -> [(String, String)] -> IO a) -> IO a
+withFakeDocker action =
+  withSystemTempDirectory "fake-docker" $ \root -> do
+    let bin = root </> "bin"
+        state = root </> "state"
+    createDirectoryIfMissing True bin
+    createDirectoryIfMissing True (state </> "registry")
+    writeFile (bin </> "docker") fakeDocker
+    _ <- readProcess "chmod" ["+x", bin </> "docker"] ""
+    writeFile (state </> "registry" </> "alpine_3.22.2") "sha256:aaa"
+    path <- maybe "" id . lookup "PATH" <$> getEnvironment
+    action state [("PATH", bin <> ":" <> path), ("FAKE_DOCKER_STATE", state)]
+
 spec :: Spec
 spec = beforeAll findLask $ do
+  -- Images are pinned by `lask env build` and `lask deps sync`, and
+  -- resolved through the lock when a command runs (spec 10.3, 10.4).
+  describe "image pinning (spec 10.3, 10.4, 11.5, 11.7)" $ do
+    let proj =
+          [ ( "main.lask",
+              "command { \"cat\" } on #alpine:3.22.2\n\
+              \hi(): String = $ cat x\n\
+              \dyn(--tag: String = \"3.21\"): String = $[#docker(\"alpine:#{tag}\")] cat x\n"
+            )
+          ]
+        lockText dir = readFile (dir </> "lask.lock.json")
+        calls state = lines <$> readFile (state </> "calls")
+
+    it "refuses to run an image the lock does not pin, naming env build" $ \lask ->
+      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
+        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit r `shouldBe` 3
+        resErr r `shouldContain` "E-IO-IMAGE-MISSING"
+        resErr r `shouldContain` "lask env build"
+
+    it "pins the digest on env build, and runs the pinned image" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        b <- runLaskEnv lask dir extra ["env", "build"] ""
+        resExit b `shouldBe` 0
+        resOut b `shouldContain` "alpine:3.22.2 -> alpine@sha256:aaa"
+        lockText dir >>= (`shouldContain` "\"digest\": \"sha256:aaa\"")
+        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit r `shouldBe` 0
+        cs <- calls state
+        [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` all ("alpine@sha256:aaa" `isInfixOf`)
+
+    it "keeps the pinned image when the tag moves upstream" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        writeFile (state </> "registry" </> "alpine_3.22.2") "sha256:bbb"
+        removeDirectoryRecursive (state </> "present")
+        writeFile (state </> "calls") ""
+        b <- runLaskEnv lask dir extra ["env", "build"] ""
+        resExit b `shouldBe` 0
+        cs <- calls state
+        [c | c <- cs, "pull " `isPrefixOf` c] `shouldBe` ["pull --quiet alpine@sha256:aaa"]
+        lockText dir >>= (`shouldContain` "sha256:aaa")
+
+    it "reports E-IO-IMAGE-DIGEST when the pinned image carries another digest" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        writeFile (state </> "present" </> "alpine_sha256_aaa") "[\"alpine@sha256:ccc\"]"
+        b <- runLaskEnv lask dir extra ["env", "build"] ""
+        resExit b `shouldBe` 3
+        resErr b `shouldContain` "E-IO-IMAGE-DIGEST"
+        lockText dir >>= (`shouldContain` "sha256:aaa")
+
+    it "never pulls a reference computed at run time" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        writeFile (state </> "calls") ""
+        r <- runLaskEnv lask dir extra ["eval", "dyn"] ""
+        resExit r `shouldBe` 3
+        resErr r `shouldContain` "docker pull alpine:3.21"
+        cs <- calls state
+        [c | c <- cs, "pull " `isPrefixOf` c] `shouldBe` []
+
+    it "pins images in deps sync, and --frozen refuses a lock that would change" $ \lask ->
+      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
+        f <- runLaskEnv lask dir extra ["deps", "sync", "--frozen"] ""
+        resExit f `shouldBe` 1
+        doesFileExist (dir </> "lask.lock.json") `shouldReturn` False
+        s' <- runLaskEnv lask dir extra ["deps", "sync"] ""
+        resExit s' `shouldBe` 0
+        lockText dir >>= (`shouldContain` "sha256:aaa")
+        f2 <- runLaskEnv lask dir extra ["deps", "sync", "--frozen"] ""
+        resExit f2 `shouldBe` 0
+
+    it "drops the entry of an image nothing references any more" $ \lask ->
+      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        writeFile (dir </> "main.lask") "hi(): String = $[#local] echo hi\n"
+        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        lockText dir >>= (`shouldNotContain` "alpine")
+
   describe "generic functions from the CLI (spec 11.2)" $ do
     let proj =
           [ ( "main.lask",

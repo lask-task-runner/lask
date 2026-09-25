@@ -8,6 +8,7 @@ module Command.Lask.Envs
     collectEnvRefs,
     collectEnvRefsFrom,
     collectRecipes,
+    collectRegistryRefs,
   )
 where
 
@@ -87,6 +88,20 @@ descendants c = let cs = children c in cs <> concatMap descendants cs
 
 children :: Core -> [Core]
 children = coreChildren
+
+-- | Every registry reference the program writes as a literal (spec
+-- 10.3), in all its modules and command declarations: the references
+-- the lock pins. One computed at run time is not among them; it cannot
+-- be pinned.
+collectRegistryRefs :: CoreProgram -> [Text]
+collectRegistryRefs core =
+  Set.toList . Set.fromList $
+    concatMap (go . cdCore) (Map.elems (cpDecls core)) <> concatMap go (commandEnvs core)
+  where
+    go c = case coreF c of
+      CEnv "docker" args
+        | Just (Core _ (CStrLit ref)) <- lookup "image" args -> ref : concatMap (go . snd) args
+      _ -> concatMap go (children c)
 
 -- | Every recipe environment the program constructs, as
 -- (dockerfile, context, build arguments) triples (spec 10.2). The
