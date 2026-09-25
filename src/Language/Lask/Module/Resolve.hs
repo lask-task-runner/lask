@@ -12,6 +12,7 @@ module Language.Lask.Module.Resolve
     TypeTarget (..),
     Publics (..),
     modulePublics,
+    namespaceMember,
     buildScopes,
     validateProgram,
   )
@@ -132,6 +133,18 @@ modulePublics lm =
     valueName _ = Nothing
     typeName (DTypeAlias n _ _) = Just n
     typeName _ = Nothing
+
+-- | The declaration a namespace member @m.x@ refers to, where @m@
+-- names the module at @key@ (spec 5, 7.2). A name that module
+-- re-exports is bound in its scope to the module that declared it, as
+-- a named import binds it, so the member resolves through that scope;
+-- a name the module declares itself resolves to itself. Visibility is
+-- not decided here: 'checkModule' has already rejected a member that
+-- is not a public symbol of @m@.
+namespaceMember :: Map FilePath GlobalScope -> FilePath -> Text -> (FilePath, Text)
+namespaceMember scopes key n = case Map.lookup key scopes >>= Map.lookup n . gsValues of
+  Just (VTopLevel k n') -> (k, n')
+  _ -> (key, n)
 
 -- Scope construction ---------------------------------------------------------
 

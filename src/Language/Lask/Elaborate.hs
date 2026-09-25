@@ -38,7 +38,7 @@ import Language.Lask.Desugar.Return (transformFunctionBody)
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer.Token (CmdStream (..), Op (..), Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
-import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTarget (..))
+import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTarget (..), namespaceMember)
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), commandWords, validCommandName)
@@ -996,10 +996,12 @@ elabDot ctx path locals sp inner fsp fld = case exprF inner of
     | not (Map.member m locals),
       Nothing <- lookupValueTarget ctx path m,
       Just key <- namespaceTarget m -> do
-        -- Namespace member (resolution rank 4, spec 7.2).
-        t <- declType ctx (key, fld)
-        recordVar fsp fld t (Just (key, fld))
-        pure (Core sp (CVar (TopRef key fld)), t)
+        -- Namespace member (resolution rank 4, spec 7.2), followed to
+        -- its declaration when the module re-exports it.
+        let target@(defPath, defName) = namespaceMember (ctxScopes ctx) key fld
+        t <- declType ctx target
+        recordVar fsp fld t (Just target)
+        pure (Core sp (CVar (TopRef defPath defName)), t)
   _ -> do
     (c, t) <- infer ctx path locals inner
     case t of
@@ -2012,7 +2014,7 @@ elabCall ctx path locals sp fn args mExpected = do
         | not (Map.member m locals),
           Nothing <- lookupValueTarget ctx path m,
           Just key <- Map.lookup path (ctxScopes ctx) >>= Map.lookup m . gsNamespaces ->
-            staticFromDecl (key, fld)
+            staticFromDecl (namespaceMember (ctxScopes ctx) key fld)
       ELambda ps rt body -> do
         (lam, ty, params) <- elabLambda ctx path locals (exprSpan fn) Nothing ps rt body
         pure (CalleeStatic lam [] ty params)

@@ -294,6 +294,15 @@ spec = do
         let src = "import * as m from \"./lib.lask\"\nf() = m."
         ls <- labels (dir </> "main.lask") src 1 8
         ls `shouldMatchList` ["double", "hidden"]
+    -- A re-exported name is declared in another module, and its keyword
+    -- parameters come from there (spec 5).
+    it "offers keyword parameters of a re-exported function called through a namespace" $
+      withSystemTempDirectory "lask-completion" $ \dir -> do
+        writeFile (dir </> "impl.lask") "greet(--name: String = \"World\") = name\n"
+        writeFile (dir </> "lib.lask") "export { greet } from \"./impl.lask\"\n"
+        let src = "import * as m from \"./lib.lask\"\ny = m.greet()"
+        ls <- labels (dir </> "main.lask") src 1 12
+        ls `shouldSatisfy` elem "name"
     it "still offers builtins and reserved words when the buffer does not parse" $ do
       ls <- labels "test.lask" "y = }\nz = to" 1 6
       ls `shouldSatisfy` elem "to_json"

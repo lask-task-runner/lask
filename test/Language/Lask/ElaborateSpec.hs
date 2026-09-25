@@ -52,6 +52,13 @@ accepts src = do
 rejects :: Text -> ErrorCode -> Expectation
 rejects src code = rejectsFiles [("main.lask", src)] code
 
+-- | The type of a declaration in main.lask, over several modules.
+hasTypeFiles :: [(FilePath, Text)] -> Text -> Text -> Expectation
+hasTypeFiles files name expected = do
+  r <- elab files
+  fmap (fmap (renderType . cdType) . Map.lookup ("main.lask", name)) r
+    `shouldBe` Right (Just expected)
+
 -- | As 'accepts' and 'rejects', over several modules; the program is
 -- entered at main.lask.
 acceptsFiles :: [(FilePath, Text)] -> Expectation
@@ -601,6 +608,72 @@ spec = do
         [ ("main.lask", "import * as t from \"./tools.lask\"\ncommand { \"aws\" } on t.mk(proxy = \"direct\")\nv(): String = $ aws --version"),
           tools
         ]
+
+  -- A re-export publishes a name from the module that declares it
+  -- (spec 5); a namespace member has to reach that declaration, not a
+  -- declaration of the re-exporting module, which has none.
+  describe "namespace members that a module re-exports (spec 5, 7.2)" $ do
+    let lib =
+          ( "lib/go.lask",
+            "go(--proxy: String = \"\"): Environment = #docker(\"golang:1.25\", env = {\"GOPROXY\": proxy})\n\
+            \image = \"golang:1.25\"\n\
+            \type Pin = Record<image: String>\n\
+            \internal hidden = 1"
+          )
+        tools = ("tools.lask", "export { go, image, Pin } from \"./lib/go.lask\"")
+
+    it "calls a re-exported function, keyword arguments included" $
+      hasTypeFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\nb(): Environment = t.go(proxy = \"direct\")"),
+          tools,
+          lib
+        ]
+        "b"
+        "Function<Environment>"
+
+    it "reads a re-exported value" $
+      hasTypeFiles
+        [("main.lask", "import * as t from \"./tools.lask\"\nv(): String = t.image"), tools, lib]
+        "v"
+        "Function<String>"
+
+    it "follows a chain of re-exports" $
+      hasTypeFiles
+        [ ("main.lask", "import * as t from \"./outer.lask\"\nb(): Environment = t.go(proxy = \"direct\")"),
+          ("outer.lask", "export { go } from \"./tools.lask\""),
+          tools,
+          lib
+        ]
+        "b"
+        "Function<Environment>"
+
+    it "follows a re-export that renames" $
+      hasTypeFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\nb(): Environment = t.golang(proxy = \"direct\")"),
+          ("tools.lask", "export { go as golang } from \"./lib/go.lask\""),
+          lib
+        ]
+        "b"
+        "Function<Environment>"
+
+    it "names a re-exported type through the namespace" $
+      acceptsFiles
+        [("main.lask", "import * as t from \"./tools.lask\"\np: t.Pin = {image: t.image}"), tools, lib]
+
+    it "backs a command declaration with a re-exported function" $
+      acceptsFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\ncommand { \"go\" } on t.go()\nv(): String = $ go vet"),
+          tools,
+          lib
+        ]
+
+    it "still rejects a name the module does not publish" $
+      rejectsFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\nv(): Number = t.hidden"),
+          ("tools.lask", "import { hidden } from \"./lib/go.lask\""),
+          lib
+        ]
+        ENameUndefined
 
   describe "async and errors (spec 6.3, 6.9)" $ do
     it "types async as AsyncHandle" $
