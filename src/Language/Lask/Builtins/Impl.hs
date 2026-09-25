@@ -252,7 +252,7 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
       [(k, v) | VRecord r <- V.toList es, Just (VString k) <- [Map.lookup "key" r], Just v <- [Map.lookup "value" r]]
   ("map_values", [VMap m, f]) -> VMap <$> traverse (\v -> apply f [v] []) m
   -- 15.5 command execution --------------------------------------------------
-  ("run_command", [VString cmd, VEnv env]) -> do
+  ("run", [VEnv env, VString cmd]) -> do
     r <- hookRunCommand hooks env cmd
     case r of
       Left failure -> throwIO failure
@@ -309,7 +309,7 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("md5", [VString v]) -> pure (VString (hex (MD5.hash (TE.encodeUtf8 v))))
   -- 15.11 filesystem ----------------------------------------------------------
   -- The environment is positional and required, exactly as for
-  -- run_command: there is no default execution environment (spec
+  -- run: there is no default execution environment (spec
   -- 10.1), so no read or write can reach a filesystem the program did
   -- not name.
   ("read_file", [VString p, VEnv env]) -> file env (FileRead p)

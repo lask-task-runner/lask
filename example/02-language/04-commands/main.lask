@@ -91,13 +91,13 @@ echo_raw(--text: String = "a b; rm -rf /"): String =
 
 // Count lines with a command assembled at run time.
 //
-// `run_command` is the same execution as a function call: the command
+// `run` is the same execution as a function call: the command
 // line comes from a String, so it can be assembled at runtime. It
 // returns a CommandResult and never raises on the exit code.
 //
 // @param args  Passed to `wc`, e.g. `-l`.
 count(--args: String = "-l", --file: String = "/etc/passwd"): Number = do {
-  r = run_command("wc #{args} #{file}", alpine)
+  r = run(alpine, "wc #{args} #{file}")
   // No command string here, so this whole line is ordinary expression.
   r.stdout |> trim |> split_first |> to_number
 }

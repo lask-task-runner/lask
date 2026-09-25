@@ -78,7 +78,7 @@ narrows a union.
 ## 04-commands
 
 **Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation,
-`shell_quote`, `run_command`, and the `command ... on ...` declarations
+`shell_quote`, `run`, and the `command ... on ...` declarations
 that dispatch a bare `$`.
 
 ```bash

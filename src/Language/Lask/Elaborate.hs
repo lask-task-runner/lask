@@ -1492,13 +1492,13 @@ elabCommand ctx path locals sp stream mEnv parts = do
       (c, ws) <- dispatchEnv ctx path sp parts
       pure (c, Just (renderEnvCore c), ws)
   recordCommandUse sp shownEnv viaWords
-  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore, envCore] [])
+  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run"))) [envCore, cmdCore] [])
   case stream of
     StreamAll -> pure (call, commandResultType)
     StreamOut -> pure (streamSelect call "stdout", TyString)
     StreamErr -> pure (streamSelect call "stderr", TyString)
   where
-    -- do { r = run_command(...);
+    -- do { r = run(...);
     --      if (r.code == 0) { r.<stream> } else { fail({code: r.code, message: r.stderr}) } }
     streamSelect call field =
       let r = "%r"
@@ -2083,7 +2083,7 @@ elabCall ctx path locals sp fn args mExpected = do
       _ -> "function"
 
     -- Builtin calls: scheme instantiation (spec 4.4), plus the
-    -- special cases of cast (15.8) and run_command's --env (6.6).
+    -- special cases of cast (15.8) and to_string.
     elabBuiltinCall name scheme
       | name == "cast" = do
           expected <- maybe castNeedsType pure mExpected
@@ -2103,18 +2103,8 @@ elabCall ctx path locals sp fn args mExpected = do
             pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) [c] []), TyString)
           _ -> abort (diag ETypeArity sp "to_string takes exactly one argument")
       | otherwise = do
-          kwCores <- case (name, kwArgs) of
-            (_, []) -> pure []
-            ("run_command", _) -> do
-              slots <- keywordSlots [("env", TyEnvironment)]
-              mapM (\(kn, e, t) -> (,) kn <$> check ctx path locals e t) slots
-            _ -> abort (diag ETypeKeyword sp ("'" <> name <> "' takes no keyword arguments"))
-          when (name == "run_command") $
-            mapM_
-              ( \(kn, _) ->
-                  when (kn /= "env") (() <$ abort (diag ETypeKeyword sp ("unknown keyword argument: '" <> kn <> "'")))
-              )
-              kwCores
+          unless (null kwArgs) $
+            () <$ abort (diag ETypeKeyword sp ("'" <> name <> "' takes no keyword arguments"))
           let (schemeVs, ren) = freshen (schemeVars scheme)
               params = map ren (schemeParams scheme)
               retPat = ren (schemeRet scheme)
@@ -2127,9 +2117,8 @@ elabCall ctx path locals sp fn args mExpected = do
           (cores, subst) <- goArgs subst0 (zip posExprs params)
           builtinSideCondition name sp (Map.mapKeys (T.takeWhile (/= '#')) subst)
           retTy <- instantiateRet name schemeVs retPat subst
-          pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) cores (kwEnvOf kwCores)), retTy)
+          pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) cores []), retTy)
       where
-        kwEnvOf = id
         castNeedsType =
           abort (diag ETypeMismatch sp "cast requires an expected type from context")
 

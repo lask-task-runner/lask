@@ -27,7 +27,7 @@ coreFunctionNames =
       "filter",
       "reduce",
       "for_each",
-      "run_command",
+      "run",
       "recover",
       "fail",
       "get_env",
@@ -130,7 +130,7 @@ builtinValueNames =
       "from_entries",
       "map_values",
       -- 15.5 command execution
-      "run_command",
+      "run",
       "shell_quote",
       -- 15.6 parallel/async
       "spawn",

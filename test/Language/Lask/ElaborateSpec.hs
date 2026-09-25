@@ -518,7 +518,7 @@ spec = do
     it "rejects mismatched catch types" $
       rejects "f() = try { 1 } catch (e) { \"x\" }" ETypeMismatch
     it "types try/finally by the body" $
-      hasType "f() = try { 1 } finally { run_command(\"true\", #local) }" "f" "Function<Number>"
+      hasType "f() = try { 1 } finally { run(#local, \"true\") }" "f" "Function<Number>"
 
   describe "command declarations and dispatch (spec ch. 5, 10.9)" $ do
     it "takes the environment from the command word" $
