@@ -1,18 +1,17 @@
 {
-    "images": {},
+    "images": {
+        "#.lask/deps/sha256-d6f7537f50f035a4009f6b07afb4b8c5e42e59af6e87563438eae85b950bbb52/lib/images/unix/Dockerfile": {
+            "kind": "recipe",
+            "tag": "lask/f26e57ebaf63a6672ff6dccc104af201697a1ab8fa65a8547736f86d5b15f13e"
+        }
+    },
     "lock_version": 1,
     "modules": {
-        "aws": {
-            "git": "https://github.com/lask-task-runner/lask-aws",
-            "hash": "sha256-9f3d3b2b03a674ba47fdb7cf7109b92c5ad5fa243df7a0223a09fba0291a93cd",
+        "tools": {
+            "git": "https://github.com/lask-task-runner/lask-module-tools.git",
+            "hash": "sha256-d6f7537f50f035a4009f6b07afb4b8c5e42e59af6e87563438eae85b950bbb52",
             "requested": "v0.1.0",
-            "rev": "bd04a07ac130dc551f8fb08800a86ed56fc35a81"
-        },
-        "terraform": {
-            "git": "https://github.com/lask-task-runner/lask-terraform",
-            "hash": "sha256-ec4fee04d0e1e37420527a58ae038f12aeec5b308fe3d5a254bd1c128fd009f1",
-            "requested": "v0.1.1",
-            "rev": "b56973364d24f57cc0a7e6c55ae013d190094d94"
+            "rev": "9608855c8aac248d742de70457675f79c2f879bd"
         }
     }
 }

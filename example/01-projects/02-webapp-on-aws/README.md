@@ -6,31 +6,40 @@ You need **Lask** and **Docker**. Nothing else — no Python, no Node.js, no Ter
 
 ```bash
 cd example/01-projects/02-webapp-on-aws
-lask deps sync   # one-time, needs network: fetches the terraform/aws modules main.lask imports
+lask deps sync   # one-time, needs network: fetches the tools module main.lask imports
 lask run test
 ```
 
-`deps sync` is the only step here that touches the network — `check`, `run`, and `eval` never do (that's true even for `test`, which never calls Terraform or aws-cli itself: the whole file is checked before anything runs, and both modules are imported at the top of [main.lask](main.lask)).
+`deps sync` is the only step here that touches the network — `check`, `run`, and `eval` never do (that's true even for `test`, which never calls Terraform or aws-cli itself: the whole file is checked before anything runs, and the tools module is imported at the top of [main.lask](main.lask)).
 
-That runs the API's Python tests and the frontend's JavaScript tests, each inside its own container. The toolchains come down as Docker images and are thrown away afterwards; nothing lands on your machine.
+That runs the API's Python tests and the frontend's JavaScript tests, each inside its own container. The toolchains come down as Docker images, and each test runs in a container that is thrown away afterwards; nothing lands on your machine.
 
 ## What the tasks look like
 
 Everything lives in [main.lask](main.lask). A few excerpts, to give you the shape of it.
 
-Execution environments are values, so they're declared once at the top of the file and referred to by name:
+Execution environments are values, so they're declared once at the top of the file and referred to by name. Each one comes from [lask-module-tools](https://github.com/lask-task-runner/lask-module-tools), imported like any other code reuse across projects (`import * as tools from "tools"`, declared once in [lask.json](lask.json) and pinned by content hash in [lask.lock.json](lask.lock.json)) — a function per tool that returns the image to run it in:
 
 ```lask
-python = #python:3.12.14-alpine3.24
-node = #node:20.20.2-alpine3.23
-playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
-curl = #curlimages/curl:8.21.0
+python = tools.python(tag = "3.12.14-alpine3.24")
+node = tools.node(tag = "20.20.2-alpine3.23")
+playwright = tools.playwright(tag = "v1.62.1-jammy")
 ```
 
-A task is then a name, one of those environments, and a command. The `$[...]` part is what picks the container it runs in — which is why you didn't need Python installed:
+A `command` declaration then says which environment provides each program:
 
 ```lask
-test_api() = $[python] pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
+command { "python", "pip" } on python
+command { "node", "npm", "npx" } on node
+command { "aws" } on aws
+command { "terraform" } on terraform
+command { "curl" } on tools.unix()
+```
+
+So a task names only what it runs, and the command words pick the container — which is why you didn't need Python installed:
+
+```lask
+test_api() = $ pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
 ```
 
 Pinning the versions in one place means a task can't quietly drift onto a different toolchain than its neighbours.
@@ -50,26 +59,27 @@ A command's output can be bound to a variable and interpolated into the next one
 type Healthcheck = Record<status: String>
 
 healthcheck_web(): Healthcheck = do {
-  url = as_string(tf.output_value("website_url", dir = "infra"))
-  status = $[curl] curl -s -o /dev/null -w "%{http_code}" "#{url}"
+  url = tf_output().website_url
+  status = $ curl -s -o /dev/null -w "%{http_code}" "#{url}"
   return { status: status }
 }
 ```
 
-Note the two different environments in one task: Terraform and curl each run in their own container, and neither is installed on your machine.
+Note the two different environments in one task: `tf_output()` runs `terraform output -json` and returns it as a typed record, then curl runs — each in its own container, and neither is installed on your machine.
 
-`tf` here isn't a raw `terraform` binary call — it's the [lask-terraform](https://github.com/lask-task-runner/lask-terraform) module, imported like any other code reuse across projects (`import * as tf from "terraform"`, declared once in [lask.json](lask.json) and pinned by content hash in [lask.lock.json](lask.lock.json)). `output_value` is a typed function of that module, not a string glued together from `terraform output -raw ...`. `deploy`, `create_user`, and `destroy` similarly call through [lask-aws](https://github.com/lask-task-runner/lask-aws) (`import * as aws from "aws"`) for S3 sync, CloudFront invalidation, and Cognito user provisioning, instead of hand-rolling `aws s3 sync` / `aws cloudfront create-invalidation` / `aws cognito-idp admin-create-user` with a credential prefix repeated at every call site.
-
-Parameters can default to an environment variable, and marking one `!!` keeps it out of the logs — `deploy` prints `AWS_SECRET_ACCESS_KEY="***"` instead of your real key:
+The tools aren't wrapped: `deploy` writes `$ terraform -chdir=infra apply ...` and `$ aws s3 sync ...` as you would at a prompt. What a tool needs — its image tag, credentials, region — is given once, in the environment the command word is declared on, rather than repeated at every call site. Marking a value secret keeps it out of the logs, so the key is printed as `***` wherever it appears:
 
 ```lask
-deploy(
-  --region: String = get_env("AWS_DEFAULT_REGION"),
-  --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
-  --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
-) = do {
-  ...
-}
+aws_access_key_id = mark_secret(get_env("AWS_ACCESS_KEY_ID"))
+aws_secret_access_key = mark_secret(get_env("AWS_SECRET_ACCESS_KEY"))
+aws_region = get_env("AWS_DEFAULT_REGION")
+
+aws = tools.aws(
+  tag = "2.36.41",
+  access_key_id = aws_access_key_id,
+  secret_access_key = aws_secret_access_key,
+  region = aws_region
+)
 ```
 
 ## What you're building
@@ -103,7 +113,7 @@ export AWS_SECRET_ACCESS_KEY=...
 EOF
 ```
 
-`.env` is already in [.gitignore](.gitignore), so it won't end up in a commit. Run `source .env` before the commands below — that's where the `get_env` defaults you saw on `deploy` read from.
+`.env` is already in [.gitignore](.gitignore), so it won't end up in a commit. Run `source .env` before the commands below — that's where the `get_env` calls you saw above read from.
 
 ## The full loop
 
