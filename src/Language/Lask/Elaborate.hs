@@ -1926,7 +1926,22 @@ elabEnv ctx path locals sp h mArgs = do
         () <$ envErr (kind <> "(...) is missing required argument: " <> T.intercalate ", " missing)
       pure bound
 
-    checkEnvArg e ty = check ctx path locals e ty
+    -- A list or table option is declared with nullable elements, so
+    -- that a literal can hold a null to leave out (10.2). Containers
+    -- are invariant (4.4), so a value already typed as a list or table
+    -- of strings would not conform to that; it holds no null to leave
+    -- out, and is accepted as it is.
+    checkEnvArg e ty = case ty of
+      TyArray el | el == nullableText -> orPlain (TyArray TyString)
+      TyMap el | el == nullableText -> orPlain (TyMap TyString)
+      _ -> check ctx path locals e ty
+      where
+        nullableText = mkUnion TyString [TyNull]
+        orPlain plain = do
+          r <- tryTC (check ctx path locals e ty)
+          case r of
+            Right c -> pure c
+            Left d -> either (const (abort d)) pure =<< tryTC (check ctx path locals e plain)
 
     coreStrLit (Core _ (CStrLit t)) = Just t
     coreStrLit _ = Nothing
