@@ -2596,7 +2596,7 @@ Keyword argument forms:
 
 Binding rules:
 
-1. Resolve the target module (`--module`, default `main.lask`) and obtain the top-level function specified by the first positional argument.
+1. Resolve the target module (`--module`, default `main.lask`) and obtain the function specified by the first positional argument, among the public symbols of that module: those it declares, and those it re-exports under the name it publishes them by (Chapter 5). A re-exported function is invoked as the declaration it names, with its parameter list intact. A declaration marked `internal` is not reachable.
 2. Bind the positional arguments after the function name, from left to right, to the positional parameters in declaration order. Positional arguments exceeding the number of positional parameters are collected into the variadic parameter (variadic collection in 7.5).
 3. Bind keyword arguments to parameters with matching names. Unknown names and duplicate bindings are pre-execution errors (corresponding to `E-TYPE-KEYWORD` in 7.5).
 4. Keyword parameters that were not bound are completed with the default values from the function definition (default-value completion in 7.5).
@@ -2812,7 +2812,8 @@ Rendering rules:
 - Parameter names are displayed as declared (3.2). The kebab-case invocation form of 11.2 remains accepted but is not displayed.
 - In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`.
 - A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
-- The function list holds the module's functions — declarations written as functions, and bindings whose value is a function. Plain value bindings are callable (11.2) and have help of their own, but are not listed.
+- The function list holds the module's functions — declarations written as functions, and bindings whose value is a function — whether it declares them or re-exports them (Chapter 5). Plain value bindings are callable (11.2) and have help of their own, but are not listed.
+- A re-exported function is listed and described under the name the module publishes, from the declaration it names: the documentation comment, parameters and location are those of the file that declares it.
 - The function list omits declarations marked `@hidden` (3.1), and shows only the name for functions that have no summary.
 
 Text output (`--format text`, the default). For the declaration:
