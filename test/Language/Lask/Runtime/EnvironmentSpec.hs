@@ -148,6 +148,16 @@ spec = do
       optionArgs [("add_hosts", VMap (Map.fromList [("api", VString "10.0.0.2")]))]
         `shouldBe` ["--add-host", "api:10.0.0.2"]
 
+    -- Null is how an argument says "not given" (spec 10.2); "" is a
+    -- value the caller means, and is passed on.
+    it "leaves out an option given null, and the null elements and values of a list or table" $ do
+      optionArgs [("user", VNull), ("init", VNull), ("cpus", VNull)] `shouldBe` []
+      optionArgs
+        [ ("env", VMap (Map.fromList [("A", VNull), ("B", VString "")])),
+          ("tmpfs", VArray (V.fromList [VNull, VString "/t"]))
+        ]
+        `shouldBe` ["--env", "B=", "--tmpfs", "/t"]
+
     it "says nothing for a switch left false, which is the daemon's own default" $ do
       optionArgs [("init", VBool True), ("read_only", VBool True)]
         `shouldBe` ["--init", "--read-only"]

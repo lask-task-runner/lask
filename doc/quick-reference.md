@@ -284,7 +284,9 @@ The container is configured by further keyword arguments: `memory`,
 `user`, `env`, `platform`, `hostname`, `init`; `read_only`, `tmpfs`,
 `cap_drop`; `network`, `dns`, `dns_search`, `add_hosts`, `publish`; `volumes`;
 and `build_args` on a recipe, which is a literal like `dockerfile`. Environment
-variable names are not `lower_id`, so quote them: `env = {"CI": "1"}`.
+variable names are not `lower_id`, so quote them: `env = {"CI": "1"}`. An option
+given `null` is left out, as are the `null` elements of a list or table — `""` is
+a value and is passed on.
 → [10.2](spec.md#102-target-environment-profiles-and-environment-constructor-signatures)
 
 **Dispatch.** A `$` with no `[env]` gets its environment from the command words
