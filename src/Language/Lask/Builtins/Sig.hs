@@ -164,7 +164,8 @@ builtinSchemes =
       ("find_env", mono [TyString] (orNull TyString)),
       ("has_env", mono [TyString] TyBool),
       ("get_env_or", mono [TyString, TyString] TyString),
-      ("mark_secret", mono [TyString] TyString),
+      -- T is String or String | Null, checked at the call site (6.10).
+      ("mark_secret", Scheme ["T"] [tv "T"] (tv "T")),
       -- 15.10 path operations: lexical, so no environment is involved.
       ("path_join", mono [TyArray TyString] TyString),
       ("dirname", mono [TyString] TyString),

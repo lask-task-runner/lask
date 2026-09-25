@@ -324,7 +324,7 @@ builtinDocs =
       ( "mark_secret",
         doc
           "15.9"
-          ["`mark_secret(v)` registers `v` for masking in logs and diagnostics, and returns `v` unchanged. A `!!` binding calls it for you."]
+          ["`mark_secret(v)` registers `v` for masking in logs and diagnostics, and returns `v` unchanged. `v` is a `String`, or a `String | Null` that registers nothing when it is `null`. A `!!` binding calls it for you."]
       ),
       -- 15.10 path operations
       ( "path_join",
