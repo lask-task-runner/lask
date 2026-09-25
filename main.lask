@@ -28,7 +28,7 @@ completion_hints: Map<String> = {
 // runs them in that environment without going through a task
 // (spec ch. 5, 11.8). The task bodies below name their environment
 // explicitly, so this declaration is only about `lask cmd`.
-command "stack", "uname", "mv", "rm" on #local
+command { "stack", "uname", "mv", "rm" } on #local
 
 // Run the unit test suite.
 //

@@ -19,28 +19,31 @@ module Language.Lask.Elaborate
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Monad (foldM, unless, when)
 import Control.Monad.State.Strict (StateT (runStateT), evalStateT, get, gets, lift, modify, put)
 import Data.Maybe (isNothing)
+import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Sig
 import Language.Lask.Core.AST
 import Language.Lask.Diagnostic
 import Language.Lask.Desugar.Return (transformFunctionBody)
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer.Token (CmdStream (..), Op (..), Spanned (..))
-import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
-import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTarget (..))
+import Language.Lask.Module.Loader (LoadedModule (..), Program (..), collapseDots)
+import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTarget (..), namespaceMember)
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), commandWords, validCommandName)
 import Language.Lask.Types
-import System.FilePath (isAbsolute, normalise, splitDirectories)
+import System.FilePath (isAbsolute, joinPath, normalise, splitDirectories, takeDirectory, (</>))
 
 -- Program-level results ------------------------------------------------------
 
@@ -116,7 +119,10 @@ data HoverInfo = HoverInfo
   { hiSpan :: Span,
     hiName :: Text,
     hiType :: Type,
-    hiDecl :: Maybe Key
+    hiDecl :: Maybe Key,
+    -- | The builtin it refers to, when it refers to one: builtins
+    -- have no declaration to take documentation from.
+    hiBuiltin :: Maybe Text
   }
   deriving (Show, Eq)
 
@@ -151,8 +157,39 @@ data St = St
     stHover :: [HoverInfo],
     stCommandUses :: [CommandUse],
     -- | Command tables, built once per module on first use.
-    stCommands :: Map FilePath (Map Text (Span, Core))
+    stCommands :: Map FilePath (Map Text CommandEntry),
+    -- | Modules whose command table is being built. A command string
+    -- elaborated meanwhile was reached from the environment of a
+    -- command declaration, which may run nothing (spec ch. 5).
+    stCommandsBuilding :: Set FilePath
   }
+
+-- | One command word of a module's table (spec ch. 5, 10.9).
+data CommandEntry = CommandEntry
+  { -- | The word where it was declared, which for an imported word is
+    -- in another module.
+    ceSpan :: Span,
+    -- | The environment, elaborated in the module that declared it.
+    -- References in it are resolved, so it can stand at a command
+    -- string in any module.
+    ceEnv :: Core,
+    -- | What selection compares (10.9).
+    ceSource :: EnvSource,
+    -- | The declaring module and the declaration's position in it. A
+    -- declaration reached through two imports is one entry, not two.
+    ceOrigin :: (FilePath, Int)
+  }
+
+-- | The identity selection compares (spec 10.9). The environment of a
+-- command declaration is an ordinary expression, evaluated when a
+-- command runs, so two declarations are known to name one environment
+-- only where the text shows it: the same literal environment
+-- expression, the same top-level binding, or the same declaration.
+data EnvSource
+  = SrcLiteral Text
+  | SrcBinding Key
+  | SrcDecl FilePath Int
+  deriving (Show, Eq)
 
 type TC = StateT St (Either Diagnostic)
 
@@ -171,12 +208,21 @@ renderEnvCore c = case coreF c of
     (_, Just (Core _ (CStrLit df))) -> "#docker(dockerfile = \"" <> df <> "\")"
     _ -> "#docker(...)"
   CEnv kind _ -> "#" <> kind
+  -- An environment named by a binding, or produced by a call, is
+  -- shown as what was written: its value exists only at run time.
+  CVar (TopRef _ n) -> n
+  CApp (Core _ (CVar (TopRef _ n))) _ _ -> n <> "(...)"
   _ -> "#?"
 
 -- | Record a resolved name occurrence for hover (editor tooling).
 recordVar :: Span -> Text -> Type -> Maybe Key -> TC ()
 recordVar sp n t d =
-  modify (\s -> s {stHover = HoverInfo sp n t d : stHover s})
+  modify (\s -> s {stHover = HoverInfo sp n t d Nothing : stHover s})
+
+-- | Record a reference to the builtin @bn@ for hover.
+recordBuiltin :: Span -> Text -> Type -> Text -> TC ()
+recordBuiltin sp n t bn =
+  modify (\s -> s {stHover = HoverInfo sp n t Nothing (Just bn) : stHover s})
 
 -- | Local value bindings with their types.
 type Locals = Map Text Type
@@ -208,7 +254,7 @@ mismatch sp expected actual =
 
 elaborateProgram :: Program -> Map FilePath GlobalScope -> Either [Diagnostic] CoreProgram
 elaborateProgram prog scopes =
-  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s, stCommandUses s))) (St Map.empty Map.empty Set.empty [] [] Map.empty) of
+  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s, stCommandUses s))) (St Map.empty Map.empty Set.empty [] [] Map.empty Set.empty) of
     Left d -> Left [d]
     Right (decls, hover, commands, uses) ->
       Right
@@ -219,7 +265,7 @@ elaborateProgram prog scopes =
             cpInternal =
               maybe Set.empty (moduleInternal . lmModule) $
                 Map.lookup (progEntry prog) (progModules prog),
-            cpCommands = Map.map (Map.map snd) commands,
+            cpCommands = Map.map (Map.map ceEnv) commands,
             cpCommandUses = uses,
             cpHover = hover
           }
@@ -373,7 +419,8 @@ markSecretCall sp inner =
   Core sp (CApp (Core sp (CVar (BuiltinRef "mark_secret"))) [inner] [])
 
 -- | Apply the @!!@ marker to a binding whose type is now known.
--- @!!@ is permitted only on @String@ bindings (spec 6.10).
+-- @!!@ is permitted only on @String@ and @String | Null@ bindings
+-- (spec 6.10).
 applySecrecy :: Span -> Text -> Secrecy -> Type -> Core -> TC Core
 applySecrecy _ _ Public _ core = pure core
 applySecrecy sp name Secret ty core = do
@@ -382,10 +429,15 @@ applySecrecy sp name Secret ty core = do
 
 checkSecretType :: Span -> Text -> Type -> TC ()
 checkSecretType sp name ty =
-  unless (ty == TyString) $
+  unless (secretType ty) $
     abort . diag ETypeSecretNonString sp $
-      "'" <> name <> "!!' marks a secret binding, which must be String, but its type is "
+      "'" <> name <> "!!' marks a secret binding, which must be String or String | Null, but its type is "
         <> renderType ty
+
+-- | The types a secret can have (spec 6.10): text, or text that may be
+-- absent. An absent secret has no text, and registers nothing.
+secretType :: Type -> Bool
+secretType ty = ty == TyString || ty == mkUnion TyString [TyNull]
 
 -- | Rebind each @!!@-marked parameter through @mark_secret@ at the top
 -- of the function body (spec 6.10). Done on the surface body, before
@@ -770,7 +822,7 @@ check ctx path locals e@(Expr sp f) expected = case f of
         let t = applySubst subst (schemeType scheme)
         unless (all (`Map.member` subst) (schemeVars scheme) && conformsTo t expected) $
           mismatch sp expected t
-        recordVar sp n t Nothing
+        recordBuiltin sp n t bn
         pure (Core sp (CVar (BuiltinRef bn)))
   EBin op a b | isEqOp op || expected == TyBool -> do
     (c, t) <- elabBin ctx path locals sp op a b (Just expected)
@@ -851,12 +903,12 @@ inferVar ctx path locals sp n = case Map.lookup n locals of
       recordVar sp n t (Just (defPath, defName))
       pure (Core sp (CVar (TopRef defPath defName)), t)
     Just (VBuiltin "stdin") -> do
-      recordVar sp n TyString Nothing
+      recordBuiltin sp n TyString "stdin"
       pure (Core sp (CVar (BuiltinRef "stdin")), TyString)
     Just (VBuiltin bn) -> case Map.lookup bn builtinSchemes of
       Just scheme
         | null (schemeVars scheme) -> do
-            recordVar sp n (schemeType scheme) Nothing
+            recordBuiltin sp n (schemeType scheme) bn
             pure (Core sp (CVar (BuiltinRef bn)), schemeType scheme)
         | otherwise ->
             abort . diag ETypeMismatch sp $
@@ -950,10 +1002,12 @@ elabDot ctx path locals sp inner fsp fld = case exprF inner of
     | not (Map.member m locals),
       Nothing <- lookupValueTarget ctx path m,
       Just key <- namespaceTarget m -> do
-        -- Namespace member (resolution rank 4, spec 7.2).
-        t <- declType ctx (key, fld)
-        recordVar fsp fld t (Just (key, fld))
-        pure (Core sp (CVar (TopRef key fld)), t)
+        -- Namespace member (resolution rank 4, spec 7.2), followed to
+        -- its declaration when the module re-exports it.
+        let target@(defPath, defName) = namespaceMember (ctxScopes ctx) key fld
+        t <- declType ctx target
+        recordVar fsp fld t (Just target)
+        pure (Core sp (CVar (TopRef defPath defName)), t)
   _ -> do
     (c, t) <- infer ctx path locals inner
     case t of
@@ -1483,13 +1537,13 @@ elabCommand ctx path locals sp stream mEnv parts = do
       (c, ws) <- dispatchEnv ctx path sp parts
       pure (c, Just (renderEnvCore c), ws)
   recordCommandUse sp shownEnv viaWords
-  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run_command"))) [cmdCore, envCore] [])
+  let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run"))) [envCore, cmdCore] [])
   case stream of
     StreamAll -> pure (call, commandResultType)
     StreamOut -> pure (streamSelect call "stdout", TyString)
     StreamErr -> pure (streamSelect call "stderr", TyString)
   where
-    -- do { r = run_command(...);
+    -- do { r = run(...);
     --      if (r.code == 0) { r.<stream> } else { fail({code: r.code, message: r.stderr}) } }
     streamSelect call field =
       let r = "%r"
@@ -1509,32 +1563,82 @@ elabCommand ctx path locals sp stream mEnv parts = do
 
 -- Command declarations and dispatch (spec ch. 5, 10.9) -----------------------
 
--- | The command declarations of one module, in source order.
-moduleCommandDecls :: Ctx -> FilePath -> [([Spanned Text], Expr)]
-moduleCommandDecls ctx path = case Map.lookup path (progModules (ctxProg ctx)) of
-  Nothing -> []
-  Just lm -> [(ns, e) | Decl _ (DCommand ns e) <- moduleDecls (lmModule lm)]
+-- | Where a module's command words come from: its own declarations,
+-- with their positions, and its imports and re-exports of command
+-- words, with the module they name. In source order.
+data CommandSite
+  = SiteDecl Int [Spanned Text] Expr
+  | SiteImport [Spanned Text] FilePath
 
--- | A command declaration's environment, as its core form. The
--- expression must be an environment expression, or an identifier bound
--- at top level to one, and its arguments must be literals: the reason
--- for the restriction is that the environment be enumerable and
--- pinnable without evaluating the module (spec ch. 5).
-staticEnv :: Ctx -> FilePath -> Expr -> TC (Maybe Core)
-staticEnv ctx path e = do
-  mc <- resolve Set.empty path e
-  pure (mc >>= \c -> if literalEnv c then Just c else Nothing)
+moduleCommandSites :: Ctx -> FilePath -> [CommandSite]
+moduleCommandSites ctx path = case Map.lookup path (progModules (ctxProg ctx)) of
+  Nothing -> []
+  Just lm ->
+    [ site
+    | (i, Decl _ f) <- zip [0 ..] (moduleDecls (lmModule lm)),
+      site <- case f of
+        DCommand ns e -> [SiteDecl i ns e]
+        DImportCommands ns p -> [SiteImport ns (importKey lm p)]
+        DExportCommandsFrom ns p -> [SiteImport ns (importKey lm p)]
+        _ -> []
+    ]
   where
-    resolve seen p ex = case exprF ex of
-      EEnv {} -> do
-        (c, _) <- infer ctx p Map.empty ex
-        pure (Just c)
-      EVar n
-        | not (Set.member (p, n) seen),
-          Just (VTopLevel dp dn) <- lookupValueTarget ctx p n,
-          Just (Decl _ (DValue _ _ _ rhs)) <- lookupDeclAst ctx (dp, dn) ->
-            resolve (Set.insert (p, n) seen) dp rhs
-      _ -> pure Nothing
+    importKey lm p = Map.findWithDefault (T.unpack p) p (lmImportKeys lm)
+
+-- | The environment of a command declaration (spec ch. 5): any
+-- expression of type Environment, provided it can reach no effect.
+-- The restriction is what lets @lask cmd@ evaluate it without running
+-- anything, and what keeps it meaning the same wherever it is used.
+declaredEnv :: Ctx -> FilePath -> Expr -> TC Core
+declaredEnv ctx path e = do
+  (c, t) <- infer ctx path Map.empty e
+  unless (conformsTo t TyEnvironment) $
+    abort . withExpectedActual "Environment" (renderType t) $
+      diag ETypeCommandEnv (exprSpan e) "the environment of a command declaration must be an Environment"
+  effect <- reachableEffect ctx c
+  case effect of
+    Nothing -> pure c
+    Just (via, n) ->
+      abort . diag ETypeCommandEffect (exprSpan e) $
+        "the environment of a command declaration must not have effects, but "
+          <> maybe "it" (\v -> "'" <> v <> "'") via
+          <> " can reach '"
+          <> n
+          <> "'; compute the environment from values alone, or give it at the command with $[...]"
+
+-- | The first effectful builtin (15.1, 9.3) an expression can reach,
+-- directly or through the top-level declarations it references, with
+-- the first of those declarations on the way. Reachability
+-- over-approximates as enumeration does (11.4): a reference counts
+-- whether or not it is ever called.
+reachableEffect :: Ctx -> Core -> TC (Maybe (Maybe Text, Text))
+reachableEffect ctx root = go Set.empty [(Nothing, root)]
+  where
+    go _ [] = pure Nothing
+    go seen ((via, c) : rest) = case coreF c of
+      CVar (BuiltinRef n)
+        | n `Set.member` effectfulBuiltinNames -> pure (Just (via, n))
+      CVar (TopRef p n)
+        | not (Set.member (p, n) seen) -> do
+            cd <- demandDecl ctx (p, n)
+            go (Set.insert (p, n) seen) ((via <|> Just n, cdCore cd) : rest)
+      _ -> go seen ([(via, x) | x <- coreChildren c] <> rest)
+
+-- | What selection compares for a declaration's environment (10.9):
+-- a literal environment expression, reached directly or through
+-- bindings, by its value; otherwise the last binding on the way; and
+-- failing that, the declaration itself.
+envSource :: Ctx -> FilePath -> Int -> Core -> TC EnvSource
+envSource ctx path idx = walk Set.empty Nothing
+  where
+    walk seen lastBinding c = case coreF c of
+      CEnv {}
+        | literalEnv c -> pure (SrcLiteral (envKey c))
+      CVar (TopRef p n)
+        | not (Set.member (p, n) seen) -> do
+            cd <- demandDecl ctx (p, n)
+            walk (Set.insert (p, n) seen) (Just (p, n)) (cdCore cd)
+      _ -> pure (maybe (SrcDecl path idx) SrcBinding lastBinding)
 
     literalEnv c = case coreF c of
       CEnv _ args -> all (literal . snd) args
@@ -1544,79 +1648,114 @@ staticEnv ctx path e = do
       CNumber _ -> True
       CBool _ -> True
       CNull -> True
+      CArray es -> all literal es
+      CMapLit kvs -> all (literal . snd) kvs
       _ -> False
 
--- | A canonical rendering of an environment value, for the structural
+-- | A canonical rendering of a literal environment, for the structural
 -- equality selection compares (spec 10.9). Spans are not part of it,
 -- so two declarations naming the same environment agree.
 envKey :: Core -> Text
 envKey c = case coreF c of
-  CEnv kind args -> kind <> "(" <> T.intercalate "," [k <> "=" <> envKey v | (k, v) <- args] <> ")"
+  -- Arguments and table entries are keyed in name order, not in the
+  -- order they were written: two declarations that pass the same
+  -- options in a different order denote the same environment, and
+  -- selection compares environment values (10.9).
+  CEnv kind args -> kind <> "(" <> T.intercalate "," [k <> "=" <> envKey v | (k, v) <- sortOn fst args] <> ")"
   CStrLit t -> "\"" <> t <> "\""
   CNumber n -> T.pack (show n)
   CBool b -> if b then "true" else "false"
   CNull -> "null"
+  CArray es -> "[" <> T.intercalate "," (map envKey es) <> "]"
+  CMapLit kvs -> "{" <> T.intercalate "," [k <> ":" <> envKey v | (k, v) <- sortOn fst kvs] <> "}"
   other -> T.pack (show other)
 
 -- | The module's command words and the environments they name, built
 -- once per module and then cached.
-commandTable :: Ctx -> FilePath -> TC (Map Text (Span, Core))
+commandTable :: Ctx -> FilePath -> TC (Map Text CommandEntry)
 commandTable ctx path = do
   cached <- gets stCommands
   case Map.lookup path cached of
     Just table -> pure table
     Nothing -> do
+      modify (\st -> st {stCommandsBuilding = Set.insert path (stCommandsBuilding st)})
       table <- buildCommandTable ctx path
-      modify (\st -> st {stCommands = Map.insert path table (stCommands st)})
+      modify $ \st ->
+        st
+          { stCommands = Map.insert path table (stCommands st),
+            stCommandsBuilding = Set.delete path (stCommandsBuilding st)
+          }
       pure table
 
-buildCommandTable :: Ctx -> FilePath -> TC (Map Text (Span, Core))
-buildCommandTable ctx path = foldM addDecl Map.empty (moduleCommandDecls ctx path)
+buildCommandTable :: Ctx -> FilePath -> TC (Map Text CommandEntry)
+buildCommandTable ctx path = foldM addSite Map.empty (moduleCommandSites ctx path)
   where
-    addDecl tbl (names, envExpr) = do
-      mEnv <- staticEnv ctx path envExpr
-      case mEnv of
-        Nothing ->
-          abort . diag ETypeCommandDecl (exprSpan envExpr) $
-            "a command declaration needs an environment that is known before execution: "
-              <> "an environment expression with literal arguments, or a top-level binding of one"
-        Just env -> foldM (addName env) tbl names
-    addName env tbl (Spanned nameSp n) = do
+    addSite tbl (SiteDecl i names envExpr) = do
+      env <- declaredEnv ctx path envExpr
+      src <- envSource ctx path i env
+      foldM (addDeclared env src i) tbl names
+    addSite tbl (SiteImport names key) = do
+      target <- commandTable ctx key
+      foldM (addImported target) tbl names
+
+    addDeclared env src i tbl (Spanned sp n) = do
       unless (validCommandName n) $
-        abort . diag ETypeCommandName nameSp $
+        abort . diag ETypeCommandName sp $
           "'" <> n <> "' could never be recognized as a command word in a command string"
-      when (Map.member n tbl) $
-        abort (diag ETypeCommandDuplicate nameSp ("command '" <> n <> "' is declared more than once"))
-      pure (Map.insert n (nameSp, env) tbl)
+      when (Map.member n tbl) $ abort (duplicate sp n)
+      pure (Map.insert n (CommandEntry sp env src (path, i)) tbl)
+
+    -- The resolver has already checked that the target exports the
+    -- word. The same declaration reached along two import paths is
+    -- one entry; anything else under the same word is a duplicate.
+    addImported target tbl (Spanned sp n) = case Map.lookup n target of
+      Nothing -> abort (diag ENameUndefined sp ("module exports no command '" <> n <> "'"))
+      Just entry -> case Map.lookup n tbl of
+        Just prev
+          | ceOrigin prev == ceOrigin entry -> pure tbl
+          | otherwise -> abort (duplicate sp n)
+        Nothing -> pure (Map.insert n entry tbl)
+
+    duplicate sp n =
+      diag ETypeCommandDuplicate sp ("command '" <> n <> "' is declared or imported more than once")
 
 -- | The environment of a command execution expression that carries no
 -- environment specification, with the command words that selected it
 -- (spec 10.9).
 dispatchEnv :: Ctx -> FilePath -> Span -> [TextPart] -> TC (Core, [Spanned Text])
 dispatchEnv ctx path sp parts = do
+  building <- gets stCommandsBuilding
+  when (path `Set.member` building) $
+    abort . diag ETypeCommandEffect sp $
+      "this command is reached from the environment of a command declaration, "
+        <> "which must not run commands"
   tbl <- commandTable ctx path
   case commandWords parts of
     NotAnalysable _ why ->
       abort . diag ETypeCommandNoEnv sp $
         "the command string could not be segmented (" <> why <> "), so no command word could be read; "
           <> "give the environment explicitly with $[...]"
-    Analysed ws -> case [(w, env) | w <- ws, cwCandidate w, Just (_, env) <- [Map.lookup (cwText w) tbl]] of
+    Analysed ws -> case [(w, e) | w <- ws, cwCandidate w, Just e <- [Map.lookup (cwText w) tbl]] of
       [] -> abort (diag ETypeCommandNoEnv sp (noneMessage ws))
-      matched@((w0, env0) : more) -> case [cwText w | (w, env) <- more, envKey env /= envKey env0] of
-        [] -> pure (env0, [Spanned (cwSpan w) (cwText w) | (w, _) <- matched])
-        (n1 : _) ->
+      matched@((w0, e0) : more) -> case [(w, e) | (w, e) <- more, ceSource e /= ceSource e0] of
+        [] -> pure (ceEnv e0, [Spanned (cwSpan w) (cwText w) | (w, _) <- matched])
+        ((w1, e1) : _) ->
           abort . diag ETypeCommandConflict sp $
-            "this command runs both '"
-              <> cwText w0
-              <> "' ("
-              <> envKey env0
-              <> ") and '"
-              <> n1
-              <> "' ("
-              <> maybe "?" (envKey . snd) (Map.lookup n1 tbl)
-              <> "), but a command string is one process in one environment; "
-              <> "split the command or give the environment explicitly with $[...]"
+            "this command runs both "
+              <> describe w0 e0
+              <> " and "
+              <> describe w1 e1
+              <> ", which are not known to be one environment; a command string is one process in one environment, "
+              <> "so split the command, declare both words on one environment, or give the environment explicitly with $[...]"
   where
+    describe w e = "'" <> cwText w <> "' (" <> sourceText e <> ")"
+    sourceText e = case ceSource e of
+      SrcLiteral _ -> renderEnvCore (ceEnv e)
+      SrcBinding (_, n) -> n
+      SrcDecl _ _ -> "declared at " <> renderSpan (ceSpan e)
+    renderSpan (Span (Position f l _) _) = T.pack f <> ":" <> T.pack (show l)
+    renderSpan NoSpan = "its declaration"
+
     noneMessage ws =
       let seen = [cwText w | w <- ws, cwCandidate w]
           quoted' ns = T.intercalate ", " ["'" <> n <> "'" | n <- ns]
@@ -1624,9 +1763,31 @@ dispatchEnv ctx path sp parts = do
             [] -> "no command word could be read"
             [n] -> "'" <> n <> "' is not a declared command"
             ns -> "none of " <> quoted' ns <> " is a declared command"
-       in named <> "; declare it with `command \"<name>\" on <environment>` or give the environment explicitly with $[...]"
+       in named
+            <> "; declare it with `command { \"<name>\" } on <environment>`, "
+            <> "import it with `import command { \"<name>\" } from \"<module>\"`, "
+            <> "or give the environment explicitly with $[...]"
 
 -- Environment expressions (spec 6.7, 10.2) ---------------------------------------------------
+
+-- | A recipe path written in the module at @modulePath@, as the path
+-- relative to the program's base directory @base@ that names the same
+-- file. Module paths and the base directory are both relative to where
+-- lask runs, or both absolute; where they are not alike (a dependency
+-- cache moved elsewhere by LASK_CACHE_DIR), the module-relative path is
+-- kept whole, which the base directory joins to unchanged.
+recipePath :: FilePath -> FilePath -> FilePath -> FilePath
+recipePath base modulePath written
+  | isAbsolute base /= isAbsolute target = target
+  | otherwise =
+      let b = parts base
+          t = parts target
+          common = length (takeWhile id (zipWith (==) b t))
+          rel = replicate (length b - common) ".." <> drop common t
+       in if null rel then "." else joinPath rel
+  where
+    target = collapseDots (normalise (takeDirectory modulePath </> written))
+    parts = filter (/= ".") . splitDirectories . collapseDots . normalise
 
 elabEnv :: Ctx -> FilePath -> Locals -> Span -> Text -> Maybe [Arg] -> TC (Core, Type)
 elabEnv ctx path locals sp h mArgs = do
@@ -1640,19 +1801,60 @@ elabEnv ctx path locals sp h mArgs = do
     "docker" -> do
       args <- maybe (envErr "docker(...) requires an image reference or a recipe") pure argsOrdered
       let hasPositional = any (\(Arg _ af) -> case af of APos _ -> True; _ -> False) args
+          -- A container option given null is left out: the one way an
+          -- argument can say "not given" without giving up a value a
+          -- caller might mean, such as "" (10.2). A list or a table
+          -- says it by being empty, and leaves out its null elements
+          -- and null values the same way.
+          nullable t = mkUnion t [TyNull]
+          text = nullable TyString
+          number = nullable TyNumber
+          switch = nullable TyBool
+          list = TyArray (nullable TyString)
+          table = TyMap (nullable TyString)
           optionals =
             [ ("image", TyString),
               ("dockerfile", TyString),
               ("context", TyString),
-              ("memory", TyString),
-              ("cpus", TyNumber)
+              ("build_args", TyMap TyString),
+              -- Resource limits.
+              ("memory", text),
+              ("memory_swap", text),
+              ("memory_reservation", text),
+              ("cpus", number),
+              ("cpu_shares", number),
+              ("cpuset_cpus", text),
+              ("cpuset_mems", text),
+              ("pids_limit", number),
+              ("shm_size", text),
+              ("blkio_weight", number),
+              ("ulimits", list),
+              -- Execution context.
+              ("workdir", text),
+              ("user", text),
+              ("env", table),
+              ("platform", text),
+              ("hostname", text),
+              ("init", switch),
+              -- Confinement: these narrow the boundary of 10.7.
+              ("read_only", switch),
+              ("tmpfs", list),
+              ("cap_drop", list),
+              -- Network.
+              ("network", text),
+              ("dns", list),
+              ("dns_search", list),
+              ("add_hosts", table),
+              ("publish", list),
+              -- Host filesystem beyond the base directory mount (10.5).
+              ("volumes", list)
             ]
       named <-
         if hasPositional
           then bindEnvArgs "docker" [("image", TyString)] optionals args
           else bindEnvArgs "docker" [] optionals args
       validateDockerEnv named
-      pure (Core sp (CEnv "docker" named), TyEnvironment)
+      pure (Core sp (CEnv "docker" (map recipeArg named)), TyEnvironment)
     imageName -> case mArgs of
       -- #image-name sugar: docker("image-name") (spec 6.7).
       Nothing ->
@@ -1665,6 +1867,18 @@ elabEnv ctx path locals sp h mArgs = do
   where
     envErr :: Text -> TC a
     envErr = abort . diag ETypeEnvConstruct sp
+
+    -- A recipe path is written relative to the directory of the module
+    -- that declares it (10.2), and is read — by the runtime, by
+    -- `lask env build`, in the lock — relative to the program's base
+    -- directory, since the value it ends up in no longer knows its
+    -- module. It is rewritten here, where the module is known. A recipe
+    -- beside the entry module keeps the path it was written with.
+    recipeArg (k, c)
+      | k `elem` ["dockerfile", "context"],
+        CStrLit p <- coreF c =
+          (k, c {coreF = CStrLit (T.pack (recipePath (progBaseDir (ctxProg ctx)) path (T.unpack p)))})
+      | otherwise = (k, c)
 
     -- Positional arguments must precede named ones (spec 6.7).
     validateOrder args = do
@@ -1718,7 +1932,22 @@ elabEnv ctx path locals sp h mArgs = do
         () <$ envErr (kind <> "(...) is missing required argument: " <> T.intercalate ", " missing)
       pure bound
 
-    checkEnvArg e ty = check ctx path locals e ty
+    -- A list or table option is declared with nullable elements, so
+    -- that a literal can hold a null to leave out (10.2). Containers
+    -- are invariant (4.4), so a value already typed as a list or table
+    -- of strings would not conform to that; it holds no null to leave
+    -- out, and is accepted as it is.
+    checkEnvArg e ty = case ty of
+      TyArray el | el == nullableText -> orPlain (TyArray TyString)
+      TyMap el | el == nullableText -> orPlain (TyMap TyString)
+      _ -> check ctx path locals e ty
+      where
+        nullableText = mkUnion TyString [TyNull]
+        orPlain plain = do
+          r <- tryTC (check ctx path locals e ty)
+          case r of
+            Right c -> pure c
+            Left d -> either (const (abort d)) pure =<< tryTC (check ctx path locals e plain)
 
     coreStrLit (Core _ (CStrLit t)) = Just t
     coreStrLit _ = Nothing
@@ -1737,26 +1966,36 @@ elabEnv ctx path locals sp h mArgs = do
         (True, False) -> do
           when (present "context") $
             () <$ envErr "'context' is only valid together with 'dockerfile'"
+          when (present "build_args") $
+            () <$ envErr "'build_args' is only valid together with 'dockerfile'"
           case lookup "image" named >>= coreStrLit of
             -- A runtime image value stays permitted here; whether the
             -- owning module may use one is a trust-domain rule (16.1).
             Nothing -> pure ()
+            -- A reference without a tag names the repository's
+            -- `latest`; the lock pins whatever that resolved to when it
+            -- was materialized (10.3), so it cannot move under a run.
             Just img
               | T.null img -> () <$ envErr "the image reference must not be empty"
-              | not (hasTagOrDigest img) ->
-                  () <$ envErr ("the image reference must carry a tag or a digest: '" <> img <> "'")
               | otherwise -> pure ()
         (False, True) -> do
           _ <- requireTreePath named "dockerfile"
           _ <- requireTreePath named "context"
-          pure ()
+          requireLiteralTable named "build_args"
 
-    hasTagOrDigest ref =
-      T.isInfixOf "@" ref || maybe False (T.isInfixOf ":") (lastSegment ref)
+    -- Build arguments decide which image a recipe builds, and are part
+    -- of its hash (10.3), so they are read before anything runs: by
+    -- `lask env build`, which has no evaluator to compute them with.
+    requireLiteralTable :: [(Text, Core)] -> Text -> TC ()
+    requireLiteralTable named key = case lookup key named of
+      Nothing -> pure ()
+      Just (Core _ (CMapLit kvs))
+        | all (isLiteralString . snd) kvs -> pure ()
+      Just _ -> envErr ("'" <> key <> "' must be a table of string literals without interpolation")
       where
-        lastSegment r = case reverse (T.splitOn "/" r) of
-          (x : _) -> Just x
-          [] -> Nothing
+        isLiteralString c = case coreF c of
+          CStrLit _ -> True
+          _ -> False
 
     requireTreePath :: [(Text, Core)] -> Text -> TC (Maybe Text)
     requireTreePath named key = case lookup key named of
@@ -1824,7 +2063,7 @@ elabCall ctx path locals sp fn args mExpected = do
             Just (VTopLevel p dn) -> staticFromDecl (p, dn)
             Just (VBuiltin bn) -> case Map.lookup bn builtinSchemes of
               Just scheme -> do
-                recordVar (exprSpan fn) bn (schemeType scheme) Nothing
+                recordBuiltin (exprSpan fn) bn (schemeType scheme) bn
                 pure (CalleeBuiltin bn scheme)
               Nothing -> abort (diag ENameUndefined (exprSpan fn) ("undefined name: '" <> n <> "'"))
             Nothing -> abort (diag ENameUndefined (exprSpan fn) ("undefined name: '" <> n <> "'"))
@@ -1832,7 +2071,7 @@ elabCall ctx path locals sp fn args mExpected = do
         | not (Map.member m locals),
           Nothing <- lookupValueTarget ctx path m,
           Just key <- Map.lookup path (ctxScopes ctx) >>= Map.lookup m . gsNamespaces ->
-            staticFromDecl (key, fld)
+            staticFromDecl (namespaceMember (ctxScopes ctx) key fld)
       ELambda ps rt body -> do
         (lam, ty, params) <- elabLambda ctx path locals (exprSpan fn) Nothing ps rt body
         pure (CalleeStatic lam [] ty params)
@@ -2032,7 +2271,7 @@ elabCall ctx path locals sp fn args mExpected = do
       _ -> "function"
 
     -- Builtin calls: scheme instantiation (spec 4.4), plus the
-    -- special cases of cast (15.8) and run_command's --env (6.6).
+    -- special cases of cast (15.8) and to_string.
     elabBuiltinCall name scheme
       | name == "cast" = do
           expected <- maybe castNeedsType pure mExpected
@@ -2052,18 +2291,8 @@ elabCall ctx path locals sp fn args mExpected = do
             pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) [c] []), TyString)
           _ -> abort (diag ETypeArity sp "to_string takes exactly one argument")
       | otherwise = do
-          kwCores <- case (name, kwArgs) of
-            (_, []) -> pure []
-            ("run_command", _) -> do
-              slots <- keywordSlots [("env", TyEnvironment)]
-              mapM (\(kn, e, t) -> (,) kn <$> check ctx path locals e t) slots
-            _ -> abort (diag ETypeKeyword sp ("'" <> name <> "' takes no keyword arguments"))
-          when (name == "run_command") $
-            mapM_
-              ( \(kn, _) ->
-                  when (kn /= "env") (() <$ abort (diag ETypeKeyword sp ("unknown keyword argument: '" <> kn <> "'")))
-              )
-              kwCores
+          unless (null kwArgs) $
+            () <$ abort (diag ETypeKeyword sp ("'" <> name <> "' takes no keyword arguments"))
           let (schemeVs, ren) = freshen (schemeVars scheme)
               params = map ren (schemeParams scheme)
               retPat = ren (schemeRet scheme)
@@ -2076,9 +2305,8 @@ elabCall ctx path locals sp fn args mExpected = do
           (cores, subst) <- goArgs subst0 (zip posExprs params)
           builtinSideCondition name sp (Map.mapKeys (T.takeWhile (/= '#')) subst)
           retTy <- instantiateRet name schemeVs retPat subst
-          pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) cores (kwEnvOf kwCores)), retTy)
+          pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) cores []), retTy)
       where
-        kwEnvOf = id
         castNeedsType =
           abort (diag ETypeMismatch sp "cast requires an expected type from context")
 
@@ -2123,6 +2351,7 @@ builtinSideCondition name sp subst = case name of
   "contains_array" -> needs comparable "T" "compared"
   "index_of_array" -> needs comparable "T" "compared"
   "unique" -> needs comparable "T" "compared"
+  "mark_secret" -> needs secretType "T" "marked secret"
   _ -> pure ()
   where
     needs ok var verb = case Map.lookup var subst of
@@ -2135,7 +2364,11 @@ builtinSideCondition name sp subst = case name of
         <> renderType t
         <> " cannot be "
         <> verb
-        <> (if verb == "ordered" then " (only Number and String can)" else "")
+        <> ( case verb of
+               "ordered" -> " (only Number and String can)"
+               "marked secret" -> " (only String and String | Null can)"
+               _ -> ""
+           )
 
 -- | First-order matching of a scheme pattern against a concrete type.
 unifyE :: Type -> Type -> Subst -> Either Text Subst

@@ -104,7 +104,7 @@ spec = do
       hasAtom "f() = $[#alpine:3.20] ls" (0, 8, 12, SemanticTokenTypes_Macro)
 
   describe "command words (spec 10.9)" $ do
-    let src = "command \"go\" on #golang:1.25\nf() = $ go test ./...\n"
+    let src = "command { \"go\" } on #golang:1.25\nf() = $ go test ./...\n"
 
     it "marks a dispatching command word as a reference, not string text" $ do
       ts <- semTokens "test.lask" src
@@ -122,12 +122,12 @@ spec = do
 
   describe "inlay hints (spec 10.9)" $ do
     it "shows the environment dispatch derived, in the notation of the source" $ do
-      hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $ go test ./...\n"
+      hs <- hintsFor "test.lask" "command { \"go\" } on #golang:1.25\nf() = $ go test ./...\n"
       -- reads as `$[#golang:1.25] go test ./...`
       hs `shouldBe` [(1, 7, "[#golang:1.25]")]
 
     it "places the bracket after a stream selector" $ do
-      hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $* go test\n"
+      hs <- hintsFor "test.lask" "command { \"go\" } on #golang:1.25\nf() = $* go test\n"
       hs `shouldBe` [(1, 8, "[#golang:1.25]")]
 
     it "shows nothing where the expression carries an environment" $ do
@@ -147,7 +147,7 @@ spec = do
       hs <-
         hintsFor
           "test.lask"
-          ( "command \"npm\" on #node:20\n"
+          ( "command { \"npm\" } on #node:20\n"
               <> "f(u: String) = $ cd web && npm ci && \\\n"
               <> "  VITE_API_URL=\"#{u}\" \\\n"
               <> "  npm run build\n"
@@ -169,6 +169,20 @@ spec = do
       hasAtom "export { a } from \"./lib.lask\"" (0, 0, 6, SemanticTokenTypes_Keyword)
     it "marks a marker after another declaration" $
       hasAtom "a = 1\ninternal b = 2" (1, 0, 8, SemanticTokenTypes_Keyword)
+
+  -- `on` is a contextual keyword (spec ch. 5): a keyword after the
+  -- braces of a command declaration, an identifier anywhere else.
+  describe "the contextual keyword `on`" $ do
+    it "marks `on` in a command declaration as a keyword" $
+      hasAtom "command { \"go\" } on #golang:1.25" (0, 17, 2, SemanticTokenTypes_Keyword)
+    it "marks it after several words and in the export form" $ do
+      hasAtom "command { \"go\", \"gofmt\" } on e" (0, 26, 2, SemanticTokenTypes_Keyword)
+      hasAtom "export command { \"go\" } on e" (0, 24, 2, SemanticTokenTypes_Keyword)
+    it "leaves `on` an identifier elsewhere" $ do
+      hasAtom "on = 1" (0, 0, 2, SemanticTokenTypes_Variable)
+      hasAtom "f(on: Number) = on" (0, 16, 2, SemanticTokenTypes_Variable)
+    it "marks `command` in an import as a keyword" $
+      hasAtom "import command { \"go\" } from \"./tools.lask\"" (0, 7, 7, SemanticTokenTypes_Keyword)
 
   describe "hover" $ do
     let src =
@@ -194,6 +208,20 @@ spec = do
     it "shows the type of local parameter references" $ do
       t <- hoverText 2 25 -- trailing `x` in the body
       t `shouldSatisfy` maybe False (T.isInfixOf "x: Number")
+    it "shows the documentation of a builtin" $ do
+      h <- hoverAt "test.lask" "f(xs: Array<Number>) = map(xs, \\(x: Number) -> x + 1)\n" (Position 0 24)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldSatisfy` maybe False (T.isInfixOf "map<T, U>: Function<Array<T>, Function<T, U>, Array<U>>")
+      t `shouldSatisfy` maybe False (T.isInfixOf "`map(xs, f)` applies `f`")
+      t `shouldSatisfy` maybe False (T.isInfixOf "spec 15.4")
+    it "does not take a local shadowing a builtin for the builtin" $ do
+      h <- hoverAt "test.lask" "f(size: Number): Number = size\n" (Position 0 26)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldBe` Just "```lask\nsize: Number\n```"
     it "returns nothing on blank positions" $ do
       t <- hoverText 3 1 -- whitespace after `y`
       t `shouldBe` Nothing
@@ -266,6 +294,15 @@ spec = do
         let src = "import * as m from \"./lib.lask\"\nf() = m."
         ls <- labels (dir </> "main.lask") src 1 8
         ls `shouldMatchList` ["double", "hidden"]
+    -- A re-exported name is declared in another module, and its keyword
+    -- parameters come from there (spec 5).
+    it "offers keyword parameters of a re-exported function called through a namespace" $
+      withSystemTempDirectory "lask-completion" $ \dir -> do
+        writeFile (dir </> "impl.lask") "greet(--name: String = \"World\") = name\n"
+        writeFile (dir </> "lib.lask") "export { greet } from \"./impl.lask\"\n"
+        let src = "import * as m from \"./lib.lask\"\ny = m.greet()"
+        ls <- labels (dir </> "main.lask") src 1 12
+        ls `shouldSatisfy` elem "name"
     it "still offers builtins and reserved words when the buffer does not parse" $ do
       ls <- labels "test.lask" "y = }\nz = to" 1 6
       ls `shouldSatisfy` elem "to_json"
@@ -397,13 +434,14 @@ spec = do
             (name `elem` ls)
 
 -- | Real sources from the repository, each with a name it declares.
--- The terraform example does not resolve its dependency unless it has
--- been fetched, which is exactly the degraded state to cover.
+-- The dependencies example does not resolve its import unless the
+-- dependency has been fetched, which is exactly the degraded state to
+-- cover.
 realSources :: [(FilePath, Text)]
 realSources =
   [ ("main.lask", "doctest"),
-    ("example/01-basic/main.lask", "cowsay"),
-    ("example/03-terraform/main.lask", "as_string")
+    ("example/01-projects/01-hello-world/main.lask", "cowsay"),
+    ("example/02-language/09-dependencies/main.lask", "status")
   ]
 
 -- | Sources exercising the states a buffer passes through while it is

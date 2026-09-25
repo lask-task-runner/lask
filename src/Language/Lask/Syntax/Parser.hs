@@ -158,6 +158,7 @@ pModule = do
     ( Module
         (map fst items)
         (Set.fromList [n | (d, True) <- items, Just n <- [declaredName d]])
+        (Set.fromList [n | (Decl _ (DCommand ns _), True) <- items, Spanned _ n <- ns])
     )
   where
     declaredName d = case declF d of
@@ -173,18 +174,34 @@ pModule = do
 pTopLevel :: P (Decl, Bool)
 pTopLevel =
   choice
-    [ -- A command declaration binds no name, so it takes no visibility
-      -- marker (spec ch. 5); parsing it only here makes
-      -- @export command ...@ a syntax error.
-      (\d -> (d, False)) <$> pCommandDecl,
+    [ (\d -> (d, False)) <$> pCommandDecl,
       do
         s <- kw KExport
-        choice [pExportFrom s, plain],
-      kw KInternal *> ((\d -> (d, True)) <$> pDecl),
+        choice [pExportFrom s, pExportCommand s, plain],
+      do
+        _ <- kw KInternal
+        (\d -> (d, True)) <$> choice [pCommandDecl, pDecl],
       plain
     ]
   where
     plain = (\d -> (d, False)) <$> pDecl
+
+    -- @export command { "go" } on e@ is the explicit form of a public
+    -- command declaration; @export command { "go" } from "path"@
+    -- re-exports command words (spec 5). The two share everything up
+    -- to the word after the braces.
+    pExportCommand s = do
+      _ <- kw KCommand
+      names <- pCommandNames
+      choice
+        [ do
+            _ <- pOn
+            e <- pExpr
+            pure (Decl (s <> exprSpan e) (DCommand names e), False),
+          do
+            Spanned e path <- kw KFrom *> stringLit "export path"
+            pure (Decl (s <> e) (DExportCommandsFrom names path), False)
+        ]
 
     -- @export { a, b } from "path"@ (spec 5).
     pExportFrom s = do
@@ -197,26 +214,49 @@ pTopLevel =
 pDecl :: P Decl
 pDecl = choice [pImport, pTypeAliasDecl, pValueOrFunction]
 
--- | @command "go", "gofmt" on #golang:1.25@ (spec ch. 5). @on@ is a
--- contextual keyword: nothing else may stand in its position, so it
--- stays usable as an identifier everywhere else.
+-- | @command { "go", "gofmt" } on #golang:1.25@ (spec ch. 5).
 pCommandDecl :: P Decl
 pCommandDecl = do
   s <- kw KCommand
-  names <- sepBy1 (stringLit "command name") (sym TComma)
+  names <- pCommandNames
   _ <- pOn
   e <- pExpr
   pure (Decl (s <> exprSpan e) (DCommand names e))
+
+-- | @on@ is a contextual keyword: nothing else may stand in its
+-- position, so it stays usable as an identifier everywhere else.
+pOn :: P ()
+pOn = void . matchTok "on" $ \t -> case t of
+  TLowerId "on" -> Just ()
+  _ -> Nothing
+
+-- | @{ "go", "gofmt" }@. Every form that lists command words writes
+-- them in braces, so a declaration, an import and a re-export read
+-- alike. A bare list is the form before braces were required; it is
+-- recognized only to say how to write it now.
+pCommandNames :: P [Spanned Text]
+pCommandNames = choice [braced, bare]
   where
-    pOn = matchTok "on" $ \t -> case t of
-      TLowerId "on" -> Just ()
-      _ -> Nothing
+    braced = do
+      _ <- sym TLBrace
+      names <- sepBy1 (stringLit "command name") (sym TComma)
+      _ <- sym TRBrace
+      pure names
+    bare = do
+      Spanned _ n <- lookAhead (stringLit "command name")
+      fail ("command words are written in braces: command { \"" <> T.unpack n <> "\" }")
 
 pImport :: P Decl
 pImport = do
   s <- kw KImport
   choice
-    [ do
+    [ -- @import command { "go" } from "path"@ (spec 5).
+      do
+        _ <- kw KCommand
+        names <- pCommandNames
+        Spanned e path <- pFromPath
+        pure (Decl (s <> e) (DImportCommands names path)),
+      do
         _ <- op OpMul
         _ <- kw KAs
         Spanned _ alias <- lowerId

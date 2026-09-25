@@ -1,0 +1,99 @@
+// Structured data
+//
+// JSON, YAML, TOML, CSV and dotenv all decode to the same handful of
+// value kinds, and `cast` is what moves a decoded value to a concrete
+// type. Pure — no Docker needed.
+//
+//   lask eval parse_config
+//   lask eval render --format yaml
+//   lask eval checksum lask
+
+type Service = Record<name: String, port: Number, public: Bool>
+
+raw_json = '{"name": "api", "port": 8080, "public": true}'
+
+// Decode JSON text into a typed value.
+//
+// `from_json` gives back `Any`: the shape of the text is not known
+// until run time. `cast` is what asserts the shape, and it fails if the
+// data does not have it — which is the point at which bad input is
+// caught, once, instead of spreading as `Any`.
+parse_config(): Service = cast(from_json(raw_json))
+
+// Read one field out of decoded data.
+//
+// @example lask eval port-of
+port_of(): Number = do {
+  s = parse_config()
+  s.port
+}
+
+// Re-encode a value in another format.
+//
+// `encode` takes the format as its second argument, and at least
+// `json`, `pretty-json`, `yaml`, `toml`, `csv` and `dotenv` are
+// understood. The format chooses a syntax, never a schema.
+//
+// @param format  json, pretty-json, yaml, toml, csv or dotenv.
+// @complete format json pretty-json yaml toml dotenv
+// @example lask eval render --format yaml
+render(--format: String = "yaml"): String = encode(parse_config(), format)
+
+// Decode the other formats the same way.
+//
+// Every format produces the ordinary value kinds, so the `cast` that
+// follows is identical whichever syntax the data arrived in.
+from_yaml_text(): Service = do {
+  // A raw string is verbatim and may span lines, which is what makes
+  // it the form for embedded documents: `\n` inside one is a backslash
+  // and an n, not a newline.
+  text = 'name: api
+port: 8080
+public: true'
+  cast(decode(text, "yaml"))
+}
+
+// CSV decodes to an array of objects, all values `String`.
+//
+// No type is inferred from the text, so a numeric column is converted
+// explicitly — `to_number` is the form to use, not a trip through JSON.
+//
+// @return The ports in the table, as numbers.
+csv_ports(): Array<Number> = do {
+  text = 'name,port
+api,8080
+web,443'
+  rows: Array<Map<String>> = cast(decode(text, "csv"))
+  map(rows, \(r: Map<String>) -> to_number(r["port"]))
+}
+
+// dotenv is a format like any other, which is how a .env file is read
+// without a shell.
+dotenv_keys(): Array<String> = do {
+  text = '# a comment line
+APP_ENV=prod
+REGION="eu-west-1"'
+  m: Map<String> = cast(decode(text, "dotenv"))
+  keys(m)
+}
+
+// `to_json` is the inverse of `from_json`, and the way a structured
+// value reaches a command or a log line — interpolation only takes
+// strings, numbers and bools.
+describe(): String = to_json({ services: [parse_config()], count: 1 })
+
+// Hashes and base64 are built in, so moving a value through a command
+// line needs no external tool.
+//
+// @param text  What to hash.
+// @example lask eval checksum lask
+checksum(text: String): Record<sha256: String, md5: String, base64: String> = {
+  sha256: sha256(text),
+  md5: md5(text),
+  base64: base64_encode(text)
+}
+
+// Base64 is also how bytes travel: the language has no binary type, so
+// a command that produces bytes encodes them and the value stays a
+// String on this side.
+roundtrip(text: String): Bool = base64_decode(base64_encode(text)) == text

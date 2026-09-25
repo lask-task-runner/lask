@@ -20,6 +20,7 @@ module Language.Lask.Runtime.Environment
     runLoggedProcess,
     runDeclaredCommand,
     envLogInfo,
+    recipeBuildArgs,
     dockerArgs,
     dockerShellArgs,
   )
@@ -35,7 +36,7 @@ import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Vector as V
 import Language.Lask.Runtime.Glob (globPrefix, matchGlob)
-import Language.Lask.Runtime.Image (imageExists, recipeTag)
+import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
 import System.Directory
   ( createDirectoryIfMissing,
     doesDirectoryExist,
@@ -65,7 +66,7 @@ import Data.Time.Clock (getCurrentTime)
 import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner)
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
-import Language.Lask.Runtime.Secrets (maskSecrets)
+import Language.Lask.Runtime.Secrets (maskSecrets, maskSecretsJson)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (valueToJson)
 import System.Exit (ExitCode (..))
@@ -104,6 +105,14 @@ resolveEnv (EnvValue kind params) = case kind of
            in Right (ResolvedRecipe df ctx (Map.delete "dockerfile" (Map.delete "context" params)))
     _ -> Left (ioFailure EIoEnvResolve "docker environment requires an image reference or a recipe")
   other -> Left (ioFailure EIoEnvResolve ("unknown environment kind: '" <> other <> "'"))
+
+-- | The build arguments a recipe environment declares (spec 10.2),
+-- in name order. They are part of what the recipe hash covers (10.3),
+-- so a changed argument is a different image.
+recipeBuildArgs :: Map Text Value -> [(Text, Text)]
+recipeBuildArgs opts = case Map.lookup "build_args" opts of
+  Just (VMap m) -> [(k, t) | (k, VString t) <- Map.toAscList m]
+  _ -> []
 
 -- | The environment summary and 13.1 metadata JSON used by command
 -- execution logs (spec 12.3). The summary follows environment
@@ -169,16 +178,77 @@ dockerShellArgs baseDir image opts wantStdin cmd =
     <> [T.unpack image, "-c", T.unpack cmd]
 
 -- | Implementation-defined environment options (spec 10.2).
+--
+-- Options are emitted in name order, so one environment value always
+-- produces the same argument vector however its arguments were
+-- written. @workdir@ is emitted here rather than in
+-- 'workdirMountArgs', which is why it overrides the default @-w@: the
+-- later @-w@ is the one the daemon takes, and 10.5 gives an explicit
+-- working directory precedence over the default.
+--
+-- The image reference, the recipe and its build arguments are not run
+-- options and are consumed before this point.
 dockerOptArgs :: Map Text Value -> [String]
-dockerOptArgs opts =
-  concat
-    [ case (k, v) of
-        ("memory", VString m) -> ["--memory", T.unpack m]
-        ("cpus", VNumber n) -> ["--cpus", formatNum n]
-        _ -> []
-    | (k, v) <- Map.toList opts
-    ]
+dockerOptArgs opts = concatMap emit (Map.toAscList opts)
   where
+    emit (k, v) = case k of
+      -- Resource limits.
+      "memory" -> one "--memory" v
+      "memory_swap" -> one "--memory-swap" v
+      "memory_reservation" -> one "--memory-reservation" v
+      "cpus" -> one "--cpus" v
+      "cpu_shares" -> one "--cpu-shares" v
+      "cpuset_cpus" -> one "--cpuset-cpus" v
+      "cpuset_mems" -> one "--cpuset-mems" v
+      "pids_limit" -> one "--pids-limit" v
+      "shm_size" -> one "--shm-size" v
+      "blkio_weight" -> one "--blkio-weight" v
+      "ulimits" -> each "--ulimit" v
+      -- Execution context.
+      "workdir" -> one "-w" v
+      "user" -> one "--user" v
+      "env" -> pairs "=" "--env" v
+      "platform" -> one "--platform" v
+      "hostname" -> one "--hostname" v
+      "init" -> switch "--init" v
+      -- Confinement.
+      "read_only" -> switch "--read-only" v
+      "tmpfs" -> each "--tmpfs" v
+      "cap_drop" -> each "--cap-drop" v
+      -- Network.
+      "network" -> one "--network" v
+      "dns" -> each "--dns" v
+      "dns_search" -> each "--dns-search" v
+      "add_hosts" -> pairs ":" "--add-host" v
+      "publish" -> each "--publish" v
+      -- Host filesystem.
+      "volumes" -> each "--volume" v
+      _ -> []
+
+    one flag v = maybe [] (\t -> [flag, T.unpack t]) (scalar v)
+
+    each flag v = case v of
+      VArray xs -> concat [[flag, T.unpack t] | Just t <- map scalar (V.toList xs)]
+      _ -> []
+
+    pairs sep flag v = case v of
+      VMap m -> concat [[flag, T.unpack (k <> sep <> t)] | (k, Just t) <- entries m]
+      _ -> []
+      where
+        entries m = [(k, scalar x) | (k, x) <- Map.toAscList m]
+
+    -- A false switch is the daemon's default, so it is left unsaid
+    -- rather than passed as @--flag=false@.
+    switch flag v = case v of
+      VBool True -> [flag]
+      _ -> []
+
+    scalar v = case v of
+      VString t -> Just t
+      VNumber n -> Just (T.pack (formatNum n))
+      VBool b -> Just (if b then "true" else "false")
+      _ -> Nothing
+
     formatNum n
       | isInteger n = formatScientific Sci.Fixed (Just 0) n
       | otherwise = formatScientific Sci.Fixed Nothing n
@@ -210,6 +280,7 @@ dockerExecArgs baseDir image opts interactive prog argv =
 -- relayed as the command execution log (12.3). The start and exit
 -- lines are written either way.
 runDeclaredCommand ::
+  ImagePins ->
   FilePath ->
   CommandLogSink ->
   -- | Force the relay even on a terminal (@--format json@).
@@ -220,7 +291,7 @@ runDeclaredCommand ::
   -- | Its arguments, each preserved as one word.
   [Text] ->
   IO (Either LaskFailure Int)
-runDeclaredCommand baseDir0 sink forceRelay envValue prog argv = do
+runDeclaredCommand pins baseDir0 sink forceRelay envValue prog argv = do
   baseDir <- makeAbsolute baseDir0
   tty <- allTerminals
   let interactive = tty && not forceRelay
@@ -235,19 +306,13 @@ runDeclaredCommand baseDir0 sink forceRelay envValue prog argv = do
       case resolved of
         ResolvedLocal ->
           launch ((proc (T.unpack prog) (map T.unpack argv)) {cwd = Just baseDir})
-        ResolvedDocker image opts ->
-          launch (proc "docker" (dockerExecArgs baseDir image opts interactive prog argv))
-        ResolvedRecipe df ctx opts -> do
-          tagE <- recipeTag baseDir df ctx
-          case tagE of
-            Left e -> pure (Left (ioFailure EIoImageMissing e))
-            Right tag -> do
-              ok <- imageExists tag
-              if not ok
-                then
-                  pure . Left . ioFailure EIoImageMissing $
-                    "image for recipe '" <> df <> "' is not materialized; run 'lask env build'"
-                else launch (proc "docker" (dockerExecArgs baseDir tag opts interactive prog argv))
+        _ -> do
+          img <- materializedImage pins baseDir resolved
+          case img of
+            Left failure -> pure (Left failure)
+            Right Nothing -> pure (Left (ioFailure EIoEnvResolve "internal: a container environment resolved to the host"))
+            Right (Just (image, opts)) ->
+              launch (proc "docker" (dockerExecArgs baseDir image opts interactive prog argv))
   where
     allTerminals =
       and <$> mapM hIsTerminalDevice [stdin, stdout, stderr]
@@ -268,7 +333,7 @@ runAttachedProcess ::
   Bool ->
   CreateProcess ->
   IO Int
-runAttachedProcess sink summary envJson rendered interactive cp = do
+runAttachedProcess sink summary envJson0 rendered interactive cp = do
   maskedCmd <- maskSecrets rendered
   emit maskedCmd ClStart
   (_, _, mErr, ph) <-
@@ -289,6 +354,7 @@ runAttachedProcess sink summary envJson rendered interactive cp = do
   where
     emit maskedCmd kind = do
       now <- getCurrentTime
+      envJson <- maskSecretsJson envJson0
       sink (CommandLog now summary envJson 1 maskedCmd kind)
 
     relayErr maskedCmd h = go ""
@@ -304,6 +370,7 @@ runAttachedProcess sink summary envJson rendered interactive cp = do
     emitLine maskedCmd l = do
       now <- getCurrentTime
       masked <- maskSecrets l
+      envJson <- maskSecretsJson envJson0
       sink (CommandLog now summary envJson 1 maskedCmd (ClLine 2 masked))
     splitLines t = case T.breakOn "\n" t of
       (_, rest) | T.null rest -> ([], t)
@@ -316,8 +383,8 @@ runAttachedProcess sink summary envJson rendered interactive cp = do
 -- (spec 12.3). Allocated in IO: it carries the execution-number
 -- counter, unique within the top-level execution even across
 -- concurrent commands (12.3).
-mkCommandRunner :: FilePath -> CommandLogSink -> IO CommandRunner
-mkCommandRunner baseDir0 sink = do
+mkCommandRunner :: ImagePins -> FilePath -> CommandLogSink -> IO CommandRunner
+mkCommandRunner pins baseDir0 sink = do
   -- The base directory is mounted into containers (spec 10.5), and a
   -- bind mount requires an absolute path.
   baseDir <- makeAbsolute baseDir0
@@ -336,7 +403,7 @@ mkCommandRunner baseDir0 sink = do
                 Right (code, out, errOut)
                   | Just code == infraExit -> Left (ioFailure infraCode (T.strip errOut))
                   | otherwise -> Right (code, out, errOut)
-        img <- materializedImage baseDir resolved
+        img <- materializedImage pins baseDir resolved
         case img of
           Left failure -> pure (Left failure)
           Right Nothing ->
@@ -346,18 +413,20 @@ mkCommandRunner baseDir0 sink = do
             run EIoEnvResolve (proc "docker" (dockerArgs baseDir image opts cmd)) (Just 125)
 
 -- | The image a resolved environment runs in, or 'Nothing' for the
--- local one. A recipe resolves to its content-addressed tag; building
--- is never implicit (spec 10.3), so an unmaterialized recipe is a
--- failure rather than a silent build.
+-- local one (spec 10.4). A registry reference resolves to the image the
+-- lock pins it to, a recipe to its content-addressed tag. Neither is
+-- pulled or built here (10.3): an image that is not on the daemon is a
+-- failure that names the command that materializes it.
 materializedImage ::
+  ImagePins ->
   FilePath ->
   ResolvedEnv ->
   IO (Either LaskFailure (Maybe (Text, Map Text Value)))
-materializedImage baseDir resolved = case resolved of
+materializedImage pins baseDir resolved = case resolved of
   ResolvedLocal -> pure (Right Nothing)
-  ResolvedDocker image opts -> pure (Right (Just (image, opts)))
+  ResolvedDocker ref opts -> fmap (\image -> Just (image, opts)) <$> resolveRegistry pins ref
   ResolvedRecipe df ctx opts -> do
-    tagE <- recipeTag baseDir df ctx
+    tagE <- recipeTag baseDir df ctx (recipeBuildArgs opts)
     case tagE of
       Left e -> pure (Left (ioFailure EIoImageMissing e))
       Right tag -> do
@@ -383,7 +452,7 @@ runLoggedProcess ::
   Text ->
   CreateProcess ->
   IO (Int, Text, Text)
-runLoggedProcess sink summary envJson execNo cmd cp = do
+runLoggedProcess sink summary envJson0 execNo cmd cp = do
   -- Masked against the registry as it stands now (spec 12.8), before
   -- the command runs and before any sink can retain the log record.
   maskedCmd <- maskSecrets cmd
@@ -407,6 +476,7 @@ runLoggedProcess sink summary envJson execNo cmd cp = do
     -- gets logged, never execution.
     emit maskedCmd kind = do
       now <- getCurrentTime
+      envJson <- maskSecretsJson envJson0
       sink (CommandLog now summary envJson execNo maskedCmd kind)
 
     -- Read a stream in chunks: accumulate the raw text verbatim for
@@ -445,14 +515,14 @@ runLoggedProcess sink summary envJson execNo cmd cp = do
 -- No command execution log is emitted (15.11): nothing here is a
 -- command execution expression, and a read is not something the user
 -- wrote a command for.
-mkFileRunner :: FilePath -> IO FileRunner
-mkFileRunner baseDir0 = do
+mkFileRunner :: ImagePins -> FilePath -> IO FileRunner
+mkFileRunner pins baseDir0 = do
   baseDir <- makeAbsolute baseDir0
   pure $ \envValue op ->
     case resolveEnv envValue of
       Left failure -> pure (Left failure)
       Right resolved -> do
-        img <- materializedImage baseDir resolved
+        img <- materializedImage pins baseDir resolved
         -- The environment belongs in the diagnostic (spec 15.11): a
         -- path that is absent in a container is often present on the
         -- host, and the message has to say which filesystem was read.

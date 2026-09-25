@@ -8,6 +8,7 @@ module Language.Lask.Builtins.Names
     builtinValueNames,
     builtinTypeAliasNames,
     isUnbindableName,
+    effectfulBuiltinNames,
   )
 where
 
@@ -27,7 +28,7 @@ coreFunctionNames =
       "filter",
       "reduce",
       "for_each",
-      "run_command",
+      "run",
       "recover",
       "fail",
       "get_env",
@@ -37,6 +38,29 @@ coreFunctionNames =
 -- | Reserved identifiers that cannot be bound (spec 3.3, 9.3).
 reservedIdentifiers :: Set Text
 reservedIdentifiers = Set.singleton "stdin"
+
+-- | The builtins with an effect outside the program (spec 15.1):
+-- command execution (15.5), the filesystem (15.11), diagnostic output
+-- (15.12) and nondeterministic generation (15.13), plus the standard
+-- input (9.3). @shell_quote@ sits in 15.5 but is pure, so it is not
+-- here. The environment of a command declaration may reach none of
+-- them (spec ch. 5).
+effectfulBuiltinNames :: Set Text
+effectfulBuiltinNames =
+  Set.fromList
+    [ "run",
+      "read_file",
+      "write_file",
+      "file_exists",
+      "remove_file",
+      "make_dir",
+      "list_dir",
+      "glob",
+      "log",
+      "uuid",
+      "random_string",
+      "stdin"
+    ]
 
 -- | True if user code must not bind this name anywhere.
 isUnbindableName :: Text -> Bool
@@ -130,7 +154,7 @@ builtinValueNames =
       "from_entries",
       "map_values",
       -- 15.5 command execution
-      "run_command",
+      "run",
       "shell_quote",
       -- 15.6 parallel/async
       "spawn",

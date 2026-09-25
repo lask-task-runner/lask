@@ -53,7 +53,8 @@ import Data.Ord (comparing)
 import qualified Data.Set as Set
 import qualified Data.Text.IO as TIO
 import Language.Lask (Compiled (..), Partial (..), checkText, compileText, compileTextPartial)
-import Language.Lask.Builtins.Sig (builtinSchemes, schemeType)
+import Language.Lask.Builtins.Doc (builtinDocs, renderBuiltinDoc)
+import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
 import Language.Lask.Doc (docBlockAbove)
 import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..), readFieldType)
@@ -61,7 +62,7 @@ import Language.Lask.ErrorCode (codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
 import qualified Language.Lask.Lexer.Token as Tok
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
-import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics)
+import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics, namespaceMember)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
 import Language.Lask.Types (Type (..), renderType)
@@ -272,12 +273,30 @@ lexSemanticTokensWith commandWordSpans fileName src =
   case lexTokensWithComments fileName src of
     Left e -> Left $ T.pack $ pretty e
     Right (ts, comments) ->
-      let atoms =
-            concatMap flattenToken ts
+      let onSpans = commandOnSpans ts
+          keywordOn (sp, typ)
+            | sp `elem` onSpans = (sp, SemanticTokenTypes_Keyword)
+            | otherwise = (sp, typ)
+          atoms =
+            map keywordOn (concatMap flattenToken ts)
               <> [(c, SemanticTokenTypes_Comment) | c <- comments]
           sorted = sortOn (spanStart . fst) atoms
        in Right (join (map toAbsolutes sorted))
   where
+    -- @on@ is a keyword only where a command declaration puts it
+    -- (spec ch. 5), and an identifier everywhere else. The braces
+    -- around the command words make that position lexical: @command@,
+    -- @{@, the words, @}@, and then @on@.
+    commandOnSpans = go
+      where
+        go (Tok.Spanned _ (Tok.TKw Tok.KCommand) : Tok.Spanned _ Tok.TLBrace : rest) =
+          case dropWhile (not . closesWords) rest of
+            _ : Tok.Spanned sp (Tok.TLowerId "on") : rest' -> sp : go rest'
+            rest' -> go rest'
+        go (_ : rest) = go rest
+        go [] = []
+        closesWords (Tok.Spanned _ t) = t == Tok.TRBrace
+
     spanStart (S.Span s _) = Just s
     spanStart S.NoSpan = Nothing
 
@@ -455,9 +474,15 @@ hoverAt path src (Position pl pc) = do
         [] -> declNameHover compiled path src line col
         _ -> do
           let hi = minimumBy (comparing (spanSize . hiSpan)) hits
-          docs <- declDocs compiled path src (hiDecl hi)
-          let shown = hiName hi <> typeParamsOf compiled (hiDecl hi)
-          pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
+          case hiBuiltin hi of
+            Just bn -> do
+              let docs = renderBuiltinDoc <$> Map.lookup bn builtinDocs
+                  shown = hiName hi <> builtinTypeParams bn (hiType hi)
+              pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
+            Nothing -> do
+              docs <- declDocs compiled path src (hiDecl hi)
+              let shown = hiName hi <> typeParamsOf compiled (hiDecl hi)
+              pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
   where
     spanContains (S.Span (S.Position f l1 c1) (S.Position _ l2 c2)) line col =
       normalise f == normalise path
@@ -505,6 +530,18 @@ hoverMarkdown name typeText docs =
     <> typeText
     <> "\n```"
     <> maybe "" ("\n\n---\n\n" <>) docs
+
+-- | The type parameters of a builtin, as they would be written on a
+-- declaration: @\<T, U\>@ for @map@. Only while the recorded type is
+-- still the scheme itself; a reference instantiated by its expected
+-- type (spec 4.4) has none left.
+builtinTypeParams :: Text -> Type -> Text
+builtinTypeParams bn t = case Map.lookup bn builtinSchemes of
+  Just sch
+    | not (null (schemeVars sch)),
+      schemeType sch == t ->
+        "<" <> T.intercalate ", " (schemeVars sch) <> ">"
+  _ -> ""
 
 -- | The documentation of a declaration: the contiguous block of
 -- comments directly above it, with comment markers stripped.
@@ -728,7 +765,7 @@ completionAt path src (Position pl pc)
         lm <- maybeToList (Map.lookup key (progModules prog)),
         let pub = modulePublics lm,
         c <-
-          [ let ty = declType p key n
+          [ let ty = uncurry (declType p) (namespaceMember (partialScopes p) key n)
              in Cand n (kindFor ty) (renderType <$> ty) Nothing 4
           | n <- Set.toList (pubValues pub)
           ]
@@ -776,7 +813,7 @@ completionAt path src (Position pl pc)
         Just (VBuiltin _) -> []
         Nothing -> keywordsOf p (entryPath p) n
       [q, n] -> case scope >>= Map.lookup q . gsNamespaces of
-        Just key -> keywordsOf p key n
+        Just key -> uncurry (keywordsOf p) (namespaceMember (partialScopes p) key n)
         Nothing -> []
       _ -> []
 

@@ -67,8 +67,9 @@ buildModule =
       "// A secret default must never be read, let alone shown.",
       "login(--password!!: String = \"hunter2\") = $ echo #{password}",
       "",
-      "command \"go\", \"docker-compose\" on #golang:1.25",
-      "command \"mv\" on #local"
+      "command { \"go\", \"docker-compose\" } on #golang:1.25",
+      "command { \"mv\" } on #local",
+      "import command { \"npm\" } from \"./tools.lask\""
     ]
 
 project :: [(FilePath, Text)]
@@ -206,7 +207,8 @@ spec = do
       describesAs ["cmd", ""]
         `shouldReturn` [ ("go", Just "#golang:1.25"),
                          ("docker-compose", Just "#golang:1.25"),
-                         ("mv", Just "#local")
+                         ("mv", Just "#local"),
+                         ("npm", Just "from \"./tools.lask\"")
                        ]
 
     it "matches a command word by exact text, without the kebab mapping" $ do
@@ -247,6 +249,29 @@ spec = do
       cs <- describesAs ["run", "build", ""]
       cs `shouldBe` [(activeHelpMarker, Just "target : String - Build target name.")]
 
+  describe "re-exported functions (spec 5, 11.2)" $ do
+    let reexporting =
+          [ ("main.lask", "export { deploy, rollout as ship } from \"./lib/ops.lask\"\nlocal() = $ echo hi\n"),
+            ( "lib/ops.lask",
+              "// Deploy it.\ndeploy(--stage: String = \"dev\") = $ echo d\nrollout(target: String) = $ echo r\ninternal hidden() = $ echo s\n"
+            )
+          ]
+        ask files ws = map candValue . resCandidates <$> complete (memResolver files) ws
+
+    it "offers a re-exported function under the name the module publishes" $ do
+      vs <- ask reexporting ["run", ""]
+      vs `shouldOffer` ["deploy", "ship", "local"]
+      vs `shouldNotOffer` ["rollout", "hidden"]
+
+    it "offers the keyword parameters of a re-exported function" $ do
+      vs <- ask reexporting ["run", "deploy", "--"]
+      vs `shouldOffer` ["--stage"]
+
+    it "follows a re-export in a module that does not parse" $ do
+      let broken = ("main.lask", "export { deploy } from \"./lib/ops.lask\"\nf() = do {\n") : drop 1 reexporting
+      vs <- ask broken ["run", ""]
+      vs `shouldOffer` ["deploy"]
+
   describe "degradation (spec 11.7)" $ do
     it "still finds declaration heads and keyword parameters in a module that does not parse" $ do
       let broken = [("main.lask", "deploy(--version: String = \"1\", --dry_run: Bool = false) = do {\n  $ echo #{version\n}\n\nteardown() = $ echo bye\n")]
@@ -254,6 +279,19 @@ spec = do
       ask ["run", ""] `shouldReturn` ["deploy", "teardown"]
       vs <- ask ["run", "deploy", "--"]
       vs `shouldOffer` ["--version", "--dry_run"]
+
+    it "still finds command words, declared and imported, in a module that does not parse" $ do
+      let broken =
+            [ ( "main.lask",
+                "command { \"go\", \"gofmt\" } on #golang:1.25\nimport command { \"npm\" } from \"tools\"\nf() = do {\n"
+              )
+            ]
+      cs <- map (\c -> (candValue c, candDesc c)) . resCandidates <$> complete (memResolver broken) ["cmd", ""]
+      cs
+        `shouldBe` [ ("go", Just "#golang:1.25"),
+                     ("gofmt", Just "#golang:1.25"),
+                     ("npm", Just "from \"tools\"")
+                   ]
 
     it "falls back to the static grammar when the module is missing" $ do
       let ask ws = complete (memResolver []) ws
