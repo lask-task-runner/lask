@@ -62,7 +62,7 @@ import Language.Lask.ErrorCode (codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
 import qualified Language.Lask.Lexer.Token as Tok
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
-import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics)
+import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics, namespaceMember)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
 import Language.Lask.Types (Type (..), renderType)
@@ -765,7 +765,7 @@ completionAt path src (Position pl pc)
         lm <- maybeToList (Map.lookup key (progModules prog)),
         let pub = modulePublics lm,
         c <-
-          [ let ty = declType p key n
+          [ let ty = uncurry (declType p) (namespaceMember (partialScopes p) key n)
              in Cand n (kindFor ty) (renderType <$> ty) Nothing 4
           | n <- Set.toList (pubValues pub)
           ]
@@ -813,7 +813,7 @@ completionAt path src (Position pl pc)
         Just (VBuiltin _) -> []
         Nothing -> keywordsOf p (entryPath p) n
       [q, n] -> case scope >>= Map.lookup q . gsNamespaces of
-        Just key -> keywordsOf p key n
+        Just key -> uncurry (keywordsOf p) (namespaceMember (partialScopes p) key n)
         Nothing -> []
       _ -> []
 
