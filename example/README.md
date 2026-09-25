@@ -2,13 +2,9 @@
 
 Two ways in, depending on what you came for.
 
-**[01-projects/](01-projects)** — whole projects, where the language is
-in service of a job. Start here to see what a real `main.lask` looks
-like.
+**[01-projects/](01-projects)** — whole projects, where the language is in service of a job. Start here to see what a real `main.lask` looks like.
 
-**[02-language/](02-language)** — a tour of the language itself: one
-small, runnable module per topic, commented as you read it. Start here
-to find out how something is written.
+**[02-language/](02-language)** — a tour of the language itself: one small, runnable module per topic, commented as you read it. Start here to find out how something is written.
 
 Everything here is checked the same way:
 
@@ -27,8 +23,7 @@ lask run --help     # every task in the module, from its own comments
 
 ## 02-language
 
-One directory per topic, in reading order. The whole of the
-[Quick Reference](../doc/quick-reference.md) is covered.
+One directory per topic, in reading order. The whole of the [Quick Reference](../doc/quick-reference.md) is covered.
 
 | Topic | Covers |
 | --- | --- |
@@ -47,5 +42,4 @@ One directory per topic, in reading order. The whole of the
 | [13-files-and-paths](02-language/13-files-and-paths) | `read_file` / `write_file` / `glob` and the environment each one names |
 | [14-docs-and-cli](02-language/14-docs-and-cli) | Doc comments, `@param`, `@complete`, `@hidden`, and how a signature becomes a command line |
 
-The rules behind all of it are in the
-[specification](../doc/spec.md).
+The rules behind all of it are in the [specification](../doc/spec.md).
