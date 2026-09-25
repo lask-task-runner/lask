@@ -37,13 +37,13 @@ import Language.Lask.Diagnostic
 import Language.Lask.Desugar.Return (transformFunctionBody)
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer.Token (CmdStream (..), Op (..), Spanned (..))
-import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
+import Language.Lask.Module.Loader (LoadedModule (..), Program (..), collapseDots)
 import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTarget (..), namespaceMember)
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), commandWords, validCommandName)
 import Language.Lask.Types
-import System.FilePath (isAbsolute, normalise, splitDirectories)
+import System.FilePath (isAbsolute, joinPath, normalise, splitDirectories, takeDirectory, (</>))
 
 -- Program-level results ------------------------------------------------------
 
@@ -1764,6 +1764,25 @@ dispatchEnv ctx path sp parts = do
 
 -- Environment expressions (spec 6.7, 10.2) ---------------------------------------------------
 
+-- | A recipe path written in the module at @modulePath@, as the path
+-- relative to the program's base directory @base@ that names the same
+-- file. Module paths and the base directory are both relative to where
+-- lask runs, or both absolute; where they are not alike (a dependency
+-- cache moved elsewhere by LASK_CACHE_DIR), the module-relative path is
+-- kept whole, which the base directory joins to unchanged.
+recipePath :: FilePath -> FilePath -> FilePath -> FilePath
+recipePath base modulePath written
+  | isAbsolute base /= isAbsolute target = target
+  | otherwise =
+      let b = parts base
+          t = parts target
+          common = length (takeWhile id (zipWith (==) b t))
+          rel = replicate (length b - common) ".." <> drop common t
+       in if null rel then "." else joinPath rel
+  where
+    target = collapseDots (normalise (takeDirectory modulePath </> written))
+    parts = filter (/= ".") . splitDirectories . collapseDots . normalise
+
 elabEnv :: Ctx -> FilePath -> Locals -> Span -> Text -> Maybe [Arg] -> TC (Core, Type)
 elabEnv ctx path locals sp h mArgs = do
   argsOrdered <- traverse validateOrder mArgs
@@ -1818,7 +1837,7 @@ elabEnv ctx path locals sp h mArgs = do
           then bindEnvArgs "docker" [("image", TyString)] optionals args
           else bindEnvArgs "docker" [] optionals args
       validateDockerEnv named
-      pure (Core sp (CEnv "docker" named), TyEnvironment)
+      pure (Core sp (CEnv "docker" (map recipeArg named)), TyEnvironment)
     imageName -> case mArgs of
       -- #image-name sugar: docker("image-name") (spec 6.7).
       Nothing ->
@@ -1831,6 +1850,18 @@ elabEnv ctx path locals sp h mArgs = do
   where
     envErr :: Text -> TC a
     envErr = abort . diag ETypeEnvConstruct sp
+
+    -- A recipe path is written relative to the directory of the module
+    -- that declares it (10.2), and is read — by the runtime, by
+    -- `lask env build`, in the lock — relative to the program's base
+    -- directory, since the value it ends up in no longer knows its
+    -- module. It is rewritten here, where the module is known. A recipe
+    -- beside the entry module keeps the path it was written with.
+    recipeArg (k, c)
+      | k `elem` ["dockerfile", "context"],
+        CStrLit p <- coreF c =
+          (k, c {coreF = CStrLit (T.pack (recipePath (progBaseDir (ctxProg ctx)) path (T.unpack p)))})
+      | otherwise = (k, c)
 
     -- Positional arguments must precede named ones (spec 6.7).
     validateOrder args = do

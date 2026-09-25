@@ -11,7 +11,7 @@ import qualified Data.Text as T
 import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, removeDirectoryRecursive)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (CreateProcess (cwd, env), proc, readCreateProcessWithExitCode, readProcess)
 import Test.Hspec
@@ -54,7 +54,7 @@ withProject files action =
   withSystemTempDirectory "lask-e2e" $ \dir -> do
     mapM_
       ( \(name, content) -> do
-          createDirectoryIfMissing True dir
+          createDirectoryIfMissing True (takeDirectory (dir </> name))
           writeFile (dir </> name) content
       )
       files
@@ -92,10 +92,16 @@ fakeDocker =
       "    f=\"$S/present/$(key \"$ref\")\"",
       "    [ -f \"$f\" ] || { echo \"Error: No such image: $ref\" >&2; exit 1; }",
       "    [ \"$3\" = \"--format\" ] && cat \"$f\"; exit 0 ;;",
+      "  build) tag=''; while [ $# -gt 0 ]; do [ \"$1\" = -t ] && tag=\"$2\"; shift; done",
+      "    printf '[]' > \"$S/present/$(key \"$tag\")\" ;;",
       "  run) echo ran ;;",
       "  *) echo \"fake docker: unsupported: $*\" >&2; exit 2 ;;",
       "esac"
     ]
+
+-- | The invocations the fake docker has recorded, one per line.
+calls :: FilePath -> IO [String]
+calls state = lines <$> readFile (state </> "calls")
 
 -- | Run an action with the fake docker first on PATH and upstream
 -- @alpine:3.22.2@ resolving to @sha256:aaa@. The action receives the
@@ -126,7 +132,6 @@ spec = beforeAll findLask $ do
             )
           ]
         lockText dir = readFile (dir </> "lask.lock.json")
-        calls state = lines <$> readFile (state </> "calls")
 
     it "refuses to run an image the lock does not pin, naming env build" $ \lask ->
       withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
@@ -261,6 +266,40 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 0
         mapM_ (resOut r `shouldContain`) ["greet", "hello", "own"]
         resOut r `shouldNotContain` "secret"
+
+  -- A recipe path is written relative to the module that declares it
+  -- (spec 10.2), wherever the module is imported from.
+  describe "recipes in an imported module (spec 10.2, 10.3)" $ do
+    let proj =
+          [ ("app/main.lask", "import command { \"cat\" } from \"../tools/main.lask\"\nhi(): String = $ cat /greeting\n"),
+            ( "tools/main.lask",
+              "greeter(): Environment = #docker(dockerfile = \"images/greeter/Dockerfile\")\nexport command { \"cat\" } on greeter()\n"
+            ),
+            ("tools/images/greeter/Dockerfile", "FROM scratch\n"),
+            ("Dockerfile", "FROM scratch\n"),
+            ("main.lask", "beside = #docker(dockerfile = \"Dockerfile\")\n")
+          ]
+
+    it "reads it from the tree of the module that declares it" $ \lask ->
+      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
+        r <- runLaskEnv lask dir extra ["env", "list", "--module", "app/main.lask"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "../tools/images/greeter/Dockerfile  recipe  lask/"
+
+    it "builds it and runs the command in it from the importing project" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        b <- runLaskEnv lask dir extra ["env", "build", "--module", "app/main.lask"] ""
+        resExit b `shouldBe` 0
+        r <- runLaskEnv lask dir extra ["eval", "--module", "app/main.lask", "hi"] ""
+        resExit r `shouldBe` 0
+        cs <- calls state
+        [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` (\rs -> not (null rs) && all ("lask/" `isInfixOf`) rs)
+
+    it "keeps the path of a recipe beside the entry module" $ \lask ->
+      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
+        r <- runLaskEnv lask dir extra ["env", "list"] ""
+        resOut r `shouldContain` "Dockerfile  recipe  lask/"
+        resOut r `shouldNotContain` "./Dockerfile"
 
   describe "cmd (spec 11.8)" $ do
     let proj =
