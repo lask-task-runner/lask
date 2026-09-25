@@ -13,6 +13,7 @@ module Language.Lask.Module.Resolve
     Publics (..),
     modulePublics,
     namespaceMember,
+    entryPublicValues,
     buildScopes,
     validateProgram,
   )
@@ -145,6 +146,30 @@ namespaceMember :: Map FilePath GlobalScope -> FilePath -> Text -> (FilePath, Te
 namespaceMember scopes key n = case Map.lookup key scopes >>= Map.lookup n . gsValues of
   Just (VTopLevel k n') -> (k, n')
   _ -> (key, n)
+
+-- | The public values and functions of the entry module, in source
+-- order, each with the declaration it names: those it declares, less
+-- the @internal@ ones, and those it re-exports, under the name it
+-- publishes them by (spec 5). These are what the CLI invokes and lists
+-- (11.2, 11.6): a re-exported name is as much a public symbol of the
+-- module as one it declares.
+entryPublicValues :: Program -> Map FilePath GlobalScope -> [(Text, (FilePath, Text))]
+entryPublicValues prog scopes = case Map.lookup entry (progModules prog) of
+  Nothing -> []
+  Just lm ->
+    [ (n, namespaceMember scopes entry n)
+    | Decl _ f <- moduleDecls (lmModule lm),
+      n <- case f of
+        DValue n' _ _ _ -> [n']
+        DFunction n' _ _ _ _ -> [n']
+        DExportFrom specs _ -> [maybe n' id a | ImportSpec _ n' a <- specs]
+        _ -> [],
+      not (startsUpper n),
+      not (n `Set.member` moduleInternal (lmModule lm))
+    ]
+  where
+    entry = progEntry prog
+    startsUpper t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
 
 -- Scope construction ---------------------------------------------------------
 

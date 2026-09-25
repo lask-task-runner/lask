@@ -77,7 +77,7 @@ import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Parser (parseModule)
 import Language.Lask.Utils (kebabToSnake)
 import System.Directory (doesDirectoryExist, getFileSize, listDirectory)
-import System.FilePath (takeExtension, (</>))
+import System.FilePath (normalise, takeDirectory, takeExtension, (</>))
 import System.IO (hSetEncoding, stdout, utf8)
 import System.Timeout (timeout)
 
@@ -820,7 +820,10 @@ data CompleteIndex = CompleteIndex
     ciCommands :: [(Text, Maybe Text)],
     -- | Top-level map literals by binding name, for @\@complete
     -- \@keys@.
-    ciMapKeys :: Map.Map Text [Text]
+    ciMapKeys :: Map.Map Text [Text],
+    -- | Re-exports (spec 5), as the published name, the name in the
+    -- module it comes from, and that module's import path.
+    ciReexports :: [(Text, Text, Text)]
   }
   deriving (Show, Eq)
 
@@ -854,9 +857,35 @@ data ParamValues = PvSpec ValueSpec | PvKeys Text
   deriving (Show, Eq)
 
 loadIndex :: Resolver -> FilePath -> IO CompleteIndex
-loadIndex r path = do
-  txt <- resolveRead r path
-  pure (maybe (CompleteIndex [] [] Map.empty) (buildIndex path) txt)
+loadIndex r = go reexportDepth Set.empty
+  where
+    go depth seen path = do
+      txt <- resolveRead r path
+      let idx = maybe (CompleteIndex [] [] Map.empty []) (buildIndex path) txt
+      if depth <= 0
+        then pure idx
+        else do
+          reexported <- concat <$> mapM (follow depth (Set.insert path seen) path) (ciReexports idx)
+          pure idx {ciDecls = ciDecls idx <> reexported}
+
+    -- A function the module re-exports is one of its public functions
+    -- (spec 5, 11.2), so it is offered under the name the module
+    -- publishes. Only a local path is followed: a dependency lives in
+    -- the cache, and completion reads nothing beyond the project.
+    follow depth seen path (visible, original, from)
+      | isLocal from,
+        let target = normalise (takeDirectory path </> T.unpack from),
+        not (target `Set.member` seen) = do
+          sub <- go (depth - 1) seen target
+          pure [d {idName = visible} | d <- ciDecls sub, idName d == original, not (idInternal d)]
+      | otherwise = pure []
+
+    isLocal from = "./" `T.isPrefixOf` from || "../" `T.isPrefixOf` from
+
+-- | How many re-exports deep completion follows a name. The module
+-- graph is acyclic, so this only bounds a pathological project.
+reexportDepth :: Int
+reexportDepth = 8
 
 -- | The index of a module, from its source text alone.
 --
@@ -875,7 +904,12 @@ fromModule path src m =
   CompleteIndex
     { ciDecls = mapMaybe decl (AST.moduleDecls m),
       ciCommands = concatMap commandWords (AST.moduleDecls m),
-      ciMapKeys = Map.fromList (mapMaybe mapBinding (AST.moduleDecls m))
+      ciMapKeys = Map.fromList (mapMaybe mapBinding (AST.moduleDecls m)),
+      ciReexports =
+        [ (maybe n id a, n, from)
+        | AST.Decl _ (AST.DExportFrom specs from) <- AST.moduleDecls m,
+          AST.ImportSpec _ n a <- specs
+        ]
     }
   where
     comments = either (const []) snd (lexTokensWithComments path src)
@@ -1011,7 +1045,27 @@ scanIndex src =
     (mapMaybe declOfLine (T.lines src))
     (concatMap commandsOfLine (T.lines src))
     Map.empty
+    (concatMap reexportsOfLine (T.lines src))
   where
+    -- @export { a, b as c } from "./lib.lask"@, read as text. Only a
+    -- list that closes on its own line is read.
+    reexportsOfLine l = case T.stripPrefix "export" l >>= T.stripPrefix "{" . T.stripStart of
+      Nothing -> []
+      Just rest ->
+        let (inside, after) = T.breakOn "}" rest
+            from = T.dropAround (== '"') . T.strip <$> T.stripPrefix "from" (T.strip (T.drop 1 after))
+         in case from of
+              Just path
+                | not (T.null after) ->
+                    [ (visible, original, path)
+                    | spec <- T.splitOn "," inside,
+                      (original, visible) <- case T.words spec of
+                        [a] -> [(a, a)]
+                        [a, "as", b] -> [(a, b)]
+                        _ -> []
+                    ]
+              _ -> []
+
     -- @command { "go", "gofmt" } on #golang:1.25@, its @export@ and
     -- @internal@ forms, and @import command { "go" } from "tools"@,
     -- read as text. Only a list that closes on its own line is read.

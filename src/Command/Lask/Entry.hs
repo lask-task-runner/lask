@@ -14,14 +14,14 @@ import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
 import Control.Exception (try)
-import Control.Monad (forM_, unless, when)
+import Control.Monad (forM, forM_, unless, when)
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.List (nub, sort)
-import Data.Maybe (isNothing)
+import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
 import Data.Scientific (toRealFloat)
@@ -32,6 +32,8 @@ import qualified Data.Text.IO as TIO
 import Data.Version (showVersion)
 import qualified Language.LSP.Lask as LSP
 import Language.Lask (Compiled (..), Partial (..), compileFile, compileFilePartial)
+import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
+import Language.Lask.Module.Resolve (entryPublicValues)
 import Language.Lask.Deps.Cache (cacheDirFor)
 import Language.Lask.Deps.Fetch (DepSource (..), fetchAndStore, resolveGitRev, syncAll)
 import Language.Lask.Deps.File
@@ -111,18 +113,18 @@ cmdRunEval printResult runOpts = do
   let opts = runCommon runOpts
   compiled <- compileOrExit opts
   let core = compiledCore compiled
-      entry = cpEntry core
       baseDir = cpBaseDir core
 
   rawName <- case runFunction runOpts of
     Just n -> pure n
     Nothing -> usageError opts "no function specified (use --help to list the module's functions)"
   let fnName = kebabToSnake rawName
-  -- A declaration marked `internal` is not part of any surface
-  -- (spec 5), so it is not callable from the CLI either.
-  cd <- case Map.lookup (entry, fnName) (cpDecls core) of
-    Just cd | not (fnName `Set.member` cpInternal core) -> pure cd
-    _ -> usageError opts ("no such function: '" <> rawName <> "'")
+  -- The public symbols of the module, re-exported ones included; a
+  -- declaration marked `internal` is not part of any surface (spec 5),
+  -- so it is not callable from the CLI either.
+  (key, cd) <- case publicDecl compiled fnName of
+    Just found -> pure found
+    Nothing -> usageError opts ("no such function: '" <> rawName <> "'")
 
   cliArgs <- case parseCliArgs (dropArgSeparator (runArgs runOpts)) of
     Right as -> pure as
@@ -179,7 +181,7 @@ cmdRunEval printResult runOpts = do
         | otherwise = noSink
       ctx = ctx0 {rtTraceId = traceId, rtEmit = sink}
   result <- try $ do
-    fv <- topValue ctx (entry, fnName)
+    fv <- topValue ctx key
     case fv of
       VClosure _ -> applyValue ctx fv posVals kwVals
       VBuiltin _ -> applyValue ctx fv posVals kwVals
@@ -223,15 +225,35 @@ cmdHelp subcommand runOpts = do
       path = optModule opts
       entry = maybe path cpEntry core
       comments = either (const []) snd (lexTokensWithComments path src)
-      declsByName =
+      ownDecls =
         [ (n, d)
         | m <- maybe [] pure (partialModule partial),
           d <- AST.moduleDecls m,
           Just n <- [declaredName d],
           not (n `Set.member` maybe Set.empty cpInternal core)
         ]
-      coreOf n = core >>= Map.lookup (entry, n) . cpDecls
-      helpOf envs (n, d) = buildFunctionHelp path src d (coreOf n) (docFor src comments d) envs
+  -- The public functions of the module, re-exported ones included
+  -- (spec 11.6), each described from the file that declares it: that
+  -- is where its documentation comment and its parameters are written.
+  -- Without a loaded program only the module's own are known.
+  declsByName <- case partialProgram partial of
+    Nothing -> pure [(n, HelpSource path src comments d (entry, n)) | (n, d) <- ownDecls]
+    Just prog ->
+      fmap catMaybes . forM (entryPublicValues prog (partialScopes partial)) $ \(n, key@(defPath, defName)) ->
+        if defPath == progEntry prog
+          then pure ((\d -> (n, HelpSource path src comments d key)) <$> lookup defName ownDecls)
+          else do
+            defSrc <- either (const "") id <$> try' (TIO.readFile defPath)
+            let defComments = either (const []) snd (lexTokensWithComments defPath defSrc)
+                defDecl = do
+                  lm <- Map.lookup defPath (progModules prog)
+                  listToMaybe [d | d <- AST.moduleDecls (lmModule lm), declaredName d == Just defName]
+            pure ((\d -> (n, HelpSource defPath defSrc defComments d key)) <$> defDecl)
+  let coreOf key = core >>= Map.lookup key . cpDecls
+      -- The name is the one the module publishes, which a renaming
+      -- re-export makes different from the declaration's.
+      helpOf envs (n, HelpSource hp hsrc hcomments d key) =
+        (buildFunctionHelp hp hsrc d (coreOf key) (docFor hsrc hcomments d) envs) {fhName = n}
 
   case runFunction runOpts of
     -- The option help is always available, whatever state the module
@@ -250,13 +272,13 @@ cmdHelp subcommand runOpts = do
       -- Without a parse there are no declarations to describe.
       when (isNothing (partialModule partial)) $ exitWith (ExitFailure 1)
       let fnName = kebabToSnake rawName
-      decl <- case lookup fnName declsByName of
-        Just d -> pure d
+      found <- case lookup fnName declsByName of
+        Just h -> pure h
         Nothing -> usageError opts (noSuchFunction rawName (map fst declsByName))
       let envs = case core of
-            Just c -> nub (sort (collectEnvRefsFrom c (entry, fnName)))
+            Just c -> nub (sort (collectEnvRefsFrom c (hsKey found)))
             Nothing -> []
-          fh = helpOf envs (fnName, decl)
+          fh = helpOf envs (fnName, found)
       if optJsonFormat opts
         then TIO.putStrLn (encodeJsonText (renderHelpJson fh))
         else TIO.putStr (renderHelpText subcommand fh)
@@ -267,6 +289,26 @@ cmdHelp subcommand runOpts = do
 
     -- Help is read-only: an unreadable or malformed environment file
     -- costs the environment targets, not the help.
+
+-- | Where the help of one public function is read from: the file
+-- that declares it, its text and comments, the declaration, and its
+-- key in the core program.
+data HelpSource = HelpSource
+  { _hsPath :: FilePath,
+    _hsSrc :: Text,
+    _hsComments :: [Span],
+    _hsDecl :: AST.Decl,
+    hsKey :: (FilePath, Text)
+  }
+
+-- | The declaration a CLI name of the entry module invokes (spec 11.2),
+-- with its key: a public symbol the module declares or re-exports,
+-- followed to where it is declared.
+publicDecl :: Compiled -> Text -> Maybe ((FilePath, Text), CoreDecl)
+publicDecl compiled n = do
+  key <- lookup n (entryPublicValues (compiledProgram compiled) (compiledScopes compiled))
+  cd <- Map.lookup key (cpDecls (compiledCore compiled))
+  pure (key, cd)
 
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
@@ -358,11 +400,9 @@ cmdEnvs envsOpts = do
   -- graph can reach (spec 11.4).
   scope <- case envsFunction envsOpts of
     Nothing -> pure Nothing
-    Just fn -> do
-      let key = (cpEntry core, kebabToSnake fn)
-      unless (Map.member key (cpDecls core)) $
-        usageError opts ("no such function: '" <> fn <> "'")
-      pure (Just key)
+    Just fn -> case publicDecl compiled (kebabToSnake fn) of
+      Just (key, _) -> pure (Just key)
+      Nothing -> usageError opts ("no such function: '" <> fn <> "'")
   traceId <- maybe newTraceId pure (optTraceId opts)
   writeErr <- newLineWriter stderr
   -- Probe processes get execution numbers too (spec 12.3).

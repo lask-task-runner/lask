@@ -249,6 +249,29 @@ spec = do
       cs <- describesAs ["run", "build", ""]
       cs `shouldBe` [(activeHelpMarker, Just "target : String - Build target name.")]
 
+  describe "re-exported functions (spec 5, 11.2)" $ do
+    let reexporting =
+          [ ("main.lask", "export { deploy, rollout as ship } from \"./lib/ops.lask\"\nlocal() = $ echo hi\n"),
+            ( "lib/ops.lask",
+              "// Deploy it.\ndeploy(--stage: String = \"dev\") = $ echo d\nrollout(target: String) = $ echo r\ninternal hidden() = $ echo s\n"
+            )
+          ]
+        ask files ws = map candValue . resCandidates <$> complete (memResolver files) ws
+
+    it "offers a re-exported function under the name the module publishes" $ do
+      vs <- ask reexporting ["run", ""]
+      vs `shouldOffer` ["deploy", "ship", "local"]
+      vs `shouldNotOffer` ["rollout", "hidden"]
+
+    it "offers the keyword parameters of a re-exported function" $ do
+      vs <- ask reexporting ["run", "deploy", "--"]
+      vs `shouldOffer` ["--stage"]
+
+    it "follows a re-export in a module that does not parse" $ do
+      let broken = ("main.lask", "export { deploy } from \"./lib/ops.lask\"\nf() = do {\n") : drop 1 reexporting
+      vs <- ask broken ["run", ""]
+      vs `shouldOffer` ["deploy"]
+
   describe "degradation (spec 11.7)" $ do
     it "still finds declaration heads and keyword parameters in a module that does not parse" $ do
       let broken = [("main.lask", "deploy(--version: String = \"1\", --dry_run: Bool = false) = do {\n  $ echo #{version\n}\n\nteardown() = $ echo bye\n")]

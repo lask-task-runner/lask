@@ -86,6 +86,49 @@ spec = beforeAll findLask $ do
         -- but not in the line the user is meant to type
         resOut r `shouldContain` "lask run first_or <xs> <fallback>"
 
+  -- A re-exported name is a public symbol of the module (spec 5), so
+  -- the CLI reaches it as it reaches one the module declares.
+  describe "re-exported functions from the CLI (spec 5, 11.2, 11.6)" $ do
+    let proj =
+          [ ("main.lask", "export { greet, greet as hello } from \"./lib.lask\"\nown(): String = \"own\"\n"),
+            ( "lib.lask",
+              "// Greets someone.\n//\n// @param name  Who to greet.\ngreet(--name: String = \"World\"): String = \"hello #{name}\"\n\ninternal secret(): String = \"s\"\n"
+            )
+          ]
+
+    it "invokes a re-exported function, keyword arguments included" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "greet", "--name", "Lask"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"hello Lask\"\n"
+
+    it "invokes it under the name a renaming re-export publishes" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "hello"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"hello World\"\n"
+
+    it "does not reach what the module does not publish" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "secret"] ""
+        resExit r `shouldBe` 4
+
+    it "describes it from the file that declares it" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "hello", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "Greets someone."
+        resOut r `shouldContain` "Who to greet."
+        resOut r `shouldContain` "lask run hello"
+        resOut r `shouldContain` "lib.lask"
+
+    it "lists it among the module's functions" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "--help"] ""
+        resExit r `shouldBe` 0
+        mapM_ (resOut r `shouldContain`) ["greet", "hello", "own"]
+        resOut r `shouldNotContain` "secret"
+
   describe "cmd (spec 11.8)" $ do
     let proj =
           [ ( "main.lask",
