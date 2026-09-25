@@ -1369,13 +1369,13 @@ shell_char   = unicode_char .
 Here `shell_char` is `unicode_char` (the common lexical element of Chapter 3; excluding newlines). A command string terminates at the end of the line (details follow the lexical rules of this section).
 
 A command execution expression is syntactic sugar for concisely writing shell command execution.
-Semantically it is handled by normalization to the built-in function `run_command`. The stream specifiers `1`, `2`, and `*` derive from file descriptor numbers and select which part of the command's result is received (`1` = standard output, `2` = standard error, `*` = the entire result).
+Semantically it is handled by normalization to the built-in function `run`. The stream specifiers `1`, `2`, and `*` derive from file descriptor numbers and select which part of the command's result is received (`1` = standard output, `2` = standard error, `*` = the entire result).
 
 Definition as a function:
 
-- `run_command` is a core function that executes a command in the specified execution environment and returns the entire result (exit code, standard output, standard error).
-- Its signature is `run_command(cmd: String, env: Environment): CommandResult`. The execution environment is a required positional parameter: there is no default execution environment (10.1), and a keyword parameter cannot express a required argument because 6.1 requires one to have a default value.
-- `run_command` succeeds regardless of the exit code as long as the command completes (8.7). Failures occur only for execution infrastructure faults (unresolvable environment, inability to connect, inability to launch the command, etc.).
+- `run` is a core function that executes a command in the specified execution environment and returns the entire result (exit code, standard output, standard error).
+- Its signature is `run(env: Environment, cmd: String): CommandResult`. The execution environment is a required positional parameter: there is no default execution environment (10.1), and a keyword parameter cannot express a required argument because 6.1 requires one to have a default value.
+- `run` succeeds regardless of the exit code as long as the command completes (8.7). Failures occur only for execution infrastructure faults (unresolvable environment, inability to connect, inability to launch the command, etc.).
 
 The `CommandResult` type:
 
@@ -1384,19 +1384,19 @@ The `CommandResult` type:
 
 Desugaring rules:
 
-- `$*[env] cmd` is syntactic sugar for `run_command("cmd", env)`.
+- `$*[env] cmd` is syntactic sugar for `run(env, "cmd")`.
 - `$[env] cmd` and `$1[env] cmd` are syntactic sugar for the following expression (`r` is a fresh identifier that does not collide with others).
 
   ```lask
   do {
-    r = run_command("cmd", env)
+    r = run(env, "cmd")
     if (r.code == 0) { r.stdout } else { fail({code: r.code, message: r.stderr}) }
   }
   ```
 
 - `$2[env] cmd` is syntactic sugar for the expression above with its success branch replaced by `r.stderr`.
 - A form written without an environment specification (`$ cmd`, `$1 cmd`, `$2 cmd`, `$* cmd`) expands identically, with the environment supplied by dispatch (10.9) over the command string. When dispatch selects no environment the expression is a static error (`E-TYPE-COMMAND-NOENV`); there is no fallback.
-- Only core functions (normalization to `run_command`, `fail`, and `choose`) and a record literal appear in the expanded forms, so the behavior can never be changed by user definitions.
+- Only core functions (normalization to `run`, `fail`, and `choose`) and a record literal appear in the expanded forms, so the behavior can never be changed by user definitions.
 - `#{e}` inside a `shell_string` is evaluated first as string interpolation, and the post-interpolation string is passed as the command body.
 
 Lexical rules:
@@ -1407,10 +1407,10 @@ Lexical rules:
 - Inside the command string, the shell's `;`, quotation marks, pipes, etc. can be used without escaping.
 - `#{` starts an interpolation. To include a literal `#{`, write `\#{`. A `#` not followed by `{` is treated as an ordinary character.
 - Inside `do`, the newline that terminates a command string simultaneously serves as statement termination (6.5).
-- A command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run_command("git --version", #local) |> trim`.
-- All tokens on the same line after a command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. To process it inside an expression, first bind it and then use it, or call `run_command` directly.
+- A command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run(#local, "git --version") |> trim`.
+- All tokens on the same line after a command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. To process it inside an expression, first bind it and then use it, or call `run` directly.
 
-Here `run_command` is a core function and must not be directly declared or overridden by user code (15.5).
+Here `run` is a core function and must not be directly declared or overridden by user code (15.5).
 
 Environment specification rules:
 
@@ -1423,7 +1423,7 @@ Environment specification rules:
 
 Typing rules:
 
-- `run_command` is typed as `Function<String, Environment, CommandResult>` (7.5).
+- `run` is typed as `Function<Environment, String, CommandResult>` (7.5).
 - As a result of the desugaring, the expression type of `$ ...`, `$1 ...`, and `$2 ...` is `String`, and the expression type of `$* ...` is `CommandResult`.
 - If `env` does not conform to `Environment`, it is a type error.
 - The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a type error.
@@ -1731,7 +1731,7 @@ Resolution rules:
 - If no candidate exists at any precedence level, it is an undefined reference error.
 - Reserved words must not be bound as identifiers.
 - Symbols of the built-in library are resolved at the lowest level (fifth precedence), so a user-defined symbol of the same name always takes priority (shadowing; 15.1).
-- However, core function names specified as non-overridable (`spawn`, `choose`, `map`, `filter`, `reduce`, `for_each`, `run_command`, `recover`, `fail`, Chapter 6; `get_env`, `mark_secret`, 6.10/15.9) and `stdin` (9.3) must not be declared or bound at any of the first through fourth precedence levels. A violation is a duplicate definition error (`E-NAME-DUPLICATE`).
+- However, core function names specified as non-overridable (`spawn`, `choose`, `map`, `filter`, `reduce`, `for_each`, `run`, `recover`, `fail`, Chapter 6; `get_env`, `mark_secret`, 6.10/15.9) and `stdin` (9.3) must not be declared or bound at any of the first through fourth precedence levels. A violation is a duplicate definition error (`E-NAME-DUPLICATE`).
 
 ### 7.3 Scope and Shadowing
 
@@ -1800,7 +1800,7 @@ Consistency of helper functions (normalization targets of syntactic sugar):
 - `for_each`: `Function<Array<T>, Function<T, U>, Void>`
 - `recover`: `Function<Function<T>, Function<Error, T>, T>`
 - `fail`: `Function<Error, T>`
-- `run_command`: `Function<String, Environment, CommandResult>`
+- `run`: `Function<Environment, String, CommandResult>`
 
 Type variables in signatures (`T`, `U`, etc.) are instantiated and checked per call according to the polymorphism rules of 4.4. This applies to a call of a declaration that declares type parameters exactly as it does to a built-in: the argument binding of this section is unchanged, and each bound argument is checked against its parameter type with the instantiation applied. Keyword parameters and variadic collection are unaffected by instantiation, being declaration parameter information rather than part of the function type.
 
@@ -2000,10 +2000,10 @@ Multiple `await`s on the same `h` return the same completion result.
 
 ### 8.7 Command Execution (Core Function)
 
-Evaluation of `run_command(cmd, env)`:
+Evaluation of `run(env, cmd)`:
 
-1. Evaluate `cmd` to a string (for command sugar containing interpolation, the interpolation expressions are evaluated from left to right and the finalized string is passed).
-2. Evaluate `env`. It is always present: command sugar supplies it from the environment specification or from dispatch (6.6, 10.9), and a direct call must pass it.
+1. Evaluate `env`. It is always present: command sugar supplies it from the environment specification or from dispatch (6.6, 10.9), and a direct call must pass it.
+2. Evaluate `cmd` to a string (for command sugar containing interpolation, the interpolation expressions are evaluated from left to right and the finalized string is passed).
 3. Resolve `env` to an execution environment (10.4).
 4. Execute the command synchronously in the resolved environment. During execution, the child process's standard output and standard error are relayed to stderr in real time according to the rules of 12.3 (the relay does not affect the evaluation result).
 5. After the command completes, construct and return a `CommandResult` value (6.6). It is a success regardless of the exit code.
@@ -2012,7 +2012,7 @@ Construction rules for `CommandResult`:
 
 - `code`: set to the process's exit code as is. Termination by signal may be mapped according to shell convention (`128 + signal number`).
 - `stdout` / `stderr`: set to the contents of each stream (up to an implementation-defined size limit; on overflow, a summary preserving the head and tail may be used).
-- `run_command` fails only in the case of execution infrastructure failures (environment unresolvable, connection failure, command unable to start, etc.) (external I/O error; Chapter 14).
+- `run` fails only in the case of execution infrastructure failures (environment unresolvable, connection failure, command unable to start, etc.) (external I/O error; Chapter 14).
 
 Error value conversion of failures caused by non-zero exit (carrying over the exit code and standard error output) follows 8.10.
 
@@ -2025,7 +2025,7 @@ An environment expression `#kind(args)` (6.7) is a core expression that remains 
 3. Return an `Environment` value consisting of the environment kind and the normalized parameter set.
 4. If the evaluation of an argument expression or a default-value expression fails, the entire environment expression fails.
 
-Resolution of an environment value to an execution environment (10.4) is performed not at environment expression evaluation time but immediately before command launch by `run_command`.
+Resolution of an environment value to an execution environment (10.4) is performed not at environment expression evaluation time but immediately before command launch by `run`.
 
 Equality comparison:
 
@@ -2213,7 +2213,7 @@ This chapter defines the execution environments that can be specified when invok
 
 ### 10.1 The `Environment` Type and Environment Expressions
 
-`Environment` is a built-in primitive type (4.1) representing the execution-target context that `run_command` (6.6) receives as its second positional argument. `Environment` values are constructed only by evaluating an environment expression (6.7) `#environment-kind(arguments...)`.
+`Environment` is a built-in primitive type (4.1) representing the execution-target context that `run` (6.6) receives as its first positional argument. `Environment` values are constructed only by evaluating an environment expression (6.7) `#environment-kind(arguments...)`.
 
 Rules:
 
@@ -2221,14 +2221,14 @@ Rules:
 - `Environment` values must be resolvable to at least the following 2 families.
   - `#local` (local execution)
   - `#docker(...)` (container execution, including the sugar `#image-name`)
-- The `env` argument of `run_command` must be normalized to an `Environment` value at evaluation time.
+- The `env` argument of `run` must be normalized to an `Environment` value at evaluation time.
 - There is no default execution environment. Every command execution expression determines its environment from the expression itself — from its environment specification, or by dispatch over its command string (6.6, 10.9) — and an expression that determines none is a static error (`E-TYPE-COMMAND-NOENV`). Local execution is written `#local`, like any other environment, or is registered for a program by a command declaration (Chapter 5).
 - No CLI option or other external configuration may supply, alter, or override the environment of a command.
 - The rule replaces an earlier implicit fallback to `#local`. Its purpose is that a program's dependence on the host be stated rather than assumed: under a fallback, deleting a command declaration or mistyping a program name left the command running against whatever the host happened to provide, which is the failure Lask exists to prevent.
 
 Type conformance:
 
-- The type and signature of `run_command` follow the definition in 7.5.
+- The type and signature of `run` follow the definition in 7.5.
 - Passing a value other than `Environment` to the `env` argument is a type error.
 
 ### 10.2 Target Environment Profiles and Environment Constructor Signatures
@@ -2301,7 +2301,7 @@ Dynamic references:
 
 ### 10.4 Environment Resolution Rules
 
-Environment resolution is performed immediately before command launch by `run_command`.
+Environment resolution is performed immediately before command launch by `run`.
 
 Resolution procedure:
 
@@ -2386,7 +2386,7 @@ In this specification, absorbing environment differences refers to the responsib
 
 Responsibilities:
 
-- Unify the return value and failure contract of the command execution API (`run_command`) across environments.
+- Unify the return value and failure contract of the command execution API (`run`) across environments.
 - Standardize the observation interface for exit codes, stdout, and stderr.
 - Map environment-specific failures to the common error classification of this specification (Chapter 14).
 - To the extent possible, internalize implementation differences such as retries and connection initialization, and do not leak them into language-level semantics.
@@ -3021,7 +3021,7 @@ Output rules:
 
 ### 12.3 Command Execution Log
 
-During execution of `run_command` (8.7), the implementation must relay the child process's standard output and standard error to its own stderr in real time as the command execution log. The relay is performed in parallel with the capture into `CommandResult` (8.7) and must not affect the evaluation result (value semantics).
+During execution of `run` (8.7), the implementation must relay the child process's standard output and standard error to its own stderr in real time as the command execution log. The relay is performed in parallel with the capture into `CommandResult` (8.7) and must not affect the evaluation result (value semantics).
 
 Relay rules:
 
@@ -3074,7 +3074,7 @@ Implementations must be able to generate and record stack traces at all times up
 
 - Contain at least function names, call order, and, where possible, source positions (line/column or span).
 - When crossing asynchronous boundaries (`spawn` / `await`), the parent-child relationship must be traceable.
-- Failures involving command execution (`run_command`) may include the environment kind and a summary of the executed command.
+- Failures involving command execution (`run`) may include the environment kind and a summary of the executed command.
 
 Omission rules:
 
@@ -3109,7 +3109,7 @@ Minimum guarantees:
 
 - Each `CallEvent` must ultimately correspond to exactly one `ReturnEvent` or `FailEvent`.
 - Event order must preserve causal order for the same function execution.
-- When command execution (`run_command`) is involved, the `ArgumentsSummary` may include an environment kind summary.
+- When command execution (`run`) is involved, the `ArgumentsSummary` may include an environment kind summary.
 - Even when a failure is caught by `try` / `catch` (6.9), the `FailEvent` corresponding to the failed function call is emitted. Catching must not cancel the event.
 
 ### 12.7 In-flight Diagnostics
@@ -3541,7 +3541,7 @@ Policy:
 
 - Referentially transparent pure functions are preferred.
 - Functions with external side effects are clearly distinguished by name and contract, and are grouped into sections of their own: command execution (15.5), filesystem access (15.11), diagnostic output (15.12), and nondeterministic generation (15.13). Every other section of this chapter is pure.
-- Access to the filesystem is never implicit. Every function that reads or writes it takes the target `Environment` as its last positional argument (15.11), just as `run_command` does, so the filesystem a program touches is always the one it names.
+- Access to the filesystem is never implicit. Every function that reads or writes it takes the target `Environment` as a required positional argument (the last one; 15.11), just as `run` does, so the filesystem a program touches is always the one it names.
 - There is no overloading: one built-in name has exactly one signature, because a name resolves to a single type scheme (4.4). Where the same operation is wanted for both `String` and `Array<T>`, the array form carries the `_array` suffix (`concat_array`, `contains_array`, `index_of_array`), and where the same operation is wanted for both `Array<T>` and `Map<T>`, the map case is written by composing with `keys` / `values` / `entries` rather than by a second function.
 
 Naming of the absent case:
@@ -3764,13 +3764,13 @@ Map operations:
 
 The built-in library provides at least the following functions.
 
-- `run_command`: `Function<String, Environment, CommandResult>`
+- `run`: `Function<Environment, String, CommandResult>`
 - `shell_quote`: `Function<String, String>`
 
 Contract:
 
 - Follows the rules of 6.6, 8.7, and Chapter 10. `CommandResult` is the built-in type alias defined in 6.6.
-- `run_command` succeeds regardless of the exit code as long as the command completes. The diagnostic code for failures caused by a non-zero exit of the command execution expressions `$`, `$1`, and `$2` (6.6) is `E-RUNTIME-COMMAND-NONZERO`.
+- `run` succeeds regardless of the exit code as long as the command completes. The diagnostic code for failures caused by a non-zero exit of the command execution expressions `$`, `$1`, and `$2` (6.6) is `E-RUNTIME-COMMAND-NONZERO`.
 - Environment resolution failure is `E-IO-ENV-RESOLVE`.
 
 Quoting:
@@ -3977,7 +3977,7 @@ Semantics:
 
 Failure rules:
 
-- Environment resolution failure is `E-IO-ENV-RESOLVE`, as it is for `run_command` (15.5).
+- Environment resolution failure is `E-IO-ENV-RESOLVE`, as it is for `run` (15.5).
 - Every failure of the access itself — a missing path, a permission denial, an exhausted disk — is `E-IO-FS`. The diagnostic must identify the path and the environment (14.3).
 - The contents of a file must never be placed in a diagnostic. A path is not treated as confidential, but the data at it is.
 - These calls emit no command execution log (12.3), because no command is executed. An implementation may record them in the execution log (12.2) with the minimum auditable information: the operation, the path, and the environment summary, mirroring the stance of 10.7 on command execution requests.
@@ -4333,7 +4333,7 @@ Expected behavior:
 
 ### 16.8 Execution Event Example
 
-An event output example on failure involving command execution with environments (`run_command`) is shown. The following is the `FailEvent` emitted when a required image has not been materialized during execution of `lask run deploy prod`.
+An event output example on failure involving command execution with environments (`run`) is shown. The following is the `FailEvent` emitted when a required image has not been materialized during execution of `lask run deploy prod`.
 
 ```json
 {

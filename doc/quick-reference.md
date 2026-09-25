@@ -404,7 +404,7 @@ signature.
 | Strings | `length` `concat` `trim` `to_lower` `to_upper` `split` `join` `replace` `contains` `starts_with` `ends_with` `index_of` `substring` `pad_start` `pad_end` `repeat` `lines` `to_string` `to_number` `regex_test` `regex_match` `regex_replace` |
 | Arrays | `map` `filter` `reduce` `for_each` `append` `concat_array` `size` `is_empty` `first` `last` `slice` `take` `drop` `reverse` `sort` `sort_by` `contains_array` `index_of_array` `find` `find_index` `every` `any` `flatten` `flat_map` `zip` `unique` `range` `enumerate` |
 | Maps | `get` `get_or` `has_key` `keys` `values` `set` `remove` `merge` `entries` `from_entries` `map_values` |
-| Commands | `run_command` `shell_quote` |
+| Commands | `run` `shell_quote` |
 | Async | `spawn` `await` `all` `race` |
 | Errors | `recover` `fail` `error` |
 | Data | `to_json` `from_json` `encode` `decode` `cast` `base64_encode` `base64_decode` `sha256` `md5` |

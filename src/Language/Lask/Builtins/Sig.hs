@@ -139,7 +139,7 @@ builtinSchemes =
       -- 15.5 command execution. The environment is positional and
       -- requiredField: there is no default execution environment (spec 10.1),
       -- and a keyword parameter must have a default (spec 6.1).
-      ("run_command", mono [TyString, TyEnvironment] commandResultType),
+      ("run", mono [TyEnvironment, TyString] commandResultType),
       ("shell_quote", mono [TyString] TyString),
       -- 15.6 parallel/async
       ("spawn", Scheme ["T"] [TyFun [] (tv "T")] (TyAsync (tv "T"))),
@@ -172,7 +172,7 @@ builtinSchemes =
       ("extname", mono [TyString] TyString),
       ("normalize_path", mono [TyString] TyString),
       ("is_absolute_path", mono [TyString] TyBool),
-      -- 15.11 filesystem. As with run_command the environment is
+      -- 15.11 filesystem. As with run the environment is
       -- positional and requiredField (spec 10.1, 15.11): there is no
       -- filesystem access that does not name an environment.
       ("read_file", mono [TyString, TyEnvironment] TyString),

@@ -222,10 +222,10 @@ builtinDocs =
       ("from_entries", doc "15.4" ["`from_entries(es)` builds a map from `{key, value}` records. It is the inverse of `entries`, and a later duplicate key wins."]),
       ("map_values", doc "15.4" ["`map_values(m, f)` applies `f` to every value and keeps the keys."]),
       -- 15.5 command execution
-      ( "run_command",
+      ( "run",
         doc
           "15.5"
-          [ "`run_command(command, env)` runs `command` in `env` and returns its `CommandResult`. Unlike `$`, a non-zero exit code is not a failure.",
+          [ "`run(env, command)` runs `command` in `env` and returns its `CommandResult`. Unlike `$`, a non-zero exit code is not a failure.",
             "Environment resolution failure is `E-IO-ENV-RESOLVE`."
           ]
       ),

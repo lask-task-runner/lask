@@ -35,7 +35,7 @@ One directory per topic, in reading order. The whole of the
 | [01-values-and-types](02-language/01-values-and-types) | Bindings, annotations, type aliases, records, maps, unions, optional fields, generics, `cast` |
 | [02-functions](02-language/02-functions) | Positional, variadic and keyword parameters, lambdas, higher-order functions, `\|>` and `>>` |
 | [03-control-flow](02-language/03-control-flow) | `do`, `if`, guard `return`, all three forms of `case`, `for` |
-| [04-commands](02-language/04-commands) | `$`, `$1`, `$2`, `$*`, interpolation, dispatch, `run_command`, `shell_quote` |
+| [04-commands](02-language/04-commands) | `$`, `$1`, `$2`, `$*`, interpolation, dispatch, `run`, `shell_quote` |
 | [05-environments](02-language/05-environments) | `#local`, tags, digests, `#docker(...)`, a Dockerfile recipe, environments as values |
 | [06-concurrency](02-language/06-concurrency) | `async` / `await`, `spawn`, `all`, `race` |
 | [07-errors](02-language/07-errors) | `try` / `catch` / `finally`, `fail`, `error`, `recover`, exit codes |
