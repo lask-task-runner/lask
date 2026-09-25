@@ -1795,42 +1795,53 @@ elabEnv ctx path locals sp h mArgs = do
     "docker" -> do
       args <- maybe (envErr "docker(...) requires an image reference or a recipe") pure argsOrdered
       let hasPositional = any (\(Arg _ af) -> case af of APos _ -> True; _ -> False) args
+          -- A container option given null is left out: the one way an
+          -- argument can say "not given" without giving up a value a
+          -- caller might mean, such as "" (10.2). A list or a table
+          -- says it by being empty, and leaves out its null elements
+          -- and null values the same way.
+          nullable t = mkUnion t [TyNull]
+          text = nullable TyString
+          number = nullable TyNumber
+          switch = nullable TyBool
+          list = TyArray (nullable TyString)
+          table = TyMap (nullable TyString)
           optionals =
             [ ("image", TyString),
               ("dockerfile", TyString),
               ("context", TyString),
               ("build_args", TyMap TyString),
               -- Resource limits.
-              ("memory", TyString),
-              ("memory_swap", TyString),
-              ("memory_reservation", TyString),
-              ("cpus", TyNumber),
-              ("cpu_shares", TyNumber),
-              ("cpuset_cpus", TyString),
-              ("cpuset_mems", TyString),
-              ("pids_limit", TyNumber),
-              ("shm_size", TyString),
-              ("blkio_weight", TyNumber),
-              ("ulimits", TyArray TyString),
+              ("memory", text),
+              ("memory_swap", text),
+              ("memory_reservation", text),
+              ("cpus", number),
+              ("cpu_shares", number),
+              ("cpuset_cpus", text),
+              ("cpuset_mems", text),
+              ("pids_limit", number),
+              ("shm_size", text),
+              ("blkio_weight", number),
+              ("ulimits", list),
               -- Execution context.
-              ("workdir", TyString),
-              ("user", TyString),
-              ("env", TyMap TyString),
-              ("platform", TyString),
-              ("hostname", TyString),
-              ("init", TyBool),
+              ("workdir", text),
+              ("user", text),
+              ("env", table),
+              ("platform", text),
+              ("hostname", text),
+              ("init", switch),
               -- Confinement: these narrow the boundary of 10.7.
-              ("read_only", TyBool),
-              ("tmpfs", TyArray TyString),
-              ("cap_drop", TyArray TyString),
+              ("read_only", switch),
+              ("tmpfs", list),
+              ("cap_drop", list),
               -- Network.
-              ("network", TyString),
-              ("dns", TyArray TyString),
-              ("dns_search", TyArray TyString),
-              ("add_hosts", TyMap TyString),
-              ("publish", TyArray TyString),
+              ("network", text),
+              ("dns", list),
+              ("dns_search", list),
+              ("add_hosts", table),
+              ("publish", list),
               -- Host filesystem beyond the base directory mount (10.5).
-              ("volumes", TyArray TyString)
+              ("volumes", list)
             ]
       named <-
         if hasPositional

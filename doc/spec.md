@@ -2292,7 +2292,8 @@ The parameters this implementation provides, beyond `image` / `dockerfile` / `co
 | Network | `network`, `dns`, `dns_search`, `add_hosts`, `publish` |
 | Host filesystem | `volumes` |
 
-- `ulimits`, `tmpfs`, `cap_drop`, `dns`, `dns_search`, `publish` and `volumes` are `Array<String>`; `env`, `add_hosts` and `build_args` are `Map<String>`; `init` and `read_only` are `Bool`; `cpus`, `cpu_shares`, `pids_limit` and `blkio_weight` are `Number`; the rest are `String`.
+- `ulimits`, `tmpfs`, `cap_drop`, `dns`, `dns_search`, `publish` and `volumes` are `Array<String | Null>`; `env` and `add_hosts` are `Map<String | Null>`; `init` and `read_only` are `Bool | Null`; `cpus`, `cpu_shares`, `pids_limit` and `blkio_weight` are `Number | Null`; the rest are `String | Null`. `build_args` is `Map<String>`, held to literals.
+- An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing. This is how an argument says "not given" — a function that builds an environment passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
 - `workdir` is the explicit working directory 10.5 gives precedence over the default.
 - `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written.

@@ -515,6 +515,9 @@ spec = do
     it "accepts the container options of 10.2" $
       accepts
         "e = #docker(\"alpine:3.20\", cpus = 2, ulimits = [\"nofile=1024:1024\"], env = {\"CI\": \"1\"}, init = true, tmpfs = [\"/tmp\"], publish = [\"8080:80\"], volumes = [\"c:/cache\"])"
+    it "accepts null for a container option, and in the elements of a list or table" $
+      accepts
+        "f(--u: String | Null = null): Environment = #docker(\"a:1\", user = u, env = {\"A\": u, \"B\": \"\"}, tmpfs = [u], init = null, cpus = null)"
     it "accepts build arguments on a recipe" $
       accepts "e = #docker(dockerfile = \"D\", build_args = {\"VERSION\": \"1.2.3\"})"
     it "rejects build arguments that are not literals, since they decide the image" $ do
