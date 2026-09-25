@@ -518,6 +518,13 @@ spec = do
     it "accepts null for a container option, and in the elements of a list or table" $
       accepts
         "f(--u: String | Null = null): Environment = #docker(\"a:1\", user = u, env = {\"A\": u, \"B\": \"\"}, tmpfs = [u], init = null, cpus = null)"
+    -- Containers are invariant (4.4): a list or table already typed
+    -- without null has to be accepted as it is.
+    it "accepts a list or table of strings that is not a literal" $
+      accepts
+        "xs: Array<String> = [\"/tmp\"]\nm: Map<String> = {\"A\": \"1\"}\nmk(): Map<String> = m\ne = #docker(\"a:1\", tmpfs = xs, env = mk(), volumes = xs, add_hosts = m)"
+    it "still rejects a list of anything but strings" $
+      rejects "xs: Array<Number> = [1]\ne = #docker(\"a:1\", tmpfs = xs)" ETypeMismatch
     it "accepts build arguments on a recipe" $
       accepts "e = #docker(dockerfile = \"D\", build_args = {\"VERSION\": \"1.2.3\"})"
     it "rejects build arguments that are not literals, since they decide the image" $ do
