@@ -25,7 +25,7 @@ data ErrorCode
   | ETypeCommandEnv
   | ETypeCommandNoEnv
   | ETypeCommandConflict
-  | ETypeCommandDecl
+  | ETypeCommandEffect
   | ETypeCommandName
   | ETypeCommandDuplicate
   | ETypeEnvConstruct
@@ -80,7 +80,7 @@ codeText c = case c of
   ETypeCommandEnv -> "E-TYPE-COMMAND-ENV"
   ETypeCommandNoEnv -> "E-TYPE-COMMAND-NOENV"
   ETypeCommandConflict -> "E-TYPE-COMMAND-CONFLICT"
-  ETypeCommandDecl -> "E-TYPE-COMMAND-DECL"
+  ETypeCommandEffect -> "E-TYPE-COMMAND-EFFECT"
   ETypeCommandName -> "E-TYPE-COMMAND-NAME"
   ETypeCommandDuplicate -> "E-TYPE-COMMAND-DUPLICATE"
   ETypeEnvConstruct -> "E-TYPE-ENV-CONSTRUCT"

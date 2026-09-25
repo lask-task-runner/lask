@@ -13,6 +13,7 @@ module Language.Lask.Core.AST
     IndexKind (..),
     PrimOp (..),
     Lam (..),
+    coreChildren,
   )
 where
 
@@ -111,3 +112,35 @@ data Lam = Lam
     lamType :: Type
   }
   deriving (Show, Eq)
+
+-- | The immediate sub-expressions of a core node, keyword defaults of
+-- a lambda included: they are evaluated on behalf of a call, so a walk
+-- that asks what an expression can reach has to see them.
+coreChildren :: Core -> [Core]
+coreChildren c = case coreF c of
+  CStr ps -> [e | CPExpr e <- ps]
+  CArray es -> es
+  CMapLit kvs -> map snd kvs
+  CRecordLit kvs -> map snd kvs
+  CLam lam -> map snd (lamKeywords lam) <> [lamBody lam]
+  CApp fn pos kw -> fn : pos <> map snd kw
+  CDot e _ -> [e]
+  CIndex _ a b -> [a, b]
+  CIf a b c' -> [a, b, c']
+  CAnd a b -> [a, b]
+  COr a b -> [a, b]
+  CNot a -> [a]
+  CBin _ a b -> [a, b]
+  CDo stmts -> concatMap stmtExpr stmts
+  CAwait a -> [a]
+  CEnv _ args -> map snd args
+  CCast a _ -> [a]
+  CIsType a _ -> [a]
+  CNull -> []
+  CBool _ -> []
+  CNumber _ -> []
+  CStrLit _ -> []
+  CVar _ -> []
+  where
+    stmtExpr (CSBind _ e) = [e]
+    stmtExpr (CSExpr e) = [e]

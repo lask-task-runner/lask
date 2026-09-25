@@ -1,9 +1,10 @@
 // A second library, this one running commands.
 //
-// Command declarations are per module and are never imported: this
-// `command` line governs the `$` below and nothing in main.lask, which
-// has to declare whatever it runs itself.
-command "echo" on #alpine:3.22.2
+// A command declaration is exported unless it is marked `internal`,
+// but it governs another module only once that module names the word
+// in `import command { ... }` — main.lask does, for "echo". A named or
+// a namespace import brings in no command word.
+command { "echo" } on #alpine:3.22.2
 
 // @param target   Where to roll out to.
 // @param version  What to roll out.

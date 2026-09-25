@@ -41,7 +41,11 @@ data Module = Module
   { moduleDecls :: [Decl],
     -- | Top-level names carrying the @internal@ marker (spec 5). They
     -- are not public symbols of the module.
-    moduleInternal :: Set Text
+    moduleInternal :: Set Text,
+    -- | Command words declared by an @internal@ command declaration
+    -- (spec 5). Command words occupy a namespace of their own, so they
+    -- are kept apart from the value and type names above.
+    moduleInternalCommands :: Set Text
   }
   deriving (Show, Eq)
 
@@ -64,9 +68,17 @@ data DeclF
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
-  | -- | @command "go", "gofmt" on #golang:1.25@ (spec 5): registers
-    -- each name as a command word of this module. Binds nothing.
+  | -- | @command { "go", "gofmt" } on #golang:1.25@ (spec 5):
+    -- registers each name as a command word of this module. Binds no
+    -- value name.
     DCommand [Spanned Text] Expr
+  | -- | @import command { "go", "gofmt" } from "path"@ (spec 5): makes
+    -- command words the target module exports command words of this
+    -- module.
+    DImportCommands [Spanned Text] Text
+  | -- | @export command { "go" } from "path"@ (spec 5): an import of
+    -- command words that also exports them.
+    DExportCommandsFrom [Spanned Text] Text
   deriving (Show, Eq)
 
 -- | Whether a binding carries the @!!@ secret marker (spec 6.10).
@@ -208,7 +220,7 @@ data StmtF
 -- Span stripping (test helpers) -------------------------------------------
 
 stripSpansModule :: Module -> Module
-stripSpansModule (Module ds ints) = Module (map stripSpansDecl ds) ints
+stripSpansModule (Module ds ints cmds) = Module (map stripSpansDecl ds) ints cmds
 
 stripSpansDecl :: Decl -> Decl
 stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
@@ -224,8 +236,11 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
       (map stripParam ps)
       (fmap stripSpansType t)
       (stripSpansExpr e)
-  DCommand ns e -> DCommand [Spanned NoSpan n | Spanned _ n <- ns] (stripSpansExpr e)
+  DCommand ns e -> DCommand (map stripWord ns) (stripSpansExpr e)
+  DImportCommands ns path -> DImportCommands (map stripWord ns) path
+  DExportCommandsFrom ns path -> DExportCommandsFrom (map stripWord ns) path
   where
+    stripWord (Spanned _ n) = Spanned NoSpan n
     stripSpec (ImportSpec _ n a) = ImportSpec NoSpan n a
 
 stripParam :: Param -> Param

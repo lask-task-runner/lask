@@ -104,7 +104,7 @@ spec = do
       hasAtom "f() = $[#alpine:3.20] ls" (0, 8, 12, SemanticTokenTypes_Macro)
 
   describe "command words (spec 10.9)" $ do
-    let src = "command \"go\" on #golang:1.25\nf() = $ go test ./...\n"
+    let src = "command { \"go\" } on #golang:1.25\nf() = $ go test ./...\n"
 
     it "marks a dispatching command word as a reference, not string text" $ do
       ts <- semTokens "test.lask" src
@@ -122,12 +122,12 @@ spec = do
 
   describe "inlay hints (spec 10.9)" $ do
     it "shows the environment dispatch derived, in the notation of the source" $ do
-      hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $ go test ./...\n"
+      hs <- hintsFor "test.lask" "command { \"go\" } on #golang:1.25\nf() = $ go test ./...\n"
       -- reads as `$[#golang:1.25] go test ./...`
       hs `shouldBe` [(1, 7, "[#golang:1.25]")]
 
     it "places the bracket after a stream selector" $ do
-      hs <- hintsFor "test.lask" "command \"go\" on #golang:1.25\nf() = $* go test\n"
+      hs <- hintsFor "test.lask" "command { \"go\" } on #golang:1.25\nf() = $* go test\n"
       hs `shouldBe` [(1, 8, "[#golang:1.25]")]
 
     it "shows nothing where the expression carries an environment" $ do
@@ -147,7 +147,7 @@ spec = do
       hs <-
         hintsFor
           "test.lask"
-          ( "command \"npm\" on #node:20\n"
+          ( "command { \"npm\" } on #node:20\n"
               <> "f(u: String) = $ cd web && npm ci && \\\n"
               <> "  VITE_API_URL=\"#{u}\" \\\n"
               <> "  npm run build\n"
@@ -169,6 +169,20 @@ spec = do
       hasAtom "export { a } from \"./lib.lask\"" (0, 0, 6, SemanticTokenTypes_Keyword)
     it "marks a marker after another declaration" $
       hasAtom "a = 1\ninternal b = 2" (1, 0, 8, SemanticTokenTypes_Keyword)
+
+  -- `on` is a contextual keyword (spec ch. 5): a keyword after the
+  -- braces of a command declaration, an identifier anywhere else.
+  describe "the contextual keyword `on`" $ do
+    it "marks `on` in a command declaration as a keyword" $
+      hasAtom "command { \"go\" } on #golang:1.25" (0, 17, 2, SemanticTokenTypes_Keyword)
+    it "marks it after several words and in the export form" $ do
+      hasAtom "command { \"go\", \"gofmt\" } on e" (0, 26, 2, SemanticTokenTypes_Keyword)
+      hasAtom "export command { \"go\" } on e" (0, 24, 2, SemanticTokenTypes_Keyword)
+    it "leaves `on` an identifier elsewhere" $ do
+      hasAtom "on = 1" (0, 0, 2, SemanticTokenTypes_Variable)
+      hasAtom "f(on: Number) = on" (0, 16, 2, SemanticTokenTypes_Variable)
+    it "marks `command` in an import as a keyword" $
+      hasAtom "import command { \"go\" } from \"./tools.lask\"" (0, 7, 7, SemanticTokenTypes_Keyword)
 
   describe "hover" $ do
     let src =

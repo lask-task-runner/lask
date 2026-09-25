@@ -9,8 +9,8 @@ where
 
 import Command.Lask.ArgCodec
 import Command.Lask.Complete (completionScript)
-import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom, collectRecipes, envRefOfCore)
-import Language.Lask.Core.AST (Core (..), CoreF (..))
+import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom, collectRecipes)
+import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
 import Control.Exception (try)
@@ -29,7 +29,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
-import qualified Data.Vector as V
 import Data.Version (showVersion)
 import qualified Language.LSP.Lask as LSP
 import Language.Lask (Compiled (..), Partial (..), compileFile, compileFilePartial)
@@ -49,7 +48,7 @@ import Language.Lask.Runtime.Environment
 import Language.Lask.Runtime.Image (buildRecipe, imageExists, recipeTag)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
-import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
+import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, evalCore, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
@@ -725,8 +724,8 @@ cmdCmd cmdOpts = do
           usageError opts $
             "'" <> name <> "' is not a command of this module; try 'lask cmd --list'"
         Just envCore -> do
-          envValue <- envValueOrExit opts envCore
           traceId <- maybe newTraceId pure (optTraceId opts)
+          envValue <- evalCommandEnv core envCore >>= either (failureExit opts traceId) pure
           writeErr <- newLineWriter stderr
           let sink
                 | optJsonFormat opts = jsonCommandLog traceId writeErr
@@ -741,7 +740,9 @@ cmdCmd cmdOpts = do
             Right code -> exitWith (ExitFailure code)
 
 -- | The declared commands of the entry module, with the state of the
--- image each needs (spec 11.8). No network access and no build.
+-- image each needs (spec 11.8). No network access and no build. An
+-- environment that cannot be evaluated here — a variable it reads is
+-- unset, say — is listed with the failure rather than ending the list.
 listCommands :: CommonOpts -> CoreProgram -> Map.Map Text Core -> IO ()
 listCommands opts core table = do
   rows <- mapM row (Map.toList table)
@@ -750,64 +751,65 @@ listCommands opts core table = do
       TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode $
         [ A.object
             [ (AK.fromText "name", A.String name),
-              (AK.fromText "kind", A.String (refKind ref)),
-              (AK.fromText "target", A.String (refTarget ref)),
+              (AK.fromText "kind", A.String kind),
+              (AK.fromText "target", A.String target),
               (AK.fromText "present", A.Bool present)
             ]
-        | (name, ref, present) <- rows
+        | (name, kind, target, present) <- rows
         ]
     else do
-      let width = maximum (8 : [T.length n | (n, _, _) <- rows])
-      forM_ rows $ \(name, ref, present) ->
+      let width = maximum (8 : [T.length n | (n, _, _, _) <- rows])
+      forM_ rows $ \(name, kind, target, present) ->
         TIO.putStrLn
           ( T.justifyLeft width ' ' name
               <> "  "
-              <> T.justifyLeft 6 ' ' (refKind ref)
+              <> T.justifyLeft 6 ' ' kind
               <> "  "
-              <> refTarget ref
+              <> target
               <> (if present then "" else "  MISSING (lask env build)")
           )
   where
     row (name, envCore) = do
-      present <- imagePresent (cpBaseDir core) envCore
-      pure (name, envRefOfCore envCore, present)
+      r <- evalCommandEnv core envCore
+      case r >>= resolveEnv of
+        Left lf -> pure (name, "?", "<" <> failureMessage lf <> ">", False)
+        Right resolved -> do
+          present <- imagePresent (cpBaseDir core) resolved
+          let (kind, target) = describeResolved resolved
+          pure (name, kind, target, present)
+
+    describeResolved resolved = case resolved of
+      ResolvedLocal -> ("local", "local")
+      ResolvedDocker image _ -> ("docker", image)
+      ResolvedRecipe df _ _ -> ("docker", "recipe " <> df)
 
 -- | Whether the image a command needs is on the target daemon. No
 -- network access and no build (spec 11.8, 10.3).
-imagePresent :: FilePath -> Core -> IO Bool
-imagePresent baseDir c = case coreF c of
-  CEnv "local" _ -> pure True
-  CEnv "docker" args -> case (lookup "image" args, lookup "dockerfile" args) of
-    (Just (Core _ (CStrLit image)), _) -> imageExists image
-    (_, Just (Core _ (CStrLit df))) -> do
-      let ctx = case lookup "context" args of
-            Just (Core _ (CStrLit x)) -> x
-            _ -> T.pack (takeDirectory (T.unpack df))
-          buildArgs = case lookup "build_args" args of
-            Just (Core _ (CMapLit kvs)) -> sort [(k, v) | (k, Core _ (CStrLit v)) <- kvs]
-            _ -> []
-      tagE <- recipeTag baseDir df ctx buildArgs
-      either (const (pure False)) imageExists tagE
-    _ -> pure False
-  _ -> pure False
+imagePresent :: FilePath -> ResolvedEnv -> IO Bool
+imagePresent baseDir resolved = case resolved of
+  ResolvedLocal -> pure True
+  ResolvedDocker image _ -> imageExists image
+  ResolvedRecipe df ctx opts -> do
+    tagE <- recipeTag baseDir df ctx (recipeBuildArgs opts)
+    either (const (pure False)) imageExists tagE
 
--- | Evaluate a command declaration's environment core to a runtime
--- value. The declaration form guarantees literal arguments (ch. 5), so
--- this needs no evaluation context.
-envValueOrExit :: CommonOpts -> Core -> IO EnvValue
-envValueOrExit opts c = case coreF c of
-  CEnv kind args -> EnvValue kind . Map.fromList <$> mapM entry args
-  _ -> usageError opts "the command's environment is not a constant"
+-- | Evaluate a command's environment (spec 11.8). The environment of a
+-- command declaration can reach no effect (ch. 5), so nothing here can
+-- run a command, touch a file or read the standard input, which
+-- belongs to the program. The hooks refuse rather than run anything if
+-- that guarantee is ever broken.
+evalCommandEnv :: CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
+evalCommandEnv core c = do
+  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())))
+  r <- try (evalCore ctx Map.empty c)
+  pure $ case r of
+    Left lf -> Left lf
+    Right (VEnv ev) -> Right ev
+    Right _ -> Left (refusal "the command's environment did not evaluate to an Environment")
   where
-    entry (k, v) = (,) k <$> literal v
-    literal v = case coreF v of
-      CStrLit t -> pure (VString t)
-      CNumber n -> pure (VNumber n)
-      CBool b -> pure (VBool b)
-      CNull -> pure VNull
-      CArray es -> VArray . V.fromList <$> mapM literal es
-      CMapLit kvs -> VMap . Map.fromList <$> mapM entry kvs
-      _ -> usageError opts "the command's environment is not a constant"
+    refuseCommand _ _ = pure (Left (refusal "the environment of a command declaration tried to run a command"))
+    refuseFile _ _ = pure (Left (refusal "the environment of a command declaration tried to access a file"))
+    refusal = ioFailure EIoEnvResolve
 
 -- | Load the target module and hand its recipe environments to the
 -- action, exiting on static errors.

@@ -13,8 +13,8 @@ alpine = #alpine:3.22.2
 // A `$` with no environment gets one from the command words in the
 // string, matched against these declarations. Matching is lexical and
 // exact — `/bin/cat` matches nothing, a basename is never taken.
-command "cat", "wc", "grep", "sort" on alpine
-command "uname", "echo" on #local
+command { "cat", "wc", "grep", "sort" } on alpine
+command { "uname", "echo" } on #local
 
 // The kernel of the host, from `uname`.
 //
