@@ -73,7 +73,7 @@ The thing to take away: a command string swallows the rest of its line. `$ uname
 
 ## 05-environments
 
-**Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits, an image built from the local `Dockerfile`, and environments held in a `Map<Environment>` and chosen at run time.
+**Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits and other container options, an image built from the local `Dockerfile`, and environments held in a `Map<Environment>` and chosen at run time.
 
 ```bash
 lask envs --check            # is each one actually reachable?
@@ -112,7 +112,7 @@ The thing to take away: static errors are not catchable. `lask check` finds them
 
 ## 08-modules
 
-**Docker** for the last task. Named imports with `as`, namespace imports, `internal`, re-export, and command declarations that stay inside the module that wrote them.
+**Docker** for the last task. Named imports with `as`, namespace imports, `internal`, re-export, and `import command`, which brings in the command words another module declares.
 
 ```bash
 lask eval page-title "  Release Notes  "
@@ -120,7 +120,7 @@ lask eval known-targets
 lask env build && lask eval ship --version 1.4.0
 ```
 
-The thing to take away: importing a module brings none of its command words with it — dispatch is resolved where the command is written.
+The thing to take away: a named or namespace import brings none of a module's command words with it — only `import command` does, and dispatch is resolved where the command is written.
 
 ## 09-dependencies
 

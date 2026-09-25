@@ -1,12 +1,8 @@
 {
     "dependencies": {
-        "aws": {
-            "git": "https://github.com/lask-task-runner/lask-aws",
+        "tools": {
+            "git": "https://github.com/lask-task-runner/lask-module-tools.git",
             "rev": "v0.1.0"
-        },
-        "terraform": {
-            "git": "https://github.com/lask-task-runner/lask-terraform",
-            "rev": "v0.1.1"
         }
     }
 }

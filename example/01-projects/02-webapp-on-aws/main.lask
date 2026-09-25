@@ -1,18 +1,32 @@
-import * as tf from "terraform"
-import * as aws from "aws"
+import * as tools from "tools"
 
-python = #python:3.12.14-alpine3.24
-node = #node:20.20.2-alpine3.23
-playwright = #mcr.microsoft.com/playwright:v1.62.1-jammy
-curl = #curlimages/curl:8.21.0
-
-// The programs below run in the images that provide them, so the
-// commands name only what they run (spec ch. 5, 10.9). playwright is
-// deliberately not registered: test_e2e runs npm and npx, but needs
-// the image for the browsers it carries, not for the program.
 command { "python", "pip" } on python
 command { "node", "npm", "npx" } on node
-command { "curl" } on curl
+command { "aws" } on aws
+command { "terraform" } on terraform
+command { "curl" } on tools.unix()
+
+aws_access_key_id = mark_secret(get_env("AWS_ACCESS_KEY_ID"))
+aws_secret_access_key = mark_secret(get_env("AWS_SECRET_ACCESS_KEY"))
+aws_region = get_env("AWS_DEFAULT_REGION")
+
+python = tools.python(tag = "3.12.14-alpine3.24")
+node = tools.node(tag = "20.20.2-alpine3.23")
+aws = tools.aws(
+  tag = "2.36.41",
+  access_key_id = aws_access_key_id,
+  secret_access_key = aws_secret_access_key,
+  region = aws_region
+)
+terraform = tools.terraform(
+  tag = "1.16.2",
+  extra_env = {
+    "TF_VAR_aws_access_key_id": aws_access_key_id,
+    "TF_VAR_aws_secret_access_key": aws_secret_access_key,
+    "TF_VAR_aws_region": aws_region
+  }
+)
+playwright = tools.playwright(tag = "v1.62.1-jammy")
 
 internal as_string(v: Any): String = cast(v)
 
@@ -87,7 +101,7 @@ type InfraOutputs = Record<
 // terraform_output() (which re-runs that command) once per field, and lets
 // callers write tf_output().api_url instead of a name string.
 tf_output(): InfraOutputs = do {
-  os = tf.outputs(dir = "infra")
+  os = terraform_outputs()
   {
     api_url: output_field(os, "api_url"),
     frontend_bucket: output_field(os, "frontend_bucket"),
@@ -100,87 +114,61 @@ tf_output(): InfraOutputs = do {
   }
 }
 
-internal output_field(os: tf.TfOutputs, name: String): String =
-  as_string(tf.output_entry(os, name).value)
+internal terraform_outputs(): Map<Any> = do {
+  raw = $ terraform -chdir=infra output -json -no-color
+  cast(from_json(raw))
+}
+
+internal output_field(os: Map<Any>, name: String): String = do {
+  entry: Map<Any> = cast(get(os, name))
+  as_string(get(entry, "value"))
+}
 
 // Deploys everything: applies the Terraform infra, builds the frontend
 // against it, and uploads the result to S3/CloudFront.
 //
 // aws_region/aws_access_key_id/aws_secret_access_key are ordinary
 // Terraform variables that infra/ feeds straight to the AWS provider (see
-// infra/providers.tf) — pre-existing to this example, not introduced by
-// the move to lask-terraform. lask-terraform's own doc/design.md §8 advises
-// against passing secrets through --vars for exactly this pair; changing
-// how infra/ takes AWS credentials is out of scope here.
-deploy(
-  --region: String = get_env("AWS_DEFAULT_REGION"),
-  --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
-  --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
-) = do {
+// infra/providers.tf); the "terraform" command's TF_VAR_* environment
+// (above) supplies them, so no -var flag puts a secret on the command line.
+deploy() = do {
   build_lambda_deps()
-  tf.init(dir = "infra")
-  tf.apply(
-    dir = "infra",
-    vars = { aws_region: region, aws_access_key_id: access_key_id, aws_secret_access_key: secret_key }
-  )
+  $ terraform -chdir=infra init -input=false -no-color
+  $ terraform -chdir=infra apply -input=false -no-color -auto-approve
 
   output = tf_output()
 
   build_web(output.api_url, output.cognito_issuer, output.user_pool_client_id, output.cognito_domain, "#{output.website_url}/")
 
-  // aws.* below default to the same official amazon/aws-cli image this
-  // example used directly before, so --env is not overridden here.
-  aws.s3_sync(
-    "web/dist", "s3://#{output.frontend_bucket}", delete = true,
-    region = region, access_key_id = access_key_id, secret_access_key = secret_key
-  )
+  $ aws s3 sync web/dist "s3://#{output.frontend_bucket}" --delete
 
   // Invalidates the cached index.html so the new build is served
   // immediately instead of the previous one.
-  aws.cloudfront_create_invalidation(
-    output.cloudfront_distribution_id, ["/index.html"],
-    region = region, access_key_id = access_key_id, secret_access_key = secret_key
-  )
+  $ aws cloudfront create-invalidation --distribution-id "#{output.cloudfront_distribution_id}" --paths /index.html
 }
 
 // Creates a Cognito sign-in user with a permanent password (self sign-up
 // is disabled, so this is the only way to add one).
 create_user(
   email: String,
-  password!!: String,
-  --region: String = get_env("AWS_DEFAULT_REGION"),
-  --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
-  --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
+  password!!: String
 ) = do {
   pool = tf_output().user_pool_id
-  aws.cognito_idp_admin_create_user(
-    pool, email,
-    user_attributes = { email: email, email_verified: "true" },
-    message_action = "SUPPRESS",
-    region = region, access_key_id = access_key_id, secret_access_key = secret_key
-  )
-  aws.cognito_idp_admin_set_user_password(
-    pool, email, password, permanent = true,
-    region = region, access_key_id = access_key_id, secret_access_key = secret_key
-  )
+  $ aws \
+    cognito-idp admin-create-user --user-pool-id "#{pool}" --username "#{email}" \
+    --user-attributes Name=email,Value="#{email}" Name=email_verified,Value=true \
+    --message-action SUPPRESS
+  $ aws \
+    cognito-idp admin-set-user-password --user-pool-id "#{pool}" --username "#{email}" \
+    --password "#{password}" --permanent
 }
 
 // Tears down everything deploy() created.
-destroy(
-  --region: String = get_env("AWS_DEFAULT_REGION"),
-  --access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
-  --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
-) = do {
-  tf.destroy(
-    dir = "infra", auto_approve = true,
-    vars = { aws_region: region, aws_access_key_id: access_key_id, aws_secret_access_key: secret_key }
-  )
-}
+destroy() = $ terraform -chdir=infra destroy -input=false -no-color -auto-approve
 
 // Reads a Terraform output by name, e.g. api_url or website_url.
 //   lask eval --stdout-encode text terraform_output api_url
-terraform_output(name: String): String =
-  as_string(tf.output_value(name, dir = "infra"))
+terraform_output(name: String): String = output_field(terraform_outputs(), name)
 
 type Healthcheck = Record<status: String>
 
