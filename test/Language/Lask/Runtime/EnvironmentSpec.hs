@@ -13,12 +13,16 @@ import Language.Lask.Builtins.Impl (FileOp (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Runtime.Environment
-import Language.Lask.Runtime.Image (recipeTag)
+import Language.Lask.Runtime.Image (ImagePins, recipeTag, unlockedPins)
 import Language.Lask.Runtime.Secrets (registerSecret, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
+
+-- | These runners run on the host, where no image is involved.
+noPins :: ImagePins
+noPins = unlockedPins Map.empty
 
 env :: Text -> [(Text, Value)] -> EnvValue
 env k ps = EnvValue k (Map.fromList ps)
@@ -190,7 +194,7 @@ spec = do
 
   describe "local execution (spec 8.7, real process)" $ do
     it "runs a local command and captures streams and exit code" $ do
-      runner <- mkCommandRunner "/tmp" noCommandLog
+      runner <- mkCommandRunner noPins "/tmp" noCommandLog
       r <- runner (env "local" []) "echo out; echo err 1>&2; exit 3"
       case r of
         Right (code, out, errOut) -> do
@@ -199,7 +203,7 @@ spec = do
           errOut `shouldBe` "err\n"
         Left lf -> expectationFailure (show lf)
     it "uses the base directory as the working directory" $ do
-      runner <- mkCommandRunner "/tmp" noCommandLog
+      runner <- mkCommandRunner noPins "/tmp" noCommandLog
       r <- runner (env "local" []) "pwd"
       case r of
         Right (0, out, _) -> out `shouldSatisfy` (\o -> o == "/tmp\n" || o == "/private/tmp\n")
@@ -212,7 +216,7 @@ spec = do
           -- threads, so a sink must be atomic: a plain read-modify-write
           -- here loses entries.
           let sink cl = atomicModifyIORef' logRef (\ls -> (ls <> [cl], ()))
-          runner <- mkCommandRunner "/tmp" sink
+          runner <- mkCommandRunner noPins "/tmp" sink
           pure (runner, readIORef logRef)
         runWithLog cmd = do
           (runner, readLog) <- mkLoggedRunner
@@ -291,7 +295,7 @@ spec = do
 
   describe "filesystem functions (spec 15.11, real filesystem)" $ do
     let withProject act = withSystemTempDirectory "lask-fs" $ \dir -> do
-          runner <- mkFileRunner dir
+          runner <- mkFileRunner noPins dir
           act dir (\op -> runner (env "local" []) op)
 
     it "writes a file and reads it back" $ withProject $ \_ run -> do

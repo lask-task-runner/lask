@@ -273,8 +273,9 @@ stringifiable value (`String | Null` is not one: resolve it first).
 #docker("node:20-alpine", env = {"CI": "1"}, network = "none", read_only = true)
 ```
 
-A registry reference must carry a tag or a digest — a bare name is a static
-error. `dockerfile` and `context` must be literals inside the module's own tree,
+A registry reference may leave out its tag — a bare name means `latest` — since
+`lask env build` pins the digest it resolves to in `lask.lock.json`, and runs use
+that. `dockerfile` and `context` must be literals inside the module's own tree,
 which is what makes every image enumerable and pinnable.
 
 The container is configured by further keyword arguments: `memory`,

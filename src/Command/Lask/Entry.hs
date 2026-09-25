@@ -47,7 +47,8 @@ import Language.Lask.Obs.CommandLog
 import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
-import Language.Lask.Runtime.Image (buildRecipe, imageExists, recipeTag)
+import Command.Lask.Images (ImageRow (..), Materialized (..), imageRows, loadPins, materialize)
+import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, evalCore, mkRtCtx, topValue)
@@ -168,8 +169,11 @@ cmdRunEval printResult runOpts = do
       cmdLogSink
         | optJsonFormat opts = jsonCommandLog traceId writeErr
         | otherwise = textCommandLog writeErr
-  runner <- mkCommandRunner baseDir cmdLogSink
-  fileRunner <- mkFileRunner baseDir
+  -- Images resolve through the lock, and are never pulled or built
+  -- here (spec 10.3, 10.4).
+  pins <- loadPins core
+  runner <- mkCommandRunner pins baseDir cmdLogSink
+  fileRunner <- mkFileRunner pins baseDir
   let -- `log` (spec 15.12) writes execution log lines to stderr,
       -- through the same serialized writer as the command logs.
       logSink
@@ -403,6 +407,7 @@ cmdEnvs envsOpts = do
     Just fn -> case publicDecl compiled (kebabToSnake fn) of
       Just (key, _) -> pure (Just key)
       Nothing -> usageError opts ("no such function: '" <> fn <> "'")
+  pins <- loadPins core
   traceId <- maybe newTraceId pure (optTraceId opts)
   writeErr <- newLineWriter stderr
   -- Probe processes get execution numbers too (spec 12.3).
@@ -420,7 +425,7 @@ cmdEnvs envsOpts = do
       ( \ref -> do
           status <-
             if envsCheck envsOpts
-              then Just <$> checkEnvRef cmdLogSink nextExec ref
+              then Just <$> checkEnvRef cmdLogSink nextExec (imageCheck pins core) ref
               else pure Nothing
           pure (ref, status)
       )
@@ -456,8 +461,8 @@ cmdEnvs envsOpts = do
 -- effects; docker checks daemon connectivity, remote checks SSH
 -- session establishment. Probe processes relay through the command
 -- execution log (spec 12.3: @envs --check@ is a relay target).
-checkEnvRef :: CommandLogSink -> IO Int -> EnvRef -> IO (Either Text ())
-checkEnvRef sink nextExec ref = case refKind ref of
+checkEnvRef :: CommandLogSink -> IO Int -> (EnvRef -> IO (Either Text ())) -> EnvRef -> IO (Either Text ())
+checkEnvRef sink nextExec presence ref = case refKind ref of
   "local" -> pure (Right ())
   "docker" -> do
     let probeCmd = "docker version"
@@ -466,11 +471,32 @@ checkEnvRef sink nextExec ref = case refKind ref of
     r <-
       try . runLoggedProcess sink ("#" <> refTarget ref) envJson execNo probeCmd $
         proc "docker" ["version", "--format", "{{.Server.Version}}"]
-    pure $ case r of
-      Right (0, _, _) -> Right ()
-      Right (_, _, errOut) -> Left (codeText EIoEnvResolve <> ": " <> T.strip errOut)
-      Left e -> Left (codeText EIoEnvResolve <> ": " <> T.pack (show (e :: IOError)))
+    case r of
+      Right (0, _, _) -> presence ref
+      Right (_, _, errOut) -> pure (Left (codeText EIoEnvResolve <> ": " <> T.strip errOut))
+      Left e -> pure (Left (codeText EIoEnvResolve <> ": " <> T.pack (show (e :: IOError))))
   _ -> pure (Right ())
+
+-- | Whether the image an enumerated environment needs is on the daemon,
+-- as the lock resolves it (spec 11.4). A reference computed at run time
+-- has nothing to check before it is computed.
+imageCheck :: ImagePins -> CoreProgram -> EnvRef -> IO (Either Text ())
+imageCheck pins core ref = case T.stripPrefix "recipe " (refTarget ref) of
+  Just dockerfile -> do
+    tags <-
+      mapM
+        (\(df, ctx, buildArgs) -> recipeTag (cpBaseDir core) df ctx buildArgs)
+        [r | r@(df, _, _) <- collectRecipes core, df == dockerfile]
+    present <- mapM (either (const (pure False)) imageExists) tags
+    pure $
+      if and present
+        then Right ()
+        else Left (codeText EIoImageMissing <> ": image for recipe '" <> dockerfile <> "' is not materialized; run 'lask env build'")
+  Nothing
+    | refLabel ref == "<dynamic>" -> pure (Right ())
+    | otherwise -> either (Left . renderFailure) (const (Right ())) <$> resolveRegistry pins (refTarget ref)
+  where
+    renderFailure lf = maybe "" (\c -> codeText c <> ": ") (lfCode lf) <> failureMessage lf
 
 -- deps (spec 11.5) ------------------------------------------------------------
 
@@ -489,7 +515,8 @@ cmdDepsSync opts frozen = do
       exitWith (ExitFailure 1)
     Right Nothing -> do
       putStrLn "no dependencies declared"
-      exitSuccess
+      prior <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
+      syncImages opts frozen (baseDir </> defaultLockFileName) (maybe emptyLock id prior)
     Right (Just df) -> do
       prior <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
       -- A declared reference that no longer matches the locked one must
@@ -528,15 +555,39 @@ cmdDepsSync opts frozen = do
           -- --frozen (spec 11.5): CI asserts that the committed lock is
           -- what resolution produces, rather than updating it.
           let existing = existing0
+              -- The modules are written before the images are
+              -- resolved: reading the program needs them locked.
+              withImages = newLock {lockImages = maybe Map.empty lockImages existing}
           if frozen && Just (lockModules newLock) /= fmap lockModules existing
             then do
               TIO.hPutStrLn stderr
                 (codeText EModuleLockStale <> ": the lock file is out of date (--frozen)")
               exitWith (ExitFailure 1)
             else do
-              BL.writeFile lockPath (renderLockFile newLock)
-              exitSuccess
+              unless frozen $ BL.writeFile lockPath (renderLockFile withImages)
+              syncImages opts frozen lockPath withImages
         else exitWith (ExitFailure 3)
+
+-- | The images half of @deps sync@ (spec 11.5): with the modules in the
+-- cache, the program can be read, and every image it requires is
+-- materialized and pinned the way its modules are. A program that does
+-- not compile keeps its modules synced and stops here, since its images
+-- cannot be enumerated. Under @--frozen@ nothing is written, and a lock
+-- the images would change is out of date.
+syncImages :: CommonOpts -> Bool -> FilePath -> LockFile -> IO ()
+syncImages opts frozen lockPath lock = do
+  compiled <- compileOrExit opts
+  m <- materialize (compiledCore compiled) (lockImages lock)
+  mapM_ TIO.putStrLn (matReport m)
+  mapM_ (TIO.hPutStrLn stderr) (matFailures m)
+  let updated = lock {lockImages = matImages m}
+  if frozen && updated /= lock
+    then do
+      TIO.hPutStrLn stderr
+        (codeText EModuleLockStale <> ": the images in the lock file are out of date (--frozen)")
+      exitWith (ExitFailure 1)
+    else when (updated /= lock) $ BL.writeFile lockPath (renderLockFile updated)
+  if null (matFailures m) then exitSuccess else exitWith (ExitFailure 3)
 
 -- | Resolve a git reference to the commit it names and compare it with
 -- what the lock already pins (spec 11.5). A reference that resolves to
@@ -703,49 +754,52 @@ diagJson d =
       ]
     location NoSpan = []
 
--- | @lask env build@ (spec 11.7): materialize every recipe image the
--- program requires. With @deps sync@, the only subcommand permitted to
--- start a build.
+-- | @lask env build@ (spec 11.7): materialize every image the program
+-- requires — registry references pulled and pinned, recipes built — and
+-- record in the lock what each resolved to. With @deps sync@, the only
+-- subcommand permitted to pull or to start a build.
 cmdEnvBuild :: CommonOpts -> IO ()
-cmdEnvBuild opts = withRecipes opts $ \baseDir recipes -> do
-  results <- mapM (buildOne baseDir) recipes
-  let failures = [e | Left e <- results]
-      built = [(df, tag) | Right (df, tag) <- results]
-  mapM_ (\(df, tag) -> TIO.putStrLn (df <> " -> " <> tag)) built
-  -- Record what was materialized, so `lask.lock.json` names the images
-  -- the resolved graph requires (spec chapter 5, 10.3).
-  let lockPath = baseDir </> defaultLockFileName
+cmdEnvBuild opts = do
+  compiled <- compileOrExit opts
+  let core = compiledCore compiled
+      lockPath = cpBaseDir core </> defaultLockFileName
   existing <- either (const Nothing) id <$> loadLockFile lockPath
-  BL.writeFile lockPath . renderLockFile $
-    (maybe emptyLock id existing)
-      { lockImages =
-          Map.fromList [("#" <> df, LockImage "recipe" Nothing (Just tag)) | (df, tag) <- built]
-      }
-  unless (null failures) $ do
-    mapM_ (TIO.hPutStrLn stderr) failures
+  m <- materialize core (maybe Map.empty lockImages existing)
+  mapM_ TIO.putStrLn (matReport m)
+  -- A project with no image and no lock gets no lock file for nothing.
+  unless (isNothing existing && Map.null (matImages m)) $
+    BL.writeFile lockPath . renderLockFile $
+      (maybe emptyLock id existing) {lockImages = matImages m}
+  unless (null (matFailures m)) $ do
+    mapM_ (TIO.hPutStrLn stderr) (matFailures m)
     exitWith (ExitFailure 3)
-  where
-    buildOne baseDir (df, ctx, buildArgs) = do
-      tagE <- recipeTag baseDir df ctx buildArgs
-      case tagE of
-        Left e -> pure (Left e)
-        Right tag -> do
-          r <- buildRecipe baseDir df ctx buildArgs tag
-          pure $ case r of
-            Left e -> Left (df <> ": " <> e)
-            Right () -> Right (df, tag)
 
--- | @lask env list@ (spec 11.7): report every recipe image and whether
--- it is present. Performs no network access and no build.
+-- | @lask env list@ (spec 11.7): every image the program references,
+-- what the lock resolves it to, and whether it is on the daemon. No
+-- network access and no build.
 cmdEnvList :: CommonOpts -> IO ()
-cmdEnvList opts = withRecipes opts $ \baseDir recipes ->
-  forM_ recipes $ \(df, ctx, buildArgs) -> do
-    tagE <- recipeTag baseDir df ctx buildArgs
-    case tagE of
-      Left e -> TIO.hPutStrLn stderr e
-      Right tag -> do
-        ok <- imageExists tag
-        TIO.putStrLn (df <> "  recipe  " <> tag <> (if ok then "  present" else "  MISSING"))
+cmdEnvList opts = do
+  compiled <- compileOrExit opts
+  rows <- imageRows (compiledCore compiled)
+  if optJsonFormat opts
+    then
+      TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode $
+        [ A.object
+            [ (AK.fromText "source", A.String (irSource r)),
+              (AK.fromText "kind", A.String (irKind r)),
+              (AK.fromText "resolved", maybe A.Null A.String (irResolved r)),
+              (AK.fromText "present", A.Bool (irPresent r))
+            ]
+        | r <- rows
+        ]
+    else forM_ rows $ \r ->
+      TIO.putStrLn $
+        irSource r
+          <> "  "
+          <> irKind r
+          <> "  "
+          <> maybe "not pinned (lask env build)" id (irResolved r)
+          <> (if irPresent r then "  present" else "  MISSING")
 
 -- | @lask cmd@ (spec 11.8): run a declared command in its declared
 -- environment, as an argument vector rather than through a shell.
@@ -770,7 +824,8 @@ cmdCmd cmdOpts = do
           let sink
                 | optJsonFormat opts = jsonCommandLog traceId writeErr
                 | otherwise = textCommandLog writeErr
-          r <- runDeclaredCommand (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
+          pins <- loadPins core
+          r <- runDeclaredCommand pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
           case r of
             -- Failures before the program starts keep the existing
             -- classification (spec 11.8); the program's own exit code
@@ -785,7 +840,8 @@ cmdCmd cmdOpts = do
 -- unset, say — is listed with the failure rather than ending the list.
 listCommands :: CommonOpts -> CoreProgram -> Map.Map Text Core -> IO ()
 listCommands opts core table = do
-  rows <- mapM row (Map.toList table)
+  pins <- loadPins core
+  rows <- mapM (row pins) (Map.toList table)
   if optJsonFormat opts
     then
       TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode $
@@ -809,12 +865,12 @@ listCommands opts core table = do
               <> (if present then "" else "  MISSING (lask env build)")
           )
   where
-    row (name, envCore) = do
+    row pins (name, envCore) = do
       r <- evalCommandEnv core envCore
       case r >>= resolveEnv of
         Left lf -> pure (name, "?", "<" <> failureMessage lf <> ">", False)
         Right resolved -> do
-          present <- imagePresent (cpBaseDir core) resolved
+          present <- imagePresent pins (cpBaseDir core) resolved
           let (kind, target) = describeResolved resolved
           pure (name, kind, target, present)
 
@@ -825,10 +881,10 @@ listCommands opts core table = do
 
 -- | Whether the image a command needs is on the target daemon. No
 -- network access and no build (spec 11.8, 10.3).
-imagePresent :: FilePath -> ResolvedEnv -> IO Bool
-imagePresent baseDir resolved = case resolved of
+imagePresent :: ImagePins -> FilePath -> ResolvedEnv -> IO Bool
+imagePresent pins baseDir resolved = case resolved of
   ResolvedLocal -> pure True
-  ResolvedDocker image _ -> imageExists image
+  ResolvedDocker ref _ -> either (const False) (const True) <$> resolveRegistry pins ref
   ResolvedRecipe df ctx opts -> do
     tagE <- recipeTag baseDir df ctx (recipeBuildArgs opts)
     either (const (pure False)) imageExists tagE
@@ -850,18 +906,6 @@ evalCommandEnv core c = do
     refuseCommand _ _ = pure (Left (refusal "the environment of a command declaration tried to run a command"))
     refuseFile _ _ = pure (Left (refusal "the environment of a command declaration tried to access a file"))
     refusal = ioFailure EIoEnvResolve
-
--- | Load the target module and hand its recipe environments to the
--- action, exiting on static errors.
-withRecipes :: CommonOpts -> (FilePath -> [(Text, Text, [(Text, Text)])] -> IO ()) -> IO ()
-withRecipes opts action = do
-  compiled <- compileOrExit opts
-  let core = compiledCore compiled
-      baseDir = cpBaseDir core
-      recipes = nubOrd (collectRecipes core)
-  action baseDir recipes
-  where
-    nubOrd = Set.toList . Set.fromList
 
 -- | @lask deps why@ (spec 11.5): the graph paths through which a
 -- dependency is reached. A name may appear in the lock without

@@ -827,6 +827,8 @@ Lock file:
 - `rev` in the lock must be a full 40-hexadecimal-digit commit SHA. `requested` preserves the reference that was resolved.
 - `hash` (a content hash of the fetched source) is required for every entry. The same entry must always yield identical source code.
 - `images` records the container images the resolved graph requires (10.3). Keys are `<dependency path>#<image key>`, where the dependency path is empty for the root project.
+- A registry reference is recorded once for the whole graph, under the empty path, whichever module writes it: one reference names one image wherever it appears, and resolving it when a command runs (10.4) needs nothing but the reference. Its entry holds the reference as written (`ref`) and the digest it is pinned to (`digest`).
+- An entry that no image of the program references any more is dropped when the images are next materialized.
 
 Consistency:
 
@@ -1879,7 +1881,7 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-COMMAND-EFFECT`: the environment of a command declaration can reach an effect (Chapter 5)
 - `E-TYPE-COMMAND-NAME`: a command declaration names a program that could never be recognized in a command string (Chapter 5)
 - `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5)
-- `E-TYPE-ENV-CONSTRUCT`: invalid environment expression (unknown environment kind, neither or both of a registry reference and a recipe, a registry reference without a tag or digest, a non-literal `dockerfile`/`context`, a recipe path escaping the module tree, a dynamic image reference in a dependency domain, or an unknown or duplicate named argument; 10.2, 10.3)
+- `E-TYPE-ENV-CONSTRUCT`: invalid environment expression (unknown environment kind, neither or both of a registry reference and a recipe, an empty registry reference, a non-literal `dockerfile`/`context`, a recipe path escaping the module tree, a dynamic image reference in a dependency domain, or an unknown or duplicate named argument; 10.2, 10.3)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
 - `E-TYPE-CASE-DUPLICATE`: two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4)
@@ -2269,7 +2271,7 @@ The environment kinds that can be used in environment expressions are the 2 kind
 - `docker`: execution inside a container
   - Signature: `docker(image: String, --dockerfile: String = "", --context: String = "", ...)`.
   - The image is given in exactly one of two forms. Giving both, or neither, is a static error (`E-TYPE-ENV-CONSTRUCT`).
-    - **Registry reference**: the positional `image`, a reference to an image in a registry. It must not be an empty string, and it must carry a tag or a digest; a bare repository name (which would mean `:latest`) is a static error (`E-TYPE-ENV-CONSTRUCT`).
+    - **Registry reference**: the positional `image`, a reference to an image in a registry. It must not be an empty string (`E-TYPE-ENV-CONSTRUCT`). It may carry a tag or a digest, or neither: a bare repository name names its `latest`. Whatever a reference names upstream, the lock pins the image it resolved to when it was materialized (10.3), so a reference that moves upstream does not move a run.
     - **Recipe**: the keyword parameters `dockerfile` and `context`, naming a Dockerfile and its build context. `context` defaults to the directory containing the Dockerfile. `build_args` supplies the build arguments the recipe hash covers (10.3); giving it with a registry reference is a static error (`E-TYPE-ENV-CONSTRUCT`), because there is then no build for it to reach.
   - `dockerfile` and `context` must be string literals containing no interpolation, and `build_args` a table of such literals, so that the set of images a module uses is statically determinable: all three decide which image is built. Any other expression is a static error (`E-TYPE-ENV-CONSTRUCT`).
   - `dockerfile` and `context` must resolve inside the tree of the module in which the expression is written. A path escaping that tree is a static error (`E-TYPE-ENV-CONSTRUCT`). A recipe is therefore covered by the module's content hash (Chapter 5) and cannot be altered without invalidating the pin.
@@ -2294,7 +2296,7 @@ The parameters this implementation provides, beyond `image` / `dockerfile` / `co
 - `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written.
 - A `Bool` parameter left `false` is the daemon's own default and is not passed; nothing is inferred from its absence.
-  - The sugar `#image-name` expands to `#docker("image-name")` (7.6) and is therefore the registry-reference form; the tag-or-digest requirement applies to it unchanged. There is no sugar for the recipe form.
+  - The sugar `#image-name` expands to `#docker("image-name")` (7.6) and is therefore the registry-reference form, under the same rules. There is no sugar for the recipe form.
 
 Each profile has at least the following execution attributes.
 
@@ -2312,12 +2314,16 @@ A `docker` environment names its image either as a registry reference or as a re
 Materialization:
 
 - A registry reference is pulled and resolved to a digest. The digest is recorded in the lock and verified on subsequent pulls; a mismatch is `E-IO-IMAGE-DIGEST`.
+- A reference the lock already pins is pulled by its digest, not by what is written: a machine that has never seen the image gets the very image the lock names, whatever the tag names upstream today. A reference the lock does not pin is pulled as written, and the digest it resolves to is recorded; it is then pulled once more by that digest, so that the daemon holds the pinned image under a name of its own, independent of the tag.
+- A reference written with a digest (`alpine@sha256:...`) pins itself: it is recorded with that digest.
+- The pin moves only when the program does. Writing another reference — a new tag — materializes a new image; the same tag pointing somewhere new upstream changes nothing until its entry is removed from the lock.
 - A recipe is built. The resulting image is tagged `lask/<dependency path>/<recipe hash>`, where the recipe hash covers the Dockerfile, the build context, and the declared build arguments. A changed recipe therefore yields a different image and cannot reuse a cached one.
 - Builds are performed with no host mount other than the declared context, without privileged mode, and without host networking.
 
 Timing:
 
 - `check`, `run`, `eval`, `envs`, and `cmd` must not build or pull an image. A build instruction is arbitrary code execution, and making it reachable from an implicit path would reintroduce the load-time execution that Chapter 5 otherwise excludes.
+- `repl` is the exception for pulls. It evaluates what is typed at it, which no one else runs and no lock records, so a reference the lock pins runs as pinned and any other runs as written, the daemon pulling it if it must. It builds nothing.
 - Images are materialized only by `lask deps sync` and `lask env build` (11.5, 11.7).
 - If a required image is absent when a command is to be executed, it is an external I/O error (`E-IO-IMAGE-MISSING`). The diagnostic must name the command that materializes it.
 
@@ -2340,7 +2346,9 @@ Kind determination rules:
 
 - The environment kind name of the environment expression becomes the environment kind of the `Environment` value as is (`#local()` is `local`, `#docker(...)` is `docker`).
 - The sugar `#image-name` has already been expanded to `#docker("image-name")` by static expansion (7.6).
-- A `docker` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3). If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`.
+- A `docker` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3), and runs as that image: a registry reference as its repository at the pinned digest. If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`, and the diagnostic names `lask env build`.
+- A reference written with a digest resolves to itself, entry or not.
+- A reference computed at run time (10.3) has no entry and can have none. It runs as written if the image is on the target daemon, and is otherwise `E-IO-IMAGE-MISSING`, whose diagnostic says to pull it: it is never pulled for the program, and `env build` cannot materialize it.
 - An unknown environment kind is a static error (`E-TYPE-ENV-CONSTRUCT`) and must not reach runtime environment resolution.
 
 Failure rules:
@@ -2748,11 +2756,12 @@ lask deps why <name> [--module <path>]
 Rules (`sync`):
 
 - `sync` resolves every declared dependency — including transitive dependencies — fetches it into the per-project cache (Chapter 5), verifies it against its hash, materializes every image the resolved graph requires (10.3), and writes `lask.lock.json`.
-- `sync` and `env build` (11.7) are the only subcommands permitted to access the network or to start an image build. All other subcommands resolve modules and images exclusively from the cache and the lock file.
+- `sync` and `env build` (11.7) are the only subcommands permitted to access the network or to start an image build. All other subcommands resolve modules and images exclusively from the cache and the lock file, except that `repl` may pull an image (10.3).
 - A reference recorded as `rev` is resolved to a full commit SHA once and pinned thereafter. A subsequent resolution of the same reference to a different SHA is `E-MODULE-REV-MOVED`.
 - Fetched sources are stored content-addressed; re-running `sync` with an unchanged project file performs no network access for already-verified entries.
 - A hash verification failure is reported as `E-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
-- `--frozen` fails instead of writing the lock file when resolution would change it. It is the intended form for continuous integration.
+- `--frozen` fails instead of writing the lock file when resolution would change it — its modules or its images. It is the intended form for continuous integration.
+- The images are materialized after the modules, since reading the program needs its modules; a program that does not compile keeps its modules synced and reports the static error. A project that declares no dependency still has its images materialized.
 
 Rules (`add`):
 
@@ -2934,7 +2943,7 @@ Rules (`build`):
 
 Rules (`list`):
 
-- `list` reports, for every image reference in the resolved graph: the owning module, the source form (registry reference or recipe), the resolved digest or content-addressed local tag, and whether the image is present on the target Docker daemon.
+- `list` reports, for every image reference in the resolved graph: the owning module, the source form (registry reference or recipe), the resolved digest or content-addressed local tag, and whether the image is present on the target Docker daemon. A registry reference the lock does not pin yet is reported as such.
 - `list` performs no network access and no build.
 - Structured output is available with `--format json`.
 

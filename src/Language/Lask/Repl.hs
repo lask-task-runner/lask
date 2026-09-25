@@ -25,7 +25,9 @@ import Language.Lask.Module.Loader (fileReader)
 import Language.Lask.Obs.CommandLog (newLineWriter, textCommandLog)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Obs.ExecLog (textLogSink)
+import Language.Lask.Deps.Lock (LockFile (..), defaultLockFileName, loadLockFile)
 import Language.Lask.Runtime.Environment (mkCommandRunner, mkFileRunner)
+import Language.Lask.Runtime.Image (lockPins, unlockedPins)
 import Language.Lask.Runtime.Eval (mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, failureMessage)
@@ -33,7 +35,7 @@ import Language.Lask.Syntax.Parser (parseExpr)
 import Language.Lask.Utils (Pretty (pretty))
 import System.Console.Haskeline
 import System.Directory (doesFileExist)
-import System.FilePath (normalise, takeDirectory)
+import System.FilePath (normalise, takeDirectory, (</>))
 import System.IO (stderr)
 
 -- | The synthetic binding used to evaluate expression inputs.
@@ -98,8 +100,13 @@ evalSession modulePath source = do
       let core = compiledCore compiled
           baseDir = takeDirectory (normalise modulePath)
       writeErr <- newLineWriter stderr
-      runner <- mkCommandRunner baseDir (textCommandLog writeErr)
-      fileRunner <- mkFileRunner baseDir
+      -- The REPL is not among the subcommands that may not pull (spec
+      -- 10.3): a reference the lock pins runs as pinned, and any other
+      -- as written, the daemon pulling it if it has to.
+      lock <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
+      let pins = unlockedPins (lockPins (maybe mempty lockImages lock))
+      runner <- mkCommandRunner pins baseDir (textCommandLog writeErr)
+      fileRunner <- mkFileRunner pins baseDir
       ctx <- mkRtCtx core "" (RtHooks runner fileRunner (textLogSink writeErr))
       result <- try (topValue ctx (cpEntry core, resultName))
       pure (Right result)

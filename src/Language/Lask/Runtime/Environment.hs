@@ -36,7 +36,7 @@ import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Vector as V
 import Language.Lask.Runtime.Glob (globPrefix, matchGlob)
-import Language.Lask.Runtime.Image (imageExists, recipeTag)
+import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
 import System.Directory
   ( createDirectoryIfMissing,
     doesDirectoryExist,
@@ -280,6 +280,7 @@ dockerExecArgs baseDir image opts interactive prog argv =
 -- relayed as the command execution log (12.3). The start and exit
 -- lines are written either way.
 runDeclaredCommand ::
+  ImagePins ->
   FilePath ->
   CommandLogSink ->
   -- | Force the relay even on a terminal (@--format json@).
@@ -290,7 +291,7 @@ runDeclaredCommand ::
   -- | Its arguments, each preserved as one word.
   [Text] ->
   IO (Either LaskFailure Int)
-runDeclaredCommand baseDir0 sink forceRelay envValue prog argv = do
+runDeclaredCommand pins baseDir0 sink forceRelay envValue prog argv = do
   baseDir <- makeAbsolute baseDir0
   tty <- allTerminals
   let interactive = tty && not forceRelay
@@ -305,19 +306,13 @@ runDeclaredCommand baseDir0 sink forceRelay envValue prog argv = do
       case resolved of
         ResolvedLocal ->
           launch ((proc (T.unpack prog) (map T.unpack argv)) {cwd = Just baseDir})
-        ResolvedDocker image opts ->
-          launch (proc "docker" (dockerExecArgs baseDir image opts interactive prog argv))
-        ResolvedRecipe df ctx opts -> do
-          tagE <- recipeTag baseDir df ctx (recipeBuildArgs opts)
-          case tagE of
-            Left e -> pure (Left (ioFailure EIoImageMissing e))
-            Right tag -> do
-              ok <- imageExists tag
-              if not ok
-                then
-                  pure . Left . ioFailure EIoImageMissing $
-                    "image for recipe '" <> df <> "' is not materialized; run 'lask env build'"
-                else launch (proc "docker" (dockerExecArgs baseDir tag opts interactive prog argv))
+        _ -> do
+          img <- materializedImage pins baseDir resolved
+          case img of
+            Left failure -> pure (Left failure)
+            Right Nothing -> pure (Left (ioFailure EIoEnvResolve "internal: a container environment resolved to the host"))
+            Right (Just (image, opts)) ->
+              launch (proc "docker" (dockerExecArgs baseDir image opts interactive prog argv))
   where
     allTerminals =
       and <$> mapM hIsTerminalDevice [stdin, stdout, stderr]
@@ -388,8 +383,8 @@ runAttachedProcess sink summary envJson0 rendered interactive cp = do
 -- (spec 12.3). Allocated in IO: it carries the execution-number
 -- counter, unique within the top-level execution even across
 -- concurrent commands (12.3).
-mkCommandRunner :: FilePath -> CommandLogSink -> IO CommandRunner
-mkCommandRunner baseDir0 sink = do
+mkCommandRunner :: ImagePins -> FilePath -> CommandLogSink -> IO CommandRunner
+mkCommandRunner pins baseDir0 sink = do
   -- The base directory is mounted into containers (spec 10.5), and a
   -- bind mount requires an absolute path.
   baseDir <- makeAbsolute baseDir0
@@ -408,7 +403,7 @@ mkCommandRunner baseDir0 sink = do
                 Right (code, out, errOut)
                   | Just code == infraExit -> Left (ioFailure infraCode (T.strip errOut))
                   | otherwise -> Right (code, out, errOut)
-        img <- materializedImage baseDir resolved
+        img <- materializedImage pins baseDir resolved
         case img of
           Left failure -> pure (Left failure)
           Right Nothing ->
@@ -418,16 +413,18 @@ mkCommandRunner baseDir0 sink = do
             run EIoEnvResolve (proc "docker" (dockerArgs baseDir image opts cmd)) (Just 125)
 
 -- | The image a resolved environment runs in, or 'Nothing' for the
--- local one. A recipe resolves to its content-addressed tag; building
--- is never implicit (spec 10.3), so an unmaterialized recipe is a
--- failure rather than a silent build.
+-- local one (spec 10.4). A registry reference resolves to the image the
+-- lock pins it to, a recipe to its content-addressed tag. Neither is
+-- pulled or built here (10.3): an image that is not on the daemon is a
+-- failure that names the command that materializes it.
 materializedImage ::
+  ImagePins ->
   FilePath ->
   ResolvedEnv ->
   IO (Either LaskFailure (Maybe (Text, Map Text Value)))
-materializedImage baseDir resolved = case resolved of
+materializedImage pins baseDir resolved = case resolved of
   ResolvedLocal -> pure (Right Nothing)
-  ResolvedDocker image opts -> pure (Right (Just (image, opts)))
+  ResolvedDocker ref opts -> fmap (\image -> Just (image, opts)) <$> resolveRegistry pins ref
   ResolvedRecipe df ctx opts -> do
     tagE <- recipeTag baseDir df ctx (recipeBuildArgs opts)
     case tagE of
@@ -518,14 +515,14 @@ runLoggedProcess sink summary envJson0 execNo cmd cp = do
 -- No command execution log is emitted (15.11): nothing here is a
 -- command execution expression, and a read is not something the user
 -- wrote a command for.
-mkFileRunner :: FilePath -> IO FileRunner
-mkFileRunner baseDir0 = do
+mkFileRunner :: ImagePins -> FilePath -> IO FileRunner
+mkFileRunner pins baseDir0 = do
   baseDir <- makeAbsolute baseDir0
   pure $ \envValue op ->
     case resolveEnv envValue of
       Left failure -> pure (Left failure)
       Right resolved -> do
-        img <- materializedImage baseDir resolved
+        img <- materializedImage pins baseDir resolved
         -- The environment belongs in the diagnostic (spec 15.11): a
         -- path that is absent in a container is often present on the
         -- host, and the message has to say which filesystem was read.

@@ -28,6 +28,7 @@ library
       Command.Lask.Entry
       Command.Lask.Envs
       Command.Lask.Help
+      Command.Lask.Images
       Command.Lask.Options
       Language.Lask
       Language.Lask.Builtins.Doc

@@ -501,8 +501,11 @@ spec = do
       rejects "n = \"x\"\ne = #env(\"a#{n}\")" ETypeEnvConstruct
     it "rejects unknown environment kinds" $
       rejects "e = #remote(\"h\")" ETypeEnvConstruct
-    it "rejects a docker image reference without a tag or digest" $
-      rejects "e = #docker(\"alpine\")" ETypeEnvConstruct
+    -- The lock pins what a bare name resolves to (spec 10.3), in the
+    -- sugar and the constructor alike.
+    it "accepts a registry reference without a tag" $ do
+      accepts "e = #docker(\"alpine\")"
+      accepts "e = #rancher/cowsay"
     it "rejects giving both an image reference and a recipe" $
       rejects "e = #docker(\"alpine:3.20\", dockerfile = \"D\")" ETypeEnvConstruct
     it "rejects a recipe path escaping the module tree" $
