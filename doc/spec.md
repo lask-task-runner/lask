@@ -1696,7 +1696,8 @@ Desugaring rules:
 
 Typing rules:
 
-- `!!` is permitted only where the declared or inferred type is `String`. A `!!` marker on a name whose type is anything other than `String` is a static error (`E-TYPE-SECRET-NON-STRING`). `String | Null` is not `String`: a value that may be absent must be resolved first, because registering an absent value for masking would either mask nothing or, worse, mask the text of the absent case everywhere it appears in a log. Read a credential with `get_env` (15.9), which presupposes the variable is set, rather than with `find_env`.
+- `!!` is permitted only where the declared or inferred type is `String` or `String | Null`. A `!!` marker on a name of any other type is a static error (`E-TYPE-SECRET-NON-STRING`).
+- A secret that may be absent is registered only when it is present. When the value is `null`, nothing is registered: an absent secret has no text to mask, and in particular the text an absent value would print as is never registered, so it is never masked wherever else it appears in a log. This lets a secret parameter default to `null` and say "not given" the way any other optional parameter does, and lets a credential be read with `find_env` (15.9) when the variable may be unset.
 
 Scope of the masking effect:
 
@@ -3946,7 +3947,7 @@ The built-in library provides at least the following functions.
 - `find_env`: `Function<String, String | Null>`
 - `has_env`: `Function<String, Bool>`
 - `get_env_or`: `Function<String, String, String>`
-- `mark_secret`: `Function<String, String>`
+- `mark_secret`: `Function<T, T>`, where `T` is `String` or `String | Null`. The condition is checked at the call site (15.1); any other type is `E-TYPE-MISMATCH`.
 
 Semantics:
 
@@ -3958,7 +3959,7 @@ Semantics:
 - All four read the process environment of the Lask process itself. They do not read the variables of an execution `Environment` (10.6); a command reads those through the shell it runs in.
 - `find_env`, `has_env` and `get_env_or` are ordinary built-in symbols and may be shadowed by a user definition (15.1). Only `get_env` and `mark_secret` are core functions.
 - `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. Note that `!!` requires `String` (6.10), so a credential is read with `get_env`, not with `find_env`.
-- `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged.
+- `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged. When `v` is `null`, nothing is registered (6.10).
 - `mark_secret` is a core function and must not be directly declared or overridden by user code (7.2). It is the desugaring target of `!!` secret bindings (6.10); user code may also call it directly to register a value that isn't declared with `!!`.
 - Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out) and no effect on control flow: it is not a source of failure.
 

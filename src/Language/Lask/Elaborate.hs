@@ -419,7 +419,8 @@ markSecretCall sp inner =
   Core sp (CApp (Core sp (CVar (BuiltinRef "mark_secret"))) [inner] [])
 
 -- | Apply the @!!@ marker to a binding whose type is now known.
--- @!!@ is permitted only on @String@ bindings (spec 6.10).
+-- @!!@ is permitted only on @String@ and @String | Null@ bindings
+-- (spec 6.10).
 applySecrecy :: Span -> Text -> Secrecy -> Type -> Core -> TC Core
 applySecrecy _ _ Public _ core = pure core
 applySecrecy sp name Secret ty core = do
@@ -428,10 +429,15 @@ applySecrecy sp name Secret ty core = do
 
 checkSecretType :: Span -> Text -> Type -> TC ()
 checkSecretType sp name ty =
-  unless (ty == TyString) $
+  unless (secretType ty) $
     abort . diag ETypeSecretNonString sp $
-      "'" <> name <> "!!' marks a secret binding, which must be String, but its type is "
+      "'" <> name <> "!!' marks a secret binding, which must be String or String | Null, but its type is "
         <> renderType ty
+
+-- | The types a secret can have (spec 6.10): text, or text that may be
+-- absent. An absent secret has no text, and registers nothing.
+secretType :: Type -> Bool
+secretType ty = ty == TyString || ty == mkUnion TyString [TyNull]
 
 -- | Rebind each @!!@-marked parameter through @mark_secret@ at the top
 -- of the function body (spec 6.10). Done on the surface body, before
@@ -2345,6 +2351,7 @@ builtinSideCondition name sp subst = case name of
   "contains_array" -> needs comparable "T" "compared"
   "index_of_array" -> needs comparable "T" "compared"
   "unique" -> needs comparable "T" "compared"
+  "mark_secret" -> needs secretType "T" "marked secret"
   _ -> pure ()
   where
     needs ok var verb = case Map.lookup var subst of
@@ -2357,7 +2364,11 @@ builtinSideCondition name sp subst = case name of
         <> renderType t
         <> " cannot be "
         <> verb
-        <> (if verb == "ordered" then " (only Number and String can)" else "")
+        <> ( case verb of
+               "ordered" -> " (only Number and String can)"
+               "marked secret" -> " (only String and String | Null can)"
+               _ -> ""
+           )
 
 -- | First-order matching of a scheme pattern against a concrete type.
 unifyE :: Type -> Type -> Subst -> Either Text Subst

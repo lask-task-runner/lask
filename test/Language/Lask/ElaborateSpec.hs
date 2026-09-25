@@ -858,6 +858,20 @@ spec = do
       hasType "a!!: String = \"s\"" "a" "String"
       hasType "f(x!!: String): String = x" "f" "Function<String, String>"
 
+    it "accepts !! on String | Null bindings of every kind (spec 6.10)" $ do
+      accepts "a!!: String | Null = null"
+      accepts "f(x!!: String | Null) = x"
+      accepts "f(--x!!: String | Null = null) = x"
+      accepts "f() = do { x!!: String | Null = find_env(\"A\")\n  x }"
+      hasType "a!!: String | Null = null" "a" "String | Null"
+
+    it "rejects !! on a union other than String | Null" $ do
+      rejects "n!!: Number | Null = null" ETypeSecretNonString
+      rejects "f(--x!!: String | Number = 1) = x" ETypeSecretNonString
+
+    it "rejects mark_secret of anything but String or String | Null" $
+      rejects "f() = mark_secret(1)" ETypeMismatch
+
     it "rejects !! on a non-String value declaration" $
       rejects "n!!: Number = 1" ETypeSecretNonString
 

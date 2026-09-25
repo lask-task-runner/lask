@@ -341,6 +341,9 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("mark_secret", [VString value]) -> do
     registerSecret value
     pure (VString value)
+  -- An absent secret has no text to mask, so nothing is registered: in
+  -- particular not the text an absent value would print as.
+  ("mark_secret", [VNull]) -> pure VNull
   -- 15.10 path operations. Lexical and POSIX whatever the host is, so
   -- a path computed here still means the same inside a container.
   ("path_join", [VArray parts]) ->
