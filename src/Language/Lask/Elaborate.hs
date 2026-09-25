@@ -19,6 +19,7 @@ module Language.Lask.Elaborate
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Monad (foldM, unless, when)
 import Control.Monad.State.Strict (StateT (runStateT), evalStateT, get, gets, lift, modify, put)
 import Data.Maybe (isNothing)
@@ -29,6 +30,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Sig
 import Language.Lask.Core.AST
 import Language.Lask.Diagnostic
@@ -155,8 +157,39 @@ data St = St
     stHover :: [HoverInfo],
     stCommandUses :: [CommandUse],
     -- | Command tables, built once per module on first use.
-    stCommands :: Map FilePath (Map Text (Span, Core))
+    stCommands :: Map FilePath (Map Text CommandEntry),
+    -- | Modules whose command table is being built. A command string
+    -- elaborated meanwhile was reached from the environment of a
+    -- command declaration, which may run nothing (spec ch. 5).
+    stCommandsBuilding :: Set FilePath
   }
+
+-- | One command word of a module's table (spec ch. 5, 10.9).
+data CommandEntry = CommandEntry
+  { -- | The word where it was declared, which for an imported word is
+    -- in another module.
+    ceSpan :: Span,
+    -- | The environment, elaborated in the module that declared it.
+    -- References in it are resolved, so it can stand at a command
+    -- string in any module.
+    ceEnv :: Core,
+    -- | What selection compares (10.9).
+    ceSource :: EnvSource,
+    -- | The declaring module and the declaration's position in it. A
+    -- declaration reached through two imports is one entry, not two.
+    ceOrigin :: (FilePath, Int)
+  }
+
+-- | The identity selection compares (spec 10.9). The environment of a
+-- command declaration is an ordinary expression, evaluated when a
+-- command runs, so two declarations are known to name one environment
+-- only where the text shows it: the same literal environment
+-- expression, the same top-level binding, or the same declaration.
+data EnvSource
+  = SrcLiteral Text
+  | SrcBinding Key
+  | SrcDecl FilePath Int
+  deriving (Show, Eq)
 
 type TC = StateT St (Either Diagnostic)
 
@@ -175,6 +208,10 @@ renderEnvCore c = case coreF c of
     (_, Just (Core _ (CStrLit df))) -> "#docker(dockerfile = \"" <> df <> "\")"
     _ -> "#docker(...)"
   CEnv kind _ -> "#" <> kind
+  -- An environment named by a binding, or produced by a call, is
+  -- shown as what was written: its value exists only at run time.
+  CVar (TopRef _ n) -> n
+  CApp (Core _ (CVar (TopRef _ n))) _ _ -> n <> "(...)"
   _ -> "#?"
 
 -- | Record a resolved name occurrence for hover (editor tooling).
@@ -217,7 +254,7 @@ mismatch sp expected actual =
 
 elaborateProgram :: Program -> Map FilePath GlobalScope -> Either [Diagnostic] CoreProgram
 elaborateProgram prog scopes =
-  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s, stCommandUses s))) (St Map.empty Map.empty Set.empty [] [] Map.empty) of
+  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s, stCommandUses s))) (St Map.empty Map.empty Set.empty [] [] Map.empty Set.empty) of
     Left d -> Left [d]
     Right (decls, hover, commands, uses) ->
       Right
@@ -228,7 +265,7 @@ elaborateProgram prog scopes =
             cpInternal =
               maybe Set.empty (moduleInternal . lmModule) $
                 Map.lookup (progEntry prog) (progModules prog),
-            cpCommands = Map.map (Map.map snd) commands,
+            cpCommands = Map.map (Map.map ceEnv) commands,
             cpCommandUses = uses,
             cpHover = hover
           }
@@ -1518,32 +1555,82 @@ elabCommand ctx path locals sp stream mEnv parts = do
 
 -- Command declarations and dispatch (spec ch. 5, 10.9) -----------------------
 
--- | The command declarations of one module, in source order.
-moduleCommandDecls :: Ctx -> FilePath -> [([Spanned Text], Expr)]
-moduleCommandDecls ctx path = case Map.lookup path (progModules (ctxProg ctx)) of
-  Nothing -> []
-  Just lm -> [(ns, e) | Decl _ (DCommand ns e) <- moduleDecls (lmModule lm)]
+-- | Where a module's command words come from: its own declarations,
+-- with their positions, and its imports and re-exports of command
+-- words, with the module they name. In source order.
+data CommandSite
+  = SiteDecl Int [Spanned Text] Expr
+  | SiteImport [Spanned Text] FilePath
 
--- | A command declaration's environment, as its core form. The
--- expression must be an environment expression, or an identifier bound
--- at top level to one, and its arguments must be literals: the reason
--- for the restriction is that the environment be enumerable and
--- pinnable without evaluating the module (spec ch. 5).
-staticEnv :: Ctx -> FilePath -> Expr -> TC (Maybe Core)
-staticEnv ctx path e = do
-  mc <- resolve Set.empty path e
-  pure (mc >>= \c -> if literalEnv c then Just c else Nothing)
+moduleCommandSites :: Ctx -> FilePath -> [CommandSite]
+moduleCommandSites ctx path = case Map.lookup path (progModules (ctxProg ctx)) of
+  Nothing -> []
+  Just lm ->
+    [ site
+    | (i, Decl _ f) <- zip [0 ..] (moduleDecls (lmModule lm)),
+      site <- case f of
+        DCommand ns e -> [SiteDecl i ns e]
+        DImportCommands ns p -> [SiteImport ns (importKey lm p)]
+        DExportCommandsFrom ns p -> [SiteImport ns (importKey lm p)]
+        _ -> []
+    ]
   where
-    resolve seen p ex = case exprF ex of
-      EEnv {} -> do
-        (c, _) <- infer ctx p Map.empty ex
-        pure (Just c)
-      EVar n
-        | not (Set.member (p, n) seen),
-          Just (VTopLevel dp dn) <- lookupValueTarget ctx p n,
-          Just (Decl _ (DValue _ _ _ rhs)) <- lookupDeclAst ctx (dp, dn) ->
-            resolve (Set.insert (p, n) seen) dp rhs
-      _ -> pure Nothing
+    importKey lm p = Map.findWithDefault (T.unpack p) p (lmImportKeys lm)
+
+-- | The environment of a command declaration (spec ch. 5): any
+-- expression of type Environment, provided it can reach no effect.
+-- The restriction is what lets @lask cmd@ evaluate it without running
+-- anything, and what keeps it meaning the same wherever it is used.
+declaredEnv :: Ctx -> FilePath -> Expr -> TC Core
+declaredEnv ctx path e = do
+  (c, t) <- infer ctx path Map.empty e
+  unless (conformsTo t TyEnvironment) $
+    abort . withExpectedActual "Environment" (renderType t) $
+      diag ETypeCommandEnv (exprSpan e) "the environment of a command declaration must be an Environment"
+  effect <- reachableEffect ctx c
+  case effect of
+    Nothing -> pure c
+    Just (via, n) ->
+      abort . diag ETypeCommandEffect (exprSpan e) $
+        "the environment of a command declaration must not have effects, but "
+          <> maybe "it" (\v -> "'" <> v <> "'") via
+          <> " can reach '"
+          <> n
+          <> "'; compute the environment from values alone, or give it at the command with $[...]"
+
+-- | The first effectful builtin (15.1, 9.3) an expression can reach,
+-- directly or through the top-level declarations it references, with
+-- the first of those declarations on the way. Reachability
+-- over-approximates as enumeration does (11.4): a reference counts
+-- whether or not it is ever called.
+reachableEffect :: Ctx -> Core -> TC (Maybe (Maybe Text, Text))
+reachableEffect ctx root = go Set.empty [(Nothing, root)]
+  where
+    go _ [] = pure Nothing
+    go seen ((via, c) : rest) = case coreF c of
+      CVar (BuiltinRef n)
+        | n `Set.member` effectfulBuiltinNames -> pure (Just (via, n))
+      CVar (TopRef p n)
+        | not (Set.member (p, n) seen) -> do
+            cd <- demandDecl ctx (p, n)
+            go (Set.insert (p, n) seen) ((via <|> Just n, cdCore cd) : rest)
+      _ -> go seen ([(via, x) | x <- coreChildren c] <> rest)
+
+-- | What selection compares for a declaration's environment (10.9):
+-- a literal environment expression, reached directly or through
+-- bindings, by its value; otherwise the last binding on the way; and
+-- failing that, the declaration itself.
+envSource :: Ctx -> FilePath -> Int -> Core -> TC EnvSource
+envSource ctx path idx = walk Set.empty Nothing
+  where
+    walk seen lastBinding c = case coreF c of
+      CEnv {}
+        | literalEnv c -> pure (SrcLiteral (envKey c))
+      CVar (TopRef p n)
+        | not (Set.member (p, n) seen) -> do
+            cd <- demandDecl ctx (p, n)
+            walk (Set.insert (p, n) seen) (Just (p, n)) (cdCore cd)
+      _ -> pure (maybe (SrcDecl path idx) SrcBinding lastBinding)
 
     literalEnv c = case coreF c of
       CEnv _ args -> all (literal . snd) args
@@ -1553,13 +1640,11 @@ staticEnv ctx path e = do
       CNumber _ -> True
       CBool _ -> True
       CNull -> True
-      -- An option whose value is a list or a table is still known
-      -- before execution as long as its elements are.
       CArray es -> all literal es
       CMapLit kvs -> all (literal . snd) kvs
       _ -> False
 
--- | A canonical rendering of an environment value, for the structural
+-- | A canonical rendering of a literal environment, for the structural
 -- equality selection compares (spec 10.9). Spans are not part of it,
 -- so two declarations naming the same environment agree.
 envKey :: Core -> Text
@@ -1579,63 +1664,90 @@ envKey c = case coreF c of
 
 -- | The module's command words and the environments they name, built
 -- once per module and then cached.
-commandTable :: Ctx -> FilePath -> TC (Map Text (Span, Core))
+commandTable :: Ctx -> FilePath -> TC (Map Text CommandEntry)
 commandTable ctx path = do
   cached <- gets stCommands
   case Map.lookup path cached of
     Just table -> pure table
     Nothing -> do
+      modify (\st -> st {stCommandsBuilding = Set.insert path (stCommandsBuilding st)})
       table <- buildCommandTable ctx path
-      modify (\st -> st {stCommands = Map.insert path table (stCommands st)})
+      modify $ \st ->
+        st
+          { stCommands = Map.insert path table (stCommands st),
+            stCommandsBuilding = Set.delete path (stCommandsBuilding st)
+          }
       pure table
 
-buildCommandTable :: Ctx -> FilePath -> TC (Map Text (Span, Core))
-buildCommandTable ctx path = foldM addDecl Map.empty (moduleCommandDecls ctx path)
+buildCommandTable :: Ctx -> FilePath -> TC (Map Text CommandEntry)
+buildCommandTable ctx path = foldM addSite Map.empty (moduleCommandSites ctx path)
   where
-    addDecl tbl (names, envExpr) = do
-      mEnv <- staticEnv ctx path envExpr
-      case mEnv of
-        Nothing ->
-          abort . diag ETypeCommandDecl (exprSpan envExpr) $
-            "a command declaration needs an environment that is known before execution: "
-              <> "an environment expression with literal arguments, or a top-level binding of one"
-        Just env -> foldM (addName env) tbl names
-    addName env tbl (Spanned nameSp n) = do
+    addSite tbl (SiteDecl i names envExpr) = do
+      env <- declaredEnv ctx path envExpr
+      src <- envSource ctx path i env
+      foldM (addDeclared env src i) tbl names
+    addSite tbl (SiteImport names key) = do
+      target <- commandTable ctx key
+      foldM (addImported target) tbl names
+
+    addDeclared env src i tbl (Spanned sp n) = do
       unless (validCommandName n) $
-        abort . diag ETypeCommandName nameSp $
+        abort . diag ETypeCommandName sp $
           "'" <> n <> "' could never be recognized as a command word in a command string"
-      when (Map.member n tbl) $
-        abort (diag ETypeCommandDuplicate nameSp ("command '" <> n <> "' is declared more than once"))
-      pure (Map.insert n (nameSp, env) tbl)
+      when (Map.member n tbl) $ abort (duplicate sp n)
+      pure (Map.insert n (CommandEntry sp env src (path, i)) tbl)
+
+    -- The resolver has already checked that the target exports the
+    -- word. The same declaration reached along two import paths is
+    -- one entry; anything else under the same word is a duplicate.
+    addImported target tbl (Spanned sp n) = case Map.lookup n target of
+      Nothing -> abort (diag ENameUndefined sp ("module exports no command '" <> n <> "'"))
+      Just entry -> case Map.lookup n tbl of
+        Just prev
+          | ceOrigin prev == ceOrigin entry -> pure tbl
+          | otherwise -> abort (duplicate sp n)
+        Nothing -> pure (Map.insert n entry tbl)
+
+    duplicate sp n =
+      diag ETypeCommandDuplicate sp ("command '" <> n <> "' is declared or imported more than once")
 
 -- | The environment of a command execution expression that carries no
 -- environment specification, with the command words that selected it
 -- (spec 10.9).
 dispatchEnv :: Ctx -> FilePath -> Span -> [TextPart] -> TC (Core, [Spanned Text])
 dispatchEnv ctx path sp parts = do
+  building <- gets stCommandsBuilding
+  when (path `Set.member` building) $
+    abort . diag ETypeCommandEffect sp $
+      "this command is reached from the environment of a command declaration, "
+        <> "which must not run commands"
   tbl <- commandTable ctx path
   case commandWords parts of
     NotAnalysable _ why ->
       abort . diag ETypeCommandNoEnv sp $
         "the command string could not be segmented (" <> why <> "), so no command word could be read; "
           <> "give the environment explicitly with $[...]"
-    Analysed ws -> case [(w, env) | w <- ws, cwCandidate w, Just (_, env) <- [Map.lookup (cwText w) tbl]] of
+    Analysed ws -> case [(w, e) | w <- ws, cwCandidate w, Just e <- [Map.lookup (cwText w) tbl]] of
       [] -> abort (diag ETypeCommandNoEnv sp (noneMessage ws))
-      matched@((w0, env0) : more) -> case [cwText w | (w, env) <- more, envKey env /= envKey env0] of
-        [] -> pure (env0, [Spanned (cwSpan w) (cwText w) | (w, _) <- matched])
-        (n1 : _) ->
+      matched@((w0, e0) : more) -> case [(w, e) | (w, e) <- more, ceSource e /= ceSource e0] of
+        [] -> pure (ceEnv e0, [Spanned (cwSpan w) (cwText w) | (w, _) <- matched])
+        ((w1, e1) : _) ->
           abort . diag ETypeCommandConflict sp $
-            "this command runs both '"
-              <> cwText w0
-              <> "' ("
-              <> envKey env0
-              <> ") and '"
-              <> n1
-              <> "' ("
-              <> maybe "?" (envKey . snd) (Map.lookup n1 tbl)
-              <> "), but a command string is one process in one environment; "
-              <> "split the command or give the environment explicitly with $[...]"
+            "this command runs both "
+              <> describe w0 e0
+              <> " and "
+              <> describe w1 e1
+              <> ", which are not known to be one environment; a command string is one process in one environment, "
+              <> "so split the command, declare both words on one environment, or give the environment explicitly with $[...]"
   where
+    describe w e = "'" <> cwText w <> "' (" <> sourceText e <> ")"
+    sourceText e = case ceSource e of
+      SrcLiteral _ -> renderEnvCore (ceEnv e)
+      SrcBinding (_, n) -> n
+      SrcDecl _ _ -> "declared at " <> renderSpan (ceSpan e)
+    renderSpan (Span (Position f l _) _) = T.pack f <> ":" <> T.pack (show l)
+    renderSpan NoSpan = "its declaration"
+
     noneMessage ws =
       let seen = [cwText w | w <- ws, cwCandidate w]
           quoted' ns = T.intercalate ", " ["'" <> n <> "'" | n <- ns]
@@ -1643,7 +1755,10 @@ dispatchEnv ctx path sp parts = do
             [] -> "no command word could be read"
             [n] -> "'" <> n <> "' is not a declared command"
             ns -> "none of " <> quoted' ns <> " is a declared command"
-       in named <> "; declare it with `command \"<name>\" on <environment>` or give the environment explicitly with $[...]"
+       in named
+            <> "; declare it with `command { \"<name>\" } on <environment>`, "
+            <> "import it with `import command { \"<name>\" } from \"<module>\"`, "
+            <> "or give the environment explicitly with $[...]"
 
 -- Environment expressions (spec 6.7, 10.2) ---------------------------------------------------
 
@@ -1800,7 +1915,7 @@ elabEnv ctx path locals sp h mArgs = do
         (False, True) -> do
           _ <- requireTreePath named "dockerfile"
           _ <- requireTreePath named "context"
-          pure ()
+          requireLiteralTable named "build_args"
 
     hasTagOrDigest ref =
       T.isInfixOf "@" ref || maybe False (T.isInfixOf ":") (lastSegment ref)
@@ -1808,6 +1923,20 @@ elabEnv ctx path locals sp h mArgs = do
         lastSegment r = case reverse (T.splitOn "/" r) of
           (x : _) -> Just x
           [] -> Nothing
+
+    -- Build arguments decide which image a recipe builds, and are part
+    -- of its hash (10.3), so they are read before anything runs: by
+    -- `lask env build`, which has no evaluator to compute them with.
+    requireLiteralTable :: [(Text, Core)] -> Text -> TC ()
+    requireLiteralTable named key = case lookup key named of
+      Nothing -> pure ()
+      Just (Core _ (CMapLit kvs))
+        | all (isLiteralString . snd) kvs -> pure ()
+      Just _ -> envErr ("'" <> key <> "' must be a table of string literals without interpolation")
+      where
+        isLiteralString c = case coreF c of
+          CStrLit _ -> True
+          _ -> False
 
     requireTreePath :: [(Text, Core)] -> Text -> TC (Maybe Text)
     requireTreePath named key = case lookup key named of

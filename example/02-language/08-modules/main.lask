@@ -15,6 +15,11 @@ import { slugify, titleize as to_title, Slug } from "./lib/text.lask"
 // Namespace import: everything the module exports, under one name.
 import * as deploy from "./lib/deploy.lask"
 
+// Command import: `$ echo` in this module now runs where the library
+// declared it. Command words come across only by name, so an import of
+// any other kind never changes where a command runs.
+import command { "echo" } from "./lib/deploy.lask"
+
 // Re-export: `ship_to` becomes a public symbol of *this* module, with
 // the parameter list of the original intact — keyword parameters,
 // defaults and arity all preserved, unlike `f = m.f`, which would make
@@ -45,12 +50,17 @@ known_targets(): Array<String> = deploy.targets
 //
 // A call into another module is an ordinary call. The command inside
 // `rollout` runs in the environment *that* module declared — dispatch
-// is resolved where the command is written, so importing a module never
-// silently brings its command words here.
+// is resolved where the command is written.
 //
 // @example lask run ship --version 1.4.0
 ship(--version: String = "1.4.0"): Array<String> =
   for (t : deploy.targets) { deploy.rollout(t, version = version) }
+
+// Announce a release, with the imported `echo`.
+//
+// @example lask eval announce --version 1.4.0
+announce(--version: String = "1.4.0"): String = $ echo "releasing #{version}"
+  |> trim
 
 // The import graph has to be acyclic, and an import of an external
 // dependency reaches only that dependency's root main.lask — never a

@@ -7,9 +7,9 @@ infra = #docker(dockerfile = "Dockerfile", context = ".")
 // Declare which image provides each program, and the commands below
 // name only what they run. There is no default: a command with no
 // environment is an error, never a silent fall back to the host.
-command "go" on go
-command "npm" on node
-command "terraform" on infra
+command { "go" } on go
+command { "npm" } on node
+command { "terraform" } on infra
 
 test_api(): String = $ go test ./...
 test_web(): String = $ npm test

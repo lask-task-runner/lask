@@ -89,7 +89,7 @@ spec = beforeAll findLask $ do
   describe "cmd (spec 11.8)" $ do
     let proj =
           [ ( "main.lask",
-              "command \"echo\", \"printf\", \"false\" on #local\n\nhello() = $ echo hi\n"
+              "command { \"echo\", \"printf\", \"false\" } on #local\n\nhello() = $ echo hi\n"
             )
           ]
 
@@ -154,7 +154,7 @@ spec = beforeAll findLask $ do
         resOut r `shouldSatisfy` isInfixOf "\"name\":\"echo\""
 
     it "exits 1 on a static error before running anything" $ \lask ->
-      withProject [("main.lask", "x: Number = \"s\"\ncommand \"echo\" on #local\n")] $ \dir -> do
+      withProject [("main.lask", "x: Number = \"s\"\ncommand { \"echo\" } on #local\n")] $ \dir -> do
         r <- runLask lask dir ["cmd", "echo", "hi"] ""
         resExit r `shouldBe` 1
         resOut r `shouldBe` ""

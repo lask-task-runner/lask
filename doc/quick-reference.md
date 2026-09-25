@@ -17,9 +17,9 @@ node = #node:20.20.2-alpine3.23
 
 // Declare which image provides each program. A command naming no
 // environment is a static error, never a silent fall back to the host.
-command "go" on go
-command "npm", "npx" on node
-command "git" on #local
+command { "go" } on go
+command { "npm", "npx" } on node
+command { "git" } on #local
 
 // Run both suites concurrently, then build.
 //
@@ -277,30 +277,41 @@ A registry reference must carry a tag or a digest — a bare name is a static
 error. `dockerfile` and `context` must be literals inside the module's own tree,
 which is what makes every image enumerable and pinnable.
 
-The container is configured by further keyword arguments, each a literal or a
-list or table of literals: `memory`, `memory_swap`, `memory_reservation`,
-`cpus`, `cpu_shares`, `cpuset_cpus`, `cpuset_mems`, `pids_limit`, `shm_size`,
-`blkio_weight`, `ulimits`; `workdir`, `user`, `env`, `platform`, `hostname`,
-`init`; `read_only`, `tmpfs`, `cap_drop`; `network`, `dns`, `dns_search`,
-`add_hosts`, `publish`; `volumes`; and `build_args` on a recipe. Environment
+The container is configured by further keyword arguments: `memory`,
+`memory_swap`, `memory_reservation`, `cpus`, `cpu_shares`, `cpuset_cpus`,
+`cpuset_mems`, `pids_limit`, `shm_size`, `blkio_weight`, `ulimits`; `workdir`,
+`user`, `env`, `platform`, `hostname`, `init`; `read_only`, `tmpfs`,
+`cap_drop`; `network`, `dns`, `dns_search`, `add_hosts`, `publish`; `volumes`;
+and `build_args` on a recipe, which is a literal like `dockerfile`. Environment
 variable names are not `lower_id`, so quote them: `env = {"CI": "1"}`.
 → [10.2](spec.md#102-target-environment-profiles-and-environment-constructor-signatures)
 
 **Dispatch.** A `$` with no `[env]` gets its environment from the command words
-in the string, matched against the module's own `command` declarations.
+in the string, matched against the command words the module declares or imports.
 → [10.9](spec.md#109-command-dispatch)
 
 ```lask
-command "go" on #golang:1.25
-command "node", "npm", "npx" on node
-command "ls" on #local
+command { "go" } on #golang:1.25
+command { "node", "npm", "npx" } on node
+command { "aws" } on tools.aws(profile = "dev")     // any Environment expression
+internal command { "ls" } on #local                 // not importable elsewhere
+
+import command { "python", "pip" } from "tools"     // words another module exports
+export command { "helm" } from "./lib/k8s.lask"     // import, and export again
 ```
 
 Matching is lexical and exact: `cd web && npm ci` selects the Node image,
 `FOO=1 npm ci` still does, and `/usr/bin/npm` does not (never a basename).
 Selection is unanimity — `ls dist && npm publish` is `E-TYPE-COMMAND-CONFLICT`.
-Nothing matched is `E-TYPE-COMMAND-NOENV`, not a fall back to the host. Imports
-bring in no command words.
+Two words agree when their declarations name the same literal environment or the
+same binding; two separate calls do not, so declare such words together.
+Nothing matched is `E-TYPE-COMMAND-NOENV`, not a fall back to the host. A command
+word arrives only by `import command`, never by a named or namespace import.
+
+A declaration's environment is evaluated when a command runs, and may not have
+effects — no command, file, `stdin`, `log` or random value, directly or through
+what it calls (`E-TYPE-COMMAND-EFFECT`); `get_env` is fine.
+→ [5](spec.md#5-declarations-and-modules)
 
 Images are materialized only by `lask deps sync` and `lask env build`; `run` and
 `eval` never pull or build, and a missing image is `E-IO-IMAGE-MISSING` naming
@@ -324,7 +335,7 @@ result. `all(handles)` waits for every one, `race(handles)` for the first.
 → [spec 6.9](spec.md#69-error-handling-expressions), [ch. 14](spec.md#14-error-system)
 
 ```lask
-command "make", "rm" on #local
+command { "make", "rm" } on #local
 
 build(): String = try {
   $ make build

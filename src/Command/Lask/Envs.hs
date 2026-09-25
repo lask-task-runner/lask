@@ -8,7 +8,6 @@ module Command.Lask.Envs
     collectEnvRefs,
     collectEnvRefsFrom,
     collectRecipes,
-    envRefOfCore,
   )
 where
 
@@ -31,26 +30,17 @@ data EnvRef = EnvRef
 -- | All environment constructions in the core program, including the
 -- environments named by command declarations (spec ch. 5). A declared
 -- command must be enumerable and materializable even when no task uses
--- it, because @lask cmd@ can invoke it (spec 11.8).
+-- it, because @lask cmd@ can invoke it (spec 11.8). A declaration's
+-- environment may be any expression, so it is walked whole; the
+-- declarations it calls are among those walked already.
 collectEnvRefs :: CoreProgram -> [EnvRef]
 collectEnvRefs core =
   concatMap declEnvRefs (Map.elems (cpDecls core))
-    <> concatMap fromEnvCore (commandEnvs core)
+    <> concatMap envRefsIn (commandEnvs core)
 
 -- | The environments of every command declaration in the program.
 commandEnvs :: CoreProgram -> [Core]
 commandEnvs core = concatMap Map.elems (Map.elems (cpCommands core))
-
--- | The reference one environment core denotes, for display.
-envRefOfCore :: Core -> EnvRef
-envRefOfCore c = case coreF c of
-  CEnv kind args -> mkRef kind args
-  _ -> EnvRef "?" "?" "?"
-
-fromEnvCore :: Core -> [EnvRef]
-fromEnvCore c = case coreF c of
-  CEnv kind args -> mkRef kind args : concatMap (fromEnvCore . snd) args
-  _ -> []
 
 -- | The environments reachable from one declaration: its own
 -- environment expressions plus those of every top-level declaration
@@ -74,17 +64,14 @@ collectEnvRefsFrom core start = go Set.empty [start]
       [(p, n) | CVar (TopRef p n) <- map coreF (c : descendants c)]
 
 declEnvRefs :: CoreDecl -> [EnvRef]
-declEnvRefs cd = concatMap fromCore (cdCore cd : keywordDefaults (cdCore cd))
-  where
-    -- A lambda's keyword defaults are not part of its body, so they
-    -- have to be walked separately.
-    keywordDefaults c = case coreF c of
-      CLam lam -> map snd (lamKeywords lam)
-      _ -> []
+declEnvRefs cd = envRefsIn (cdCore cd)
 
-    fromCore c = case coreF c of
-      CEnv kind args -> mkRef kind args : concatMap (fromCore . snd) args
-      _ -> concatMap fromCore (children c)
+-- | Every environment expression within a core expression, keyword
+-- defaults of its lambdas included.
+envRefsIn :: Core -> [EnvRef]
+envRefsIn c = case coreF c of
+  CEnv kind args -> mkRef kind args : concatMap (envRefsIn . snd) args
+  _ -> concatMap envRefsIn (children c)
 
 mkRef :: Text -> [(Text, Core)] -> EnvRef
 mkRef kind args = case kind of
@@ -99,28 +86,7 @@ descendants :: Core -> [Core]
 descendants c = let cs = children c in cs <> concatMap descendants cs
 
 children :: Core -> [Core]
-children c = case coreF c of
-  CStr ps -> [e | CPExpr e <- ps]
-  CArray es -> es
-  CMapLit kvs -> map snd kvs
-  CRecordLit kvs -> map snd kvs
-  CLam lam -> map snd (lamKeywords lam) <> [lamBody lam]
-  CApp fn pos kw -> fn : pos <> map snd kw
-  CDot e _ -> [e]
-  CIndex _ a b -> [a, b]
-  CIf a b c' -> [a, b, c']
-  CAnd a b -> [a, b]
-  COr a b -> [a, b]
-  CNot a -> [a]
-  CBin _ a b -> [a, b]
-  CDo stmts -> concatMap stmtExpr stmts
-  CAwait a -> [a]
-  CCast a _ -> [a]
-  CEnv _ args -> map snd args
-  _ -> []
-  where
-    stmtExpr (CSBind _ e) = [e]
-    stmtExpr (CSExpr e) = [e]
+children = coreChildren
 
 -- | Every recipe environment the program constructs, as
 -- (dockerfile, context, build arguments) triples (spec 10.2). The

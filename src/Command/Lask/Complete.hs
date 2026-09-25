@@ -921,11 +921,18 @@ fromModule path src m =
       Span (Position _ l _) _ -> maybe emptyDoc parseDoc (docBlockAbove src comments l)
       NoSpan -> emptyDoc
 
-    -- @command "go", "gofmt" on #golang:1.25@ (spec 5). The
-    -- environment is shown as it was written, never resolved.
+    -- @command { "go", "gofmt" } on #golang:1.25@ (spec 5). The
+    -- environment is shown as it was written, never resolved. An
+    -- imported word is shown with the module it comes from: the index
+    -- reads one file, and resolving the import would mean loading
+    -- another.
     commandWords d = case AST.declF d of
       AST.DCommand names env ->
         [(w, environmentText env) | Spanned _ w <- names]
+      AST.DImportCommands names from ->
+        [(w, Just (importedFrom from)) | Spanned _ w <- names]
+      AST.DExportCommandsFrom names from ->
+        [(w, Just (importedFrom from)) | Spanned _ w <- names]
       _ -> []
 
     environmentText e = case T.strip (spanText src (AST.exprSpan e)) of
@@ -936,6 +943,11 @@ fromModule path src m =
       AST.DValue n _ _ (AST.Expr _ (AST.EObject fields)) ->
         Just (n, [k | (Spanned _ k, _) <- fields])
       _ -> Nothing
+
+-- | How a command word brought in from another module is described:
+-- by the module, since its environment is not in this file.
+importedFrom :: Text -> Text
+importedFrom path = "from \"" <> path <> "\""
 
 -- | The words of an @\@complete@ tag (spec 3.1).
 completeTag :: [Text] -> ParamValues
@@ -1000,17 +1012,30 @@ scanIndex src =
     (concatMap commandsOfLine (T.lines src))
     Map.empty
   where
-    -- @command "go", "gofmt" on #golang:1.25@, read as text.
-    commandsOfLine l = case T.stripPrefix "command " l of
-      Nothing -> []
-      Just rest ->
-        let (names, env) = T.breakOn " on " rest
-         in [ (w, if T.null env then Nothing else Just (T.strip (T.drop 4 env)))
-            | chunk <- T.splitOn "," names,
+    -- @command { "go", "gofmt" } on #golang:1.25@, its @export@ and
+    -- @internal@ forms, and @import command { "go" } from "tools"@,
+    -- read as text. Only a list that closes on its own line is read.
+    commandsOfLine l = case mapMaybe openWords commandHeads of
+      [] -> []
+      rest : _ ->
+        let (inside, after) = T.breakOn "}" rest
+            tailText = T.strip (T.drop 1 after)
+            described
+              | Just env <- T.stripPrefix "on " tailText = Just (T.strip env)
+              | Just path <- T.stripPrefix "from " tailText =
+                  Just (importedFrom (T.dropAround (== '"') (T.strip path)))
+              | otherwise = Nothing
+         in [ (w, described)
+            | not (T.null after),
+              chunk <- T.splitOn "," inside,
               let w = T.dropAround (== '"') (T.strip chunk),
               not (T.null w),
               not ("\"" `T.isInfixOf` w)
             ]
+      where
+        openWords h = T.stripPrefix h l >>= T.stripPrefix "{" . T.stripStart
+
+    commandHeads = ["command", "export command", "internal command", "import command"]
 
     declOfLine l = do
       let (name, rest) = T.span isNameChar l

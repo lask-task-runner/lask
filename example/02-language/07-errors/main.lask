@@ -9,7 +9,7 @@
 
 alpine = #alpine:3.22.2
 
-command "cat", "sh" on alpine
+command { "cat", "sh" } on alpine
 
 // Build, retrying once when the disk was full.
 //

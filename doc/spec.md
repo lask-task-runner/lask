@@ -323,7 +323,7 @@ Reserved words:
 
 - The following words are reserved words and must not be used as identifiers.
 - `import`, `export`, `internal`, `from`, `as`, `type`, `command`, `do`, `async`, `await`, `if`, `else`, `case`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
-- `on` is not a reserved word. It is a contextual keyword recognized only within a command declaration (Chapter 5), where no other token may appear in its position, and remains usable as an identifier elsewhere.
+- `on` is not a reserved word. It is a contextual keyword recognized only within a command declaration (Chapter 5), directly after the closing brace of its command words, where no other token may appear; it remains usable as an identifier elsewhere. Because the position is lexical, an editor can show `on` as a keyword there without elaborating the module.
 - `stdin` is not a reserved word but is a reserved identifier (9.3), and must not be declared or rebound in user code.
 
 String interpolation:
@@ -633,8 +633,8 @@ This chapter defines modules, declarations, public symbols, and imports.
 
 ```ebnf
 Module        = { TopLevelDecl } .
-TopLevelDecl  = ( ImportDecl | ExportDecl | CommandDecl
-                | [ Visibility ] ( TypeAliasDecl | Declaration ) ) decl_end .
+TopLevelDecl  = ( ImportDecl | ExportDecl
+                | [ Visibility ] ( CommandDecl | TypeAliasDecl | Declaration ) ) decl_end .
 decl_end      = newline | ";" .
 Visibility    = "export" | "internal" .
 TypeAliasDecl = "type" upper_id [ TypeParams ] "=" Type .
@@ -642,11 +642,12 @@ Declaration = ValueDecl | FunctionDecl .
 ValueDecl   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 FunctionDecl = lower_id [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" Type ] "=" Expression .
 
-CommandDecl   = "command" command_names "on" Expression .
-command_names = string_lit { "," string_lit } .
+CommandDecl   = "command" CommandWords "on" Expression .
+CommandWords  = "{" string_lit { "," string_lit } "}" .
 
-ImportDecl      = "import" ( NamedImports | NamespaceImport ) "from" ImportPath .
-ExportDecl      = "export" NamedImports "from" ImportPath .
+ImportDecl      = "import" ( NamedImports | NamespaceImport | CommandImports ) "from" ImportPath .
+ExportDecl      = "export" ( NamedImports | CommandImports ) "from" ImportPath .
+CommandImports  = "command" CommandWords .
 NamedImports    = "{" ImportSpecifier { "," ImportSpecifier } "}" .
 ImportSpecifier = ( lower_id | upper_id ) [ "as" ( lower_id | upper_id ) ] .
 NamespaceImport = "*" "as" lower_id .
@@ -665,26 +666,51 @@ Declaration termination rules:
 - Type parameters are not part of a declaration's name. `first<T>` declares the symbol `first`, which is what an import, an export and a duplicate-definition check see.
 - `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
+- `CommandWords` is written in braces in every form — a declaration, an import and a re-export — so that the three read alike. The braces may span lines by the open-bracket continuation rule; the closing `}` and the `on` or `from` that follows it must be placed on the same line. After `export command`, the word after the closing brace decides the form: `on` begins a command declaration, `from` a re-export.
 
 Command declarations:
 
-- A command declaration registers each name as a **command word**: the name of a program that the given environment provides. It binds no name, and is the sole means by which a command execution expression with no environment specification obtains an environment (6.6, 10.9).
-- A name is a `string_lit` containing no interpolation. The set of command words a module declares must be determinable without evaluating it, for the same reason 10.2 requires literal `dockerfile` and `context` arguments.
+- A command declaration registers each name as a **command word**: the name of a program that the given environment provides. It binds no value name. Command words are the sole means by which a command execution expression with no environment specification obtains an environment (6.6, 10.9); a module has the words it declares and those it imports (below).
+- A name is a `string_lit` containing no interpolation. The set of command words a module has must be determinable without evaluating it, for the same reason 10.2 requires literal `dockerfile` and `context` arguments.
 - A name is valid exactly when submitting it alone, as a whole command string, to the dispatch procedure of 10.9 yields exactly one candidate whose text is the name itself. Otherwise it is a static error (`E-TYPE-COMMAND-NAME`). The rule is stated against the procedure so that a name that could never be recognized in a command string is rejected where it is written; `docker-compose`, `7z` and `g++` are valid, while `my prog`, `a=b`, `/usr/bin/x` and `foo*` are not.
-- The environment expression must be statically resolvable: an environment expression (6.7), or an identifier resolving to a top-level value declaration whose right-hand side is, transitively, an environment expression. Its arguments must be literals; a dynamic image reference (10.3) is not permitted here. Any other expression is a static error (`E-TYPE-COMMAND-DECL`).
-- The restriction is what makes every declared environment enumerable (11.4), pinnable (10.3), and resolvable by `cmd` (11.8) without evaluating the module, and it is also what lets dispatch compare two environments for structural equality (10.9).
+- The environment is any expression of type `Environment`; any other type is a static error (`E-TYPE-COMMAND-ENV`). It is elaborated in the module that declares it, and evaluated when a command it selects runs, not when the module is loaded.
+- The environment must not have an effect. It must not reach, directly or through the top-level declarations it references, command execution (15.5, and so no command execution expression), the filesystem (15.11), diagnostic output (15.12), nondeterministic generation (15.13), or the standard input (9.3). Reachability over-approximates as enumeration does (11.4): a reference counts whether or not it is ever called. A violation is a static error (`E-TYPE-COMMAND-EFFECT`). Reading the variables of the process (15.9) is permitted.
+- The restriction is what an environment has to satisfy for everything that reads it without running a task. Every image a declaration can name stays enumerable (11.4), since enumeration walks its expression; an image reference built at run time is reported as dynamic, as it is anywhere else (10.3); `cmd` can evaluate the environment without running anything and without consuming the standard input, which belongs to the program (11.8); and the environment means the same wherever the word is used, including in a module that imports it.
 - `#local` is permitted, and is how a module states which programs it runs on the host.
-- A command declaration takes no visibility marker. It binds no name and does not cross module boundaries, so `export` and `internal` would qualify nothing; writing one is a syntax error.
-- The command words of a module are exactly those its own command declarations register. Importing a module introduces none, so an import never changes the meaning of a command execution expression in the importing module. A module that needs the environment as a value binds it in the ordinary way and registers commands on the binding.
-- Declaring the same name twice within one module is a static error (`E-TYPE-COMMAND-DUPLICATE`). The names occupy no namespace shared with values or types, so they cannot collide with a declaration, an import, or a type alias.
+- A command declaration takes a visibility marker like any other declaration. Omitting it is equivalent to `export`, and makes the words **exported command words** of the module; `internal` keeps them to it. Exporting a word changes nothing in another module until that module imports the word by name.
+- The same word declared twice within one module, or both declared and imported, is a static error (`E-TYPE-COMMAND-DUPLICATE`). The names occupy no namespace shared with values or types, so they cannot collide with a declaration, a value import, or a type alias.
 
 ```lask
 node = #node:20.20.2-alpine3.23
+go(--proxy: String = ""): Environment = #docker("golang:1.25", env = {"GOPROXY": proxy})
 
-command "go" on #golang:1.25
-command "node", "npm", "npx" on node
-command "docker-compose" on #docker("docker/compose:2.29.7")
-command "mv", "rm", "ls" on #local
+command { "go", "gofmt" } on go(proxy = "direct")
+command { "node", "npm", "npx" } on node
+command { "docker-compose" } on #docker("docker/compose:2.29.7")
+internal command { "mv", "rm", "ls" } on #local
+```
+
+Command imports and exports:
+
+- `import command { "node", "python" } from "path"` makes the named words, which must be exported command words of the target module, command words of the current module, with the environment the target declared for them. A word the target does not export is an error before type checking (`E-NAME-UNDEFINED`).
+- The words are named, and no other form brings a command word in. A named import or a namespace import brings in none, and no wildcard form is provided. An import therefore changes the meaning of a command execution expression only by naming the command word, in the import itself.
+- A command word is imported under its own text; there is no renaming. The word is the name of the program the environment runs, and importing it under another name would change what runs rather than what it is called.
+- An imported word is not exported. `export command { "go" } from "path"` imports the words and exports them as well, as `ExportDecl` does for symbols.
+- One declaration reached along two import paths — directly, and through a module that re-exports it — gives one command word, not two. A word imported from two different declarations is `E-TYPE-COMMAND-DUPLICATE`.
+- `ImportPath` follows the resolution rules below, including the restriction of an external import to the entry module of a dependency. A dependency that publishes command words from several files re-exports them from its entry module.
+
+```lask
+// tools/main.lask
+go(--proxy: String = ""): Environment = #docker("golang:1.25", env = {"GOPROXY": proxy})
+aws(--profile: String = ""): Environment = #docker("amazon/aws-cli:2.36.41", env = {"AWS_PROFILE": profile})
+command { "go", "gofmt" } on go()
+export command { "node", "npm" } on #node:20.20.2-alpine3.23
+internal command { "helper" } on #local
+
+// main.lask
+import command { "go", "gofmt", "npm" } from "tools"
+import * as tools from "tools"
+command { "aws" } on tools.aws(profile = "dev")
 ```
 
 Module loading unit:
@@ -1459,7 +1485,7 @@ show_in_fixed_image() =
 
 // golangci-lint is registered as a command word, so the environment is
 // supplied by dispatch (10.9).
-command "golangci-lint" on #golangci/golangci-lint:v1.64.8
+command { "golangci-lint" } on #golangci/golangci-lint:v1.64.8
 
 lint(): String = do {
   r = $* golangci-lint run
@@ -1847,12 +1873,12 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-ARITY`: function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2)
 - `E-TYPE-KEYWORD`: invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5)
 - `E-TYPE-CALL`: invalid call (calling a non-function value, etc.)
-- `E-TYPE-COMMAND-ENV`: invalid command execution environment type
+- `E-TYPE-COMMAND-ENV`: invalid command execution environment type, at a command execution expression or a command declaration (6.6, Chapter 5)
 - `E-TYPE-COMMAND-NOENV`: a command execution expression with no environment specification for which dispatch selects no environment (6.6, 10.9)
-- `E-TYPE-COMMAND-CONFLICT`: one command string selects two structurally different environments (10.9)
-- `E-TYPE-COMMAND-DECL`: the environment of a command declaration is not statically resolvable to an environment expression (Chapter 5)
+- `E-TYPE-COMMAND-CONFLICT`: one command string selects environments not known to be one (10.9)
+- `E-TYPE-COMMAND-EFFECT`: the environment of a command declaration can reach an effect (Chapter 5)
 - `E-TYPE-COMMAND-NAME`: a command declaration names a program that could never be recognized in a command string (Chapter 5)
-- `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module (Chapter 5)
+- `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5)
 - `E-TYPE-ENV-CONSTRUCT`: invalid environment expression (unknown environment kind, neither or both of a registry reference and a recipe, a registry reference without a tag or digest, a non-literal `dockerfile`/`context`, a recipe path escaping the module tree, a dynamic image reference in a dependency domain, or an unknown or duplicate named argument; 10.2, 10.3)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
@@ -2245,10 +2271,10 @@ The environment kinds that can be used in environment expressions are the 2 kind
   - The image is given in exactly one of two forms. Giving both, or neither, is a static error (`E-TYPE-ENV-CONSTRUCT`).
     - **Registry reference**: the positional `image`, a reference to an image in a registry. It must not be an empty string, and it must carry a tag or a digest; a bare repository name (which would mean `:latest`) is a static error (`E-TYPE-ENV-CONSTRUCT`).
     - **Recipe**: the keyword parameters `dockerfile` and `context`, naming a Dockerfile and its build context. `context` defaults to the directory containing the Dockerfile. `build_args` supplies the build arguments the recipe hash covers (10.3); giving it with a registry reference is a static error (`E-TYPE-ENV-CONSTRUCT`), because there is then no build for it to reach.
-  - `dockerfile` and `context` must be string literals containing no interpolation, so that the set of images a module uses is statically determinable. Any other expression is a static error (`E-TYPE-ENV-CONSTRUCT`).
+  - `dockerfile` and `context` must be string literals containing no interpolation, and `build_args` a table of such literals, so that the set of images a module uses is statically determinable: all three decide which image is built. Any other expression is a static error (`E-TYPE-ENV-CONSTRUCT`).
   - `dockerfile` and `context` must resolve inside the tree of the module in which the expression is written. A path escaping that tree is a static error (`E-TYPE-ENV-CONSTRUCT`). A recipe is therefore covered by the module's content hash (Chapter 5) and cannot be altered without invalidating the pin.
   - Implementations may extend the signature with further keyword parameters that configure the container (e.g. `--memory: String = implementation default`, `--cpus: Number = implementation default`). Unknown parameter names must be static errors (7.7).
-  - An extension parameter takes a literal, or a list or table of literals. The restriction is the one command declarations already place on the environments they name (Chapter 5): the configuration of a container must be readable without evaluating the module, or an environment carrying it is neither enumerable (11.4) nor declarable.
+  - An extension parameter takes any expression of its type, like an argument anywhere else. Only `dockerfile`, `context` and `build_args` are held to literals, because they decide which image is built (10.3); the container options decide how that image runs, and are resolved when a command runs.
   - The order keyword arguments are written in is not part of the value. Two environment expressions passing the same arguments under different orders are structurally equal (8.8), so dispatch does not see them as two environments (10.9).
   - An extension parameter must not be able to unsettle what this chapter fixes elsewhere: the process launch method, the mount of the base directory (10.5), the streams (9.1, 11.8), or the rule that images are materialized only by `deps sync` and `env build` (10.3). A parameter that would override one of those is outside what the signature may be extended with.
   - Notation examples: `#docker("alpine:3.12", memory="4g")`, `#docker(dockerfile = "infra/Dockerfile", context = ".")`, sugar `#alpine:3.12`
@@ -2440,15 +2466,16 @@ Candidates:
 
 - A command word is a **candidate** when it contains no quotation character, no `\`, no interpolation hole, and no nested region, and contains no `/`. A path such as `/usr/bin/npm` is therefore never a candidate: matching is on the word as written and never on a basename.
 - No further restriction is placed on its text. Command words are declared as string literals (Chapter 5), so candidacy need not anticipate what a program may be called.
-- A candidate **matches** when its text is identical to a command word declared by the module (Chapter 5). Matching is exact; no normalization is applied. A word matching none is neutral: it neither selects nor prevents selection.
+- A candidate **matches** when its text is identical to a command word of the module — one it declares or one it imports (Chapter 5). Matching is exact; no normalization is applied. A word matching none is neutral: it neither selects nor prevents selection.
 
 Selection:
 
-- Let `E` be the sequence of `Environment` values of the matched candidates, in order of occurrence.
-- If `E` is empty, dispatch selects nothing.
-- If every element of `E` is structurally equal (8.8) to the first, dispatch selects that value.
+- Let `D` be the sequence of the command declarations of the matched candidates, in order of occurrence. For an imported word, its declaration is the one in the module that declared it.
+- If `D` is empty, dispatch selects nothing.
+- Selection compares the **source** of each declaration's environment, which is determined from the text alone: a literal environment expression — all of its arguments literals, or lists and tables of literals — is its own source, whether written in the declaration or reached through top-level bindings, and two such are compared by structural equality (8.8); otherwise the source is the last top-level value binding reached from the declaration, if any; and otherwise it is the declaration itself.
+- If every element of `D` has the same source as the first, dispatch selects the environment of the first. That environment is evaluated when the command runs (Chapter 5); what dispatch decides statically is which declaration supplies it.
 - Otherwise it is a static error (`E-TYPE-COMMAND-CONFLICT`), whose diagnostic must name at least two of the conflicting command words with their environments.
-- Selection is unanimity, not majority: the number of times an environment is named plays no part, and order plays none either. Two distinct declarations denoting the same environment do not conflict, because selection compares environment values and not declarations.
+- Selection is unanimity, not majority: the number of times an environment is named plays no part, and order plays none either. Two declarations naming the same literal environment, or the same binding, do not conflict. Two declarations whose environments are separate calls do, even when the calls would return equal values, because that is known only by running them; listing both words in one declaration, or declaring both on one binding, says what the text could not.
 - `#local` participates on equal terms. A command string invoking both a program registered on `#local` and a program registered on a container therefore conflicts, and the author states the environment explicitly. A command string is one process in one environment, so a string claiming both must say which it means.
 
 Undeterminable command words:
@@ -2456,7 +2483,7 @@ Undeterminable command words:
 - A command word containing an interpolation hole cannot be resolved before execution. It is not a candidate and contributes nothing; if no other candidate matches, the expression is `E-TYPE-COMMAND-NOENV`, and the diagnostic must state that the command word is not statically determinable.
 - Dispatch is never attempted at run time on the interpolated string. An environment not determined statically is neither enumerable (11.4) nor pinnable (10.3).
 
-Examples, given `command "go" on #golang:1.25`, `command "node", "npm", "npx" on #node:20.20.2-alpine3.23`, `command "python", "pip" on #python:3.12.14-alpine3.24`, and `command "ls" on #local`:
+Examples, given `command { "go" } on #golang:1.25`, `command { "node", "npm", "npx" } on #node:20.20.2-alpine3.23`, `command { "python", "pip" } on #python:3.12.14-alpine3.24`, and `command { "ls" } on #local`:
 
 | command string | command words | selection |
 | --- | --- | --- |
@@ -2679,7 +2706,7 @@ lask envs [--module <path>] [<function>] [--check]
 
 Enumeration rules:
 
-- If no function is specified, the environments referenced by the entire module are enumerated (static scan of environment expressions).
+- If no function is specified, the environments referenced by the entire module are enumerated (static scan of environment expressions). The environment of every command word the module has, declared or imported, is part of the scan, and so is every declaration that environment references (Chapter 5).
 - If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. Function-name mapping follows 11.2.
 - Reachability is an over-approximation. A superset of the environments that may be used must be reported; under-reporting is not permitted. Functions passed around as function values are included conservatively.
 - If the `image` of `#docker(image)` is a runtime value, it is enumerated as a `docker` environment with a dynamic image (permitted in the root domain only; 10.3). Recipe forms are statically determined (10.2), so they are always enumerated concretely.
@@ -2930,7 +2957,7 @@ lask cmd --list [--module <path>]
 
 Name resolution rules:
 
-- `<command>` is resolved against the command words the target module declares, by exact text. The `-` to `_` mapping of 11.2 must not be applied: this is a program name and not a function name, so `lask cmd docker-compose up` resolves the command word `docker-compose`.
+- `<command>` is resolved against the command words the target module has — those it declares, `internal` ones included, and those it imports (Chapter 5) — by exact text. The `-` to `_` mapping of 11.2 must not be applied: this is a program name and not a function name, so `lask cmd docker-compose up` resolves the command word `docker-compose`.
 - A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --list`.
 - No option for supplying or overriding the execution environment is provided (11.1, 10.4).
 
@@ -2943,6 +2970,7 @@ Argument boundary rules:
 Execution rules:
 
 - The program is executed with `<command>` as its first argument vector entry and the following tokens as the remaining entries, each preserved as one argument. No shell is created and no shell metacharacter is interpreted. This differs from a command execution expression (6.6), which passes one string to a shell inside the environment, and it is why `cmd` cannot lose or re-split an argument containing whitespace.
+- The command's environment is evaluated before the program starts. It can reach no effect (Chapter 5), so the evaluation runs nothing and reads nothing from the standard input, which is the program's. A failure to evaluate it — a process variable it reads being unset, for instance — is an error before the program starts.
 - Working directory and environment variable rules are those of 10.5 and 10.6.
 - `cmd` must not pull or build an image (10.3). An absent image is `E-IO-IMAGE-MISSING`, and the diagnostic must name the subcommand that materializes it.
 - `cmd` requires a lock file covering every declared dependency, on the same terms as `run` / `eval` / `envs` (Chapter 5).
@@ -2962,7 +2990,8 @@ Exit code rules:
 
 Rules (`--list`):
 
-- `--list` reports every command word the target module declares: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
+- `--list` reports every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
+- An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
 - `--list` performs no network access and no build, on the same terms as `envs` (11.4).
 
 Execution example:
@@ -3357,7 +3386,7 @@ Representative codes:
 - `E-TYPE-COMMAND-ENV`
 - `E-TYPE-COMMAND-NOENV`
 - `E-TYPE-COMMAND-CONFLICT`
-- `E-TYPE-COMMAND-DECL`
+- `E-TYPE-COMMAND-EFFECT`
 - `E-TYPE-COMMAND-NAME`
 - `E-TYPE-COMMAND-DUPLICATE`
 - `E-TYPE-ENV-CONSTRUCT`
@@ -3437,7 +3466,7 @@ Minimum targets:
 - `E-TYPE-COMMAND-ENV`
 - `E-TYPE-COMMAND-NOENV`
 - `E-TYPE-COMMAND-CONFLICT`
-- `E-TYPE-COMMAND-DECL`
+- `E-TYPE-COMMAND-EFFECT`
 - `E-TYPE-COMMAND-NAME`
 - `E-TYPE-COMMAND-DUPLICATE`
 - `E-TYPE-ENV-CONSTRUCT`

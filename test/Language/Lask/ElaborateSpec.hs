@@ -50,8 +50,20 @@ accepts src = do
     Left cs -> expectationFailure ("expected success, got " <> show cs)
 
 rejects :: Text -> ErrorCode -> Expectation
-rejects src code = do
-  r <- elab [("main.lask", src)]
+rejects src code = rejectsFiles [("main.lask", src)] code
+
+-- | As 'accepts' and 'rejects', over several modules; the program is
+-- entered at main.lask.
+acceptsFiles :: [(FilePath, Text)] -> Expectation
+acceptsFiles files = do
+  r <- elab files
+  case r of
+    Right _ -> pure ()
+    Left cs -> expectationFailure ("expected success, got " <> show cs)
+
+rejectsFiles :: [(FilePath, Text)] -> ErrorCode -> Expectation
+rejectsFiles files code = do
+  r <- elab files
   case r of
     Left cs | code `elem` cs -> pure ()
     other -> expectationFailure ("expected " <> show code <> ", got " <> show other)
@@ -495,12 +507,100 @@ spec = do
         "e = #docker(\"alpine:3.20\", cpus = 2, ulimits = [\"nofile=1024:1024\"], env = {\"CI\": \"1\"}, init = true, tmpfs = [\"/tmp\"], publish = [\"8080:80\"], volumes = [\"c:/cache\"])"
     it "accepts build arguments on a recipe" $
       accepts "e = #docker(dockerfile = \"D\", build_args = {\"VERSION\": \"1.2.3\"})"
+    it "rejects build arguments that are not literals, since they decide the image" $ do
+      rejects "v = \"1.2.3\"\ne = #docker(dockerfile = \"D\", build_args = {\"VERSION\": v})" ETypeEnvConstruct
+      rejects "v = \"1.2.3\"\ne = #docker(dockerfile = \"D\", build_args = {\"VERSION\": \"#{v}\"})" ETypeEnvConstruct
     it "rejects build arguments on a registry reference" $
       rejects "e = #docker(\"alpine:3.20\", build_args = {\"V\": \"1\"})" ETypeEnvConstruct
     it "rejects a container option of the wrong type" $
       rejects "e = #docker(\"alpine:3.20\", tmpfs = \"/tmp\")" ETypeMismatch
     it "rejects interpolating non-stringifiable values" $
       rejects "u = {a: 1}\ns = \"v=#{u}\"" ETypeMismatch
+
+  describe "command imports and exports (spec ch. 5)" $ do
+    let tools =
+          ( "tools.lask",
+            "mk(--proxy: String = \"\"): Environment = #docker(\"golang:1.25\", env = {\"GOPROXY\": proxy})\n\
+            \node = #node:24-alpine\n\
+            \command { \"go\", \"gofmt\" } on mk()\n\
+            \export command { \"node\", \"npm\" } on node\n\
+            \internal command { \"helper\" } on #local"
+          )
+
+    it "dispatches an imported command word" $
+      acceptsFiles
+        [ ("main.lask", "import command { \"go\", \"npm\" } from \"./tools.lask\"\nt(): String = $ go test ./...\nw(): String = $ npm ci"),
+          tools
+        ]
+
+    it "keeps the words of one imported declaration on one environment" $
+      acceptsFiles
+        [ ("main.lask", "import command { \"go\", \"gofmt\" } from \"./tools.lask\"\nv(): String = $ gofmt -l . && go vet"),
+          tools
+        ]
+
+    it "brings in only the words it names" $
+      rejectsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./tools.lask\"\nv(): String = $ npm ci"),
+          tools
+        ]
+        ETypeCommandNoEnv
+
+    it "brings in no command word through a namespace import" $
+      rejectsFiles
+        [("main.lask", "import * as t from \"./tools.lask\"\nv(): String = $ go vet"), tools]
+        ETypeCommandNoEnv
+
+    it "rejects a word the module does not export" $ do
+      rejectsFiles
+        [("main.lask", "import command { \"helper\" } from \"./tools.lask\""), tools]
+        ENameUndefined
+      rejectsFiles
+        [("main.lask", "import command { \"cargo\" } from \"./tools.lask\""), tools]
+        ENameUndefined
+
+    it "does not export a word the module itself imported" $
+      rejectsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./mid.lask\""),
+          ("mid.lask", "import command { \"go\" } from \"./tools.lask\""),
+          tools
+        ]
+        ENameUndefined
+
+    it "passes a word on through a re-export" $
+      acceptsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./mid.lask\"\nv(): String = $ go vet"),
+          ("mid.lask", "export command { \"go\" } from \"./tools.lask\""),
+          tools
+        ]
+
+    it "treats one declaration reached along two paths as one" $
+      acceptsFiles
+        [ ( "main.lask",
+            "import command { \"go\" } from \"./tools.lask\"\nimport command { \"go\" } from \"./mid.lask\"\nv(): String = $ go vet"
+          ),
+          ("mid.lask", "export command { \"go\" } from \"./tools.lask\""),
+          tools
+        ]
+
+    it "rejects a word both declared and imported" $
+      rejectsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./tools.lask\"\ncommand { \"go\" } on #golang:1.25"),
+          tools
+        ]
+        ETypeCommandDuplicate
+
+    it "names an environment through a namespace member" $
+      acceptsFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\ncommand { \"node\" } on t.node\nv(): String = $ node -v"),
+          tools
+        ]
+
+    it "names an environment through a call into another module" $
+      acceptsFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\ncommand { \"aws\" } on t.mk(proxy = \"direct\")\nv(): String = $ aws --version"),
+          tools
+        ]
 
   describe "async and errors (spec 6.3, 6.9)" $ do
     it "types async as AsyncHandle" $
@@ -522,43 +622,43 @@ spec = do
 
   describe "command declarations and dispatch (spec ch. 5, 10.9)" $ do
     it "takes the environment from the command word" $
-      hasType "command \"go\" on #golang:1.25\nv() = $ go test ./..." "v" "Function<String>"
+      hasType "command { \"go\" } on #golang:1.25\nv() = $ go test ./..." "v" "Function<String>"
 
     it "accepts a top-level binding of an environment expression" $
-      hasType "e = #golang:1.25\ncommand \"go\" on e\nv() = $ go test ./..." "v" "Function<String>"
+      hasType "e = #golang:1.25\ncommand { \"go\" } on e\nv() = $ go test ./..." "v" "Function<String>"
 
     it "lets neutral words stand alongside a declared command" $
-      hasType "command \"npm\" on #node:20.20.2-alpine3.23\nv() = $ cd web && npm ci" "v" "Function<String>"
+      hasType "command { \"npm\" } on #node:20.20.2-alpine3.23\nv() = $ cd web && npm ci" "v" "Function<String>"
 
     it "skips assignment words before the command word" $
-      hasType "command \"npm\" on #node:20.20.2-alpine3.23\nv() = $ FOO=1 npm ci" "v" "Function<String>"
+      hasType "command { \"npm\" } on #node:20.20.2-alpine3.23\nv() = $ FOO=1 npm ci" "v" "Function<String>"
 
     it "rejects a command string that names no declared command" $
-      rejects "command \"go\" on #golang:1.25\nv() = $ npm ci" ETypeCommandNoEnv
+      rejects "command { \"go\" } on #golang:1.25\nv() = $ npm ci" ETypeCommandNoEnv
 
     it "rejects a bare command with no declarations at all" $
       rejects "v() = $ echo hi" ETypeCommandNoEnv
 
     it "rejects a command word that cannot be determined statically" $
-      rejects "command \"go\" on #golang:1.25\nbin = \"go\"\nv() = $ #{bin} test" ETypeCommandNoEnv
+      rejects "command { \"go\" } on #golang:1.25\nbin = \"go\"\nv() = $ #{bin} test" ETypeCommandNoEnv
 
     it "rejects a command string that could not be segmented" $
-      rejects "command \"go\" on #golang:1.25\nv() = $ go test \"unterminated" ETypeCommandNoEnv
+      rejects "command { \"go\" } on #golang:1.25\nv() = $ go test \"unterminated" ETypeCommandNoEnv
 
     it "rejects two different environments in one command string" $
       rejects
-        "command \"go\" on #golang:1.25\ncommand \"npm\" on #node:20.20.2-alpine3.23\nv() = $ go build && npm ci"
+        "command { \"go\" } on #golang:1.25\ncommand { \"npm\" } on #node:20.20.2-alpine3.23\nv() = $ go build && npm ci"
         ETypeCommandConflict
 
     it "treats #local as an environment like any other" $ do
-      hasType "command \"ls\" on #local\nv() = $ ls dist" "v" "Function<String>"
+      hasType "command { \"ls\" } on #local\nv() = $ ls dist" "v" "Function<String>"
       rejects
-        "command \"ls\" on #local\ncommand \"go\" on #golang:1.25\nv() = $ ls dist && go test"
+        "command { \"ls\" } on #local\ncommand { \"go\" } on #golang:1.25\nv() = $ ls dist && go test"
         ETypeCommandConflict
 
     it "does not conflict when two declarations name the same environment" $
       hasType
-        "command \"go\" on #golang:1.25\ncommand \"gofmt\" on #golang:1.25\nv() = $ gofmt -l . && go vet"
+        "command { \"go\" } on #golang:1.25\ncommand { \"gofmt\" } on #golang:1.25\nv() = $ gofmt -l . && go vet"
         "v"
         "Function<String>"
 
@@ -566,7 +666,7 @@ spec = do
     -- options were written in is not part of what is compared.
     it "does not conflict when the same options are written in a different order" $
       hasType
-        "command \"go\" on #docker(\"golang:1.25\", cpus = 2, memory = \"4g\")\ncommand \"gofmt\" on #docker(\"golang:1.25\", memory = \"4g\", cpus = 2)\nv() = $ gofmt -l . && go vet"
+        "command { \"go\" } on #docker(\"golang:1.25\", cpus = 2, memory = \"4g\")\ncommand { \"gofmt\" } on #docker(\"golang:1.25\", memory = \"4g\", cpus = 2)\nv() = $ gofmt -l . && go vet"
         "v"
         "Function<String>"
 
@@ -574,29 +674,86 @@ spec = do
     -- environment carrying one stays declarable (ch. 5).
     it "accepts an environment whose options are literal lists and tables" $
       hasType
-        "command \"go\" on #docker(\"golang:1.25\", env = {\"CI\": \"1\"}, tmpfs = [\"/tmp\"])\nv() = $ go vet"
+        "command { \"go\" } on #docker(\"golang:1.25\", env = {\"CI\": \"1\"}, tmpfs = [\"/tmp\"])\nv() = $ go vet"
         "v"
         "Function<String>"
 
-    it "rejects an option that is not known before execution" $
+    -- The environment of a declaration is an ordinary expression
+    -- (ch. 5): what it may not do is have an effect.
+    it "accepts an environment computed from other values" $
+      hasType
+        "d = \"/tmp\"\ncommand { \"go\" } on #docker(\"golang:1.25\", tmpfs = [d])\nv() = $ go vet"
+        "v"
+        "Function<String>"
+
+    it "accepts an environment produced by a call" $
+      hasType
+        "mk(--proxy: String = \"\"): Environment = #docker(\"golang:1.25\", env = {\"GOPROXY\": proxy})\ncommand { \"go\" } on mk(proxy = \"direct\")\nv() = $ go vet"
+        "v"
+        "Function<String>"
+
+    it "accepts an environment that reads a variable of the process" $
+      hasType
+        "command { \"go\" } on #docker(\"golang:#{get_env(\"GO_TAG\")}\")\nv() = $ go vet"
+        "v"
+        "Function<String>"
+
+    it "rejects an environment that can run a command" $
       rejects
-        "d = \"/tmp\"\ncommand \"go\" on #docker(\"golang:1.25\", tmpfs = [d])\nv() = $ go vet"
-        ETypeCommandDecl
+        "mk(): Environment = do {\n  tag = $[#local] cat tag\n  return #docker(\"golang:#{tag}\")\n}\ncommand { \"go\" } on mk()\nv() = $ go vet"
+        ETypeCommandEffect
+
+    it "rejects an environment that reads the standard input" $
+      rejects "command { \"go\" } on #docker(\"golang:#{stdin}\")\nv() = $ go vet" ETypeCommandEffect
+
+    it "rejects an environment that touches the filesystem" $
+      rejects
+        "command { \"go\" } on #docker(\"golang:#{read_file(\"tag\", #local)}\")\nv() = $ go vet"
+        ETypeCommandEffect
+
+    -- The command string inside mk() is dispatched against the table
+    -- being built: an effect, and one that must not loop.
+    it "rejects an environment that dispatches a command of its own module" $
+      rejects
+        "command { \"ls\" } on mk()\nmk(): Environment = do {\n  x = $ ls\n  return #alpine:3.22.2\n}"
+        ETypeCommandEffect
+
+    it "rejects an environment that is not an Environment" $
+      rejects "command { \"go\" } on \"golang:1.25\"\nv() = $ go vet" ETypeCommandEnv
 
     it "leaves an explicit environment specification alone" $
       hasType
-        "command \"npm\" on #node:20.20.2-alpine3.23\nv() = $[#local] npm ci"
+        "command { \"npm\" } on #node:20.20.2-alpine3.23\nv() = $[#local] npm ci"
         "v"
         "Function<String>"
 
-    it "rejects an environment that is not known before execution" $
-      rejects "img = \"golang:1.25\"\ncommand \"go\" on #docker(img)\nv() = $ go test" ETypeCommandDecl
+    -- Selection compares where environments come from (10.9): two
+    -- calls are two values, known equal only at run time.
+    it "agrees on two declarations naming one binding" $
+      hasType
+        "box = #docker(\"golang:1.25\", env = {\"HOME\": get_env(\"HOME\")})\ncommand { \"go\" } on box\ncommand { \"gofmt\" } on box\nv() = $ gofmt -l . && go vet"
+        "v"
+        "Function<String>"
+
+    it "agrees on the words of one declaration whose environment is a call" $
+      hasType
+        "mk(): Environment = #golang:1.25\ncommand { \"go\", \"gofmt\" } on mk()\nv() = $ gofmt -l . && go vet"
+        "v"
+        "Function<String>"
+
+    it "does not take two calls for one environment" $
+      rejects
+        "mk(): Environment = #golang:1.25\ncommand { \"go\" } on mk()\ncommand { \"gofmt\" } on mk()\nv() = $ gofmt -l . && go vet"
+        ETypeCommandConflict
+
+    it "rejects the command words without braces, saying how to write them" $
+      rejects "command \"go\" on #golang:1.25\nv() = $ go vet" ESyntaxUnexpectedToken
 
     it "rejects a name that could never be a command word" $
-      rejects "command \"my prog\" on #local\nv() = $ ls" ETypeCommandName
+      rejects "command { \"my prog\" } on #local\nv() = $ ls" ETypeCommandName
 
     it "rejects a duplicate command word" $
-      rejects "command \"go\", \"go\" on #golang:1.25\nv() = $ go test" ETypeCommandDuplicate
+      rejects "command { \"go\", \"go\" } on #golang:1.25\nv() = $ go test" ETypeCommandDuplicate
 
   describe "misc" $ do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"

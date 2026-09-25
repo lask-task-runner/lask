@@ -89,7 +89,13 @@ data Publics = Publics
     -- | Public names that come from a re-export (spec 5), mapped to
     -- the module and name they were re-exported from. A consumer must
     -- bind them to that origin, not to the re-exporting module.
-    pubOrigins :: Map Text (FilePath, Text)
+    pubOrigins :: Map Text (FilePath, Text),
+    -- | The command words the module exports (spec 5): those its own
+    -- command declarations register, less the @internal@ ones, and
+    -- those it re-exports. A command word keeps its text through a
+    -- re-export, so no origin needs recording here: elaboration takes
+    -- each word's declaration from the module it names.
+    pubCommands :: Set Text
   }
 
 modulePublics :: LoadedModule -> Publics
@@ -97,6 +103,11 @@ modulePublics lm =
   Publics
     { pubValues = Set.difference (Set.fromList (mapMaybe valueName decls) <> reValues) internal,
       pubTypes = Set.difference (Set.fromList (mapMaybe typeName decls) <> reTypes) internal,
+      pubCommands =
+        Set.difference
+          (Set.fromList [n | DCommand ns _ <- decls, Spanned _ n <- ns])
+          (moduleInternalCommands (lmModule lm))
+          <> Set.fromList [n | DExportCommandsFrom ns _ <- decls, Spanned _ n <- ns],
       pubOrigins =
         Map.fromList
           [ (maybe n id a, (reKey path, n))
@@ -159,8 +170,11 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
         let key = resolveKey path
             (gs', newDs) = foldl (addImport key) (gs, []) specs
          in go gs' (newDs <> ds) rest
-      -- Registers command words, binds no name (spec ch. 5).
+      -- Command words bind no value name (spec ch. 5): they occupy a
+      -- namespace of their own, built in "Language.Lask.Elaborate".
       DCommand {} -> go gs ds rest
+      DImportCommands {} -> go gs ds rest
+      DExportCommandsFrom {} -> go gs ds rest
       DImportNamespace alias path ->
         let key = resolveKey path
             dups =
@@ -266,9 +280,23 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       -- static resolvability in "Language.Lask.Elaborate" (spec ch. 5);
       -- here only its name references are resolved.
       DCommand _ e -> checkExpr [] e
+      DImportCommands ns path -> checkCommandImport ns path
+      DExportCommandsFrom ns path -> checkCommandImport ns path
       DImportNamed {} -> []
       DExportFrom {} -> []
       DImportNamespace {} -> []
+
+    -- A command word can be imported only if the target exports it.
+    -- A missing module is reported by the loader, not here.
+    checkCommandImport ns path =
+      case Map.lookup (Map.findWithDefault (T.unpack path) path (lmImportKeys lm)) publics of
+        Nothing -> []
+        Just pub ->
+          [ mkDiagnostic ENameUndefined StageStatic sp $
+              "module exports no command '" <> n <> "'"
+          | Spanned sp n <- ns,
+            not (n `Set.member` pubCommands pub)
+          ]
 
     paramNames ps = Set.fromList [paramName p | p <- ps]
     paramName (Param _ (PPositional n _ _)) = n

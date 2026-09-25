@@ -20,6 +20,7 @@ module Language.Lask.Runtime.Environment
     runLoggedProcess,
     runDeclaredCommand,
     envLogInfo,
+    recipeBuildArgs,
     dockerArgs,
     dockerShellArgs,
   )

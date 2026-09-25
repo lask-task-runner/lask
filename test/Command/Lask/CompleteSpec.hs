@@ -67,8 +67,9 @@ buildModule =
       "// A secret default must never be read, let alone shown.",
       "login(--password!!: String = \"hunter2\") = $ echo #{password}",
       "",
-      "command \"go\", \"docker-compose\" on #golang:1.25",
-      "command \"mv\" on #local"
+      "command { \"go\", \"docker-compose\" } on #golang:1.25",
+      "command { \"mv\" } on #local",
+      "import command { \"npm\" } from \"./tools.lask\""
     ]
 
 project :: [(FilePath, Text)]
@@ -206,7 +207,8 @@ spec = do
       describesAs ["cmd", ""]
         `shouldReturn` [ ("go", Just "#golang:1.25"),
                          ("docker-compose", Just "#golang:1.25"),
-                         ("mv", Just "#local")
+                         ("mv", Just "#local"),
+                         ("npm", Just "from \"./tools.lask\"")
                        ]
 
     it "matches a command word by exact text, without the kebab mapping" $ do
@@ -254,6 +256,19 @@ spec = do
       ask ["run", ""] `shouldReturn` ["deploy", "teardown"]
       vs <- ask ["run", "deploy", "--"]
       vs `shouldOffer` ["--version", "--dry_run"]
+
+    it "still finds command words, declared and imported, in a module that does not parse" $ do
+      let broken =
+            [ ( "main.lask",
+                "command { \"go\", \"gofmt\" } on #golang:1.25\nimport command { \"npm\" } from \"tools\"\nf() = do {\n"
+              )
+            ]
+      cs <- map (\c -> (candValue c, candDesc c)) . resCandidates <$> complete (memResolver broken) ["cmd", ""]
+      cs
+        `shouldBe` [ ("go", Just "#golang:1.25"),
+                     ("gofmt", Just "#golang:1.25"),
+                     ("npm", Just "from \"tools\"")
+                   ]
 
     it "falls back to the static grammar when the module is missing" $ do
       let ask ws = complete (memResolver []) ws

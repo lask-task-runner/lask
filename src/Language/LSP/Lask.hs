@@ -273,12 +273,30 @@ lexSemanticTokensWith commandWordSpans fileName src =
   case lexTokensWithComments fileName src of
     Left e -> Left $ T.pack $ pretty e
     Right (ts, comments) ->
-      let atoms =
-            concatMap flattenToken ts
+      let onSpans = commandOnSpans ts
+          keywordOn (sp, typ)
+            | sp `elem` onSpans = (sp, SemanticTokenTypes_Keyword)
+            | otherwise = (sp, typ)
+          atoms =
+            map keywordOn (concatMap flattenToken ts)
               <> [(c, SemanticTokenTypes_Comment) | c <- comments]
           sorted = sortOn (spanStart . fst) atoms
        in Right (join (map toAbsolutes sorted))
   where
+    -- @on@ is a keyword only where a command declaration puts it
+    -- (spec ch. 5), and an identifier everywhere else. The braces
+    -- around the command words make that position lexical: @command@,
+    -- @{@, the words, @}@, and then @on@.
+    commandOnSpans = go
+      where
+        go (Tok.Spanned _ (Tok.TKw Tok.KCommand) : Tok.Spanned _ Tok.TLBrace : rest) =
+          case dropWhile (not . closesWords) rest of
+            _ : Tok.Spanned sp (Tok.TLowerId "on") : rest' -> sp : go rest'
+            rest' -> go rest'
+        go (_ : rest) = go rest
+        go [] = []
+        closesWords (Tok.Spanned _ t) = t == Tok.TRBrace
+
     spanStart (S.Span s _) = Just s
     spanStart S.NoSpan = Nothing
 
