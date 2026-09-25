@@ -172,29 +172,6 @@ spec = do
       pInternal "internal a = 1\nb = 2\ninternal c() = 3" `shouldBe` Right ["a", "c"]
       pInternal "export a = 1" `shouldBe` Right []
 
-    it "parses a command declaration with its words in braces (spec 5)" $
-      pModule "command { \"go\", \"gofmt\" } on e"
-        `shouldBe` Right [DCommand [sp "go", sp "gofmt"] (var "e")]
-
-    it "parses an import of command words (spec 5)" $
-      pModule "import command { \"node\", \"python\" } from \"tools\""
-        `shouldBe` Right [DImportCommands [sp "node", sp "python"] "tools"]
-
-    it "parses the export forms of a command declaration (spec 5)" $ do
-      pModule "export command { \"go\" } on e"
-        `shouldBe` Right [DCommand [sp "go"] (var "e")]
-      pModule "export command { \"go\" } from \"./lib.lask\""
-        `shouldBe` Right [DExportCommandsFrom [sp "go"] "./lib.lask"]
-
-    it "keeps internal command words apart from internal names" $ do
-      let m = parseModule "t.lask" "internal command { \"helper\" } on e\ninternal x = 1"
-      fmap moduleInternalCommands m `shouldBe` Right (Set.fromList ["helper"])
-      fmap moduleInternal m `shouldBe` Right (Set.fromList ["x"])
-
-    it "requires the braces around command words" $ do
-      pModule "command \"go\" on e" `shouldSatisfy` isLeft
-      pModule "import command \"go\" from \"tools\"" `shouldSatisfy` isLeft
-
     it "parses a re-export declaration (spec 5)" $
       pModule "export { a, b as c } from \"./lib.lask\""
         `shouldBe` Right

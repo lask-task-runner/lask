@@ -340,24 +340,6 @@ spec = do
     it "registers an explicit mark_secret call" $
       masksAfterEval "f() = mark_secret(\"s3cr3t-value\")" "f"
 
-    it "registers a String | Null secret that is given a value" $
-      masksAfterEval
-        "g(--x!!: String | Null = null): String | Null = x\nf() = g(x = \"s3cr3t-value\")"
-        "f"
-
-    -- An absent secret has no text: in particular the text null prints
-    -- as must not become a masked word everywhere in a log.
-    it "registers nothing for a secret that is null" $ do
-      resetSecretRegistryForTests
-      r <- run "g(--x!!: String | Null = null): String | Null = x\nf() = g()" "f"
-      masked <- maskSecrets "value=null"
-      resetSecretRegistryForTests
-      r `shouldSatisfy` isRight
-      masked `shouldBe` "value=null"
-
-    it "hands a null secret back as null" $
-      evalsTo "f(): String | Null = mark_secret(find_env(\"LASK_TEST_SURELY_UNSET\"))" "f" "null"
-
     it "does not register values merely because get_env returned them" $ do
       -- Masking is opt-in (spec 12.8): a region or log level read from
       -- the environment must stay readable in logs.

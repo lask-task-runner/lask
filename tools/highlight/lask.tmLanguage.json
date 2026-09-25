@@ -88,7 +88,7 @@
         { "name": "keyword.control.async.lask", "match": "\\b(async|await)\\b" },
         { "name": "keyword.control.import.lask", "match": "\\b(import|from|as|type)\\b" },
         { "name": "keyword.control.command.lask", "match": "\\b(command)\\b" },
-        { "name": "keyword.control.command.lask", "match": "(?<=\\})\\s+\\bon\\b" },
+        { "name": "keyword.control.command.lask", "match": "(?<=\")\\s+\\bon\\b" },
         { "name": "storage.modifier.lask", "match": "\\b(export|internal)\\b" }
       ]
     },

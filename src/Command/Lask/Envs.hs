@@ -8,11 +8,10 @@ module Command.Lask.Envs
     collectEnvRefs,
     collectEnvRefsFrom,
     collectRecipes,
-    collectRegistryRefs,
+    envRefOfCore,
   )
 where
 
-import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -31,17 +30,26 @@ data EnvRef = EnvRef
 -- | All environment constructions in the core program, including the
 -- environments named by command declarations (spec ch. 5). A declared
 -- command must be enumerable and materializable even when no task uses
--- it, because @lask cmd@ can invoke it (spec 11.8). A declaration's
--- environment may be any expression, so it is walked whole; the
--- declarations it calls are among those walked already.
+-- it, because @lask cmd@ can invoke it (spec 11.8).
 collectEnvRefs :: CoreProgram -> [EnvRef]
 collectEnvRefs core =
   concatMap declEnvRefs (Map.elems (cpDecls core))
-    <> concatMap envRefsIn (commandEnvs core)
+    <> concatMap fromEnvCore (commandEnvs core)
 
 -- | The environments of every command declaration in the program.
 commandEnvs :: CoreProgram -> [Core]
 commandEnvs core = concatMap Map.elems (Map.elems (cpCommands core))
+
+-- | The reference one environment core denotes, for display.
+envRefOfCore :: Core -> EnvRef
+envRefOfCore c = case coreF c of
+  CEnv kind args -> mkRef kind args
+  _ -> EnvRef "?" "?" "?"
+
+fromEnvCore :: Core -> [EnvRef]
+fromEnvCore c = case coreF c of
+  CEnv kind args -> mkRef kind args : concatMap (fromEnvCore . snd) args
+  _ -> []
 
 -- | The environments reachable from one declaration: its own
 -- environment expressions plus those of every top-level declaration
@@ -65,14 +73,17 @@ collectEnvRefsFrom core start = go Set.empty [start]
       [(p, n) | CVar (TopRef p n) <- map coreF (c : descendants c)]
 
 declEnvRefs :: CoreDecl -> [EnvRef]
-declEnvRefs cd = envRefsIn (cdCore cd)
+declEnvRefs cd = concatMap fromCore (cdCore cd : keywordDefaults (cdCore cd))
+  where
+    -- A lambda's keyword defaults are not part of its body, so they
+    -- have to be walked separately.
+    keywordDefaults c = case coreF c of
+      CLam lam -> map snd (lamKeywords lam)
+      _ -> []
 
--- | Every environment expression within a core expression, keyword
--- defaults of its lambdas included.
-envRefsIn :: Core -> [EnvRef]
-envRefsIn c = case coreF c of
-  CEnv kind args -> mkRef kind args : concatMap (envRefsIn . snd) args
-  _ -> concatMap envRefsIn (children c)
+    fromCore c = case coreF c of
+      CEnv kind args -> mkRef kind args : concatMap (fromCore . snd) args
+      _ -> concatMap fromCore (children c)
 
 mkRef :: Text -> [(Text, Core)] -> EnvRef
 mkRef kind args = case kind of
@@ -87,27 +98,33 @@ descendants :: Core -> [Core]
 descendants c = let cs = children c in cs <> concatMap descendants cs
 
 children :: Core -> [Core]
-children = coreChildren
-
--- | Every registry reference the program writes as a literal (spec
--- 10.3), in all its modules and command declarations: the references
--- the lock pins. One computed at run time is not among them; it cannot
--- be pinned.
-collectRegistryRefs :: CoreProgram -> [Text]
-collectRegistryRefs core =
-  Set.toList . Set.fromList $
-    concatMap (go . cdCore) (Map.elems (cpDecls core)) <> concatMap go (commandEnvs core)
+children c = case coreF c of
+  CStr ps -> [e | CPExpr e <- ps]
+  CArray es -> es
+  CMapLit kvs -> map snd kvs
+  CRecordLit kvs -> map snd kvs
+  CLam lam -> map snd (lamKeywords lam) <> [lamBody lam]
+  CApp fn pos kw -> fn : pos <> map snd kw
+  CDot e _ -> [e]
+  CIndex _ a b -> [a, b]
+  CIf a b c' -> [a, b, c']
+  CAnd a b -> [a, b]
+  COr a b -> [a, b]
+  CNot a -> [a]
+  CBin _ a b -> [a, b]
+  CDo stmts -> concatMap stmtExpr stmts
+  CAwait a -> [a]
+  CCast a _ -> [a]
+  CEnv _ args -> map snd args
+  _ -> []
   where
-    go c = case coreF c of
-      CEnv "docker" args
-        | Just (Core _ (CStrLit ref)) <- lookup "image" args -> ref : concatMap (go . snd) args
-      _ -> concatMap go (children c)
+    stmtExpr (CSBind _ e) = [e]
+    stmtExpr (CSExpr e) = [e]
 
 -- | Every recipe environment the program constructs, as
--- (dockerfile, context, build arguments) triples (spec 10.2). The
--- context defaults to the Dockerfile's directory, and the build
--- arguments are carried because the recipe hash covers them (10.3).
-collectRecipes :: CoreProgram -> [(Text, Text, [(Text, Text)])]
+-- (dockerfile, context) pairs (spec 10.2). The context defaults to the
+-- Dockerfile's directory.
+collectRecipes :: CoreProgram -> [(Text, Text)]
 collectRecipes core = concatMap fromDecl (Map.elems (cpDecls core)) <> concatMap go (commandEnvs core)
   where
     fromDecl cd = go (cdCore cd)
@@ -117,14 +134,10 @@ collectRecipes core = concatMap fromDecl (Map.elems (cpDecls core)) <> concatMap
           let ctx = case lookup "context" args of
                 Just (Core _ (CStrLit x)) -> x
                 _ -> defaultContext df
-           in [(df, ctx, buildArgs args)]
+           in [(df, ctx)]
         _ -> []
       CLam lam -> concatMap (go . snd) (lamKeywords lam) <> concatMap go (children c)
       _ -> concatMap go (children c)
-
-    buildArgs args = case lookup "build_args" args of
-      Just (Core _ (CMapLit kvs)) -> sortOn fst [(k, v) | (k, Core _ (CStrLit v)) <- kvs]
-      _ -> []
 
     defaultContext df =
       let parts = T.splitOn "/" df

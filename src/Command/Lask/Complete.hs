@@ -77,7 +77,7 @@ import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Parser (parseModule)
 import Language.Lask.Utils (kebabToSnake)
 import System.Directory (doesDirectoryExist, getFileSize, listDirectory)
-import System.FilePath (normalise, takeDirectory, takeExtension, (</>))
+import System.FilePath (takeExtension, (</>))
 import System.IO (hSetEncoding, stdout, utf8)
 import System.Timeout (timeout)
 
@@ -820,10 +820,7 @@ data CompleteIndex = CompleteIndex
     ciCommands :: [(Text, Maybe Text)],
     -- | Top-level map literals by binding name, for @\@complete
     -- \@keys@.
-    ciMapKeys :: Map.Map Text [Text],
-    -- | Re-exports (spec 5), as the published name, the name in the
-    -- module it comes from, and that module's import path.
-    ciReexports :: [(Text, Text, Text)]
+    ciMapKeys :: Map.Map Text [Text]
   }
   deriving (Show, Eq)
 
@@ -857,35 +854,9 @@ data ParamValues = PvSpec ValueSpec | PvKeys Text
   deriving (Show, Eq)
 
 loadIndex :: Resolver -> FilePath -> IO CompleteIndex
-loadIndex r = go reexportDepth Set.empty
-  where
-    go depth seen path = do
-      txt <- resolveRead r path
-      let idx = maybe (CompleteIndex [] [] Map.empty []) (buildIndex path) txt
-      if depth <= 0
-        then pure idx
-        else do
-          reexported <- concat <$> mapM (follow depth (Set.insert path seen) path) (ciReexports idx)
-          pure idx {ciDecls = ciDecls idx <> reexported}
-
-    -- A function the module re-exports is one of its public functions
-    -- (spec 5, 11.2), so it is offered under the name the module
-    -- publishes. Only a local path is followed: a dependency lives in
-    -- the cache, and completion reads nothing beyond the project.
-    follow depth seen path (visible, original, from)
-      | isLocal from,
-        let target = normalise (takeDirectory path </> T.unpack from),
-        not (target `Set.member` seen) = do
-          sub <- go (depth - 1) seen target
-          pure [d {idName = visible} | d <- ciDecls sub, idName d == original, not (idInternal d)]
-      | otherwise = pure []
-
-    isLocal from = "./" `T.isPrefixOf` from || "../" `T.isPrefixOf` from
-
--- | How many re-exports deep completion follows a name. The module
--- graph is acyclic, so this only bounds a pathological project.
-reexportDepth :: Int
-reexportDepth = 8
+loadIndex r path = do
+  txt <- resolveRead r path
+  pure (maybe (CompleteIndex [] [] Map.empty) (buildIndex path) txt)
 
 -- | The index of a module, from its source text alone.
 --
@@ -904,12 +875,7 @@ fromModule path src m =
   CompleteIndex
     { ciDecls = mapMaybe decl (AST.moduleDecls m),
       ciCommands = concatMap commandWords (AST.moduleDecls m),
-      ciMapKeys = Map.fromList (mapMaybe mapBinding (AST.moduleDecls m)),
-      ciReexports =
-        [ (maybe n id a, n, from)
-        | AST.Decl _ (AST.DExportFrom specs from) <- AST.moduleDecls m,
-          AST.ImportSpec _ n a <- specs
-        ]
+      ciMapKeys = Map.fromList (mapMaybe mapBinding (AST.moduleDecls m))
     }
   where
     comments = either (const []) snd (lexTokensWithComments path src)
@@ -955,18 +921,11 @@ fromModule path src m =
       Span (Position _ l _) _ -> maybe emptyDoc parseDoc (docBlockAbove src comments l)
       NoSpan -> emptyDoc
 
-    -- @command { "go", "gofmt" } on #golang:1.25@ (spec 5). The
-    -- environment is shown as it was written, never resolved. An
-    -- imported word is shown with the module it comes from: the index
-    -- reads one file, and resolving the import would mean loading
-    -- another.
+    -- @command "go", "gofmt" on #golang:1.25@ (spec 5). The
+    -- environment is shown as it was written, never resolved.
     commandWords d = case AST.declF d of
       AST.DCommand names env ->
         [(w, environmentText env) | Spanned _ w <- names]
-      AST.DImportCommands names from ->
-        [(w, Just (importedFrom from)) | Spanned _ w <- names]
-      AST.DExportCommandsFrom names from ->
-        [(w, Just (importedFrom from)) | Spanned _ w <- names]
       _ -> []
 
     environmentText e = case T.strip (spanText src (AST.exprSpan e)) of
@@ -977,11 +936,6 @@ fromModule path src m =
       AST.DValue n _ _ (AST.Expr _ (AST.EObject fields)) ->
         Just (n, [k | (Spanned _ k, _) <- fields])
       _ -> Nothing
-
--- | How a command word brought in from another module is described:
--- by the module, since its environment is not in this file.
-importedFrom :: Text -> Text
-importedFrom path = "from \"" <> path <> "\""
 
 -- | The words of an @\@complete@ tag (spec 3.1).
 completeTag :: [Text] -> ParamValues
@@ -1045,51 +999,18 @@ scanIndex src =
     (mapMaybe declOfLine (T.lines src))
     (concatMap commandsOfLine (T.lines src))
     Map.empty
-    (concatMap reexportsOfLine (T.lines src))
   where
-    -- @export { a, b as c } from "./lib.lask"@, read as text. Only a
-    -- list that closes on its own line is read.
-    reexportsOfLine l = case T.stripPrefix "export" l >>= T.stripPrefix "{" . T.stripStart of
+    -- @command "go", "gofmt" on #golang:1.25@, read as text.
+    commandsOfLine l = case T.stripPrefix "command " l of
       Nothing -> []
       Just rest ->
-        let (inside, after) = T.breakOn "}" rest
-            from = T.dropAround (== '"') . T.strip <$> T.stripPrefix "from" (T.strip (T.drop 1 after))
-         in case from of
-              Just path
-                | not (T.null after) ->
-                    [ (visible, original, path)
-                    | spec <- T.splitOn "," inside,
-                      (original, visible) <- case T.words spec of
-                        [a] -> [(a, a)]
-                        [a, "as", b] -> [(a, b)]
-                        _ -> []
-                    ]
-              _ -> []
-
-    -- @command { "go", "gofmt" } on #golang:1.25@, its @export@ and
-    -- @internal@ forms, and @import command { "go" } from "tools"@,
-    -- read as text. Only a list that closes on its own line is read.
-    commandsOfLine l = case mapMaybe openWords commandHeads of
-      [] -> []
-      rest : _ ->
-        let (inside, after) = T.breakOn "}" rest
-            tailText = T.strip (T.drop 1 after)
-            described
-              | Just env <- T.stripPrefix "on " tailText = Just (T.strip env)
-              | Just path <- T.stripPrefix "from " tailText =
-                  Just (importedFrom (T.dropAround (== '"') (T.strip path)))
-              | otherwise = Nothing
-         in [ (w, described)
-            | not (T.null after),
-              chunk <- T.splitOn "," inside,
+        let (names, env) = T.breakOn " on " rest
+         in [ (w, if T.null env then Nothing else Just (T.strip (T.drop 4 env)))
+            | chunk <- T.splitOn "," names,
               let w = T.dropAround (== '"') (T.strip chunk),
               not (T.null w),
               not ("\"" `T.isInfixOf` w)
             ]
-      where
-        openWords h = T.stripPrefix h l >>= T.stripPrefix "{" . T.stripStart
-
-    commandHeads = ["command", "export command", "internal command", "import command"]
 
     declOfLine l = do
       let (name, rest) = T.span isNameChar l

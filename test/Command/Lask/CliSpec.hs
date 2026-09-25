@@ -11,7 +11,7 @@ import qualified Data.Text as T
 import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, removeDirectoryRecursive)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (CreateProcess (cwd, env), proc, readCreateProcessWithExitCode, readProcess)
 import Test.Hspec
@@ -54,152 +54,14 @@ withProject files action =
   withSystemTempDirectory "lask-e2e" $ \dir -> do
     mapM_
       ( \(name, content) -> do
-          createDirectoryIfMissing True (takeDirectory (dir </> name))
+          createDirectoryIfMissing True dir
           writeFile (dir </> name) content
       )
       files
     action dir
 
--- | A stand-in for the docker CLI, for tests of image pinning that must
--- not need a daemon. Its state is files under @$FAKE_DOCKER_STATE@:
--- @registry/<ref>@ holds the digest a tag resolves to upstream,
--- @present/<name>@ an image on the daemon with its repository digests,
--- and @calls@ every invocation.
-fakeDocker :: String
-fakeDocker =
-  unlines
-    [ "#!/bin/sh",
-      "S=\"$FAKE_DOCKER_STATE\"",
-      "mkdir -p \"$S/present\" \"$S/registry\"",
-      "echo \"$*\" >> \"$S/calls\"",
-      "key() { printf '%s' \"$1\" | tr '/:@' '___'; }",
-      "repo() { r=\"${1%@*}\"; last=\"${r##*/}\"; case \"$last\" in *:*) r=\"${r%:*}\";; esac; printf '%s' \"$r\"; }",
-      "case \"$1\" in",
-      "  version) echo 27.0.0 ;;",
-      "  pull)",
-      "    ref=\"$3\"",
-      "    case \"$ref\" in",
-      "      *@*) digest=\"${ref#*@}\" ;;",
-      "      *) [ -f \"$S/registry/$(key \"$ref\")\" ] || { echo \"manifest unknown: $ref\" >&2; exit 1; }",
-      "         digest=$(cat \"$S/registry/$(key \"$ref\")\") ;;",
-      "    esac",
-      "    name=\"$(repo \"$ref\")@$digest\"",
-      "    printf '[\"%s\"]' \"$name\" > \"$S/present/$(key \"$ref\")\"",
-      "    printf '[\"%s\"]' \"$name\" > \"$S/present/$(key \"$name\")\"",
-      "    echo \"$name\" ;;",
-      "  image)",
-      "    ref=\"$5\"; [ \"$3\" = \"--format\" ] || ref=\"$3\"",
-      "    f=\"$S/present/$(key \"$ref\")\"",
-      "    [ -f \"$f\" ] || { echo \"Error: No such image: $ref\" >&2; exit 1; }",
-      "    [ \"$3\" = \"--format\" ] && cat \"$f\"; exit 0 ;;",
-      "  build) tag=''; while [ $# -gt 0 ]; do [ \"$1\" = -t ] && tag=\"$2\"; shift; done",
-      "    printf '[]' > \"$S/present/$(key \"$tag\")\" ;;",
-      "  run) echo ran ;;",
-      "  *) echo \"fake docker: unsupported: $*\" >&2; exit 2 ;;",
-      "esac"
-    ]
-
--- | The invocations the fake docker has recorded, one per line.
-calls :: FilePath -> IO [String]
-calls state = lines <$> readFile (state </> "calls")
-
--- | Run an action with the fake docker first on PATH and upstream
--- @alpine:3.22.2@ resolving to @sha256:aaa@. The action receives the
--- state directory and the extra environment to run lask with.
-withFakeDocker :: (FilePath -> [(String, String)] -> IO a) -> IO a
-withFakeDocker action =
-  withSystemTempDirectory "fake-docker" $ \root -> do
-    let bin = root </> "bin"
-        state = root </> "state"
-    createDirectoryIfMissing True bin
-    createDirectoryIfMissing True (state </> "registry")
-    writeFile (bin </> "docker") fakeDocker
-    _ <- readProcess "chmod" ["+x", bin </> "docker"] ""
-    writeFile (state </> "registry" </> "alpine_3.22.2") "sha256:aaa"
-    path <- maybe "" id . lookup "PATH" <$> getEnvironment
-    action state [("PATH", bin <> ":" <> path), ("FAKE_DOCKER_STATE", state)]
-
 spec :: Spec
 spec = beforeAll findLask $ do
-  -- Images are pinned by `lask env build` and `lask deps sync`, and
-  -- resolved through the lock when a command runs (spec 10.3, 10.4).
-  describe "image pinning (spec 10.3, 10.4, 11.5, 11.7)" $ do
-    let proj =
-          [ ( "main.lask",
-              "command { \"cat\" } on #alpine:3.22.2\n\
-              \hi(): String = $ cat x\n\
-              \dyn(--tag: String = \"3.21\"): String = $[#docker(\"alpine:#{tag}\")] cat x\n"
-            )
-          ]
-        lockText dir = readFile (dir </> "lask.lock.json")
-
-    it "refuses to run an image the lock does not pin, naming env build" $ \lask ->
-      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
-        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
-        resExit r `shouldBe` 3
-        resErr r `shouldContain` "E-IO-IMAGE-MISSING"
-        resErr r `shouldContain` "lask env build"
-
-    it "pins the digest on env build, and runs the pinned image" $ \lask ->
-      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        b <- runLaskEnv lask dir extra ["env", "build"] ""
-        resExit b `shouldBe` 0
-        resOut b `shouldContain` "alpine:3.22.2 -> alpine@sha256:aaa"
-        lockText dir >>= (`shouldContain` "\"digest\": \"sha256:aaa\"")
-        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
-        resExit r `shouldBe` 0
-        cs <- calls state
-        [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` all ("alpine@sha256:aaa" `isInfixOf`)
-
-    it "keeps the pinned image when the tag moves upstream" $ \lask ->
-      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
-        writeFile (state </> "registry" </> "alpine_3.22.2") "sha256:bbb"
-        removeDirectoryRecursive (state </> "present")
-        writeFile (state </> "calls") ""
-        b <- runLaskEnv lask dir extra ["env", "build"] ""
-        resExit b `shouldBe` 0
-        cs <- calls state
-        [c | c <- cs, "pull " `isPrefixOf` c] `shouldBe` ["pull --quiet alpine@sha256:aaa"]
-        lockText dir >>= (`shouldContain` "sha256:aaa")
-
-    it "reports E-IO-IMAGE-DIGEST when the pinned image carries another digest" $ \lask ->
-      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
-        writeFile (state </> "present" </> "alpine_sha256_aaa") "[\"alpine@sha256:ccc\"]"
-        b <- runLaskEnv lask dir extra ["env", "build"] ""
-        resExit b `shouldBe` 3
-        resErr b `shouldContain` "E-IO-IMAGE-DIGEST"
-        lockText dir >>= (`shouldContain` "sha256:aaa")
-
-    it "never pulls a reference computed at run time" $ \lask ->
-      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
-        writeFile (state </> "calls") ""
-        r <- runLaskEnv lask dir extra ["eval", "dyn"] ""
-        resExit r `shouldBe` 3
-        resErr r `shouldContain` "docker pull alpine:3.21"
-        cs <- calls state
-        [c | c <- cs, "pull " `isPrefixOf` c] `shouldBe` []
-
-    it "pins images in deps sync, and --frozen refuses a lock that would change" $ \lask ->
-      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
-        f <- runLaskEnv lask dir extra ["deps", "sync", "--frozen"] ""
-        resExit f `shouldBe` 1
-        doesFileExist (dir </> "lask.lock.json") `shouldReturn` False
-        s' <- runLaskEnv lask dir extra ["deps", "sync"] ""
-        resExit s' `shouldBe` 0
-        lockText dir >>= (`shouldContain` "sha256:aaa")
-        f2 <- runLaskEnv lask dir extra ["deps", "sync", "--frozen"] ""
-        resExit f2 `shouldBe` 0
-
-    it "drops the entry of an image nothing references any more" $ \lask ->
-      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
-        writeFile (dir </> "main.lask") "hi(): String = $[#local] echo hi\n"
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
-        lockText dir >>= (`shouldNotContain` "alpine")
-
   describe "generic functions from the CLI (spec 11.2)" $ do
     let proj =
           [ ( "main.lask",
@@ -224,87 +86,10 @@ spec = beforeAll findLask $ do
         -- but not in the line the user is meant to type
         resOut r `shouldContain` "lask run first_or <xs> <fallback>"
 
-  -- A re-exported name is a public symbol of the module (spec 5), so
-  -- the CLI reaches it as it reaches one the module declares.
-  describe "re-exported functions from the CLI (spec 5, 11.2, 11.6)" $ do
-    let proj =
-          [ ("main.lask", "export { greet, greet as hello } from \"./lib.lask\"\nown(): String = \"own\"\n"),
-            ( "lib.lask",
-              "// Greets someone.\n//\n// @param name  Who to greet.\ngreet(--name: String = \"World\"): String = \"hello #{name}\"\n\ninternal secret(): String = \"s\"\n"
-            )
-          ]
-
-    it "invokes a re-exported function, keyword arguments included" $ \lask ->
-      withProject proj $ \dir -> do
-        r <- runLask lask dir ["eval", "greet", "--name", "Lask"] ""
-        resExit r `shouldBe` 0
-        resOut r `shouldBe` "\"hello Lask\"\n"
-
-    it "invokes it under the name a renaming re-export publishes" $ \lask ->
-      withProject proj $ \dir -> do
-        r <- runLask lask dir ["eval", "hello"] ""
-        resExit r `shouldBe` 0
-        resOut r `shouldBe` "\"hello World\"\n"
-
-    it "does not reach what the module does not publish" $ \lask ->
-      withProject proj $ \dir -> do
-        r <- runLask lask dir ["eval", "secret"] ""
-        resExit r `shouldBe` 4
-
-    it "describes it from the file that declares it" $ \lask ->
-      withProject proj $ \dir -> do
-        r <- runLask lask dir ["run", "hello", "--help"] ""
-        resExit r `shouldBe` 0
-        resOut r `shouldContain` "Greets someone."
-        resOut r `shouldContain` "Who to greet."
-        resOut r `shouldContain` "lask run hello"
-        resOut r `shouldContain` "lib.lask"
-
-    it "lists it among the module's functions" $ \lask ->
-      withProject proj $ \dir -> do
-        r <- runLask lask dir ["run", "--help"] ""
-        resExit r `shouldBe` 0
-        mapM_ (resOut r `shouldContain`) ["greet", "hello", "own"]
-        resOut r `shouldNotContain` "secret"
-
-  -- A recipe path is written relative to the module that declares it
-  -- (spec 10.2), wherever the module is imported from.
-  describe "recipes in an imported module (spec 10.2, 10.3)" $ do
-    let proj =
-          [ ("app/main.lask", "import command { \"cat\" } from \"../tools/main.lask\"\nhi(): String = $ cat /greeting\n"),
-            ( "tools/main.lask",
-              "greeter(): Environment = #docker(dockerfile = \"images/greeter/Dockerfile\")\nexport command { \"cat\" } on greeter()\n"
-            ),
-            ("tools/images/greeter/Dockerfile", "FROM scratch\n"),
-            ("Dockerfile", "FROM scratch\n"),
-            ("main.lask", "beside = #docker(dockerfile = \"Dockerfile\")\n")
-          ]
-
-    it "reads it from the tree of the module that declares it" $ \lask ->
-      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
-        r <- runLaskEnv lask dir extra ["env", "list", "--module", "app/main.lask"] ""
-        resExit r `shouldBe` 0
-        resOut r `shouldContain` "../tools/images/greeter/Dockerfile  recipe  lask/"
-
-    it "builds it and runs the command in it from the importing project" $ \lask ->
-      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        b <- runLaskEnv lask dir extra ["env", "build", "--module", "app/main.lask"] ""
-        resExit b `shouldBe` 0
-        r <- runLaskEnv lask dir extra ["eval", "--module", "app/main.lask", "hi"] ""
-        resExit r `shouldBe` 0
-        cs <- calls state
-        [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` (\rs -> not (null rs) && all ("lask/" `isInfixOf`) rs)
-
-    it "keeps the path of a recipe beside the entry module" $ \lask ->
-      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
-        r <- runLaskEnv lask dir extra ["env", "list"] ""
-        resOut r `shouldContain` "Dockerfile  recipe  lask/"
-        resOut r `shouldNotContain` "./Dockerfile"
-
   describe "cmd (spec 11.8)" $ do
     let proj =
           [ ( "main.lask",
-              "command { \"echo\", \"printf\", \"false\" } on #local\n\nhello() = $ echo hi\n"
+              "command \"echo\", \"printf\", \"false\" on #local\n\nhello() = $ echo hi\n"
             )
           ]
 
@@ -369,7 +154,7 @@ spec = beforeAll findLask $ do
         resOut r `shouldSatisfy` isInfixOf "\"name\":\"echo\""
 
     it "exits 1 on a static error before running anything" $ \lask ->
-      withProject [("main.lask", "x: Number = \"s\"\ncommand { \"echo\" } on #local\n")] $ \dir -> do
+      withProject [("main.lask", "x: Number = \"s\"\ncommand \"echo\" on #local\n")] $ \dir -> do
         r <- runLask lask dir ["cmd", "echo", "hi"] ""
         resExit r `shouldBe` 1
         resOut r `shouldBe` ""
@@ -424,7 +209,7 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", "id2(x: String): String = x\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "--arg-decode", "text", "id2", "5"] ""
         r `shouldBe` Result 0 "\"5\"\n" ""
-    -- Reproduces a report against example/01-projects/02-webapp-on-aws/main.lask:
+    -- Reproduces a report against example/04-webapp/main.lask:
     -- `--access_key_id!!: String = get_env("AWS_ACCESS_KEY_ID")` works
     -- when the default (a get_env call, always a String) is used, but
     -- passing an explicit CLI value that happens to look like JSON

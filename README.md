@@ -30,9 +30,9 @@ infra = #docker(dockerfile = "Dockerfile", context = ".")
 // Declare which image provides each program, and the commands below
 // name only what they run. There is no default: a command with no
 // environment is an error, never a silent fall back to the host.
-command { "go" } on go
-command { "npm" } on node
-command { "terraform" } on infra
+command "go" on go
+command "npm" on node
+command "terraform" on infra
 
 test_api(): String = $ go test ./...
 test_web(): String = $ npm test
@@ -57,7 +57,7 @@ release(--dry_run = false) = do {
 
 </details>
 
-Beyond the snippet above: [example/02-language](example/02-language) is a tour of the whole language, one runnable module per topic, and [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed.
+Beyond the snippet above: [example/03-terraform](example/03-terraform) drives Terraform through hash-pinned shared tasks, and [example/04-webapp](example/04-webapp) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed.
 
 ## Why Lask
 
@@ -67,11 +67,11 @@ Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, 
 
 **Verifiable**. `lask check` resolves every name, argument and type before a single command runs — over the very definitions CI will execute, with no second copy in YAML to drift out of sync. The same errors appear in your editor as you type, so a typo costs seconds instead of a red CI log.
 
-**Portable**. An execution environment is a value: pin an image once with `command { "go" } on #golang:1.22`, and every command that names it runs there — reproducibly, on your laptop and in CI alike. A command that names no environment is a static error, never a silent fall back to the host, so the only things to install are Lask and Docker.
+**Portable**. An execution environment is a value: pin an image once with `command "go" on #golang:1.22`, and every command that names it runs there — reproducibly, on your laptop and in CI alike. A command that names no environment is a static error, never a silent fall back to the host, so the only things to install are Lask and Docker.
 
 **Programmable**. A task is an ordinary function — typed keyword arguments with defaults, a return value, callable on its own. Control flow, error handling and concurrency belong to the language rather than to shell convention. That language is a DSL and not a general-purpose one, so the same task takes fewer lines than an SDK in Go or TypeScript would, with no project to build around it.
 
-**Reusable**. Inside a project, tasks call each other like the functions they are; across projects, shared tasks live in their own repository and are imported rather than copied — and so do the environments programs run in, with `import command { "go" } from "tools"`. Imports are pinned by content hash in a committed lock file, so every machine resolves the same code and a run reaches no network.
+**Reusable**. Inside a project, tasks call each other like the functions they are; across projects, shared tasks live in their own repository and are imported rather than copied. Imports are pinned by content hash in a committed lock file, so every machine resolves the same code and a run reaches no network.
 
 **Runnable**. The CLI is small, and every piece of a project runs on its own: a task with `lask run`, an expression in the REPL, or a one-off command inside its own container with `lask cmd go test ./...`. Nothing has to be pushed, and nothing has to be run through a shell to try it. A task's signature is its command line, too: keyword arguments become flags, so `release(--dry_run = false)` is `lask run release --dry-run true` with nothing to wire up.
 
@@ -87,7 +87,7 @@ Here is how Lask compares to the lighter tools it replaces and to the heavier on
 | --------------------------------------- | :--: | :--: | :------: | :----: |
 | Static checks before execution           | ✅ types, names, arity (`lask check`) | — | schema only | via the SDK's language |
 | Typed task arguments with defaults       | ✅ `--name: String = "World"` | — | untyped vars | ✅ in the SDK's language |
-| Execution environments as values         | ✅ `command { "go" } on #golang:1.22` | — | — | ✅ containers in the API |
+| Execution environments as values         | ✅ `command "go" on #golang:1.22` | — | — | ✅ containers in the API |
 | Concurrency                              | ✅ `async` / `await` | `-j` (per-target) | `deps` run in parallel | ✅ implicit in the DAG |
 | Code reuse across projects               | ✅ hash-pinned module imports | `include` | `includes` | ✅ Git modules |
 | Incremental rebuilds                     | — | ✅ file targets | ✅ checksum / timestamp | ✅ content-addressed cache |
@@ -252,10 +252,7 @@ no environment is ever evaluated to answer a `<TAB>`.
   <img alt="Terminal recording: lask check reports an error in the module; once it is fixed, lask run cowsay-hello Lask pulls the image, traces the command it runs inside it, and prints the cow" src="doc/assets/lask-cowsay.gif" width="831">
 </div>
 
-An error `lask check` finds, and a task that runs. Before a task first runs in a
-container, `lask env build` pulls its image and pins the digest in
-`lask.lock.json`; `lask run` itself never reaches the network, so every machine runs
-the image the lock names.
+An error `lask check` finds, and a task that runs.
 
 Run a command in any image straight from the REPL, with nothing installed locally:
 

@@ -252,7 +252,7 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
       [(k, v) | VRecord r <- V.toList es, Just (VString k) <- [Map.lookup "key" r], Just v <- [Map.lookup "value" r]]
   ("map_values", [VMap m, f]) -> VMap <$> traverse (\v -> apply f [v] []) m
   -- 15.5 command execution --------------------------------------------------
-  ("run", [VEnv env, VString cmd]) -> do
+  ("run_command", [VString cmd, VEnv env]) -> do
     r <- hookRunCommand hooks env cmd
     case r of
       Left failure -> throwIO failure
@@ -309,7 +309,7 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("md5", [VString v]) -> pure (VString (hex (MD5.hash (TE.encodeUtf8 v))))
   -- 15.11 filesystem ----------------------------------------------------------
   -- The environment is positional and required, exactly as for
-  -- run: there is no default execution environment (spec
+  -- run_command: there is no default execution environment (spec
   -- 10.1), so no read or write can reach a filesystem the program did
   -- not name.
   ("read_file", [VString p, VEnv env]) -> file env (FileRead p)
@@ -341,9 +341,6 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("mark_secret", [VString value]) -> do
     registerSecret value
     pure (VString value)
-  -- An absent secret has no text to mask, so nothing is registered: in
-  -- particular not the text an absent value would print as.
-  ("mark_secret", [VNull]) -> pure VNull
   -- 15.10 path operations. Lexical and POSIX whatever the host is, so
   -- a path computed here still means the same inside a container.
   ("path_join", [VArray parts]) ->

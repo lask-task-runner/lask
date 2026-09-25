@@ -10,9 +10,9 @@ curl = #curlimages/curl:8.21.0
 // commands name only what they run (spec ch. 5, 10.9). playwright is
 // deliberately not registered: test_e2e runs npm and npx, but needs
 // the image for the browsers it carries, not for the program.
-command { "python", "pip" } on python
-command { "node", "npm", "npx" } on node
-command { "curl" } on curl
+command "python", "pip" on python
+command "node", "npm", "npx" on node
+command "curl" on curl
 
 internal as_string(v: Any): String = cast(v)
 

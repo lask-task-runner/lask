@@ -12,8 +12,6 @@ module Language.Lask.Module.Resolve
     TypeTarget (..),
     Publics (..),
     modulePublics,
-    namespaceMember,
-    entryPublicValues,
     buildScopes,
     validateProgram,
   )
@@ -91,13 +89,7 @@ data Publics = Publics
     -- | Public names that come from a re-export (spec 5), mapped to
     -- the module and name they were re-exported from. A consumer must
     -- bind them to that origin, not to the re-exporting module.
-    pubOrigins :: Map Text (FilePath, Text),
-    -- | The command words the module exports (spec 5): those its own
-    -- command declarations register, less the @internal@ ones, and
-    -- those it re-exports. A command word keeps its text through a
-    -- re-export, so no origin needs recording here: elaboration takes
-    -- each word's declaration from the module it names.
-    pubCommands :: Set Text
+    pubOrigins :: Map Text (FilePath, Text)
   }
 
 modulePublics :: LoadedModule -> Publics
@@ -105,11 +97,6 @@ modulePublics lm =
   Publics
     { pubValues = Set.difference (Set.fromList (mapMaybe valueName decls) <> reValues) internal,
       pubTypes = Set.difference (Set.fromList (mapMaybe typeName decls) <> reTypes) internal,
-      pubCommands =
-        Set.difference
-          (Set.fromList [n | DCommand ns _ <- decls, Spanned _ n <- ns])
-          (moduleInternalCommands (lmModule lm))
-          <> Set.fromList [n | DExportCommandsFrom ns _ <- decls, Spanned _ n <- ns],
       pubOrigins =
         Map.fromList
           [ (maybe n id a, (reKey path, n))
@@ -134,42 +121,6 @@ modulePublics lm =
     valueName _ = Nothing
     typeName (DTypeAlias n _ _) = Just n
     typeName _ = Nothing
-
--- | The declaration a namespace member @m.x@ refers to, where @m@
--- names the module at @key@ (spec 5, 7.2). A name that module
--- re-exports is bound in its scope to the module that declared it, as
--- a named import binds it, so the member resolves through that scope;
--- a name the module declares itself resolves to itself. Visibility is
--- not decided here: 'checkModule' has already rejected a member that
--- is not a public symbol of @m@.
-namespaceMember :: Map FilePath GlobalScope -> FilePath -> Text -> (FilePath, Text)
-namespaceMember scopes key n = case Map.lookup key scopes >>= Map.lookup n . gsValues of
-  Just (VTopLevel k n') -> (k, n')
-  _ -> (key, n)
-
--- | The public values and functions of the entry module, in source
--- order, each with the declaration it names: those it declares, less
--- the @internal@ ones, and those it re-exports, under the name it
--- publishes them by (spec 5). These are what the CLI invokes and lists
--- (11.2, 11.6): a re-exported name is as much a public symbol of the
--- module as one it declares.
-entryPublicValues :: Program -> Map FilePath GlobalScope -> [(Text, (FilePath, Text))]
-entryPublicValues prog scopes = case Map.lookup entry (progModules prog) of
-  Nothing -> []
-  Just lm ->
-    [ (n, namespaceMember scopes entry n)
-    | Decl _ f <- moduleDecls (lmModule lm),
-      n <- case f of
-        DValue n' _ _ _ -> [n']
-        DFunction n' _ _ _ _ -> [n']
-        DExportFrom specs _ -> [maybe n' id a | ImportSpec _ n' a <- specs]
-        _ -> [],
-      not (startsUpper n),
-      not (n `Set.member` moduleInternal (lmModule lm))
-    ]
-  where
-    entry = progEntry prog
-    startsUpper t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
 
 -- Scope construction ---------------------------------------------------------
 
@@ -208,11 +159,8 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
         let key = resolveKey path
             (gs', newDs) = foldl (addImport key) (gs, []) specs
          in go gs' (newDs <> ds) rest
-      -- Command words bind no value name (spec ch. 5): they occupy a
-      -- namespace of their own, built in "Language.Lask.Elaborate".
+      -- Registers command words, binds no name (spec ch. 5).
       DCommand {} -> go gs ds rest
-      DImportCommands {} -> go gs ds rest
-      DExportCommandsFrom {} -> go gs ds rest
       DImportNamespace alias path ->
         let key = resolveKey path
             dups =
@@ -318,23 +266,9 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       -- static resolvability in "Language.Lask.Elaborate" (spec ch. 5);
       -- here only its name references are resolved.
       DCommand _ e -> checkExpr [] e
-      DImportCommands ns path -> checkCommandImport ns path
-      DExportCommandsFrom ns path -> checkCommandImport ns path
       DImportNamed {} -> []
       DExportFrom {} -> []
       DImportNamespace {} -> []
-
-    -- A command word can be imported only if the target exports it.
-    -- A missing module is reported by the loader, not here.
-    checkCommandImport ns path =
-      case Map.lookup (Map.findWithDefault (T.unpack path) path (lmImportKeys lm)) publics of
-        Nothing -> []
-        Just pub ->
-          [ mkDiagnostic ENameUndefined StageStatic sp $
-              "module exports no command '" <> n <> "'"
-          | Spanned sp n <- ns,
-            not (n `Set.member` pubCommands pub)
-          ]
 
     paramNames ps = Set.fromList [paramName p | p <- ps]
     paramName (Param _ (PPositional n _ _)) = n

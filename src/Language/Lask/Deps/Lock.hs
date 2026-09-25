@@ -59,14 +59,12 @@ data LockEntry = LockEntry
   }
   deriving (Show, Eq)
 
--- | A materialized container image (spec 10.3): a recipe built to a
--- content-addressed tag, or a registry reference pinned to the digest
--- it resolved to.
+-- | A materialized container image: a recipe built to a
+-- content-addressed tag, or a registry reference (spec 10.3).
 data LockImage = LockImage
   { liKind :: Text,
     liRef :: Maybe Text,
-    liTag :: Maybe Text,
-    liDigest :: Maybe Text
+    liTag :: Maybe Text
   }
   deriving (Show, Eq)
 
@@ -131,7 +129,7 @@ parseLockFile bytes = do
     image (key, v) = do
       o <- asObject ("lock image '" <> key <> "'") v
       let kind = maybe "registry" id (str o "kind")
-      Right (key, LockImage kind (str o "ref") (str o "tag") (str o "digest"))
+      Right (key, LockImage kind (str o "ref") (str o "tag"))
 
 renderLockFile :: LockFile -> BL.ByteString
 renderLockFile lf =
@@ -156,8 +154,7 @@ renderLockFile lf =
         concat
           [ ["kind" A..= liKind i],
             maybe [] (\x -> ["ref" A..= x]) (liRef i),
-            maybe [] (\x -> ["tag" A..= x]) (liTag i),
-            maybe [] (\x -> ["digest" A..= x]) (liDigest i)
+            maybe [] (\x -> ["tag" A..= x]) (liTag i)
           ]
 
 err :: Text -> Diagnostic
