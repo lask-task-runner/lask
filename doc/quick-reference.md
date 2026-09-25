@@ -291,7 +291,7 @@ deploy(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")) = do {
 }
 ```
 
-`!!` marks a binding secret: the value is masked in the command execution log wherever it later appears. It is allowed on `String` only, carries no meaning in the type system, and never masks a `CommandResult` or `eval`'s own output. → [12.8](spec.md#128-protection-of-sensitive-information-and-retention-policy)
+`!!` marks a binding secret: the value is masked in the command execution log wherever it later appears. It is allowed on `String` and `String | Null` — a `null` registers nothing, so a secret can default to `null` like any optional parameter — carries no meaning in the type system, and never masks a `CommandResult` or `eval`'s own output. → [12.8](spec.md#128-protection-of-sensitive-information-and-retention-policy)
 
 ## Documentation comments
 

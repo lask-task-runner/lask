@@ -138,8 +138,7 @@ $ curl -fsSL -o lask.deb "https://github.com/lask-task-runner/lask/releases/down
 $ sudo dpkg -i lask.deb
 ```
 
-amd64 only; on another architecture, take the tarball above. Uninstall with
-`sudo apt remove lask`.
+amd64 only; on another architecture, take the tarball above. Uninstall with `sudo apt remove lask`.
 
 </details>
 
@@ -153,8 +152,7 @@ amd64 only; on another architecture, take the tarball above. Uninstall with
 > setx PATH "$env:PATH;$env:LOCALAPPDATA\Programs\lask"
 ```
 
-Restart your terminal for the updated `PATH` to take effect. Uninstall with
-`Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\lask"`.
+Restart your terminal for the updated `PATH` to take effect. Uninstall with `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\lask"`.
 
 </details>
 
@@ -169,20 +167,17 @@ $ stack --local-bin-path /usr/local/bin/ install
 
 </details>
 
-Verify with `lask --help`. Archives and packages for every platform are on the
-[latest release](https://github.com/lask-task-runner/lask/releases/latest); an APT
-repository and Chocolatey support are planned.
+Verify with `lask --help`. Archives and packages for every platform are on the [latest release](https://github.com/lask-task-runner/lask/releases/latest); an APT repository and Chocolatey support are planned.
 
 <details>
 <summary><b>Shell completion</b> &middot; bash, zsh, fish</summary>
 
-Completion knows your module, not just the CLI: it completes the functions the
-repository you are standing in defines, each function's keyword parameters, and
-the commands it declares.
+Completion knows your module, not just the CLI: it completes the functions the repository you are standing in defines, each function's keyword parameters, and the commands it declares.
 
 ```bash
 $ lask run <TAB>
-build_on_docker  doctest  install  test  uninstall  unittest
+build_on_docker     install             test                uninstall_completion
+doctest             install_completion  uninstall           unittest
 $ lask run install --<TAB>
 --output  --env  --help
 $ lask run install --env <TAB>
@@ -204,23 +199,15 @@ $ mkdir -p ~/.bash_completion.d
 $ lask completion bash > ~/.bash_completion.d/lask
 ```
 
-then, in `~/.bash_profile` (macOS Terminal starts a login shell, which does not
-read `~/.bashrc`) or in `~/.bashrc` (Linux):
+then, in `~/.bash_profile` (macOS Terminal starts a login shell, which does not read `~/.bashrc`) or in `~/.bashrc` (Linux):
 
 ```bash
 source ~/.bash_completion.d/lask
 ```
 
-With the `bash-completion` package installed — most Linux distributions have it
-— writing the script to `~/.local/share/bash-completion/completions/lask`
-instead loads it on demand, with nothing added to your rc file. That directory
-does nothing on a system without the package, which includes a stock macOS.
-Note that `source <(lask completion bash)` cannot be used there either: the
-`source` builtin in bash 3.2, still macOS's `/bin/bash`, silently reads nothing
-from a process substitution.
+With the `bash-completion` package installed — most Linux distributions have it — writing the script to `~/.local/share/bash-completion/completions/lask` instead loads it on demand, with nothing added to your rc file. That directory does nothing on a system without the package, which includes a stock macOS. Note that `source <(lask completion bash)` cannot be used there either: the `source` builtin in bash 3.2, still macOS's `/bin/bash`, silently reads nothing from a process substitution.
 
-**zsh** — the completion system has to be switched on, which macOS does not do
-for you:
+**zsh** — the completion system has to be switched on, which macOS does not do for you:
 
 ```zsh
 $ mkdir -p ~/.zsh/completions
@@ -234,15 +221,9 @@ fpath=(~/.zsh/completions $fpath)
 autoload -Uz compinit && compinit
 ```
 
-If `compinit` already runs in your `~/.zshrc` — every framework does it for you
-— only the `fpath` line is new, and any directory already on `$fpath` works just
-as well. `compinit` caches what it found, so after adding a file, delete
-`~/.zcompdump*` and open a new shell. If completion does nothing and
-`command not found: compdef` appears when zsh starts, `compinit` has not run.
+If `compinit` already runs in your `~/.zshrc` — every framework does it for you — only the `fpath` line is new, and any directory already on `$fpath` works just as well. `compinit` caches what it found, so after adding a file, delete `~/.zcompdump*` and open a new shell. If completion does nothing and `command not found: compdef` appears when zsh starts, `compinit` has not run.
 
-The script only ever asks the binary, so it keeps working across upgrades.
-Completion reads your module without running it: no task, no default value, and
-no environment is ever evaluated to answer a `<TAB>`.
+The script only ever asks the binary, so it keeps working across upgrades. Completion reads your module without running it: no task, no default value, and no environment is ever evaluated to answer a `<TAB>`.
 
 </details>
 
@@ -252,10 +233,7 @@ no environment is ever evaluated to answer a `<TAB>`.
   <img alt="Terminal recording: lask check reports an error in the module; once it is fixed, lask run cowsay-hello Lask pulls the image, traces the command it runs inside it, and prints the cow" src="doc/assets/lask-cowsay.gif" width="831">
 </div>
 
-An error `lask check` finds, and a task that runs. Before a task first runs in a
-container, `lask env build` pulls its image and pins the digest in
-`lask.lock.json`; `lask run` itself never reaches the network, so every machine runs
-the image the lock names.
+An error `lask check` finds, and a task that runs. Before a task first runs in a container, `lask env build` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
 
 Run a command in any image straight from the REPL, with nothing installed locally:
 
@@ -285,8 +263,7 @@ $ lask serve                       # language server (LSP)
 $ lask version                     # print the lask version
 ```
 
-The [Quick Reference](doc/quick-reference.md) covers the whole language and CLI
-in ten minutes; [doc/spec.md](doc/spec.md) is the full specification behind it.
+The [Quick Reference](doc/quick-reference.md) covers the whole language and CLI in ten minutes; [doc/spec.md](doc/spec.md) is the full specification behind it.
 
 ## Status
 

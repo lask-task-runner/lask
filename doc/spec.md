@@ -1,7 +1,6 @@
 # Lask Language Specification
 
-This document is the language specification of Lask that satisfies the requirements definition document (`requirements.md`).
-This specification is intended to serve as the reference for implementation, verification, and editor integration.
+This document is the language specification of Lask that satisfies the requirements definition document (`requirements.md`). This specification is intended to serve as the reference for implementation, verification, and editor integration.
 
 
 ## Table of Contents
@@ -136,8 +135,7 @@ This specification is intended to serve as the reference for implementation, ver
 
 ### 1.1 Purpose
 
-Lask aims to express tasks as functions and to describe automation and CI/CD execution in a single consistent language.
-This specification defines syntax, types, evaluation, input/output, and observability so that implementers, users, and tool developers can share the same semantics.
+Lask aims to express tasks as functions and to describe automation and CI/CD execution in a single consistent language. This specification defines syntax, types, evaluation, input/output, and observability so that implementers, users, and tool developers can share the same semantics.
 
 The design goals of Lask are as follows.
 
@@ -177,8 +175,7 @@ The following are outside the scope of this specification.
 
 ### 1.5 Relationship to the Requirements Definition Document
 
-`requirements.md` is the higher-level document that defines the requirements to be satisfied, and this specification is the normative document that translates those requirements into an implementable language specification.
-If there is a discrepancy between the requirements and this specification, the intent of the requirements document takes precedence and the specification is updated.
+`requirements.md` is the higher-level document that defines the requirements to be satisfied, and this specification is the normative document that translates those requirements into an implementable language specification. If there is a discrepancy between the requirements and this specification, the intent of the requirements document takes precedence and the specification is updated.
 
 ### 1.6 Terminology
 
@@ -1039,8 +1036,7 @@ The types of the operators are as follows.
 
 The pipe and composition operators are syntactic sugar for making the passing of functions readable from left to right, and parentheses can be used to make the association order explicit.
 
-The result of comparison operators and logical operators is `Bool`. The result of arithmetic operators is `Number`, and they must be evaluable as numeric operations.
-The arithmetic operators, including `+`, are exclusively for `Number`; applying them to `String` is a type error. String concatenation is not done with an operator; use the built-in library function `concat` (15.3).
+The result of comparison operators and logical operators is `Bool`. The result of arithmetic operators is `Number`, and they must be evaluable as numeric operations. The arithmetic operators, including `+`, are exclusively for `Number`; applying them to `String` is a type error. String concatenation is not done with an operator; use the built-in library function `concat` (15.3).
 
 ### 6.3 Asynchronous Invocation and Awaiting
 
@@ -1287,8 +1283,7 @@ Statement termination rules:
 - In the rules and examples from this section onward, the statement separator `;` may be read as a newline. The two are synonymous as statement termination.
 - These rules (determination of termination and continuation) also apply identically to the termination of top-level declarations (the declaration termination rules of Chapter 5).
 
-Procedural notation is syntactic sugar to ease gradual migration to the expression-centered core language.
-`do` is syntactic sugar for sequential evaluation, and `if (...) { ... } else { ... }` / `case (...) { ... }` / `for (...) { ... }` are normalized by the rules of 6.4 into expressions that use `choose` / `map`.
+Procedural notation is syntactic sugar to ease gradual migration to the expression-centered core language. `do` is syntactic sugar for sequential evaluation, and `if (...) { ... } else { ... }` / `case (...) { ... }` / `for (...) { ... }` are normalized by the rules of 6.4 into expressions that use `choose` / `map`.
 
 Purpose and design policy:
 
@@ -1396,8 +1391,7 @@ shell_char   = unicode_char .
 
 Here `shell_char` is `unicode_char` (the common lexical element of Chapter 3; excluding newlines). A command string terminates at the end of the line (details follow the lexical rules of this section).
 
-A command execution expression is syntactic sugar for concisely writing shell command execution.
-Semantically it is handled by normalization to the built-in function `run`. The stream specifiers `1`, `2`, and `*` derive from file descriptor numbers and select which part of the command's result is received (`1` = standard output, `2` = standard error, `*` = the entire result).
+A command execution expression is syntactic sugar for concisely writing shell command execution. Semantically it is handled by normalization to the built-in function `run`. The stream specifiers `1`, `2`, and `*` derive from file descriptor numbers and select which part of the command's result is received (`1` = standard output, `2` = standard error, `*` = the entire result).
 
 Definition as a function:
 
@@ -1904,8 +1898,7 @@ Error diagnostics include at least the following.
 
 This chapter defines the evaluation order of expressions and their runtime meaning.
 
-Dynamic semantics is defined over the core expressions statically expanded in 7.6.
-An evaluation result is either a "success value" or a "failure".
+Dynamic semantics is defined over the core expressions statically expanded in 7.6. An evaluation result is either a "success value" or a "failure".
 
 ### 8.1 Evaluation Relation
 
@@ -2134,8 +2127,7 @@ Channel separation rules:
 
 ### 9.2 Ingestion of Standard Input
 
-Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure.
-Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable (9.3).
+Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure. Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable (9.3).
 
 1. Read stdin until EOF.
 2. Fix the entire input that was read as a single input snapshot.
@@ -3958,10 +3950,10 @@ Semantics:
 - The four differ only in what an unset variable means — a failure, a `Null`, a `Bool`, or a fallback — and follow the naming rules of 15.1. `find_env` is the only one of them whose result can be absent, and `get_env_or(name, fallback)` is exactly the `case` over `find_env(name)` that returns `fallback` for `Null`.
 - All four read the process environment of the Lask process itself. They do not read the variables of an execution `Environment` (10.6); a command reads those through the shell it runs in.
 - `find_env`, `has_env` and `get_env_or` are ordinary built-in symbols and may be shadowed by a user definition (15.1). Only `get_env` and `mark_secret` are core functions.
-- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. Note that `!!` requires `String` (6.10), so a credential is read with `get_env`, not with `find_env`.
+- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. `!!` accepts `String | Null` (6.10), so a credential that may be unset can be read with `find_env` and still be masked when present.
 - `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged. When `v` is `null`, nothing is registered (6.10).
 - `mark_secret` is a core function and must not be directly declared or overridden by user code (7.2). It is the desugaring target of `!!` secret bindings (6.10); user code may also call it directly to register a value that isn't declared with `!!`.
-- Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out) and no effect on control flow: it is not a source of failure.
+- Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out; `String | Null` in, `String | Null` out) and no effect on control flow: it is not a source of failure.
 
 ### 15.10 Path Operations
 

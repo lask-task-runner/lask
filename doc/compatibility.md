@@ -1,7 +1,6 @@
 # Lask Compatibility and Migration Policy
 
-This document defines the criteria for determining compatibility with respect to specification changes in Lask, and the policy for staged migration from the specification of the current implementation to this specification.
-The language specification itself is documented in `spec.md`. References to chapter and section numbers in this document (e.g., 11.3, Chapter 14) refer to the chapter numbers of `spec.md` unless otherwise noted.
+This document defines the criteria for determining compatibility with respect to specification changes in Lask, and the policy for staged migration from the specification of the current implementation to this specification. The language specification itself is documented in `spec.md`. References to chapter and section numbers in this document (e.g., 11.3, Chapter 14) refer to the chapter numbers of `spec.md` unless otherwise noted.
 
 ## 1. Purpose and Scope
 

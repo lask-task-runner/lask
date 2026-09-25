@@ -4,8 +4,7 @@ This document summarizes the requirements for "Lask", a functional-style task ru
 
 ## 1. Overview
 
-Lask is a new task runner and automation tool for developers that aims to be "locally verifiable", "type-safe", and "highly modular".
-It provides the simplicity of Makefiles, the task management capabilities of Task/Just, and the reproducibility of container integration found in tools like Earthly/Dagger, through a simple functional DSL and a powerful ecosystem (LSP, etc.).
+Lask is a new task runner and automation tool for developers that aims to be "locally verifiable", "type-safe", and "highly modular". It provides the simplicity of Makefiles, the task management capabilities of Task/Just, and the reproducibility of container integration found in tools like Earthly/Dagger, through a simple functional DSL and a powerful ecosystem (LSP, etc.).
 
 ## 2. Problems to Solve (Background)
 
