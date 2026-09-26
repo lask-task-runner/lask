@@ -5,17 +5,21 @@ module Language.Lask.ElaborateSpec (spec) where
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import Language.Lask.Diagnostic (Diagnostic, diagCode)
+import Language.Lask.Diagnostic (Advisory (..), Diagnostic, diagCode)
 import Language.Lask.Elaborate
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
+import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Types (renderType)
 import Test.Hspec
 
 -- | Full front-end pipeline over in-memory sources.
 elab :: [(FilePath, Text)] -> IO (Either [ErrorCode] (Map (FilePath, Text) CoreDecl))
-elab files = do
+elab files = fmap cpDecls <$> elabProgram files
+
+elabProgram :: [(FilePath, Text)] -> IO (Either [ErrorCode] CoreProgram)
+elabProgram files = do
   r <- loadProgramWith reader "main.lask"
   pure $ case r of
     Left ds -> Left (codes ds)
@@ -23,7 +27,7 @@ elab files = do
       Left ds -> Left (codes ds)
       Right scopes -> case elaborateProgram prog scopes of
         Left ds -> Left (codes ds)
-        Right cp -> Right (cpDecls cp)
+        Right cp -> Right cp
   where
     reader p = pure (maybe (Left "not found") Right (lookup p files))
     codes :: [Diagnostic] -> [ErrorCode]
@@ -38,6 +42,18 @@ typeOf src name = do
     Right decls -> case Map.lookup ("main.lask", name) decls of
       Just cd -> Right (renderType (cdType cd))
       Nothing -> Left []
+
+-- | The lines of main.lask where an advisory is reported; the program
+-- itself must be valid.
+advisedAt :: AdvisoryCode -> Text -> IO [Int]
+advisedAt code src = do
+  r <- elabProgram [("main.lask", src)]
+  case r of
+    Left cs -> expectationFailure ("expected success, got " <> show cs) >> pure []
+    Right cp -> pure [l | Advisory c (Span (Position _ l _) _) _ <- cpAdvisories cp, c == code]
+
+unusedAt :: Text -> [Int] -> Expectation
+unusedAt src expected = advisedAt WAsyncUnused src >>= (`shouldBe` expected)
 
 hasType :: Text -> Text -> Text -> Expectation
 hasType src name expected = typeOf src name >>= (`shouldBe` Right expected)
@@ -279,6 +295,26 @@ spec = do
           ("lib.lask", "a = 1\ntype R = Record<a: Number, a: String>")
         ]
         ETypeFieldDuplicate
+
+  describe "unused async handles (spec 6.3, 14.2)" $ do
+    it "reports a discarded handle" $
+      unusedAt "f(): String = do {\n  async \"x\"\n  \"done\"\n}" [2]
+    it "reports a handle bound to a name nothing refers to" $
+      unusedAt "f(): String = do {\n  h = async \"x\"\n  \"done\"\n}" [2]
+    it "reports the handles of a discarded for over an async body" $
+      unusedAt "f(): String = do {\n  for (s : [\"a\"]) {\n    async s\n  }\n  \"done\"\n}" [2]
+    it "reports a discarded call that returns a handle" $
+      unusedAt "g(): AsyncHandle<String> = async \"x\"\nf(): String = do {\n  g()\n  \"done\"\n}" [3]
+    it "is only advice: the program stays valid" $
+      accepts "f(): String = do {\n  async \"x\"\n  \"done\"\n}"
+    it "does not report a handle that is awaited, consumed, passed on or returned" $ do
+      unusedAt "f(): String = do {\n  h = async \"x\"\n  await h\n}" []
+      unusedAt "f(): Array<String> = do {\n  h = async \"x\"\n  all([h])\n}" []
+      unusedAt "w(h: AsyncHandle<String>): String = await h\nf(): String = do {\n  h = async \"x\"\n  w(h)\n}" []
+      unusedAt "f(): AsyncHandle<String> = do {\n  h = async \"x\"\n  h\n}" []
+      unusedAt "f(): AsyncHandle<String> = do {\n  \"x\"\n  async \"y\"\n}" []
+      unusedAt "f(): Array<AsyncHandle<String>> = do {\n  h = async \"x\"\n  hs = [h]\n  hs\n}" []
+      unusedAt "f(): Function<String> = do {\n  h = async \"x\"\n  \\() -> await h\n}" []
 
   describe "operators (spec 6.2)" $ do
     it "types arithmetic as Number" $ hasType "x = 1 + 2 * 3" "x" "Number"

@@ -488,6 +488,17 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", "a = 1\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""
         r `shouldBe` Result 0 "the module is valid\n" ""
+    it "check reports advisories and still exits 0 (spec 14.2)" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  async \"x\"\n  \"done\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        r
+          `shouldBe` Result
+            0
+            "main.lask:2:3-2:12: W-ASYNC-UNUSED [static]: this statement discards an async handle, so it is never awaited\nthe module is valid\n"
+            ""
+        j <- runLask lask dir ["check", "--format", "json"] ""
+        resExit j `shouldBe` 0
+        mapM_ (resOut j `shouldContain`) ["\"code\":\"W-ASYNC-UNUSED\"", "\"severity\":\"warning\"", "\"stage\":\"static\""]
     it "check reports diagnostics as JSON with --format json" $ \lask ->
       withProject [("main.lask", "x: Number = \"s\"\n")] $ \dir -> do
         r <- runLask lask dir ["check", "--format", "json"] ""

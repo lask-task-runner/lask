@@ -40,7 +40,7 @@ import Language.Lask.Deps.Cache (cacheDirFor)
 import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Diagnostic (Diagnostic (..))
+import Language.Lask.Diagnostic (Advisory (..), Diagnostic (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
 import Language.Lask.ErrorCode
@@ -99,10 +99,15 @@ cmdCheck opts = do
     Left ds -> do
       TIO.putStrLn (renderDiags (optJsonFormat opts) ds)
       exitWith (ExitFailure 1)
-    Right _ -> do
+    -- Advisories are reported alongside a valid module and leave the
+    -- exit code at 0 (spec 14.2).
+    Right compiled -> do
+      let advisories = cpAdvisories (compiledCore compiled)
       if optJsonFormat opts
-        then TIO.putStrLn "[]"
-        else putStrLn "the module is valid"
+        then TIO.putStrLn (TE.decodeUtf8 (BL.toStrict (A.encode (map advisoryJson advisories))))
+        else do
+          mapM_ (putStrLn . pretty) advisories
+          putStrLn "the module is valid"
       exitSuccess
 
 -- run / eval -----------------------------------------------------------------
@@ -773,6 +778,27 @@ diagJson d =
         )
       ]
     location NoSpan = []
+
+-- | An advisory in the JSON form of 14.3, marked by @severity@ (14.2).
+advisoryJson :: Advisory -> A.Value
+advisoryJson a =
+  A.object $
+    [ ("code", A.String (advisoryText (advCode a))),
+      ("severity", "warning"),
+      ("stage", "static"),
+      ("message", A.String (advMessage a))
+    ]
+      <> case advSpan a of
+        Span (Position file l c) _ ->
+          [ ( "location",
+              A.object
+                [ ("file", A.String (T.pack file)),
+                  ("line", A.Number (fromIntegral l)),
+                  ("column", A.Number (fromIntegral c))
+                ]
+            )
+          ]
+        NoSpan -> []
 
 -- | @lask env build@ (spec 11.7): materialize every image the program
 -- requires — registry references pulled and pinned, recipes built — and
