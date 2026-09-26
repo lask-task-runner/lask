@@ -14,9 +14,55 @@ Lask (lambda + task) is a task runner with a small language behind it, giving au
 
 Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger or Earthly too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
 
-Lask aims to stay simple and light to use while matching what the heavyweight platforms can do.
+Lask aims to stay simple and light to use, while bringing along the parts of the heavyweight platforms that most automation needs: pinned environments, checks before anything runs, concurrency and reuse.
 
-The recording above is [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws), which builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed. For the language itself, [example/02-language](example/02-language) is a tour of the whole language, one runnable module per topic.
+The recording above and the excerpt below come from [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws), which builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed. For the language itself, [example/02-language](example/02-language) is a tour of the whole language, one runnable module per topic.
+
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="doc/assets/example-dark.svg">
+    <img alt="An excerpt of the example's main.lask: Python and Node commands declared on pinned images from an imported tools module, a one-line unit-test task, and a typed end-to-end test task that runs Playwright in its own image" src="doc/assets/example-light.svg" width="620">
+  </picture>
+</div>
+
+<details>
+<summary>Copy the source of this excerpt</summary>
+
+```lask
+import * as tools from "tools"
+
+command { "python", "pip" } on python
+command { "node", "npm", "npx" } on node
+
+python = tools.python(tag = "3.12.14-alpine3.24")
+node = tools.node(tag = "20.20.2-alpine3.23")
+playwright = tools.playwright(tag = "v1.62.1-jammy")
+// …
+
+// Runs the frontend's unit tests (web/).
+test_web() = $ cd web && npm ci --no-audit --no-fund && npm test
+
+// Browser end-to-end test against the deployed site (e2e/): opens the
+// site, signs in through the real Cognito Hosted UI, and walks through
+// creating, listing, and deleting an order.
+test_e2e(
+  --email: String = get_env("E2E_EMAIL"),
+  --password!!: String = get_env("E2E_PASSWORD")
+) = do {
+  website = tf_output().website_url
+
+  $[playwright] cd e2e && \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && \
+    E2E_BASE_URL="#{website}" \
+    E2E_EMAIL="#{email}" \
+    E2E_PASSWORD="#{password}" \
+    npx playwright test
+}
+
+// …
+```
+
+</details>
 
 ## Why Lask
 
@@ -211,7 +257,7 @@ $ lask cmd <command> [args...]     # run a declared command in its declared imag
 $ lask envs [--check]              # list/check referenced environments
 $ lask env build | list            # materialize / inspect container images
 $ lask deps sync                   # fetch + verify external dependencies
-$ lask deps add <name> --git <url> --rev <rev>   # or --url <url>
+$ lask deps add <name> <source>    # add a dependency: --git <url> --rev <rev>, or --url <url>
 $ lask deps why <name>             # show why a dependency is in the graph
 $ lask repl                        # interactive session
 $ lask serve                       # language server (LSP)
@@ -222,7 +268,13 @@ The [Quick Reference](doc/quick-reference.md) covers the whole language and CLI 
 
 ## Status
 
-Lask is pre-1.0: features are `experimental` until 1.0, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released.
+Lask is pre-1.0: features are `experimental` until 1.0, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released. Until then, [feedback](#feedback) shapes what becomes stable.
+
+## Feedback
+
+Questions, ideas and feedback of any kind are welcome in [GitHub Discussions](https://github.com/lask-task-runner/lask/discussions): ask in [Q&A](https://github.com/lask-task-runner/lask/discussions/categories/q-a), suggest a feature in [Ideas](https://github.com/lask-task-runner/lask/discussions/categories/ideas), or share what you built in [Show and tell](https://github.com/lask-task-runner/lask/discussions/categories/show-and-tell). If something in this README or the [Quick Reference](doc/quick-reference.md) was unclear, or a task you wanted to write did not fit the language, that is worth a discussion too.
+
+Found a bug? Please open an [issue](https://github.com/lask-task-runner/lask/issues).
 
 ## Development
 
