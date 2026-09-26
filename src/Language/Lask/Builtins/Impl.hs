@@ -39,6 +39,7 @@ import qualified Language.Lask.Builtins.Path as P
 import qualified Language.Lask.Builtins.Regex as Re
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.ExecLog (LogSink)
+import Language.Lask.Runtime.AsyncTrack (AsyncTracker (..), siteOf)
 import Language.Lask.Runtime.Secrets (maskSecrets, registerSecret)
 import Language.Lask.Runtime.Value
 import System.Entropy (getEntropy)
@@ -78,7 +79,10 @@ type FileRunner = EnvValue -> FileOp -> IO (Either LaskFailure Value)
 data RtHooks = RtHooks
   { hookRunCommand :: CommandRunner,
     hookRunFile :: FileRunner,
-    hookLog :: LogSink
+    hookLog :: LogSink,
+    -- | Which computations were started and which were awaited
+    -- (spec 6.3).
+    hookAsync :: AsyncTracker
   }
 
 callBuiltin :: Apply -> RtHooks -> Text -> [Value] -> [(Text, Value)] -> IO Value
@@ -269,16 +273,23 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   -- 15.6 parallel/async ------------------------------------------------------
   ("spawn", [f]) -> do
     a <- async (apply f [] [])
+    trackSpawned (hookAsync hooks) (siteOf f) a
     pure (VAsync (AsyncHandle a))
   ("await", [VAsync (AsyncHandle a)]) -> awaitHandle a
   ("all", [VArray xs]) -> do
     let handles = [a | VAsync (AsyncHandle a) <- V.toList xs]
+    -- All of them are consumed, even if one fails before the rest are
+    -- reached.
+    mapM_ (trackAwaited (hookAsync hooks)) handles
     VArray . V.fromList <$> mapM awaitHandle handles
   ("race", [VArray xs]) -> do
     let handles = [a | VAsync (AsyncHandle a) <- V.toList xs]
     case handles of
       [] -> throwIO (domainError "race on an empty array")
       _ -> do
+        -- Every handle given to race is consumed: the winner is
+        -- received, and the rest are cancelled.
+        mapM_ (trackAwaited (hookAsync hooks)) handles
         (_, r) <- waitAnyCatch handles
         mapM_ cancel handles
         either throwIO pure r
@@ -483,5 +494,6 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
 
     -- A failed computation's failure is re-raised as it was (spec 6.3).
     awaitHandle a = do
+      trackAwaited (hookAsync hooks) a
       r <- waitCatch a
       either throwIO pure r

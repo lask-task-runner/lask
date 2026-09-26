@@ -408,6 +408,67 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["run", "nope"] ""
         resExit r `shouldBe` 4
 
+  -- A computation nothing awaits is waited for at the end of the run,
+  -- and reported as an advisory that leaves the outcome alone.
+  describe "never-awaited async (spec 6.3, 14.2)" $ do
+    it "runs it to completion and reports it, keeping the exit code" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] sh -c 'sleep 1; echo done > side.txt'\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"ok\"\n"
+        resErr r `shouldContain` "W-ASYNC-UNAWAITED: the async at main.lask:2:7 was never awaited"
+        resErr r `shouldContain` "and completed"
+        readFile (dir </> "side.txt") `shouldReturn` "done\n"
+    it "reports its failure without taking over the exit code" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 3\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldContain` "failed with E-RUNTIME-COMMAND-NONZERO (exit code 3)"
+    it "reports it when the function itself fails, which keeps its own exit code" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] echo side\n  $[#local] exit 5\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 5
+        resErr r `shouldContain` "W-ASYNC-UNAWAITED: the async at main.lask:2:7"
+    it "does not report a handle consumed by await, all, race, or another function" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "wait(h: AsyncHandle<String>): String = await h\n\
+            \f(): String = do {\n\
+            \  a = async \"a\"\n\
+            \  b = async \"b\"\n\
+            \  c = async \"c\"\n\
+            \  d = async \"d\"\n\
+            \  e = async \"e\"\n\
+            \  x = await a\n\
+            \  ys = all([b, c])\n\
+            \  z = race([d])\n\
+            \  w = wait(e)\n\
+            \  \"ok\"\n\
+            \}\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["eval", "f"] ""
+          r `shouldBe` Result 0 "\"ok\"\n" ""
+    it "does not report the rest of an all whose first handle failed" $ \lask ->
+      withProject [("main.lask", "f(): Array<String> = do {\n  a = async $[#local] exit 4\n  b = async $[#local] echo b\n  all([a, b])\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldNotContain` "W-ASYNC-UNAWAITED"
+    it "reports it as a JSON Lines warning under --format json" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 3\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "--format", "json", "f"] ""
+        resExit r `shouldBe` 0
+        let warnings = [l | l <- lines (resErr r), "W-ASYNC-UNAWAITED" `isInfixOf` l]
+        length warnings `shouldBe` 1
+        mapM_
+          (\field -> concat warnings `shouldContain` field)
+          [ "\"severity\":\"warning\"",
+            "\"stage\":\"runtime\"",
+            "\"location\":{\"column\":7,\"file\":\"main.lask\",\"line\":2}",
+            "\"failure\":{\"code\":\"E-RUNTIME-COMMAND-NONZERO\""
+          ]
+
   describe "output encodings (spec 11.3, 13.1)" $ do
     it "encodes records as JSON by default" $ \lask ->
       withProject [("main.lask", "u() = {name: \"a\", age: 20}\n")] $ \dir -> do

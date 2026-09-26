@@ -1079,6 +1079,7 @@ Evaluation rules:
 - `await h` suspends the current evaluation until `h` completes, and returns the result value after completion.
 - Applying `await h` multiple times to the same handle returns the same completion result.
 - If a failure occurs inside `async e`, that failure is re-raised at the time of `await h`.
+- A handle is **consumed** when it is passed to `await`, `all`, or `race`. A computation whose handle is never consumed is not cut short by the end of the top-level execution (`run` / `eval`, Chapter 11): the execution waits for it, including any computation it starts in turn, and then reports it as the advisory `W-ASYNC-UNAWAITED` (14.2). The report names where it was started and, if it failed, its failure. It changes neither the result nor the exit code of the execution: a failure nobody awaited is reported, not raised.
 
 The execution environment may choose the concurrency mechanism for `async` (threads, an event loop, a remote execution queue, etc.) as implementation-defined, but must satisfy the typing rules and evaluation rules above.
 
@@ -2023,6 +2024,11 @@ Evaluation of `await(h)`:
 4. If `A[h] = failure(err)`, rethrow `err`.
 
 Multiple `await`s on the same `h` return the same completion result.
+
+At the end of a top-level execution, before its result is output or its failure reported:
+
+1. While some `h` created during the execution has never been passed to `await`, `all`, or `race`, wait until `A[h]` is no longer `running`.
+2. Report each such `h` as `W-ASYNC-UNAWAITED` (6.3), in the order the handles were created, with its failure if `A[h] = failure(err)`.
 
 ### 8.7 Command Execution (Core Function)
 
@@ -3056,7 +3062,7 @@ Output rules:
 - `info` and below are classified as operational logs, and `warn` / `error` as diagnostic logs.
 - `error`-level logs must be cross-referenceable with the corresponding failure event (12.6).
 - The line format of the default text display is implementation-defined. However, each line contains `level` and `message`, and the command execution log (12.3) follows the text-format provisions.
-- When `--format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = error diagnostics (14.3), `stream` / `event` = command execution log (12.3)).
+- When `--format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3)).
 
 ### 12.3 Command Execution Log
 
@@ -3428,7 +3434,8 @@ Advisory codes:
   - `W-DOC-PARAM-UNKNOWN`: an `@param` in a documentation comment (3.1) names a parameter the declaration does not have.
   - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
   - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
-- Reporting advisory diagnostics is optional. `check` and `serve` are the expected places to report them.
+  - `W-ASYNC-UNAWAITED`: an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6). Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`.
+- Reporting advisory diagnostics is optional, with one exception: `W-ASYNC-UNAWAITED` is always reported, because a failure it carries is otherwise invisible. `check` and `serve` are the expected places for the static ones; `run` and `eval` report the run-time ones on stderr.
 
 ### 14.3 Minimum Requirements for Diagnostic Information
 

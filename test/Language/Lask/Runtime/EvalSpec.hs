@@ -8,6 +8,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner, RtHooks (..))
+import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
 import Language.Lask.Obs.ExecLog (noLogSink)
 import Language.Lask.Diagnostic (diagCode)
 import Language.Lask.Elaborate (elaborateProgram)
@@ -55,7 +56,7 @@ run src name = do
       Right scopes -> case elaborateProgram prog scopes of
         Left ds -> pure (Left (Nothing, T.pack (show (map diagCode ds))))
         Right cp -> do
-          ctx <- mkRtCtx cp "in-data\n" (RtHooks mockRunner mockFileRunner noLogSink)
+          ctx <- mkRtCtx cp "in-data\n" (RtHooks mockRunner mockFileRunner noLogSink noAsyncTracker)
           out <- try $ do
             v <- topValue ctx ("main.lask", name)
             case v of

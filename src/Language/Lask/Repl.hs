@@ -28,6 +28,7 @@ import Language.Lask.Obs.ExecLog (textLogSink)
 import Language.Lask.Deps.Lock (LockFile (..), defaultLockFileName, loadLockFile)
 import Language.Lask.Runtime.Environment (mkCommandRunner, mkFileRunner)
 import Language.Lask.Runtime.Image (lockPins, unlockedPins)
+import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
 import Language.Lask.Runtime.Eval (mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, failureMessage)
@@ -107,7 +108,7 @@ evalSession modulePath source = do
       let pins = unlockedPins (lockPins (maybe mempty lockImages lock))
       runner <- mkCommandRunner pins baseDir (textCommandLog writeErr)
       fileRunner <- mkFileRunner pins baseDir
-      ctx <- mkRtCtx core "" (RtHooks runner fileRunner (textLogSink writeErr))
+      ctx <- mkRtCtx core "" (RtHooks runner fileRunner (textLogSink writeErr) noAsyncTracker)
       result <- try (topValue ctx (cpEntry core, resultName))
       pure (Right result)
 
