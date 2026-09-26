@@ -23,7 +23,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (foldM, unless, when)
 import Control.Monad.State.Strict (StateT (runStateT), evalStateT, get, gets, lift, modify, put)
 import Data.Maybe (isNothing)
-import Data.List (sortOn)
+import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -94,7 +94,9 @@ data CoreProgram = CoreProgram
     cpCommandUses :: [CommandUse],
     -- | Name references with their types, recorded during
     -- elaboration for editor tooling (hover).
-    cpHover :: [HoverInfo]
+    cpHover :: [HoverInfo],
+    -- | Advisory diagnostics (spec 14.2), in source order.
+    cpAdvisories :: [Advisory]
   }
   deriving (Show)
 
@@ -161,7 +163,9 @@ data St = St
     -- | Modules whose command table is being built. A command string
     -- elaborated meanwhile was reached from the environment of a
     -- command declaration, which may run nothing (spec ch. 5).
-    stCommandsBuilding :: Set FilePath
+    stCommandsBuilding :: Set FilePath,
+    -- | Advisories found so far, most recent first.
+    stAdvisories :: [Advisory]
   }
 
 -- | One command word of a module's table (spec ch. 5, 10.9).
@@ -230,6 +234,10 @@ type Locals = Map Text Type
 abort :: Diagnostic -> TC a
 abort = lift . Left
 
+-- | Record an advisory diagnostic (spec 14.2); elaboration continues.
+advise :: AdvisoryCode -> Span -> Text -> TC ()
+advise code sp msg = modify (\s -> s {stAdvisories = Advisory code sp msg : stAdvisories s})
+
 -- | Attempt an elaboration, recovering from its diagnostic. Used for
 -- bidirectional fallbacks (e.g. inferring one if branch and checking
 -- the other, so context-typed calls like @fail(e)@ work in either
@@ -254,9 +262,9 @@ mismatch sp expected actual =
 
 elaborateProgram :: Program -> Map FilePath GlobalScope -> Either [Diagnostic] CoreProgram
 elaborateProgram prog scopes =
-  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s, stCommandUses s))) (St Map.empty Map.empty Set.empty [] [] Map.empty Set.empty) of
+  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s, stCommandUses s, stAdvisories s))) (St Map.empty Map.empty Set.empty [] [] Map.empty Set.empty []) of
     Left d -> Left [d]
-    Right (decls, hover, commands, uses) ->
+    Right (decls, hover, commands, uses, advisories) ->
       Right
         CoreProgram
           { cpEntry = progEntry prog,
@@ -267,7 +275,10 @@ elaborateProgram prog scopes =
                 Map.lookup (progEntry prog) (progModules prog),
             cpCommands = Map.map (Map.map ceEnv) commands,
             cpCommandUses = uses,
-            cpHover = hover
+            cpHover = hover,
+            -- An expression elaborated twice, by a bidirectional
+            -- fallback, reports once.
+            cpAdvisories = sortOn advSpan (nub advisories)
           }
   where
     ctx = Ctx prog scopes Set.empty
@@ -1166,9 +1177,18 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
       SBind n sec ann e -> do
         (c, t) <- elabBind locals ssp n sec ann e (infer ctx path locals e)
         (cs, ty) <- go (Map.insert n t locals) rest
+        -- A later binding of the same name, or a parameter, counts as
+        -- a reference: the check never reports a handle that is used.
+        when (holdsHandles t && not (any (mentions n) cs)) $
+          advise WAsyncUnused ssp $
+            "'" <> n <> "' holds " <> handlesOf t <> " that nothing refers to, so " <> neverAwaited t
         pure (CSBind n c : cs, ty)
       SExpr e -> do
-        (c, _) <- infer ctx path locals e
+        (c, t) <- infer ctx path locals e
+        -- Only the last statement gives the block its value (6.5).
+        when (holdsHandles t) $
+          advise WAsyncUnused (exprSpan e) $
+            "this statement discards " <> handlesOf t <> ", so " <> neverAwaited t
         (cs, ty) <- go locals rest
         pure (CSExpr c : cs, ty)
       SReturn _ -> returnErr
@@ -1198,6 +1218,26 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
 
     returnErr =
       abort (diag ESyntaxReturnPosition bsp "return is not allowed in this position")
+
+    -- The value of an @async@ (6.3), or an array of them, as @for@
+    -- over an @async@ body produces.
+    holdsHandles t = case t of
+      TyAsync _ -> True
+      TyArray (TyAsync _) -> True
+      _ -> False
+    handlesOf t = case t of
+      TyArray _ -> "async handles"
+      _ -> "an async handle"
+    neverAwaited t = case t of
+      TyArray _ -> "they are never awaited"
+      _ -> "it is never awaited"
+    mentions n stmt = any refersTo (concatMap stmtCores [stmt])
+      where
+        refersTo c = case coreF c of
+          CVar (LocalRef m) | m == n -> True
+          _ -> any refersTo (coreChildren c)
+        stmtCores (CSBind _ c) = [c]
+        stmtCores (CSExpr c) = [c]
 
 -- case (spec 6.4) -----------------------------------------------------------------------
 

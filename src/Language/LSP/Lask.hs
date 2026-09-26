@@ -20,6 +20,7 @@ module Language.LSP.Lask
     semanticTokens,
     hoverMarkdown,
     completionAt,
+    documentDiagnostics,
   )
 where
 
@@ -52,13 +53,13 @@ import Data.Maybe (isJust, listToMaybe, mapMaybe, maybeToList)
 import Data.Ord (comparing)
 import qualified Data.Set as Set
 import qualified Data.Text.IO as TIO
-import Language.Lask (Compiled (..), Partial (..), checkText, compileText, compileTextPartial)
+import Language.Lask (Compiled (..), Partial (..), compileText, compileTextPartial)
 import Language.Lask.Builtins.Doc (builtinDocs, renderBuiltinDoc)
 import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
 import Language.Lask.Doc (docBlockAbove)
 import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..), readFieldType)
-import Language.Lask.ErrorCode (codeText)
+import Language.Lask.ErrorCode (advisoryText, codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
 import qualified Language.Lask.Lexer.Token as Tok
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
@@ -213,9 +214,23 @@ sendDocumentDiagnostics logger msg = do
   mdoc <- getVirtualFile doc
   case mdoc of
     Just file -> do
-      ds <- liftIO $ checkText path (virtualFileText file)
+      ds <- liftIO $ documentDiagnostics path (virtualFileText file)
       sendDiagnostics doc (Just $ virtualFileVersion file) ds
     Nothing -> sendDiagnostics doc Nothing []
+
+-- | What the editor shows for a document: its errors, or, when it is
+-- valid, the advisories found in it (spec 14.2) as warnings.
+documentDiagnostics :: FilePath -> Text -> IO [LSP.Diagnostic]
+documentDiagnostics path src = do
+  r <- compileText path src
+  pure $ case r of
+    Left ds -> map errorDiagnostic ds
+    Right c ->
+      [ advisoryDiagnostic a
+      | a <- cpAdvisories (compiledCore c),
+        S.Span (S.Position inFile _ _) _ <- [D.advSpan a],
+        inFile == path
+      ]
 
 -- | The filesystem path of a document URI. Imports and the
 -- environment definition file resolve relative to this path, so the
@@ -224,24 +239,35 @@ sendDocumentDiagnostics logger msg = do
 uriPath :: Uri -> FilePath
 uriPath uri = maybe (T.unpack (getUri uri)) id (uriToFilePath uri)
 
-sendDiagnostics :: LSP.NormalizedUri -> Maybe Int32 -> [D.Diagnostic] -> LspM Config ()
-sendDiagnostics fileUri version ds = do
-  let diags =
-        map
-          ( \d ->
-              LSP.Diagnostic
-                (toRange (D.diagSpan d))
-                (Just LSP.DiagnosticSeverity_Error)
-                (Just (LSP.InR (codeText (D.diagCode d))))
-                Nothing
-                (Just "lask")
-                (T.pack $ pretty d)
-                Nothing
-                (Just [])
-                Nothing
-          )
-          ds
+sendDiagnostics :: LSP.NormalizedUri -> Maybe Int32 -> [LSP.Diagnostic] -> LspM Config ()
+sendDiagnostics fileUri version diags =
   publishDiagnostics 100 fileUri version (partitionBySource diags)
+
+errorDiagnostic :: D.Diagnostic -> LSP.Diagnostic
+errorDiagnostic d =
+  LSP.Diagnostic
+    (toRange (D.diagSpan d))
+    (Just LSP.DiagnosticSeverity_Error)
+    (Just (LSP.InR (codeText (D.diagCode d))))
+    Nothing
+    (Just "lask")
+    (T.pack $ pretty d)
+    Nothing
+    (Just [])
+    Nothing
+
+advisoryDiagnostic :: D.Advisory -> LSP.Diagnostic
+advisoryDiagnostic a =
+  LSP.Diagnostic
+    (toRange (D.advSpan a))
+    (Just LSP.DiagnosticSeverity_Warning)
+    (Just (LSP.InR (advisoryText (D.advCode a))))
+    Nothing
+    (Just "lask")
+    (D.advMessage a)
+    Nothing
+    (Just [])
+    Nothing
 
 -- | Semantic token atoms from the lexer: comments (collected on the
 -- side), interpolation contents (nested token streams inside string

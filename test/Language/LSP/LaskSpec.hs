@@ -9,7 +9,7 @@ import Data.List (nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.LSP.Lask (completionAt, hoverAt, inlayHintsIn, lexSemanticTokens, semanticTokens, uriPath)
+import Language.LSP.Lask (completionAt, documentDiagnostics, hoverAt, inlayHintsIn, lexSemanticTokens, semanticTokens, uriPath)
 import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.Lask (checkText)
@@ -54,6 +54,17 @@ hintsFor path src = do
 
 spec :: Spec
 spec = do
+  describe "document diagnostics (spec 14.2)" $ do
+    let severities src = map (\d -> (d ^. L.severity, d ^. L.code)) <$> documentDiagnostics "main.lask" src
+    it "shows an advisory of a valid document as a warning" $
+      severities "f(): String = do {\n  async \"x\"\n  \"done\"\n}"
+        `shouldReturn` [(Just DiagnosticSeverity_Warning, Just (InR "W-ASYNC-UNUSED"))]
+    it "shows an error as an error" $
+      severities "x: Number = \"s\""
+        `shouldReturn` [(Just DiagnosticSeverity_Error, Just (InR "E-TYPE-MISMATCH"))]
+    it "shows nothing for a clean document" $
+      severities "a = 1" `shouldReturn` []
+
   describe "comments" $ do
     it "emits comment tokens for line comments" $
       -- "// hi" occupies columns 0-4 on line 0.

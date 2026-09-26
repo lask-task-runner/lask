@@ -3,8 +3,10 @@
 -- | Error codes and stages defined by spec chapter 14.
 module Language.Lask.ErrorCode
   ( ErrorCode (..),
+    AdvisoryCode (..),
     Stage (..),
     codeText,
+    advisoryText,
     stageText,
   )
 where
@@ -54,6 +56,16 @@ data ErrorCode
   | EIoDataDecode
   | ECliUsage
   deriving (Show, Eq, Ord, Enum, Bounded)
+
+-- | @W-\<CATEGORY\>-\<DETAIL\>@ advisory codes (spec 14.2): a probable
+-- mistake that is not an error.
+data AdvisoryCode
+  = WAsyncUnused
+  deriving (Show, Eq, Ord, Enum, Bounded)
+
+advisoryText :: AdvisoryCode -> Text
+advisoryText c = case c of
+  WAsyncUnused -> "W-ASYNC-UNUSED"
 
 -- | Error stage (spec 14.3).
 data Stage

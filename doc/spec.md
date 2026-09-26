@@ -1080,6 +1080,7 @@ Evaluation rules:
 - Applying `await h` multiple times to the same handle returns the same completion result.
 - If a failure occurs inside `async e`, that failure is re-raised at the time of `await h`.
 - A handle is **consumed** when it is passed to `await`, `all`, or `race`. A computation whose handle is never consumed is not cut short by the end of the top-level execution (`run` / `eval`, Chapter 11): the execution waits for it, including any computation it starts in turn, and then reports it as the advisory `W-ASYNC-UNAWAITED` (14.2). The report names where it was started and, if it failed, its failure. It changes neither the result nor the exit code of the execution: a failure nobody awaited is reported, not raised.
+- A handle that can be seen from the text alone never to be consumed is reported statically as the advisory `W-ASYNC-UNUSED` (14.2): an expression of type `AsyncHandle<T>` or `Array<AsyncHandle<T>>` that is a statement of a block other than its last, so that its value is discarded (6.5); or a binding in a block of either type whose name no later statement of the block refers to. A handle that is referred to — awaited, passed to a function, stored, returned — is not reported, whether or not it is eventually consumed; `W-ASYNC-UNAWAITED` covers those at run time.
 
 The execution environment may choose the concurrency mechanism for `async` (threads, an event loop, a remote execution queue, etc.) as implementation-defined, but must satisfy the typing rules and evaluation rules above.
 
@@ -3434,6 +3435,7 @@ Advisory codes:
   - `W-DOC-PARAM-UNKNOWN`: an `@param` in a documentation comment (3.1) names a parameter the declaration does not have.
   - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
   - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
+  - `W-ASYNC-UNUSED`: a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`.
   - `W-ASYNC-UNAWAITED`: an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6). Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`.
 - Reporting advisory diagnostics is optional, with one exception: `W-ASYNC-UNAWAITED` is always reported, because a failure it carries is otherwise invisible. `check` and `serve` are the expected places for the static ones; `run` and `eval` report the run-time ones on stderr.
 
