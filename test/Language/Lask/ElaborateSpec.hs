@@ -266,6 +266,19 @@ spec = do
       rejects "type Pair<A, B> = Record<first: A, second: B>\nf(p: Pair): Number = 1" ETypeArity
     it "checks well-formedness after expansion" $
       rejects "type Bad<A> = Array<A>\nf(x: Bad<Void>): Number = 1" ETypeIllformed
+    it "checks an alias that nothing uses" $ do
+      rejects "type R = Record<a: Number, a: String>" ETypeFieldDuplicate
+      rejects "type R = Array<Void>" ETypeIllformed
+      rejects "type P<A> = Record<a: A, a: A>" ETypeFieldDuplicate
+    it "accepts a well-formed alias that nothing uses" $ do
+      accepts "type R = Void"
+      accepts "type P<A> = Array<A>"
+    it "checks an alias of an imported module that nothing uses" $
+      rejectsFiles
+        [ ("main.lask", "import { a } from \"./lib.lask\"\nx = a"),
+          ("lib.lask", "a = 1\ntype R = Record<a: Number, a: String>")
+        ]
+        ETypeFieldDuplicate
 
   describe "operators (spec 6.2)" $ do
     it "types arithmetic as Number" $ hasType "x = 1 + 2 * 3" "x" "Number"

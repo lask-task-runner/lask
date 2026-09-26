@@ -272,9 +272,16 @@ elaborateProgram prog scopes =
   where
     ctx = Ctx prog scopes Set.empty
     -- Every module's command declarations are checked, whether or not
-    -- a command string uses them (spec ch. 5).
+    -- a command string uses them (spec ch. 5), and so is every type
+    -- alias, whether or not a type refers to it (spec 4.2).
     elabAll = do
       mapM_ (commandTable ctx . lmPath) (Map.elems (progModules prog))
+      mapM_
+        (aliasBody ctx)
+        [ (lmPath lm, a)
+        | lm <- Map.elems (progModules prog),
+          Decl _ (DTypeAlias a _ _) <- moduleDecls (lmModule lm)
+        ]
       mapM_
         (demandDecl ctx)
         [ (lmPath lm, n)
@@ -526,16 +533,7 @@ aliasType ctx path sp qualifier n args = do
     -- standing for themselves, and each reference substitutes its type
     -- arguments into that body (spec 4.2).
     Just (TAlias defPath defName) -> do
-      (params, body) <- do
-        cached <- gets stAliases
-        case Map.lookup (defPath, defName) cached of
-          Just pb -> pure pb
-          Nothing -> do
-            (tps, rhs) <- aliasRhs defPath defName
-            vs <- typeVarsOf ctx defPath tps
-            t <- typeFromS (withTypeVars (Set.fromList vs) ctx) defPath rhs
-            modify (\s -> s {stAliases = Map.insert (defPath, defName) (vs, t) (stAliases s)})
-            pure (vs, t)
+      (params, body) <- aliasBody ctx (defPath, defName)
       unless (length args == length params) $
         abort . diag ETypeArity sp $
           "'"
@@ -551,13 +549,28 @@ aliasType ctx path sp qualifier n args = do
     noArgs =
       unless (null args) $
         abort (diag ETypeArity sp ("'" <> n <> "' takes no type arguments"))
-    aliasRhs defPath defName =
+
+-- | The body of a declared type alias, with the type parameters it
+-- binds, elaborated once and cached. A parameterised alias is
+-- elaborated with its parameters standing for themselves.
+aliasBody :: Ctx -> Key -> TC ([Text], Type)
+aliasBody ctx key@(defPath, defName) = do
+  cached <- gets stAliases
+  case Map.lookup key cached of
+    Just pb -> pure pb
+    Nothing -> do
+      (tps, rhs) <- aliasRhs
+      vs <- typeVarsOf ctx defPath tps
+      t <- typeFromS (withTypeVars (Set.fromList vs) ctx) defPath rhs
+      modify (\s -> s {stAliases = Map.insert key (vs, t) (stAliases s)})
+      pure (vs, t)
+  where
+    aliasRhs =
       case Map.lookup defPath (progModules (ctxProg ctx)) of
-        Just lm ->
-          case [(tps, t) | Decl _ (DTypeAlias a tps t) <- moduleDecls (lmModule lm), a == defName] of
-            (r : _) -> pure r
-            [] -> abort (diag ENameUndefined sp ("undefined type: '" <> n <> "'"))
-        Nothing -> abort (diag ENameUndefined sp ("undefined type: '" <> n <> "'"))
+        Just lm
+          | (r : _) <- [(tps, t) | Decl _ (DTypeAlias a tps t) <- moduleDecls (lmModule lm), a == defName] ->
+              pure r
+        _ -> abort (diag ENameUndefined NoSpan ("internal: missing type alias " <> defName))
 
 -- Lambdas and parameters ----------------------------------------------------------
 
