@@ -17,7 +17,6 @@ data ErrorCode
   | ESyntaxReturnPosition
   | ESyntaxCaseElse
   | ENameUndefined
-  | ENameAmbiguous
   | ENameDuplicate
   | ETypeMismatch
   | ETypeArity
@@ -72,7 +71,6 @@ codeText c = case c of
   ESyntaxReturnPosition -> "E-SYNTAX-RETURN-POSITION"
   ESyntaxCaseElse -> "E-SYNTAX-CASE-ELSE"
   ENameUndefined -> "E-NAME-UNDEFINED"
-  ENameAmbiguous -> "E-NAME-AMBIGUOUS"
   ENameDuplicate -> "E-NAME-DUPLICATE"
   ETypeMismatch -> "E-TYPE-MISMATCH"
   ETypeArity -> "E-TYPE-ARITY"

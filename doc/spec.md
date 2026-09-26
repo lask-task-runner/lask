@@ -1869,7 +1869,6 @@ Two expansions are type-directed, and every other expansion is purely syntactic.
 The error kinds reported by static verification include at least the following.
 
 - `E-NAME-UNDEFINED`: undefined reference
-- `E-NAME-AMBIGUOUS`: ambiguous reference
 - `E-NAME-DUPLICATE`: duplicate definition
 - `E-TYPE-MISMATCH`: type mismatch
 - `E-TYPE-ARITY`: function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2)
@@ -3389,7 +3388,6 @@ Representative codes:
 - `E-SYNTAX-RETURN-POSITION`
 - `E-SYNTAX-CASE-ELSE`
 - `E-NAME-UNDEFINED`
-- `E-NAME-AMBIGUOUS`
 - `E-NAME-DUPLICATE`
 - `E-TYPE-MISMATCH`
 - `E-TYPE-ARITY`
@@ -3469,7 +3467,6 @@ Static errors are reported by pre-execution verification (Chapter 7).
 Minimum targets:
 
 - `E-NAME-UNDEFINED`
-- `E-NAME-AMBIGUOUS`
 - `E-NAME-DUPLICATE`
 - `E-TYPE-MISMATCH`
 - `E-TYPE-ARITY`
