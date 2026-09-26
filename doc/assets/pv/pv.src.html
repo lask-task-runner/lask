@@ -602,11 +602,39 @@ function render(t) {
 }
 window.render = render;
 
+// ---------- 15-second cut (pv.html?short) ----------
+// Plays pieces of the full timeline: [short start, short end, full start, full end].
+if (new URLSearchParams(location.search).has("short")) {
+  const SC = S => 13.4 + 10.4 * S;
+  const MOMENTS = [SC(0) + 6.9, SC(1) + 3.6, SC(2) + 4.6, SC(3) + 7.6, SC(4) + 4.3, SC(5) + 5.2, SC(6) + 5.6];
+  const CUT = .65, M0 = 6.85;
+  const SEGS = [
+    [0, 2.7, 0, 2.9],          // lambda + task -> Lask
+    [2.7, 2.95, 4.05, 4.3],    // fade out
+    [2.95, 5.45, 4.4, 8.4],    // where Lask fits, 1.6x
+    [5.45, 6.55, 8.4, 9.5],    // hold to read
+    [6.55, 6.85, 10.7, 11.0],  // fade out
+    ...MOMENTS.map((m, i) => [M0 + i * CUT, M0 + (i + 1) * CUT, m - CUT / 2, m + CUT / 2]),
+    [M0 + 7 * CUT, 15, 86.2, 86.2 + 15 - (M0 + 7 * CUT)], // end card
+  ];
+  window.DURATION = 15;
+  const renderFull = render;
+  window.render = ts => {
+    const seg = SEGS.find(([a, b]) => ts >= a && ts < b) || SEGS[SEGS.length - 1];
+    const [a, b, fa, fb] = seg;
+    renderFull(fa + (fb - fa) * clamp((ts - a) / (b - a)));
+    // montage: each cut lands slightly zoomed in and snaps back
+    const inMontage = ts >= M0 && ts < M0 + 7 * CUT;
+    const k = inMontage ? 1 + .045 * (1 - expo(((ts - M0) % CUT) / .3)) : 1;
+    $("stage").style.transform = `scale(${k})`;
+  };
+}
+
 if (!navigator.webdriver) {
   const t0 = performance.now();
-  const loop = () => { render(((performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  const loop = () => { window.render(((performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
   loop();
-} else render(0);
+} else window.render(0);
 </script>
 </body>
 </html>

@@ -5,7 +5,9 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <div align="center">
-  <img alt="Lask in 90 seconds: the example/01-projects/02-webapp-on-aws project, showing lask check catching a typo before anything runs, Terraform and Python running in pinned images on a machine without them, two test suites running concurrently with async / await, hash-pinned module imports, the REPL and lask cmd, and --help generated from doc comments" src="doc/assets/lask-pv.gif" width="960">
+  <img alt="Lask in 15 seconds: lambda + task becomes Lask, where it fits between make or Taskfile and Dagger or Earthly, then quick cuts of the example/01-projects/02-webapp-on-aws project showing its seven strengths" src="doc/assets/lask-pv-short.gif" width="960">
+  <br>
+  <a href="doc/assets/lask-pv.mp4">▶ Watch the full 90-second tour (MP4)</a>
 </div>
 
 Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
