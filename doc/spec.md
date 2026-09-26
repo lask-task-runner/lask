@@ -197,7 +197,7 @@ This section defines the principal terms used in this specification.
 
 ## 2. Notation
 
-This chapter defines only how to read the EBNF notation used throughout the specification document.
+This chapter defines how to read the EBNF notation used throughout the specification document, and how its Lask examples are marked.
 
 ```ebnf
 Production  = production_name "=" [ Expression ] "." .
@@ -218,6 +218,11 @@ How to read the EBNF:
 - `( X )` denotes grouping.
 - `"..."` denotes a terminal symbol (a literal string).
 - `production_name` denotes a nonterminal symbol (a reference to another production rule).
+
+Lask examples:
+
+- A code block marked `lask` is a complete module: on its own, as `main.lask`, it passes `lask check`.
+- A code block marked `lask fragment` is not: it is an excerpt, an equivalence written with `(* ... *)` between its two sides, or a module that relies on files or dependencies the example does not show.
 
 ## 3. Lexical Specification
 
@@ -696,7 +701,7 @@ Command imports and exports:
 - One declaration reached along two import paths — directly, and through a module that re-exports it — gives one command word, not two. A word imported from two different declarations is `E-TYPE-COMMAND-DUPLICATE`.
 - `ImportPath` follows the resolution rules below, including the restriction of an external import to the entry module of a dependency. A dependency that publishes command words from several files re-exports them from its entry module.
 
-```lask
+```lask fragment
 // tools/main.lask
 go(--proxy: String = ""): Environment = #docker("golang:1.25", env = {"GOPROXY": proxy})
 aws(--profile: String = ""): Environment = #docker("amazon/aws-cli:2.36.41", env = {"AWS_PROFILE": profile})
@@ -853,7 +858,7 @@ type Strings = Array<String>
 joinWithComma(xs: Strings): String = join(xs, ",")
 ```
 
-```lask
+```lask fragment
 // module: app/main.lask
 import { add } from "./lib/math.lask"
 import * as types from "./lib/types.lask"
@@ -877,7 +882,7 @@ Here `notify` is an external dependency declared in `lask.json` as a single-file
 export rollout(--target: String = "staging"): String = $[#alpine:3.20] echo "#{target}"
 ```
 
-```lask
+```lask fragment
 // module: main.lask
 export { rollout } from "./lib/deploy.lask"
 ```
@@ -977,7 +982,7 @@ Desugaring rules for function declarations:
 
 Equivalence example:
 
-```lask
+```lask fragment
 f(x) = x + 1
 g = \(x) -> x + 1
 ```
@@ -1374,7 +1379,7 @@ labels(xs: Array<String>) = do {
 
 publish(tag: String): String = do {
   if (tag == "") { return "skip: no tag" }
-  r = $* ./release.sh #{tag}
+  r = $*[#local] ./release.sh #{tag}
   if (r.code != 0) { return r.stderr }
   "released"
 }
@@ -1409,7 +1414,7 @@ Desugaring rules:
 - `$*[env] cmd` is syntactic sugar for `run(env, "cmd")`.
 - `$[env] cmd` and `$1[env] cmd` are syntactic sugar for the following expression (`r` is a fresh identifier that does not collide with others).
 
-  ```lask
+  ```lask fragment
   do {
     r = run(env, "cmd")
     if (r.code == 0) { r.stdout } else { fail({code: r.code, message: r.stderr}) }
@@ -1674,13 +1679,13 @@ Semantics:
 Desugaring rules:
 
 - `!!` is syntactic sugar for wrapping the bound expression with the core function `mark_secret` (15.9):
-  ```lask
+  ```lask fragment
   a!!: String = e
   (* is equivalent to *)
   a: String = mark_secret(e)
   ```
 - A `!!`-marked parameter is equivalent to an unmarked parameter of the same kind, with an assignment prepended to the function body that rebinds the parameter through `mark_secret`:
-  ```lask
+  ```lask fragment
   f(x!!: String) = body
   (* is equivalent to *)
   f(x: String) = do { x = mark_secret(x); body }
@@ -3815,7 +3820,7 @@ Quoting:
 
 ```lask
 upload(src: String, dst: String) =
-  $ aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}
+  $[#local] aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}
 ```
 
 - The result is already one word, and must not be quoted again by the caller: writing `"'#{shell_quote(v)}'"` produces a literal quotation character in the argument.
@@ -4404,7 +4409,7 @@ An example of `try` / `catch` / `finally` and the pass-through of exit codes and
 ```lask
 release(): String = do {
   out = try {
-    $ ./release.sh
+    $[#local] ./release.sh
   } catch (e) {
     if (e.code == 75) {
       "retry-later"

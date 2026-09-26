@@ -171,6 +171,7 @@ test-suite lask-test
       Command.Lask.ErrorCodeSpec
       Command.Lask.ExamplesSpec
       Command.Lask.Harness
+      Command.Lask.SpecExamplesSpec
       Language.Lask.Builtins.DocSpec
       Language.Lask.Builtins.FormatSpec
       Language.Lask.Builtins.PathSpec
