@@ -17,7 +17,7 @@ module Language.Lask.Builtins.Impl
 where
 
 import Control.Concurrent.Async (async, cancel, waitAnyCatch, waitCatch)
-import Control.Exception (SomeException, fromException, throwIO, try)
+import Control.Exception (throwIO, try)
 import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
@@ -277,11 +277,11 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("race", [VArray xs]) -> do
     let handles = [a | VAsync (AsyncHandle a) <- V.toList xs]
     case handles of
-      [] -> throwIO (runtimeFailure ERuntimeAwaitFailed "race on an empty array")
+      [] -> throwIO (domainError "race on an empty array")
       _ -> do
         (_, r) <- waitAnyCatch handles
         mapM_ cancel handles
-        either rethrowAsync pure r
+        either throwIO pure r
   -- 15.7 error handling ---------------------------------------------------------
   ("recover", [body, handler]) -> do
     r <- try' (apply body [] [])
@@ -481,12 +481,7 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     try' :: IO a -> IO (Either LaskFailure a)
     try' = try
 
+    -- A failed computation's failure is re-raised as it was (spec 6.3).
     awaitHandle a = do
       r <- waitCatch a
-      either rethrowAsync pure r
-
-    rethrowAsync :: SomeException -> IO a
-    rethrowAsync ex = case fromException ex of
-      Just failure -> throwIO (failure :: LaskFailure)
-      Nothing ->
-        throwIO (runtimeFailure ERuntimeAwaitFailed ("async computation failed: " <> T.pack (show ex)))
+      either throwIO pure r

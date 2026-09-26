@@ -372,6 +372,11 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["run", "f"] ""
         resExit r `shouldBe` 42
         resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO"
+    it "passes a command's exit code through await" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 75\n  await h\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 75
+        resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO"
     it "uses the Error code of uncaught fail" $ \lask ->
       withProject [("main.lask", "f(): Number = fail({code: 75, message: \"retry later\"})\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""
