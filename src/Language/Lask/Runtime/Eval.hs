@@ -25,7 +25,8 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
-import Language.Lask.Builtins.Impl (RtHooks, callBuiltin)
+import Language.Lask.Builtins.Impl (RtHooks (..), callBuiltin)
+import Language.Lask.Runtime.AsyncTrack (AsyncTracker (..))
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
 import Language.Lask.ErrorCode
@@ -156,6 +157,7 @@ evalCore ctx scope (Core _ f) = case f of
     v <- evalCore ctx scope c
     case v of
       VAsync (AsyncHandle a) -> do
+        trackAwaited (hookAsync (rtHooks ctx)) a
         r <- waitCatch a
         case r of
           Right x -> pure x

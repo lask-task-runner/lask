@@ -14,7 +14,7 @@ import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
 import Control.Applicative ((<|>))
-import Control.Exception (try)
+import Control.Exception (SomeException, fromException, try)
 import Control.Monad (forM, forM_, unless, when)
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
@@ -53,6 +53,7 @@ import Command.Lask.Images (ImageRow (..), Materialized (..), imageRows, loadPin
 import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
+import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, noAsyncTracker, renderSite)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, evalCore, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
@@ -181,7 +182,8 @@ cmdRunEval printResult runOpts = do
       logSink
         | optJsonFormat opts = jsonLogSink traceId writeErr
         | otherwise = textLogSink writeErr
-  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner logSink)
+  tracker <- newAsyncTracker
+  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner logSink tracker)
   let sink
         | optJsonFormat opts = writeErr . encodeEvent
         | otherwise = noSink
@@ -194,6 +196,11 @@ cmdRunEval printResult runOpts = do
       v
         | null posVals && null kwVals -> pure v
         | otherwise -> applyValue ctx fv posVals kwVals
+  -- A computation nothing awaited is waited for rather than cut short
+  -- by the end of the process, and reported (spec 6.3). Whatever it
+  -- did, the run keeps its own outcome and exit code.
+  unawaited <- drainUnawaited tracker
+  mapM_ (writeErr . unawaitedDiagnostic opts traceId) unawaited
   case result of
     Left lf -> failureExit opts traceId lf
     Right v -> do
@@ -201,6 +208,47 @@ cmdRunEval printResult runOpts = do
         VVoid -> pure ()
         _ -> TIO.putStrLn (encodeResult (runStdoutEncode runOpts) v)
       exitSuccess
+
+-- | The advisory @W-ASYNC-UNAWAITED@ (spec 6.3, 14.2) for one
+-- computation that was never awaited, with how it ended.
+unawaitedDiagnostic :: CommonOpts -> TraceId -> (AsyncSite, Either SomeException Value) -> Text
+unawaitedDiagnostic opts traceId (site, outcome)
+  | optJsonFormat opts =
+      TE.decodeUtf8 . BL.toStrict . A.encode . A.object $
+        [ ("code", A.String code),
+          ("severity", "warning"),
+          ("stage", "runtime"),
+          ("message", A.String message),
+          ("traceId", A.String traceId)
+        ]
+          <> [ ( "location",
+                 A.object
+                   [ ("file", A.String (T.pack (siteModule site))),
+                     ("line", A.toJSON l),
+                     ("column", A.toJSON c)
+                   ]
+               )
+             | Just (l, c) <- [sitePosition site]
+             ]
+          <> [("failure", A.object [("code", A.String fc), ("message", A.String fm)]) | Left (fc, fm, _) <- [ended]]
+  | otherwise = code <> ": " <> message
+  where
+    code = "W-ASYNC-UNAWAITED"
+    ended = case outcome of
+      Right _ -> Right ()
+      Left ex -> Left $ case fromException ex of
+        Just lf -> (maybe "E-RUNTIME" codeText (lfCode lf), failureMessage lf, Just (exitCodeOf (lfError lf)))
+        Nothing -> ("E-RUNTIME", T.pack (show ex), Nothing)
+    message =
+      "the async at "
+        <> renderSite site
+        <> " was never awaited; it was waited for at the end of the run and "
+        <> either failed (const "completed") ended
+    failed (fc, fm, exit) =
+      "failed with "
+        <> fc
+        <> maybe "" (\n -> " (exit code " <> T.pack (show n) <> ")") exit
+        <> (if T.null (T.strip fm) then "" else ": " <> fm)
 
 -- help (spec 11.6) -------------------------------------------------------------
 
@@ -868,7 +916,7 @@ imagePresent pins baseDir resolved = case resolved of
 -- that guarantee is ever broken.
 evalCommandEnv :: CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
 evalCommandEnv core c = do
-  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())))
+  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())) noAsyncTracker)
   r <- try (evalCore ctx Map.empty c)
   pure $ case r of
     Left lf -> Left lf
