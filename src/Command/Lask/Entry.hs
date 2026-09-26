@@ -13,12 +13,14 @@ import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom, colle
 import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
+import Control.Applicative ((<|>))
 import Control.Exception (try)
 import Control.Monad (forM, forM_, unless, when)
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Data.Either (isRight)
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.List (nub, sort)
 import Data.Maybe (catMaybes, isNothing, listToMaybe)
@@ -35,7 +37,7 @@ import Language.Lask (Compiled (..), Partial (..), compileFile, compileFileParti
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (entryPublicValues)
 import Language.Lask.Deps.Cache (cacheDirFor)
-import Language.Lask.Deps.Fetch (DepSource (..), fetchAndStore, resolveGitRev, syncAll)
+import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
 import Language.Lask.Diagnostic (Diagnostic (..))
@@ -518,47 +520,19 @@ cmdDepsSync opts frozen = do
       prior <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
       syncImages opts frozen (baseDir </> defaultLockFileName) (maybe emptyLock id prior)
     Right (Just df) -> do
-      prior <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
-      -- A declared reference that no longer matches the locked one must
-      -- be fetched again, so that changing `rev` without changing
-      -- `hash` is caught as E-MODULE-HASH-MISMATCH (spec 11.5).
-      let declaredRef e = case e of
-            DepGit _ ref -> Just ref
-            DepUrl {} -> Nothing
-          needsRecheck path e =
-            case Map.lookup path (maybe Map.empty lockModules prior) of
-              Nothing -> False
-              Just locked -> lkRequested locked /= declaredRef e
-          lockedHash path = lkHash <$> Map.lookup path (maybe Map.empty lockModules prior)
-      results <- syncAll cacheDir lockedHash needsRecheck df
-      mapM_
-        ( \(path, _, status) -> case status of
-            Right _ -> TIO.putStrLn (path <> " ok")
-            Left d -> do
-              TIO.putStrLn (path <> " NG")
-              TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-        )
-        results
-      let failed = [() | (_, _, Left _) <- results]
-          lockPath = baseDir </> defaultLockFileName
-      existing0 <- either (const Nothing) id <$> loadLockFile lockPath
-      -- Resolve each reference to the commit it currently names, so a
-      -- tag that has been repointed is detected (spec 11.5).
-      entries <- mapM (resolveEntry existing0) [(p, e, h) | (p, e, Right h) <- results]
-      let moved = [m | Left m <- entries]
-          newLock = LockFile (Map.fromList [ok | Right ok <- entries]) Map.empty
-      unless (null moved) $ do
-        mapM_ (TIO.hPutStrLn stderr) moved
-        exitWith (ExitFailure 3)
-      if null failed
+      let lockPath = baseDir </> defaultLockFileName
+      prior <- either (const Nothing) id <$> loadLockFile lockPath
+      results <- syncAll cacheDir (lockedEntry prior) df
+      reportSync opts results
+      if all (isRight . thd) results
         then do
-          -- --frozen (spec 11.5): CI asserts that the committed lock is
-          -- what resolution produces, rather than updating it.
-          let existing = existing0
+          let newLock = LockFile (lockedModules results) Map.empty
               -- The modules are written before the images are
               -- resolved: reading the program needs them locked.
-              withImages = newLock {lockImages = maybe Map.empty lockImages existing}
-          if frozen && Just (lockModules newLock) /= fmap lockModules existing
+              withImages = newLock {lockImages = maybe Map.empty lockImages prior}
+          -- --frozen (spec 11.5): CI asserts that the committed lock is
+          -- what resolution produces, rather than updating it.
+          if frozen && Just (lockModules newLock) /= fmap lockModules prior
             then do
               TIO.hPutStrLn stderr
                 (codeText EModuleLockStale <> ": the lock file is out of date (--frozen)")
@@ -589,39 +563,37 @@ syncImages opts frozen lockPath lock = do
     else when (updated /= lock) $ BL.writeFile lockPath (renderLockFile updated)
   if null (matFailures m) then exitSuccess else exitWith (ExitFailure 3)
 
--- | Resolve a git reference to the commit it names and compare it with
--- what the lock already pins (spec 11.5). A reference that resolves to
--- a different commit than before is @E-MODULE-REV-MOVED@.
-resolveEntry ::
-  Maybe LockFile ->
-  (Text, DepEntry, Text) ->
-  IO (Either Text (Text, LockEntry))
-resolveEntry existing (path, entry, hash) = case entry of
-  DepUrl {} -> pure (Right (path, lockEntryOf entry hash))
-  DepGit url rev -> do
-    resolved <- resolveGitRev url rev
-    let base = lockEntryOf entry hash
-        wasRev = Map.lookup path (maybe Map.empty lockModules existing) >>= lkRev
-    pure $ case (resolved, wasRev) of
-      (Just sha, Just old)
-        | sha /= old ->
-            Left $
-              codeText EModuleRevMoved
-                <> ": '"
-                <> path
-                <> "': "
-                <> rev
-                <> " now resolves to "
-                <> sha
-                <> " (locked: "
-                <> old
-                <> ")"
-      (Just sha, _) -> Right (path, base {lkRev = Just sha})
-      (Nothing, _) -> Right (path, base)
+-- | What the lock records for a dependency path.
+lockedEntry :: Maybe LockFile -> Text -> Maybe LockEntry
+lockedEntry lock path = Map.lookup path (maybe Map.empty lockModules lock)
+
+-- | The module section of the lock, from a sync in which every entry
+-- resolved.
+lockedModules :: [(Text, DepEntry, Either Diagnostic Pinned)] -> Map.Map Text LockEntry
+lockedModules results =
+  Map.fromList
+    [ (p, base {lkRev = pinRev pinned <|> lkRev base})
+    | (p, e, Right pinned) <- results,
+      let base = lockEntryOf e (pinHash pinned)
+    ]
+
+-- | One line per dependency path on stdout, and the diagnostic of each
+-- failure on stderr.
+reportSync :: CommonOpts -> [(Text, DepEntry, Either Diagnostic Pinned)] -> IO ()
+reportSync opts =
+  mapM_ $ \(path, _, status) -> case status of
+    Right _ -> TIO.putStrLn (path <> " ok")
+    Left d -> do
+      TIO.putStrLn (path <> " NG")
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+
+thd :: (a, b, c) -> c
+thd (_, _, c) = c
 
 -- | The lock record of a declared entry (spec chapter 5). @requested@
--- keeps the reference that was written; @rev@ is filled in only when
--- that reference is already a full commit SHA.
+-- keeps the reference that was written; @rev@ is filled in here only
+-- when that reference is already a full commit SHA, and otherwise from
+-- the commit the fetch checked out.
 lockEntryOf :: DepEntry -> Text -> LockEntry
 lockEntryOf (DepGit u r) h =
   LockEntry (Just u) Nothing (Just r) (if isFullSha r then Just r else Nothing) h
@@ -630,18 +602,21 @@ lockEntryOf (DepUrl u) h = LockEntry Nothing (Just u) Nothing Nothing h
 isFullSha :: Text -> Bool
 isFullSha r = T.length r == 40 && T.all (\c -> c `elem` ("0123456789abcdef" :: String)) r
 
--- | @lask deps add@: fetch the source, pin its content hash (trust on
--- first use), record the entry and place the verified source in the
--- cache.
+-- | @lask deps add@: declare the entry, then resolve the whole project
+-- file the way @deps sync@ does. The new entry is pinned on first use:
+-- its content hash and, for git, the commit it came from. Every other
+-- entry is verified against what the lock already pins, and the lock's
+-- images are kept. Nothing is written unless every entry resolves.
 cmdDepsAdd :: CommonOpts -> Text -> DepsAddSource -> IO ()
 cmdDepsAdd opts name source = do
   unless (isLowerIdent name) $
     usageError opts ("dependency name must be a lower-case identifier: '" <> name <> "'")
   let baseDir = takeDirectory (optModule opts)
       depsPath = baseDir </> defaultDepsFileName
-      depSource = case source of
-        AddGit url rev -> SrcGit url rev
-        AddUrl url -> SrcUrl url
+      lockPath = baseDir </> defaultLockFileName
+      entry = case source of
+        AddGit url rev -> DepGit url rev
+        AddUrl url -> DepUrl url
   cacheDir <- cacheDirFor baseDir
   existingE <- loadDepsFile depsPath
   existing <- case existingE of
@@ -649,26 +624,23 @@ cmdDepsAdd opts name source = do
       TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
       exitWith (ExitFailure 1)
     Right mDf -> pure (maybe emptyDepsFile id mDf)
-  fetched <- fetchAndStore cacheDir depSource
-  case fetched of
-    Left d -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-      exitWith (ExitFailure 3)
-    Right hash -> do
-      let entry = case depSource of
-            SrcGit url rev -> DepGit url rev
-            SrcUrl url -> DepUrl url
-          updated = existing {depsEntries = Map.insert name entry (depsEntries existing)}
-      BL.writeFile depsPath (renderDepsFile updated)
-      -- The resolution is recorded in the lock as well (spec 11.5), so
-      -- the project is immediately resolvable without a second step.
-      results <- syncAll cacheDir (const Nothing) (\_ _ -> False) updated
-      BL.writeFile (baseDir </> defaultLockFileName)
-        . renderLockFile
-        . (\ms -> LockFile ms Map.empty)
-        $ Map.fromList [(p, lockEntryOf e h) | (p, e, Right h) <- results]
-      TIO.putStrLn (name <> " " <> hash)
-      exitSuccess
+  prior <- either (const Nothing) id <$> loadLockFile lockPath
+  let updated = existing {depsEntries = Map.insert name entry (depsEntries existing)}
+      -- The entry being added, and whatever it pulled in before, is
+      -- resolved afresh; the rest keeps its pins.
+      replaced path = path == name || (name <> ">") `T.isPrefixOf` path
+      locked path = if replaced path then Nothing else lockedEntry prior path
+  results <- syncAll cacheDir locked updated
+  unless (all (isRight . thd) results) $ do
+    reportSync opts [r | r@(_, _, Left _) <- results]
+    exitWith (ExitFailure 3)
+  BL.writeFile depsPath (renderDepsFile updated)
+  BL.writeFile lockPath . renderLockFile $
+    LockFile (lockedModules results) (maybe Map.empty lockImages prior)
+  case [pinHash p | (path, _, Right p) <- results, path == name] of
+    hash : _ -> TIO.putStrLn (name <> " " <> hash)
+    [] -> pure ()
+  exitSuccess
   where
     isLowerIdent t = case T.uncons t of
       Just (c, rest) ->

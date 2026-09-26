@@ -163,16 +163,6 @@ withGitDep lask action =
     resExit added `shouldBe` 0
     action repo proj run
 
-git :: FilePath -> [String] -> IO ()
-git repo args = do
-  (code, _, err) <-
-    readCreateProcessWithExitCode
-      ((proc "git" (["-c", "user.email=t@example.com", "-c", "user.name=t"] <> args)) {cwd = Just repo})
-      ""
-  case code of
-    ExitSuccess -> pure ()
-    ExitFailure _ -> expectationFailure ("git " <> unwords args <> ": " <> err)
-
 exitOf :: ExitCode -> Int
 exitOf ExitSuccess = 0
 exitOf (ExitFailure n) = n

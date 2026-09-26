@@ -10,6 +10,8 @@ module Command.Lask.Harness
     fakeDocker,
     calls,
     withFakeDocker,
+    git,
+    gitOut,
   )
 where
 
@@ -19,6 +21,22 @@ import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (CreateProcess (cwd, env), proc, readCreateProcessWithExitCode, readProcess)
+
+-- | Run git in a repository as a throwaway identity, failing the test
+-- if it fails.
+git :: FilePath -> [String] -> IO ()
+git repo args = () <$ gitOut repo args
+
+-- | 'git', returning its standard output without the final newline.
+gitOut :: FilePath -> [String] -> IO String
+gitOut repo args = do
+  (code, out, err) <-
+    readCreateProcessWithExitCode
+      ((proc "git" (["-c", "user.email=t@example.com", "-c", "user.name=t"] <> args)) {cwd = Just repo})
+      ""
+  case code of
+    ExitSuccess -> pure (takeWhile (/= '\n') out)
+    ExitFailure _ -> fail ("git " <> unwords args <> ": " <> err)
 
 -- | Locate the freshly built binary via stack.
 findLask :: IO FilePath
