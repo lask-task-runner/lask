@@ -168,6 +168,10 @@ test-suite lask-test
   main-is: Spec.hs
   other-modules:
       Command.Lask.CliSpec
+      Command.Lask.ErrorCodeSpec
+      Command.Lask.ExamplesSpec
+      Command.Lask.Harness
+      Command.Lask.SpecExamplesSpec
       Language.Lask.Builtins.DocSpec
       Language.Lask.Builtins.FormatSpec
       Language.Lask.Builtins.PathSpec
