@@ -30,8 +30,6 @@ data Trigger
     -- binary and returns the final run; the code may be on either
     -- stream.
     Scripted Int (FilePath -> IO Result)
-  | -- | No input raises the code yet; the reason is shown as pending.
-    NotRaised String
 
 trigger :: ErrorCode -> Trigger
 trigger c = case c of
@@ -41,7 +39,6 @@ trigger c = case c of
     check "f(x: String): String = do {\n  y = case (x) {\n    \"a\" -> do { return \"e\" }\n    else -> \"z\"\n  }\n  y\n}\n"
   ESyntaxCaseElse -> check "f(x: String) = case (x) {\n  \"a\" -> 1\n}\n"
   ENameUndefined -> check "x = nope\n"
-  ENameAmbiguous -> NotRaised "the implementation never reports E-NAME-AMBIGUOUS (#58)"
   ENameDuplicate -> check "a = 1\na = 2\n"
   ETypeMismatch -> check "x: Number = \"s\"\n"
   ETypeArity -> check "f(a: Number) = a\nx = f(1, 2)\n"
@@ -174,7 +171,6 @@ spec = beforeAll findLask $
 
 raises :: ErrorCode -> FilePath -> Expectation
 raises c lask = case trigger c of
-  NotRaised why -> pendingWith why
   Check files -> withProject files $ \dir -> do
     r <- runLask lask dir ["check"] ""
     resExit r `shouldBe` 1
