@@ -43,7 +43,6 @@ data ErrorCode
   | EModuleHashMismatch
   | ERuntimeDivByZero
   | ERuntimeCommandNonzero
-  | ERuntimeAwaitFailed
   | ERuntimeAccess
   | ERuntimeCast
   | ERuntimeValue
@@ -98,7 +97,6 @@ codeText c = case c of
   EModuleHashMismatch -> "E-MODULE-HASH-MISMATCH"
   ERuntimeDivByZero -> "E-RUNTIME-DIV-BY-ZERO"
   ERuntimeCommandNonzero -> "E-RUNTIME-COMMAND-NONZERO"
-  ERuntimeAwaitFailed -> "E-RUNTIME-AWAIT-FAILED"
   ERuntimeAccess -> "E-RUNTIME-ACCESS"
   ERuntimeCast -> "E-RUNTIME-CAST"
   ERuntimeValue -> "E-RUNTIME-VALUE"

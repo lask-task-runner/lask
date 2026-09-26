@@ -15,7 +15,7 @@ module Language.Lask.Runtime.Eval
 where
 
 import Control.Concurrent.Async (waitCatch)
-import Control.Exception (catch, fromException, throwIO)
+import Control.Exception (catch, throwIO)
 import Control.Monad (foldM, when)
 import Data.Time.Clock (getCurrentTime)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
@@ -159,10 +159,9 @@ evalCore ctx scope (Core _ f) = case f of
         r <- waitCatch a
         case r of
           Right x -> pure x
-          Left ex -> case fromException ex of
-            Just failure -> throwIO (failure :: LaskFailure)
-            Nothing ->
-              throwIO (runtimeFailure ERuntimeAwaitFailed ("async computation failed: " <> T.pack (show ex)))
+          -- The failure is re-raised as it was, as if the computation
+          -- had run in place (spec 6.3, 8.6).
+          Left ex -> throwIO ex
       _ -> internal "await on a non-handle"
   CEnv kind args -> do
     params <- mapM evalKv args

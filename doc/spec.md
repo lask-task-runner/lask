@@ -3412,7 +3412,6 @@ Representative codes:
 - `E-MODULE-HASH-MISMATCH`
 - `E-RUNTIME-DIV-BY-ZERO`
 - `E-RUNTIME-COMMAND-NONZERO`
-- `E-RUNTIME-AWAIT-FAILED`
 - `E-RUNTIME-ACCESS`
 - `E-RUNTIME-CAST`
 - `E-RUNTIME-VALUE`
@@ -3505,7 +3504,6 @@ Representative examples:
 
 - `E-RUNTIME-DIV-BY-ZERO`: invalid arithmetic
 - `E-RUNTIME-COMMAND-NONZERO`: failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6)
-- `E-RUNTIME-AWAIT-FAILED`: `await` re-raises a failed state
 - `E-RUNTIME-ACCESS`: index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9)
 - `E-RUNTIME-CAST`: failure of the runtime type check of `cast` (15.8)
 - `E-RUNTIME-VALUE`: a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13)
@@ -3845,8 +3843,9 @@ Semantics:
 
 Failure rules:
 
+- `await` on a handle whose computation failed re-raises that failure unchanged (6.3, 8.6): the same `Error` value, with its code and message, and therefore the same exit code if it goes uncaught (11.3). `all` and `race` do the same with the failure they receive.
 - `all` may fail as soon as any single one fails.
-- Receiving a failed result via `await` is `E-RUNTIME-AWAIT-FAILED`.
+- `race` on an empty array is `E-RUNTIME-VALUE`: there is no result to return.
 
 ### 15.7 Error Handling Functions
 

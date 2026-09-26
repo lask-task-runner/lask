@@ -255,6 +255,15 @@ spec = do
         "2"
     it "repeated await returns the same result" $
       evalsTo "f() = do {\n  h = async 21\n  (await h) + (await h)\n}" "f" "42"
+    it "rethrows the failure unchanged, with its own code (spec 6.3, 15.6)" $ do
+      failsWith "f() = do {\n  h = async (1 / 0)\n  await h\n}" "f" ERuntimeDivByZero
+      failsWith "f() = all([async 1, async (1 / 0)])" "f" ERuntimeDivByZero
+      evalsTo
+        "f() = do {\n  h = async $[#local] boom\n  try {\n    out = await h\n    0\n  } catch (e) {\n    e.code\n  }\n}"
+        "f"
+        "7"
+    it "fails race on an empty array as an argument outside its domain" $
+      failsWith "hs: Array<AsyncHandle<Number>> = []\nf() = race(hs)" "f" ERuntimeValue
 
   describe "serialization and cast (spec 13, 15.8)" $ do
     it "encodes records to JSON" $

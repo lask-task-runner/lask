@@ -91,7 +91,6 @@ trigger c = case c of
   -- passes its own exit code through.
   ERuntimeDivByZero -> Invoke "f() = 1 / 0\n" ["eval", "f"] 2
   ERuntimeCommandNonzero -> Invoke "f() = $[#local] exit 42\n" ["run", "f"] 42
-  ERuntimeAwaitFailed -> Invoke "hs: Array<AsyncHandle<Number>> = []\nf() = race(hs)\n" ["eval", "f"] 2
   ERuntimeAccess -> Invoke "xs = [1]\nf() = xs[5]\n" ["eval", "f"] 2
   ERuntimeCast ->
     Invoke "pick(r: Record<a: Number>): Number = r.a\nf() = pick(cast(from_json(\"{\\\"a\\\": \\\"s\\\"}\")))\n" ["eval", "f"] 2
