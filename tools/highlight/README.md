@@ -1,24 +1,21 @@
 # Highlight renderer
 
-GitHub does not know the `lask` language, and its Markdown sanitizer strips `<style>` and `style=` attributes, so a code fence in `README.md` cannot be coloured. Instead the README embeds a pre-rendered SVG "code card" that carries its colours as `fill` attributes, which GitHub does render — one per theme, selected by `prefers-color-scheme` in the README's `<picture>` element.
+GitHub does not know the `lask` language, and its Markdown sanitizer strips `<style>` and `style=` attributes, so a code fence in `README.md` cannot be coloured. These renderers work around that by drawing Lask source or a terminal transcript as an SVG "code card" that carries its colours as `fill` attributes, which GitHub does render.
+
+Nothing in the README uses them right now: its hero is the recording in `doc/assets/lask-pv.gif` (built from `doc/assets/pv/`). They are kept for when a card is worth showing again.
 
 - `lask.tmLanguage.json` — TextMate grammar for Lask (comments, reserved words, types, keyword parameters, command strings `$`/`$2`/`$*`, environments `#golang:1.22`, and `#{...}` interpolation).
-- `render.mjs` — tokenizes `doc/assets/main.lask` with [Shiki](https://shiki.style) using that grammar.
+- `render.mjs` — tokenizes a Lask source file with [Shiki](https://shiki.style) using that grammar.
 - `card.mjs` — the shared SVG card. Every glyph is placed on the monospace grid with its own `x`, so the layout survives whatever monospace font the reader's machine picks.
-- `render-session.mjs` — colours a captured terminal transcript instead of source: the lines you typed, timestamps, `[#env]` tags, `1|`/`2|` stream markers, exit status, and `E-*` error codes. Nothing in the README uses it right now; it is kept for when a transcript card is worth showing again.
+- `render-session.mjs` — colours a captured terminal transcript instead of source: the lines you typed, timestamps, `[#env]` tags, `1|`/`2|` stream markers, exit status, and `E-*` error codes.
 
-## Regenerate
+## Usage
 
 ```bash
 $ cd tools/highlight
 $ npm install
-$ npm run render      # writes doc/assets/main-{dark,light}.svg
+$ node render.mjs path/to/source.lask out-dir main.lask          # writes out-dir/source-{dark,light}.svg
+$ node render-session.mjs path/to/transcript.txt out-dir title   # same, for a terminal transcript
 ```
 
-Both renderers take `<source> <out-dir> [title]`, so they work for other snippets too.
-
-## When editing the example
-
-`doc/assets/main.lask` is the single source for the README hero. After changing it, re-render and paste the same text into the `<details>` fence in `README.md`, which exists so the example stays copy-pastable and searchable.
-
-The `<img width="...">` of the `<picture>` in `README.md` must match the SVG's own `width` (printed in its first line), otherwise GitHub scales the card and the text goes soft.
+Both renderers take `<source> <out-dir> [title]`. To embed a card, put the two SVGs in a `<picture>` selected by `prefers-color-scheme`, and give the `<img width="...">` the SVG's own `width` (printed in its first line); otherwise GitHub scales the card and the text goes soft.

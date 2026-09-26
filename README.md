@@ -4,60 +4,17 @@
 [![release](https://img.shields.io/github/v/release/lask-task-runner/lask?sort=semver)](https://github.com/lask-task-runner/lask/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+<div align="center">
+  <img alt="Lask in 90 seconds: the example/01-projects/02-webapp-on-aws project, showing lask check catching a typo before anything runs, Terraform and Python running in pinned images on a machine without them, two test suites running concurrently with async / await, hash-pinned module imports, the REPL and lask cmd, and --help generated from doc comments" src="doc/assets/lask-pv.gif" width="960">
+</div>
+
 Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
 
 Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger or Earthly too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
 
 Lask aims to stay simple and light to use while matching what the heavyweight platforms can do.
 
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="doc/assets/main-dark.svg">
-    <img alt="Lask task definitions: three pinned environments as values, two test suites running concurrently in separate containers, then a build and either a terraform plan or apply" src="doc/assets/main-light.svg" width="611">
-  </picture>
-</div>
-
-<details>
-<summary>Copy the source of this example</summary>
-
-```lask
-// Environments are values: pin an image once, reuse it everywhere.
-go    = #golang:1.22
-node  = #node:20
-// A custom image builds from a Dockerfile and is used the same way.
-infra = #docker(dockerfile = "Dockerfile", context = ".")
-
-// Declare which image provides each program, and the commands below
-// name only what they run. There is no default: a command with no
-// environment is an error, never a silent fall back to the host.
-command { "go" } on go
-command { "npm" } on node
-command { "terraform" } on infra
-
-test_api(): String = $ go test ./...
-test_web(): String = $ npm test
-
-// Both suites run concurrently; the build and deploy follow in order.
-//
-// @param dry_run  Run `terraform plan` instead of `terraform apply`.
-// @example lask run release --dry-run true
-release(--dry_run = false) = do {
-  api = async test_api()
-  web = async test_web()
-  await api
-  await web
-  $ go build
-  if (dry_run) {
-    $ terraform plan
-  } else {
-    $ terraform apply -auto-approve
-  }
-}
-```
-
-</details>
-
-Beyond the snippet above: [example/02-language](example/02-language) is a tour of the whole language, one runnable module per topic, and [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed.
+The recording above is [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws), which builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed. For the language itself, [example/02-language](example/02-language) is a tour of the whole language, one runnable module per topic.
 
 ## Why Lask
 
@@ -229,11 +186,7 @@ The script only ever asks the binary, so it keeps working across upgrades. Compl
 
 ## Example
 
-<div align="center">
-  <img alt="Terminal recording: lask check reports an error in the module; once it is fixed, lask run cowsay-hello Lask pulls the image, traces the command it runs inside it, and prints the cow" src="doc/assets/lask-cowsay.gif" width="831">
-</div>
-
-An error `lask check` finds, and a task that runs. Before a task first runs in a container, `lask env build` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
+Before a task first runs in a container, `lask env build` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
 
 Run a command in any image straight from the REPL, with nothing installed locally:
 

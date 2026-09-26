@@ -1,0 +1,612 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Lask PV</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #0d1117; --bar: #161b22; --line: #30363d;
+    --fg: #e1e4e8; --dim: #8b949e; --faint: #6a737d;
+    --red: #f97583; --green: #85e89d; --blue: #79b8ff; --str: #9ecbff; --purple: #b392f0; --orange: #ffab70; --yellow: #ffdf5d;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 720px; overflow: hidden; background: var(--bg); color: var(--fg); font-family: var(--sans); }
+  #stage { position: relative; width: 1280px; height: 720px; overflow: hidden;
+    background: radial-gradient(900px 500px at 50% -10%, #1a2330 0%, var(--bg) 70%); }
+  .abs { position: absolute; }
+  .center { left: 0; right: 0; text-align: center; }
+
+  /* intro */
+  #mark { top: 250px; left: 0; right: 0; height: 120px; display: flex; justify-content: center; align-items: center; }
+  #lamSlot { display: flex; justify-content: flex-start; align-items: center; height: 112px; }
+  .lam { flex: none; width: 112px; height: 112px; border-radius: 26px; background: linear-gradient(145deg, #2b3a55, #151c28);
+    border: 1px solid #3a4a66; display: grid; place-items: center; font: 600 76px/1 var(--mono); color: var(--green);
+    box-shadow: 0 20px 60px rgba(133,232,157,.12); }
+  #letters { display: flex; align-items: baseline; font: 700 104px/1 var(--sans); white-space: pre; }
+  #letters .c { display: inline-block; overflow: hidden; text-align: left; position: relative; }
+  #letters .c.plus { font: 500 88px/1 var(--mono); color: var(--green); }
+  #letters .c .alt { position: absolute; left: 0; top: 0; }
+  #tag2 { top: 408px; font: 500 30px var(--sans); color: var(--fg); letter-spacing: -.3px; }
+
+  #cmp { top: 0; left: 0; right: 0; bottom: 0; }
+  #cmp h3 { position: absolute; top: 140px; left: 0; right: 0; text-align: center; font: 700 34px var(--sans); letter-spacing: -.6px; }
+  #axis { position: absolute; top: 220px; left: 70px; right: 70px; height: 20px; }
+  #axis .bar { position: absolute; top: 9px; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, #30363d, #8b949e 50%, #30363d); transform-origin: 50% 50%; }
+  #axis .lt, #axis .rt { position: absolute; top: -16px; font: 500 14px var(--mono); color: var(--dim); }
+  #axis .lt { left: 0; } #axis .rt { right: 0; }
+  #cards { position: absolute; top: 274px; left: 70px; right: 70px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 26px; }
+  .card { border: 1px solid var(--line); border-radius: 14px; background: #0d1117; padding: 22px 24px 20px; }
+  .card .ct { font: 700 25px var(--mono); }
+  .card .cs { margin-top: 8px; font: 400 16px/1.4 var(--sans); color: var(--dim); min-height: 45px; }
+  .card ul { list-style: none; margin-top: 16px; }
+  .card li { font: 500 17px/1.35 var(--sans); padding-left: 28px; position: relative; margin-top: 10px; }
+  .card li::before { position: absolute; left: 0; font-weight: 700; }
+  .card li.ok::before { content: "✓"; color: var(--green); }
+  .card li.ng::before { content: "✕"; color: var(--red); }
+  .card.lask { border-color: #85e89d; box-shadow: 0 0 0 1px #85e89d55, 0 20px 60px rgba(133,232,157,.12); }
+  .card.lask .ct { color: var(--green); }
+
+  /* seven */
+  #seven { top: 0; left: 0; right: 0; bottom: 0; }
+  #seven h3 { position: absolute; top: 178px; left: 0; right: 0; text-align: center; font: 600 22px var(--sans); color: var(--dim); }
+  #sevenGrid { position: absolute; top: 250px; left: 0; right: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 18px 18px; width: 1120px; margin: 0 auto; }
+  .chip { font: 600 26px var(--mono); padding: 14px 22px; border: 1px solid var(--line); border-radius: 12px; background: #0d1117; color: var(--fg); }
+  .chip b { color: var(--green); font-weight: 600; margin-right: 12px; font-size: 18px; vertical-align: 3px; }
+
+  /* captions */
+  .cap { top: 18px; left: 0; right: 0; text-align: center; }
+  .cap .lbl { font: 600 13px var(--mono); color: var(--green); letter-spacing: 2px; }
+  .cap .lbl span { color: var(--faint); }
+  .cap h2 { margin-top: 7px; font: 700 32px/1.1 var(--sans); letter-spacing: -.6px; }
+  .cap p { margin-top: 7px; font: 400 16px var(--sans); color: var(--dim); }
+  .cap code { font-family: var(--mono); color: var(--green); font-size: 15px; }
+
+  /* windows */
+  .win { position: absolute; top: 132px; height: 560px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+  .win .hd { height: 34px; background: var(--bar); border-bottom: 1px solid var(--line); position: relative; z-index: 3; }
+  .win .hd i { position: absolute; top: 11px; width: 12px; height: 12px; border-radius: 50%; }
+  .win .hd i:nth-child(1) { left: 14px; background: #ff5f57; }
+  .win .hd i:nth-child(2) { left: 33px; background: #febc2e; }
+  .win .hd i:nth-child(3) { left: 52px; background: #28c840; }
+  .win .hd span { position: absolute; left: 0; right: 0; top: 9px; text-align: center; font: 12px var(--mono); color: var(--dim); }
+  #ed { left: 40px; width: 560px; }
+  #tm { left: 620px; width: 620px; }
+
+  #codeView { position: absolute; top: 34px; left: 0; right: 0; bottom: 0; overflow: hidden; }
+  #code { position: absolute; top: 10px; left: 0; right: 0; font: 13px/19.5px var(--mono); }
+  .ln { position: relative; height: 19.5px; white-space: pre; padding-left: 50px; }
+  .ln .no { position: absolute; left: 0; width: 36px; text-align: right; color: #484f58; }
+  .ln .bgh { position: absolute; left: 0; right: 0; top: 0; bottom: 0; border-left: 3px solid var(--blue); background: rgba(121,184,255,.13); opacity: 0; }
+  .ln .bgh.err { background: rgba(249,117,131,.14); border-left-color: var(--red); }
+  .ln .bgh.py  { background: rgba(255,171,112,.13); border-left-color: var(--orange); }
+  .ln .bgh.node{ background: rgba(133,232,157,.12); border-left-color: var(--green); }
+  .ln .bgh.tf  { background: rgba(179,146,240,.15); border-left-color: var(--purple); }
+  .ln .bgh.soft{ background: rgba(121,184,255,.07); border-left-color: #79b8ff66; }
+  .ln .tx { position: relative; }
+  .cur { display: inline-block; width: 8px; height: 16px; vertical-align: -3px; background: var(--fg); }
+  #squig { position: absolute; height: 6px; opacity: 0; z-index: 2;
+    background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='4'><path d='M0 3 L1.5 1 L3 3 L4.5 1 L6 3' fill='none' stroke='%23f97583' stroke-width='1.2'/></svg>") repeat-x; }
+  .pop { position: absolute; opacity: 0; z-index: 2; background: #1c2128; border: 1px solid #444c56; border-radius: 6px;
+    font: 12px/1.5 var(--mono); color: var(--fg); box-shadow: 0 10px 30px rgba(0,0,0,.55); }
+  #tip { padding: 6px 10px; white-space: nowrap; border-color: #f9758399; }
+  #tip b { color: var(--red); font-weight: 600; }
+  #hover { width: 470px; }
+  #hover .sig { padding: 8px 12px; white-space: pre; border-bottom: 1px solid #444c56; }
+  #hover .doc { padding: 8px 12px; font: 12.5px/1.5 var(--sans); color: #c9d1d9; }
+  #hover .doc code { font: 11.5px var(--mono); color: var(--str); }
+  .callout { position: absolute; right: 12px; z-index: 2; opacity: 0; font: 600 12px var(--sans); color: #0b0f14; background: var(--blue);
+    padding: 3px 10px; border-radius: 999px; white-space: nowrap; box-shadow: 0 0 0 4px var(--panel); }
+
+  #term { position: absolute; top: 34px; left: 0; right: 0; bottom: 0; padding: 12px 16px; font: 12px/17.5px var(--mono); overflow: hidden; }
+  .tl { white-space: pre; overflow: hidden; text-overflow: ellipsis; height: 17.5px; }
+  .p { color: var(--green); }
+  .d { color: var(--dim); }
+  .f { color: #545d68; }
+  .e { color: var(--red); font-weight: 600; }
+  .g { color: var(--green); }
+  .b { color: var(--blue); }
+  .s { color: var(--str); }
+  .h { color: var(--fg); font-weight: 700; }
+  .tg-py { color: var(--orange); } .tg-node { color: var(--green); } .tg-tf { color: var(--purple); }
+
+  /* end card */
+  #endBox { top: 190px; left: 0; right: 0; display: flex; flex-direction: column; align-items: center; }
+  #endBox .row { display: flex; align-items: center; gap: 22px; }
+  #endBox .lamS { width: 84px; height: 84px; border-radius: 20px; font-size: 56px; }
+  #endBox h1 { font: 700 88px/1 var(--sans); letter-spacing: -2.5px; }
+  #endBox .t { margin-top: 26px; font: 500 28px var(--sans); color: var(--fg); }
+  #endBox .inst { margin-top: 34px; font: 18px/1 var(--mono); background: #0d1117; border: 1px solid var(--line); border-radius: 10px; padding: 16px 22px; }
+  #endBox .url { margin-top: 26px; font: 17px var(--mono); color: var(--dim); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="intro">
+    <div id="mark" class="abs"><div id="lamSlot"><div class="lam" id="lam">λ</div></div><div id="letters"></div></div>
+    <div id="tag2" class="abs center">A task runner with a small language behind it.</div>
+  </div>
+  <div id="cmp" class="abs">
+    <h3>Where Lask fits</h3>
+    <div id="axis"><div class="bar"></div><span class="lt">← simpler</span><span class="rt">more machinery →</span></div>
+    <div id="cards">
+      <div class="card" id="cd0"><div class="ct">make · Taskfile</div><div class="cs">Shell commands listed in a Makefile or YAML.</div>
+        <ul><li class="ok">Quick to start</li><li class="ng">Nothing is checked until it runs</li><li class="ng">Every tool installed on every machine</li></ul></div>
+      <div class="card lask" id="cd1"><div class="ct">Lask</div><div class="cs">A small typed language for tasks, running on Docker.</div>
+        <ul><li class="ok">Checked before anything runs</li><li class="ok">Every tool runs in a pinned image</li><li class="ok">Install Lask + Docker, nothing else</li></ul></div>
+      <div class="card" id="cd2"><div class="ct">Dagger · Earthly</div><div class="cs">CI pipelines as code, on a container build engine.</div>
+        <ul><li class="ok">Containerized and reproducible</li><li class="ok">Caching built for large builds</li><li class="ng">More to learn and set up before the first task</li></ul></div>
+    </div>
+  </div>
+  <div id="seven" class="abs"><h3>Automation that is</h3><div id="sevenGrid"></div></div>
+
+  <div id="caps"></div>
+
+  <div class="win" id="ed"><div class="hd"><i></i><i></i><i></i><span>02-webapp-on-aws/main.lask</span></div>
+    <div id="codeView"><div id="code"></div></div>
+    <div id="squig"></div>
+    <div id="tip" class="pop"><b>E-TYPE-ACCESS</b> record has no field 'webiste_url'</div>
+    <div id="hover" class="pop"></div>
+    <div id="callouts"></div>
+  </div>
+  <div class="win" id="tm"><div class="hd"><i></i><i></i><i></i><span>zsh — 02-webapp-on-aws</span></div>
+    <div id="term"></div>
+  </div>
+
+  <div id="endBox" class="abs">
+    <div class="row"><div class="lam lamS">λ</div><h1>Lask</h1></div>
+    <div class="t">Install Docker and Lask. That's the whole toolchain.</div>
+    <div class="inst"><span class="d">❯</span> <span id="instTx"></span></div>
+    <div class="url">github.com/lask-task-runner/lask</div>
+  </div>
+</div>
+
+<script>
+// The real example/01-projects/02-webapp-on-aws/main.lask, injected by build.py.
+const MAIN_LASK = __MAIN_LASK__;
+const BASE = MAIN_LASK.replace(/\n$/, "").split("\n");
+
+// ---------- easing ----------
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ease = x => { x = clamp(x); return x < .5 ? 4*x*x*x : 1 - Math.pow(-2*x + 2, 3) / 2; };
+const eo = x => 1 - Math.pow(1 - clamp(x), 3);
+const expo = x => { x = clamp(x); return x === 1 ? 1 : 1 - Math.pow(2, -10 * x); };
+const snap = x => { x = clamp(x); return x < .5 ? 16*x*x*x*x*x : 1 - Math.pow(-2*x + 2, 5) / 2; };
+const ramp = (t, a, b) => clamp((t - a) / (b - a));
+const win = (t, a, b, f = .3) => Math.min(eo(ramp(t, a, a + f)), 1 - ease(ramp(t, b - f, b)));
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function show(el, o, dy = 0) {
+  el.style.opacity = o;
+  el.style.transform = `translateY(${(1 - o) * dy}px)`;
+  el.style.visibility = o <= 0.001 ? "hidden" : "visible";
+}
+
+// ---------- global schedule ----------
+window.DURATION = 90;
+const T = { wordIn: .15, dimA: .75, dimB: 1.0, colA: 1.2, colB: 1.75, lamA: 1.9, tagA: 2.5, introEnd: 4.3,
+  cmpA: 4.4, cmpEnd: 11.0, sevenA: 11.1, sevenEnd: 13.4, endA: 86.2 };
+const SCENE_LEN = 10.4;
+const S = k => 13.4 + SCENE_LEN * k;
+const FEATURES = ["approachable", "verifiable", "portable", "programmable", "reusable", "runnable", "discoverable"];
+
+// ---------- intro: "lambda + task" -> "Lask" ----------
+const WORD = "lambda + task";
+const KEEP = new Set([0, 1, 11, 12]);
+const lettersEl = $("letters");
+const cEls = [...WORD].map((ch, i) => {
+  const s = document.createElement("span");
+  s.className = "c" + (ch === "+" ? " plus" : "");
+  s.innerHTML = i === 0 ? `<span class="lo">l</span><span class="alt up">L</span>` : esc(ch);
+  lettersEl.appendChild(s); return s;
+});
+const W0 = cEls.map(s => s.getBoundingClientRect().width);
+const upEl = cEls[0].querySelector(".up"), loEl = cEls[0].querySelector(".lo");
+const W_L = upEl.getBoundingClientRect().width, W_l = loEl.getBoundingClientRect().width;
+function renderIntro(t) {
+  const inP = expo(ramp(t, T.wordIn, T.wordIn + .5));
+  const dim = snap(ramp(t, T.dimA, T.dimB));
+  const col = snap(ramp(t, T.colA, T.colB));
+  cEls.forEach((s, i) => {
+    if (KEEP.has(i)) {
+      s.style.opacity = 1;
+      if (i === 0) { s.style.width = (W_l + (W_L - W_l) * col) + "px"; loEl.style.opacity = 1 - col; upEl.style.opacity = col; }
+      else s.style.width = W0[i] + "px";
+    } else {
+      s.style.width = (W0[i] * (1 - col)) + "px";
+      s.style.opacity = (1 - .78 * dim) * (1 - clamp(col * 1.6));
+      s.style.transform = `translateY(${col * 26}px)`;
+    }
+  });
+  lettersEl.style.letterSpacing = (-3 * col) + "px";
+  const lp = expo(ramp(t, T.lamA, T.lamA + .45));
+  $("lamSlot").style.width = (138 * lp) + "px";
+  $("lam").style.opacity = lp; $("lam").style.transform = `scale(${.4 + .6 * lp})`;
+  $("mark").style.opacity = inP; $("mark").style.transform = `translateY(${(1 - inP) * 20}px)`;
+  const tg = expo(ramp(t, T.tagA, T.tagA + .45));
+  $("tag2").style.opacity = tg; $("tag2").style.transform = `translateY(${(1 - tg) * 10}px)`;
+  show($("intro"), 1 - snap(ramp(t, T.introEnd - .25, T.introEnd)));
+}
+
+// ---------- seven features overview ----------
+const chipEls = FEATURES.map((f, i) => {
+  const d = document.createElement("div"); d.className = "chip";
+  d.innerHTML = `<b>0${i + 1}</b>${f}`; $("sevenGrid").appendChild(d); return d;
+});
+function renderSeven(t) {
+  const on = t >= T.sevenA && t < T.sevenEnd;
+  $("seven").style.visibility = on ? "visible" : "hidden";
+  $("seven").style.opacity = 1 - snap(ramp(t, T.sevenEnd - .3, T.sevenEnd));
+  $("seven").querySelector("h3").style.opacity = expo(ramp(t, T.sevenA, T.sevenA + .4));
+  chipEls.forEach((c, i) => {
+    const o = expo(ramp(t, T.sevenA + .15 + i * .12, T.sevenA + .6 + i * .12));
+    c.style.opacity = o; c.style.transform = `translateY(${(1 - o) * 16}px)`;
+  });
+}
+
+// ---------- captions ----------
+const CAPTIONS = [
+  ["One file is a project.", "Braces and calls, TypeScript-style types, <code>async</code> / <code>await</code> — a small language you can read on day one."],
+  ["Checked before anything runs.", "<code>lask check</code> resolves every name, argument and type — and the same errors appear in your editor."],
+  ["Environments are values.", "Terraform isn't installed on this machine. Each command runs in the image it's pinned to."],
+  ["Tasks are functions.", "Typed arguments and return values — and concurrency is just <code>async</code> / <code>await</code>."],
+  ["Import tasks and environments.", "Modules come from Git, pinned by content hash in a committed lock file."],
+  ["Run any piece on its own.", "A task with <code>lask run</code>, an expression in the REPL, one command with <code>lask cmd</code>."],
+  ["Docs come from the source.", "One doc comment feeds both <code>--help</code> and your editor's hover."],
+];
+const capEls = CAPTIONS.map(([h, p], i) => {
+  const d = document.createElement("div"); d.className = "cap abs";
+  d.innerHTML = `<div class="lbl">0${i + 1} <span>/ 07</span> &nbsp;${FEATURES[i].toUpperCase()}</div><h2>${h}</h2><p>${p}</p>`;
+  $("caps").appendChild(d); return d;
+});
+
+// ---------- syntax highlight ----------
+const RULES = [
+  [/^\/\/.*/, "#6a737d"],
+  [/^"(?:[^"\\]|\\.)*"/, "#9ecbff"],
+  [/^\$\[[^\]]*\]/, "#f97583"],
+  [/^#[\w.:\/-]+/, "#85e89d"],
+  [/^(import|as|from|command|on|do|async|await|if|else|internal|type|return|try|catch)\b/, "#f97583"],
+  [/^[A-Z][\w]*/, "#79b8ff"],
+  [/^(false|true)\b/, "#79b8ff"],
+  [/^[a-z_][\w]*(?=\()/, "#b392f0"],
+  [/^--[\w]+(!!)?/, "#ffab70"],
+  [/^(=|\$|!!|\*)/, "#f97583"],
+  [/^[a-zA-Z_][\w]*/, null],
+  [/^\s+/, null],
+  [/^./, null],
+];
+function hl(line, n = Infinity) {
+  let html = "", left = n, s = line;
+  while (s.length && left > 0) {
+    for (const [re, c] of RULES) {
+      const m = s.match(re); if (!m) continue;
+      const part = esc(m[0].slice(0, left)); left -= m[0].length; s = s.slice(m[0].length);
+      html += c ? `<span style="color:${c}">${part}</span>` : part; break;
+    }
+  }
+  return html;
+}
+
+// ---------- document edits over time ----------
+// retype: delete `from` char by char, then type `to`
+function retype(prefix, from, to, p) {
+  const steps = from.length + to.length, k = Math.round(p * steps);
+  return k <= from.length ? prefix + from.slice(0, from.length - k) : prefix + to.slice(0, k - from.length);
+}
+const V = { typoA: S(1) + .7, typoB: S(1) + 1.5, fixA: S(1) + 5.4, fixB: S(1) + 6.2, progA: S(3) + .6 };
+const PROG = [ // [kind, line idx (0-based), text, start, end]
+  ["ins", 41, "api = async ", V.progA, V.progA + .7],
+  ["ins", 42, "web = async ", V.progA + .85, V.progA + 1.55],
+  ["new", 43, "  await api", V.progA + 1.75, V.progA + 2.35],
+  ["new", 44, "  await web", V.progA + 2.5, V.progA + 3.1],
+];
+function doc(t) {
+  const L = BASE.slice(); let cur = null;
+  const P55 = "  website = tf_output().";
+  if (t >= V.typoA) {
+    L[55] = t < V.fixA ? retype(P55, "website_url", "webiste_url", ramp(t, V.typoA, V.typoB))
+                       : retype(P55, "webiste_url", "website_url", ramp(t, V.fixA, V.fixB));
+    if (t < V.typoB + .4 || (t >= V.fixA && t < V.fixB + .4)) cur = [55, L[55].length];
+  }
+  for (const [kind, idx, text, a, b] of PROG) {
+    if (t < a) continue;
+    const typed = text.slice(0, Math.round(text.length * ramp(t, a, b)));
+    if (kind === "ins") { L[idx] = "  " + typed + L[idx].slice(2); if (t < b + .3) cur = [idx, 2 + typed.length]; }
+    else { L.splice(idx, 0, typed); if (t < b + .4) cur = [idx, typed.length]; }
+  }
+  return { L, cur };
+}
+
+// ---------- editor rendering ----------
+const LH = 19.5, ROWS = 28;
+const codeEl = $("code");
+const rows = [...Array(ROWS)].map(() => {
+  const d = document.createElement("div"); d.className = "ln";
+  d.innerHTML = `<div class="bgh"></div><span class="no"></span><span class="tx"></span>`;
+  codeEl.appendChild(d); return d;
+});
+const probe = document.createElement("span"); probe.style.cssText = "font:13px var(--mono);visibility:hidden;position:absolute"; probe.textContent = "x".repeat(100);
+document.body.appendChild(probe); const CW = probe.getBoundingClientRect().width / 100; probe.remove();
+
+// scroll: top line (1-based) per scene, with a skim through the whole file in scene 1
+const SCROLL = [[0, 1], [S(0) + .6, 1], [S(0) + 2.2, 150], [S(0) + 3.3, 31],
+  [S(1), 31], [S(1) + .5, 40], [S(2), 40], [S(2) + .5, 1], [S(3), 1], [S(3) + .5, 31],
+  [S(4), 31], [S(4) + .5, 1], [S(5), 1], [S(5) + .5, 31], [S(6), 31], [S(6) + .5, 46]];
+function scrollTop(t) {
+  for (let i = SCROLL.length - 1; i >= 0; i--) {
+    if (t >= SCROLL[i][0]) {
+      const [a, va] = SCROLL[i], nx = SCROLL[i + 1];
+      if (!nx) return va;
+      const [b, vb] = nx;
+      return va === vb ? va : va + (vb - va) * ease(ramp(t, a, b));
+    }
+  }
+  return 1;
+}
+// highlights: [first, last (1-based, current numbering), class, start, end]
+const HL = [
+  [34, 34, "", S(0) + 3.4, S(1)], [41, 44, "", S(0) + 4.4, S(1)], [52, 55, "", S(0) + 5.4, S(1)],
+  [56, 56, "err", S(1) + 2.6, S(1) + 6.4],
+  [3, 7, "", S(2) + .3, S(2) + 2.6], [6, 6, "tf", S(2) + 2.5, S(2) + 6.3], [21, 28, "tf", S(2) + 2.5, S(2) + 6.3],
+  [3, 3, "py", S(2) + 6.3, S(3)], [13, 13, "py", S(2) + 6.3, S(3)],
+  [41, 46, "soft", S(3) + .4, S(3) + 4.2], [42, 42, "py", S(3) + 4.7, S(3) + 7.8], [43, 43, "node", S(3) + 4.7, S(3) + 9.2],
+  [1, 1, "", S(4) + .3, S(5)], [13, 15, "soft", S(4) + 1.4, S(5)], [21, 21, "soft", S(4) + 1.4, S(5)], [29, 29, "soft", S(4) + 1.4, S(5)],
+  [34, 34, "py", S(5) + 3.3, S(5) + 6.3],
+  [48, 53, "soft", S(6) + .4, T.endA],
+];
+const CALLOUTS = [ // line, text, start, end
+  [34, "a task is a function", S(0) + 3.4, S(1)],
+  [41, "blocks and calls, C-style", S(0) + 4.4, S(1)],
+  [53, "TypeScript-style types", S(0) + 5.4, S(1)],
+];
+const calloutEls = CALLOUTS.map(([, txt]) => { const d = document.createElement("div"); d.className = "callout"; d.textContent = txt; $("callouts").appendChild(d); return d; });
+
+function renderEditor(t) {
+  const { L, cur } = doc(t);
+  const top = scrollTop(t), first = Math.floor(top), frac = top - first;
+  codeEl.style.transform = `translateY(${-frac * LH}px)`;
+  const hmap = {};
+  for (const [a, b, cls, s, e] of HL) {
+    const o = win(t, s, e, .25); if (o <= 0) continue;
+    for (let n = a; n <= b; n++) if (!hmap[n] || o >= hmap[n][1]) hmap[n] = [cls, o];
+  }
+  rows.forEach((r, i) => {
+    const n = first + i, idx = n - 1;
+    if (idx >= L.length) { r.style.visibility = "hidden"; return; }
+    r.style.visibility = "visible";
+    r.querySelector(".no").textContent = n;
+    let html = hl(L[idx]);
+    if (cur && cur[0] === idx) html = hl(L[idx], cur[1]) + `<span class="cur"></span>` + esc(L[idx].slice(cur[1]));
+    r.querySelector(".tx").innerHTML = html;
+    const H = hmap[n], b = r.querySelector(".bgh");
+    b.className = "bgh" + (H && H[0] ? " " + H[0] : ""); b.style.opacity = H ? H[1] : 0;
+  });
+  const yOf = n => 34 + 10 + (n - top) * LH;
+  // typo squiggle + tooltip on line 56, cols 25-36
+  const errO = win(t, S(1) + 2.7, V.fixA + .05, .2);
+  const x0 = 50 + 24 * CW;
+  $("squig").style.cssText += `;left:${x0}px;top:${yOf(56) + 16}px;width:${11 * CW}px;opacity:${errO}`;
+  const tipX = Math.min(x0 - 8, 560 - $("tip").offsetWidth - 12);
+  $("tip").style.cssText += `;left:${tipX}px;top:${yOf(56) + 23}px;opacity:${win(t, S(1) + 3.0, V.fixA, .2)}`;
+  // hover on test_e2e (line 54 after the async edit)
+  $("hover").style.cssText += `;left:${50 + 2 * CW}px;top:${yOf(54) + 22}px;opacity:${win(t, S(6) + 4.9, T.endA, .25)}`;
+  CALLOUTS.forEach(([n, , s, e], i) => {
+    const o = win(t, s, e, .25), el = calloutEls[i];
+    el.style.opacity = o; el.style.top = (yOf(n) + 1) + "px"; el.style.transform = `translateX(${(1 - o) * 12}px)`;
+  });
+}
+$("hover").innerHTML =
+  `<div class="sig">${hl("test_e2e(")}\n${hl('  --email: String = get_env("E2E_EMAIL"),')}\n${hl('  --password!!: String = get_env("E2E_PASSWORD")')}\n${hl("): String")}</div>` +
+  `<div class="doc">Browser end-to-end test against the deployed site (e2e/): opens the site, signs in through the real Cognito Hosted UI, and walks through creating, listing, and deleting an order.<br><br>The sign-in user must already exist: run <code>lask run create_user</code> once first…</div>`;
+
+// ---------- terminal ----------
+// Output below is real output from this project (abridged; timestamps trimmed to the time of day).
+const TAG = { py: "#python:3.12.14-alpine3.24", node: "#node:20.20.2-alpine3.23", tf: "#hashicorp/terraform:1.16.2" };
+const TAGW = 32;
+function log(ts, k, n, fd, text, sty = "") {
+  const b = `[${TAG[k]}:${n}]`, pad = " ".repeat(Math.max(1, TAGW - b.length));
+  let body;
+  if (fd === "$") body = `<span class="h">$ ${esc(text)}</span>`;
+  else if (fd === "x") body = `<span class="g">${esc(text)}</span>`;
+  else body = `<span class="f">${fd}|</span> <span class="${sty}">${esc(text)}</span>`;
+  return `<span class="f">${ts}Z</span> <span class="tg-${k}">${esc(b)}</span>${pad}${body}`;
+}
+const raw = s => esc(s);
+const dim = s => `<span class="d">${esc(s)}</span>`;
+const hi = s => `<span class="h">${esc(s)}</span>`;
+// events: ["cmd"|"repl", u, text, typeDur] or ["out", u, [lines], stagger] or ["log", [[u, line], ...]]
+const TERM = [
+  [ // 01 approachable
+    ["cmd", .5, "ls", .25],
+    ["out", .9, [`README.md  <span class="b">api</span>  <span class="b">docs</span>  <span class="b">e2e</span>  <span class="b">infra</span>  lask.json  lask.lock.json  main.lask  <span class="b">web</span>`]],
+    ["cmd", 1.6, "wc -l main.lask", .45],
+    ["out", 2.3, ["     188 main.lask"]],
+    ["cmd", 6.0, "lask version", .4],
+    ["out", 6.6, ["lask 0.6.0"]],
+    ["cmd", 7.1, "docker --version", .45],
+    ["out", 7.8, ["Docker version 29.6.2-rd, build ede120b"]],
+    ["cmd", 8.5, "# ...and that's the whole toolchain.", .9, "d"],
+  ],
+  [ // 02 verifiable
+    ["cmd", 1.9, "lask check", .35],
+    ["out", 2.6, [`<span class="h">main.lask:56:25-56:36:</span> <span class="e">E-TYPE-ACCESS</span> <span class="d">[static]:</span>`,
+      `  record has no field 'webiste_url':`,
+      `  <span class="d">Record&lt;api_url: String, cloudfront_distribution_id: String, …&gt;</span>`], .05],
+    ["cmd", 6.6, "lask check", .35],
+    ["out", 7.2, [`<span class="g">the module is valid</span>`]],
+  ],
+  [ // 03 portable
+    ["cmd", .6, "which terraform aws", .5],
+    ["out", 1.3, ["terraform not found", "aws not found"], .08],
+    ["cmd", 2.4, "lask cmd terraform -version", .6],
+    ["log", [[3.2, log("06:47:29.412", "tf", 1, "$", "terraform -version")], [4.0, raw("Terraform v1.16.2")], [4.05, raw("on linux_arm64")],
+             [4.7, log("06:47:30.185", "tf", 1, "x", "exit 0")]]],
+    ["cmd", 6.3, "lask cmd python --version", .6],
+    ["log", [[7.1, log("06:47:31.844", "py", 1, "$", "python --version")], [7.6, raw("Python 3.12.14")],
+             [8.1, log("06:47:32.451", "py", 1, "x", "exit 0")]]],
+  ],
+  [ // 04 programmable — real concurrent run of the edited test()
+    ["cmd", 4.0, "lask run test", .35],
+    ["log", [
+      [4.70, log("06:46:33.373", "node", 2, "$", "cd web && npm ci --no-audit --no-fund && npm test")],
+      [4.72, log("06:46:33.373", "py", 1, "$", 'pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"')],
+      [6.11, log("06:46:34.781", "node", 2, 2, "npm warn deprecated whatwg-encoding@3.1.1: Use @exodus/bytes instead", "d")],
+      [6.79, log("06:46:35.462", "py", 1, 2, "WARNING: Running pip as the 'root' user can result in broken permissions", "d")],
+      [7.35, log("06:46:36.027", "py", 1, 2, "..................", "d")],
+      [7.36, log("06:46:36.028", "py", 1, 2, "Ran 18 tests in 0.005s", "h")],
+      [7.37, log("06:46:36.028", "py", 1, 2, "OK", "h")],
+      [7.61, log("06:46:36.284", "node", 2, 1, "added 137 packages in 3s", "d")],
+      [7.68, log("06:46:36.352", "py", 1, "x", "exit 0")],
+      [7.72, log("06:46:36.388", "node", 2, 1, "> vitest run", "d")],
+      [8.83, log("06:46:37.507", "node", 2, 1, " ✓ src/App.test.jsx (12 tests) 207ms")],
+      [8.84, log("06:46:37.514", "node", 2, 1, " Test Files  1 passed (1)", "h")],
+      [8.85, log("06:46:37.515", "node", 2, 1, "      Tests  12 passed (12)", "h")],
+      [9.10, log("06:46:37.770", "node", 2, "x", "exit 0")],
+    ]],
+  ],
+  [ // 05 reusable
+    ["cmd", .6, "cat lask.json", .4],
+    ["out", 1.2, ["{", `  <span class="b">"dependencies"</span>: {`, `    <span class="b">"tools"</span>: {`,
+      `      <span class="b">"git"</span>: <span class="s">"https://github.com/lask-task-runner/lask-module-tools.git"</span>,`,
+      `      <span class="b">"rev"</span>: <span class="s">"v0.1.0"</span>`, "    }", "  }", "}"], .04],
+    ["cmd", 3.4, "grep hash lask.lock.json", .55],
+    ["out", 4.1, [`            <span class="b">"hash"</span>: <span class="s">"sha256-d6f7537f50f035a4009f6b07afb4b8c5e42e59af6e87563438eae85b950bbb52"</span>,`]],
+    ["cmd", 5.4, "ls .lask/deps/*/lib", .5],
+    ["out", 6.1, [`aws.lask     <span class="b">images</span>     playwright.lask  terraform.lask`, `common.lask  node.lask  python.lask      unix.lask`], .04],
+    ["cmd", 7.4, "lask deps sync", .4],
+    ["out", 8.0, ["tools ok", dim(".lask/deps/sha256-d6f7537f…/lib/images/unix/Dockerfile -> lask/f26e57ebaf63a667…")], .1],
+  ],
+  [ // 06 runnable
+    ["cmd", .5, "lask repl", .3],
+    ["out", 1.0, ["lask repl — :quit to exit"]],
+    ["repl", 1.4, '"#{1 + 2} tests"', .6],
+    ["out", 2.3, [`<span class="s">"3 tests"</span>`]],
+    ["repl", 2.9, "test_api()", .4],
+    ["log", [[3.4, log("06:47:39.922", "py", 1, "$", 'pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"')],
+             [4.9, log("06:47:42.819", "py", 1, 2, "Ran 18 tests in 0.013s", "h")], [4.95, log("06:47:42.827", "py", 1, 2, "OK", "h")],
+             [5.45, log("06:47:43.323", "py", 1, "x", "exit 0")], [5.6, `<span class="s">""</span>`]]],
+    ["repl", 6.1, ":quit", .3],
+    ["cmd", 6.8, "lask cmd node --version", .55],
+    ["log", [[7.6, log("06:47:44.494", "node", 1, "$", "node --version")], [8.0, raw("v20.20.2")],
+             [8.4, log("06:47:44.940", "node", 1, "x", "exit 0")]]],
+  ],
+  [ // 07 discoverable
+    ["cmd", .6, "lask run --help", .45],
+    ["out", 1.3, [dim("Functions in main.lask:"),
+      `  <span class="b">test_api</span>           Runs the API's Python unit tests (api/).`,
+      `  <span class="b">test_web</span>           Runs the frontend's unit tests (web/).`,
+      `  <span class="b">test</span>               Runs the fast, offline tests. test_e2e is kept separate since it needs a deployed stack…`,
+      `  <span class="b">test_e2e</span>           Browser end-to-end test against the deployed site (e2e/): opens the site, signs in…`,
+      `  <span class="b">build_lambda_deps</span>  Installs the API's Python dependencies into api/vendor so the Lambda deployment…`,
+      `  <span class="b">build_web</span>          Builds the React frontend (web/) with the deployed API and Cognito settings…`,
+      `  <span class="b">tf_output</span>          Fetches every Terraform output in infra/ with a single \`terraform output -json\`…`,
+      `  <span class="b">deploy</span>             Deploys everything: applies the Terraform infra, builds the frontend against it…`,
+      `  <span class="b">create_user</span>        Creates a Cognito sign-in user with a permanent password (self sign-up is…`,
+      `  <span class="b">destroy</span>            Tears down everything deploy() created.`,
+      `  <span class="b">healthcheck_api</span>    Calls the deployed API's health route and returns its HTTP status.`], .04],
+    ["cmd", 3.8, "lask run test_e2e --help", .6],
+    ["out", 4.7, [`<span class="h">test_e2e</span> - Browser end-to-end test against the deployed site (e2e/): opens`,
+      "the site, signs in through the real Cognito Hosted UI, and walks through",
+      "creating, listing, and deleting an order.", "",
+      dim("Usage:"), `  lask run test_e2e [<span class="b">--email</span> &lt;String&gt;] [<span class="b">--password</span> &lt;String&gt;]`, "",
+      "The sign-in user must already exist: run `lask run create_user` once",
+      "first, with the same email/password as E2E_EMAIL/E2E_PASSWORD in .env.", "",
+      dim("Parameters:"), `  <span class="b">--email</span> : String = get_env("E2E_EMAIL")`, `  <span class="b">--password</span> : String = <span class="e">&lt;secret&gt;</span>`, "",
+      dim("Returns:"), "  String", "", dim("Defined at main.lask:54")], .035],
+  ],
+];
+const TERM_ROWS = 29;
+const caret = on => on ? `<span class="cur" style="width:7px;height:14px;vertical-align:-2px"></span>` : "";
+const blink = t => Math.floor(t * 2.2) % 2 === 0;
+function termLines(k, u, t) {
+  const lines = []; let prevEnd = 0, inRepl = false, last = null;
+  for (const ev of TERM[k]) {
+    const [kind] = ev;
+    if (kind === "cmd" || kind === "repl") {
+      const [, at, text, dur, cls] = ev;
+      if (u < prevEnd) break;
+      const pr = kind === "repl" ? `<span class="p">lask&gt;</span> ` : `<span class="p">❯</span> `;
+      const typed = esc(text.slice(0, Math.round(text.length * ramp(u, at, at + dur))));
+      const typing = u >= at && u < at + dur + .25;
+      lines.push(pr + (cls ? `<span class="${cls}">${typed}</span>` : typed));
+      last = { i: lines.length - 1, typing, idle: u < at };
+      if (u < at + dur + .2) break;
+      prevEnd = at + dur + .2; last = null;
+      if (text === "lask repl") inRepl = true; if (text === ":quit") inRepl = false;
+    } else if (kind === "out") {
+      const [, at, out, st = .03] = ev;
+      out.forEach((l, i) => { if (u >= at + i * st) lines.push(l); });
+      prevEnd = Math.max(prevEnd, at + out.length * st);
+      if (u < prevEnd) break;
+    } else if (kind === "log") {
+      for (const [at, l] of ev[1]) if (u >= at) lines.push(l);
+      prevEnd = Math.max(prevEnd, ev[1][ev[1].length - 1][0] + .15);
+      if (u < prevEnd) break;
+    }
+  }
+  if (last) lines[last.i] += caret(last.typing || blink(t));
+  else if (u >= prevEnd) lines.push((inRepl ? `<span class="p">lask&gt;</span> ` : `<span class="p">❯</span> `) + caret(blink(t)));
+  return lines;
+}
+function renderTerm(t) {
+  const k = clamp(Math.floor((t - S(0)) / SCENE_LEN), 0, 6);
+  const u = t - S(k);
+  const lines = termLines(k, u, t).slice(-TERM_ROWS);
+  $("term").innerHTML = lines.map(l => `<div class="tl">${l || " "}</div>`).join("");
+}
+
+// ---------- render ----------
+function render(t) {
+  renderIntro(t);
+  const cmpOn = t >= T.cmpA && t < T.cmpEnd;
+  $("cmp").style.visibility = cmpOn ? "visible" : "hidden";
+  $("cmp").style.opacity = 1 - snap(ramp(t, T.cmpEnd - .3, T.cmpEnd));
+  const c0 = T.cmpA;
+  $("cmp").querySelector("h3").style.opacity = expo(ramp(t, c0, c0 + .4));
+  const ax = expo(ramp(t, c0 + .2, c0 + .8));
+  $("axis").querySelector(".bar").style.transform = `scaleX(${ax})`;
+  $("axis").querySelectorAll("span").forEach(e => e.style.opacity = ax);
+  // left, right, then Lask lands in the middle and the others step back
+  [[0, c0 + .5], [2, c0 + 1.9], [1, c0 + 3.4]].forEach(([i, a]) => {
+    const o = expo(ramp(t, a, a + .5)), el = $("cd" + i);
+    el.style.opacity = o; el.style.transform = `translateY(${(1 - o) * (i === 1 ? -24 : 24)}px)`;
+    if (i !== 1) el.style.opacity = o * (1 - .5 * eo(ramp(t, c0 + 3.5, c0 + 3.9)));
+  });
+  renderSeven(t);
+
+  capEls.forEach((el, i) => show(el, win(t, S(i) + .05, S(i + 1) + .05, .3), 8));
+
+  const wO = win(t, S(0) - .1, T.endA + .1, .45);
+  const ed = $("ed"), tm = $("tm");
+  ed.style.opacity = tm.style.opacity = wO;
+  ed.style.visibility = tm.style.visibility = wO > 0 ? "visible" : "hidden";
+  const slide = 1 - expo(ramp(t, S(0) - .1, S(0) + .5));
+  ed.style.transform = `translateX(${-50 * slide}px)`;
+  tm.style.transform = `translateX(${50 * slide}px)`;
+  if (wO > 0) { renderEditor(t); renderTerm(t); }
+
+  const eO = expo(ramp(t, T.endA + .15, T.endA + .8));
+  show($("endBox"), eO, 16);
+  [[".t", .55], [".inst", .7], [".url", 1.15]].forEach(([sel, d]) => $("endBox").querySelector(sel).style.opacity = expo(ramp(t, T.endA + d, T.endA + d + .5)));
+
+  // "lask run task" -> backspace -> "lask make it simple"
+  const e0 = T.endA + .85;
+  const instTx = (t < e0 + 1.1
+    ? "lask run task".slice(0, Math.round(13 * ramp(t, e0, e0 + .6)))
+    : retype("lask ", "run task", "make it simple", ramp(t, e0 + 1.1, e0 + 2.1)));
+  const typing = t >= e0 && t < e0 + 2.3 && !(t > e0 + .7 && t < e0 + 1.1);
+  $("instTx").innerHTML = esc(instTx) + `<span class="cur" style="width:9px;height:19px;vertical-align:-3px;opacity:${typing || blink(t) ? 1 : 0}"></span>`;
+}
+window.render = render;
+
+if (!navigator.webdriver) {
+  const t0 = performance.now();
+  const loop = () => { render(((performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  loop();
+} else render(0);
+</script>
+</body>
+</html>
