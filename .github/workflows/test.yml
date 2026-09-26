@@ -39,8 +39,19 @@ jobs:
       - name: Build project
         run: stack build
 
+      # Coverage is recorded, not enforced: there is no threshold yet,
+      # only a number to watch from one push to the next.
       - name: Run tests
-        run: stack test
+        run: stack test --coverage
+
+      - name: Summarize coverage
+        run: tools/coverage-report.sh >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: .stack-work/install/**/hpc/
 
       - name: Run doctests
         run: stack exec doctest app src

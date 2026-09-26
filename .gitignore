@@ -7,3 +7,6 @@
 doc/assets/pv/pv.html
 doc/assets/pv/frames/
 doc/assets/pv/snap_*.png
+
+# Written to the working directory by a binary built with --coverage
+*.tix
