@@ -5,14 +5,14 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <div align="center">
-  <img alt="Lask in 15 seconds: lambda + task becomes Lask, where it fits between make or Taskfile and Dagger or Earthly, then quick cuts of the example/01-projects/02-webapp-on-aws project showing its seven strengths" src="doc/assets/lask-pv-short.gif" width="960">
+  <img alt="Lask in 15 seconds: lambda + task becomes Lask, where it fits between make or Taskfile and Dagger, then quick cuts of the example/01-projects/02-webapp-on-aws project showing its seven strengths" src="doc/assets/lask-pv-short.gif" width="960">
   <br>
   <a href="doc/assets/lask-pv.mp4">▶ Watch the full 90-second tour (MP4)</a>
 </div>
 
 Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
 
-Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger or Earthly too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
+Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
 
 Lask aims to stay simple and light to use, while bringing along the parts of the heavyweight platforms that most automation needs: pinned environments, checks before anything runs, concurrency and reuse.
 
@@ -25,44 +25,7 @@ The recording above and the excerpt below come from [example/01-projects/02-weba
   </picture>
 </div>
 
-<details>
-<summary>Copy the source of this excerpt</summary>
-
-```lask
-import * as tools from "tools"
-
-command { "python", "pip" } on python
-command { "node", "npm", "npx" } on node
-
-python = tools.python(tag = "3.12.14-alpine3.24")
-node = tools.node(tag = "20.20.2-alpine3.23")
-playwright = tools.playwright(tag = "v1.62.1-jammy")
-// …
-
-// Runs the frontend's unit tests (web/).
-test_web() = $ cd web && npm ci --no-audit --no-fund && npm test
-
-// Browser end-to-end test against the deployed site (e2e/): opens the
-// site, signs in through the real Cognito Hosted UI, and walks through
-// creating, listing, and deleting an order.
-test_e2e(
-  --email: String = get_env("E2E_EMAIL"),
-  --password!!: String = get_env("E2E_PASSWORD")
-) = do {
-  website = tf_output().website_url
-
-  $[playwright] cd e2e && \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && \
-    E2E_BASE_URL="#{website}" \
-    E2E_EMAIL="#{email}" \
-    E2E_PASSWORD="#{password}" \
-    npx playwright test
-}
-
-// …
-```
-
-</details>
+<p align="center"><a href="example/01-projects/02-webapp-on-aws/main.lask">See the full main.lask →</a></p>
 
 ## Why Lask
 

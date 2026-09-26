@@ -19,6 +19,6 @@ Both renderers take `<source> <out-dir> [title]` and write `<source name>-{dark,
 
 ## When editing the excerpt
 
-`doc/assets/example.lask` is an excerpt of `example/01-projects/02-webapp-on-aws/main.lask`, copied line for line, with `// …` where lines were left out. After changing either, re-render and paste the same text into the `<details>` fence in `README.md`, which exists so the excerpt stays copy-pastable and searchable.
+`doc/assets/example.lask` is an abridged excerpt of `example/01-projects/02-webapp-on-aws/main.lask` (some lines and comments are shortened or left out); the README links to the full file below it. After changing either, re-render.
 
 The `<img width="...">` of the `<picture>` in `README.md` must match the SVG's own `width` (printed in its first line), otherwise GitHub scales the card and the text goes soft.

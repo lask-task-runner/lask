@@ -136,7 +136,7 @@
         <ul><li class="ok">Quick to start</li><li class="ng">Nothing is checked until it runs</li><li class="ng">Every tool installed on every machine</li></ul></div>
       <div class="card lask" id="cd1"><div class="ct">Lask</div><div class="cs">A small typed language for tasks, running on Docker.</div>
         <ul><li class="ok">Checked before anything runs</li><li class="ok">Every tool runs in a pinned image</li><li class="ok">Install Lask + Docker, nothing else</li></ul></div>
-      <div class="card" id="cd2"><div class="ct">Dagger · Earthly</div><div class="cs">CI pipelines as code, on a container build engine.</div>
+      <div class="card" id="cd2"><div class="ct">Dagger</div><div class="cs">CI pipelines as code, on a container build engine.</div>
         <ul><li class="ok">Containerized and reproducible</li><li class="ok">Caching built for large builds</li><li class="ng">More to learn and set up before the first task</li></ul></div>
     </div>
   </div>
@@ -167,6 +167,10 @@
 // The real example/01-projects/02-webapp-on-aws/main.lask, injected by build.py.
 const MAIN_LASK = __MAIN_LASK__;
 const BASE = MAIN_LASK.replace(/\n$/, "").split("\n");
+// Line numbers (1-based) the scenes point at, found in the source so edits to main.lask don't shift them.
+const LN = { e2e: BASE.indexOf("test_e2e(") + 1, site: BASE.indexOf("  website = tf_output().website_url") + 1 };
+LN.doc = (() => { let n = LN.e2e - 1; while (n > 1 && BASE[n - 2].startsWith("//")) n--; return n; })();
+const ASYNC_LINES = 2; // the programmable scene turns test() into 6 lines from 4, above test_e2e
 
 // ---------- easing ----------
 const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
@@ -307,9 +311,9 @@ function doc(t) {
   const L = BASE.slice(); let cur = null;
   const P55 = "  website = tf_output().";
   if (t >= V.typoA) {
-    L[55] = t < V.fixA ? retype(P55, "website_url", "webiste_url", ramp(t, V.typoA, V.typoB))
+    L[LN.site - 1] = t < V.fixA ? retype(P55, "website_url", "webiste_url", ramp(t, V.typoA, V.typoB))
                        : retype(P55, "webiste_url", "website_url", ramp(t, V.fixA, V.fixB));
-    if (t < V.typoB + .4 || (t >= V.fixA && t < V.fixB + .4)) cur = [55, L[55].length];
+    if (t < V.typoB + .4 || (t >= V.fixA && t < V.fixB + .4)) cur = [LN.site - 1, L[LN.site - 1].length];
   }
   for (const [kind, idx, text, a, b] of PROG) {
     if (t < a) continue;
@@ -332,9 +336,9 @@ const probe = document.createElement("span"); probe.style.cssText = "font:13px v
 document.body.appendChild(probe); const CW = probe.getBoundingClientRect().width / 100; probe.remove();
 
 // scroll: top line (1-based) per scene, with a skim through the whole file in scene 1
-const SCROLL = [[0, 1], [S(0) + .6, 1], [S(0) + 2.2, 150], [S(0) + 3.3, 31],
-  [S(1), 31], [S(1) + .5, 40], [S(2), 40], [S(2) + .5, 1], [S(3), 1], [S(3) + .5, 31],
-  [S(4), 31], [S(4) + .5, 1], [S(5), 1], [S(5) + .5, 31], [S(6), 31], [S(6) + .5, 46]];
+const SCROLL = [[0, 1], [S(0) + .6, 1], [S(0) + 2.2, 150], [S(0) + 3.3, 33],
+  [S(1), 33], [S(1) + .5, LN.site - 17], [S(2), LN.site - 17], [S(2) + .5, 1], [S(3), 1], [S(3) + .5, 31],
+  [S(4), 31], [S(4) + .5, 1], [S(5), 1], [S(5) + .5, 31], [S(6), 31], [S(6) + .5, LN.doc + ASYNC_LINES - 2]];
 function scrollTop(t) {
   for (let i = SCROLL.length - 1; i >= 0; i--) {
     if (t >= SCROLL[i][0]) {
@@ -348,19 +352,19 @@ function scrollTop(t) {
 }
 // highlights: [first, last (1-based, current numbering), class, start, end]
 const HL = [
-  [34, 34, "", S(0) + 3.4, S(1)], [41, 44, "", S(0) + 4.4, S(1)], [52, 55, "", S(0) + 5.4, S(1)],
-  [56, 56, "err", S(1) + 2.6, S(1) + 6.4],
+  [34, 34, "", S(0) + 3.4, S(1)], [41, 44, "", S(0) + 4.4, S(1)], [LN.e2e, LN.e2e + 2, "", S(0) + 5.4, S(1)],
+  [LN.site, LN.site, "err", S(1) + 2.6, S(1) + 6.4],
   [3, 7, "", S(2) + .3, S(2) + 2.6], [6, 6, "tf", S(2) + 2.5, S(2) + 6.3], [21, 28, "tf", S(2) + 2.5, S(2) + 6.3],
   [3, 3, "py", S(2) + 6.3, S(3)], [13, 13, "py", S(2) + 6.3, S(3)],
   [41, 46, "soft", S(3) + .4, S(3) + 4.2], [42, 42, "py", S(3) + 4.7, S(3) + 7.8], [43, 43, "node", S(3) + 4.7, S(3) + 9.2],
   [1, 1, "", S(4) + .3, S(5)], [13, 15, "soft", S(4) + 1.4, S(5)], [21, 21, "soft", S(4) + 1.4, S(5)], [29, 29, "soft", S(4) + 1.4, S(5)],
   [34, 34, "py", S(5) + 3.3, S(5) + 6.3],
-  [48, 53, "soft", S(6) + .4, T.endA],
+  [LN.doc + ASYNC_LINES, LN.e2e + ASYNC_LINES - 1, "soft", S(6) + .4, T.endA],
 ];
 const CALLOUTS = [ // line, text, start, end
   [34, "a task is a function", S(0) + 3.4, S(1)],
   [41, "blocks and calls, C-style", S(0) + 4.4, S(1)],
-  [53, "TypeScript-style types", S(0) + 5.4, S(1)],
+  [LN.e2e + 1, "TypeScript-style types", S(0) + 5.4, S(1)],
 ];
 const calloutEls = CALLOUTS.map(([, txt]) => { const d = document.createElement("div"); d.className = "callout"; d.textContent = txt; $("callouts").appendChild(d); return d; });
 
@@ -388,11 +392,11 @@ function renderEditor(t) {
   // typo squiggle + tooltip on line 56, cols 25-36
   const errO = win(t, S(1) + 2.7, V.fixA + .05, .2);
   const x0 = 50 + 24 * CW;
-  $("squig").style.cssText += `;left:${x0}px;top:${yOf(56) + 16}px;width:${11 * CW}px;opacity:${errO}`;
+  $("squig").style.cssText += `;left:${x0}px;top:${yOf(LN.site) + 16}px;width:${11 * CW}px;opacity:${errO}`;
   const tipX = Math.min(x0 - 8, 560 - $("tip").offsetWidth - 12);
-  $("tip").style.cssText += `;left:${tipX}px;top:${yOf(56) + 23}px;opacity:${win(t, S(1) + 3.0, V.fixA, .2)}`;
+  $("tip").style.cssText += `;left:${tipX}px;top:${yOf(LN.site) + 23}px;opacity:${win(t, S(1) + 3.0, V.fixA, .2)}`;
   // hover on test_e2e (line 54 after the async edit)
-  $("hover").style.cssText += `;left:${50 + 2 * CW}px;top:${yOf(54) + 22}px;opacity:${win(t, S(6) + 4.9, T.endA, .25)}`;
+  $("hover").style.cssText += `;left:${50 + 2 * CW}px;top:${yOf(LN.e2e + ASYNC_LINES) + 22}px;opacity:${win(t, S(6) + 4.9, T.endA, .25)}`;
   CALLOUTS.forEach(([n, , s, e], i) => {
     const o = win(t, s, e, .25), el = calloutEls[i];
     el.style.opacity = o; el.style.top = (yOf(n) + 1) + "px"; el.style.transform = `translateX(${(1 - o) * 12}px)`;
@@ -400,7 +404,7 @@ function renderEditor(t) {
 }
 $("hover").innerHTML =
   `<div class="sig">${hl("test_e2e(")}\n${hl('  --email: String = get_env("E2E_EMAIL"),')}\n${hl('  --password!!: String = get_env("E2E_PASSWORD")')}\n${hl("): String")}</div>` +
-  `<div class="doc">Browser end-to-end test against the deployed site (e2e/): opens the site, signs in through the real Cognito Hosted UI, and walks through creating, listing, and deleting an order.<br><br>The sign-in user must already exist: run <code>lask run create_user</code> once first…</div>`;
+  `<div class="doc">Browser end-to-end test against the deployed site (e2e/): opens the site, signs in through the real Cognito Hosted UI, and walks through creating, listing, and deleting an order.<br><br><i>@param</i> <code>email</code> — The user to sign in as.<br><i>@param</i> <code>password</code> — That user's password; <code>!!</code> masks it in logs.</div>`;
 
 // ---------- terminal ----------
 // Output below is real output from this project (abridged; timestamps trimmed to the time of day).
@@ -423,7 +427,7 @@ const TERM = [
     ["cmd", .5, "ls", .25],
     ["out", .9, [`README.md  <span class="b">api</span>  <span class="b">docs</span>  <span class="b">e2e</span>  <span class="b">infra</span>  lask.json  lask.lock.json  main.lask  <span class="b">web</span>`]],
     ["cmd", 1.6, "wc -l main.lask", .45],
-    ["out", 2.3, ["     188 main.lask"]],
+    ["out", 2.3, [`     ${BASE.length} main.lask`]],
     ["cmd", 6.0, "lask version", .4],
     ["out", 6.6, ["lask 0.6.0"]],
     ["cmd", 7.1, "docker --version", .45],
@@ -432,7 +436,7 @@ const TERM = [
   ],
   [ // 02 verifiable
     ["cmd", 1.9, "lask check", .35],
-    ["out", 2.6, [`<span class="h">main.lask:56:25-56:36:</span> <span class="e">E-TYPE-ACCESS</span> <span class="d">[static]:</span>`,
+    ["out", 2.6, [`<span class="h">main.lask:${LN.site}:25-${LN.site}:36:</span> <span class="e">E-TYPE-ACCESS</span> <span class="d">[static]:</span>`,
       `  record has no field 'webiste_url':`,
       `  <span class="d">Record&lt;api_url: String, cloudfront_distribution_id: String, …&gt;</span>`], .05],
     ["cmd", 6.6, "lask check", .35],
@@ -514,8 +518,10 @@ const TERM = [
       dim("Usage:"), `  lask run test_e2e [<span class="b">--email</span> &lt;String&gt;] [<span class="b">--password</span> &lt;String&gt;]`, "",
       "The sign-in user must already exist: run `lask run create_user` once",
       "first, with the same email/password as E2E_EMAIL/E2E_PASSWORD in .env.", "",
-      dim("Parameters:"), `  <span class="b">--email</span> : String = get_env("E2E_EMAIL")`, `  <span class="b">--password</span> : String = <span class="e">&lt;secret&gt;</span>`, "",
-      dim("Returns:"), "  String", "", dim("Defined at main.lask:54")], .035],
+      dim("Parameters:"), `  <span class="b">--email</span> : String = get_env("E2E_EMAIL")`, "      The user to sign in as.",
+      `  <span class="b">--password</span> : String = <span class="e">&lt;secret&gt;</span>`,
+      "      That user's password; `!!` masks it in logs.", "",
+      dim("Returns:"), "  String", "", dim(`Defined at main.lask:${LN.e2e + ASYNC_LINES}`)], .035],
   ],
 ];
 const TERM_ROWS = 29;

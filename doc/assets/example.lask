@@ -6,14 +6,14 @@ command { "node", "npm", "npx" } on node
 python = tools.python(tag = "3.12.14-alpine3.24")
 node = tools.node(tag = "20.20.2-alpine3.23")
 playwright = tools.playwright(tag = "v1.62.1-jammy")
-// …
 
 // Runs the frontend's unit tests (web/).
 test_web() = $ cd web && npm ci --no-audit --no-fund && npm test
 
-// Browser end-to-end test against the deployed site (e2e/): opens the
-// site, signs in through the real Cognito Hosted UI, and walks through
-// creating, listing, and deleting an order.
+// Browser end-to-end test against the deployed site (e2e/).
+//
+// @param email     The user to sign in as.
+// @param password  That user's password; `!!` masks it in logs.
 test_e2e(
   --email: String = get_env("E2E_EMAIL"),
   --password!!: String = get_env("E2E_PASSWORD")
@@ -27,5 +27,3 @@ test_e2e(
     E2E_PASSWORD="#{password}" \
     npx playwright test
 }
-
-// …

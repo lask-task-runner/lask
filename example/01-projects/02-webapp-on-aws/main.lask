@@ -49,6 +49,9 @@ test() = do {
 //
 // The sign-in user must already exist: run `lask run create_user` once
 // first, with the same email/password as E2E_EMAIL/E2E_PASSWORD in .env.
+//
+// @param email     The user to sign in as.
+// @param password  That user's password; `!!` masks it in logs.
 test_e2e(
   --email: String = get_env("E2E_EMAIL"),
   --password!!: String = get_env("E2E_PASSWORD")
