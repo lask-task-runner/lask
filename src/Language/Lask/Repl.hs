@@ -15,14 +15,12 @@ module Language.Lask.Repl
     sessionSource,
     Input (..),
     classifyInput,
-    Reloaded (..),
     ReloadFailure (..),
     reloadSession,
   )
 where
 
 import Control.Exception (try)
-import Control.Monad (forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -95,24 +93,21 @@ classifyInput raw = case T.uncons trimmed of
   where
     trimmed = T.strip raw
 
--- | The outcome of a successful @:reload@: the new session, and the
--- declarations that no longer compile against the new module text,
--- each with the diagnostics that dropped it.
-data Reloaded = Reloaded
-  { reloadedSession :: Session,
-    reloadedDropped :: [(Text, [Diagnostic])]
-  }
-
 data ReloadFailure
   = ReloadMissing
-  | ReloadInvalid [Diagnostic]
+  | -- | The module does not compile on its own.
+    ReloadInvalid [Diagnostic]
+  | -- | The module compiles, but this declaration typed at the prompt
+    -- no longer compiles on top of it.
+    ReloadConflict Text [Diagnostic]
 
 -- | Read the module again and re-apply the session's declarations on
--- top of it, in the order they were typed, keeping each only if the
--- session still compiles with it, as when it was typed. Declarations
--- are compiled, not evaluated, and expressions are not replayed, so
--- a reload runs nothing. On failure the caller keeps the old session.
-reloadSession :: FilePath -> Session -> IO (Either ReloadFailure Reloaded)
+-- top of it, in the order they were typed. Declarations are compiled,
+-- not evaluated, and expressions are not replayed, so a reload runs
+-- nothing. A reload is all or nothing: on any failure, including a
+-- declaration that no longer compiles, the caller keeps the old
+-- session.
+reloadSession :: FilePath -> Session -> IO (Either ReloadFailure Session)
 reloadSession modulePath old = do
   exists <- doesFileExist modulePath
   if not exists
@@ -122,15 +117,16 @@ reloadSession modulePath old = do
       r <- compileSession modulePath base
       case r of
         Left ds -> pure (Left (ReloadInvalid ds))
-        Right _ -> Right <$> reapply (Session base []) [] (sessionDecls old)
+        Right _ -> reapply (Session base []) (sessionDecls old)
   where
-    reapply s dropped [] = pure (Reloaded s (reverse dropped))
-    reapply s dropped (d : ds) = do
+    -- One at a time, so that a failure names the declaration.
+    reapply s [] = pure (Right s)
+    reapply s (d : ds) = do
       let s' = s {sessionDecls = sessionDecls s <> [d]}
       r <- compileSession modulePath (sessionSource s')
       case r of
-        Left diags -> reapply s ((d, diags) : dropped) ds
-        Right _ -> reapply s' dropped ds
+        Left diags -> pure (Left (ReloadConflict d diags))
+        Right _ -> reapply s' ds
 
 runRepl :: FilePath -> IO ()
 runRepl modulePath = do
@@ -165,11 +161,12 @@ loop modulePath session = do
           mapM_ (outputStrLn . pretty) ds
           outputStrLn "reload failed; the previous session is kept."
           loop modulePath session
-        Right (Reloaded session' dropped) -> do
+        Left (ReloadConflict d ds) -> do
+          mapM_ (outputStrLn . pretty) ds
+          outputStrLn ("reload failed: the REPL declaration '" <> T.unpack d <> "' no longer compiles; the previous session is kept.")
+          loop modulePath session
+        Right session' -> do
           outputStrLn ("Ok, reloaded " <> takeFileName modulePath <> "." <> reappliedNote (length (sessionDecls session')))
-          forM_ dropped $ \(d, ds) -> do
-            outputStrLn ("dropped: " <> T.unpack d)
-            mapM_ (outputStrLn . pretty) ds
           loop modulePath session'
     Just (InputCode code) -> case parseExpr "<repl>" code of
       Right _ -> do

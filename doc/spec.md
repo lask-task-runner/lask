@@ -3050,9 +3050,9 @@ A session command takes no arguments; one given arguments is an error and change
 Reload rules (`:reload`):
 
 - The target module is read again and compiled on its own, without the session's declarations.
-- If it compiles, it replaces the module text of the session, and the declarations typed at the prompt are re-applied to it in the order they were typed. Each is kept only if the session compiles with it, as when it was typed; one that no longer does (because the module now defines the same name, or no longer defines a name it uses) is dropped and reported with its diagnostics. The rest are kept.
+- If it compiles, the declarations typed at the prompt are re-applied to it in the order they were typed, and the result replaces the session.
 - Re-applying a declaration compiles it and does not evaluate it, and expressions are not replayed. A reload therefore runs no function and no command.
-- If the target module does not exist or does not compile, its diagnostics are reported and the session is kept as it was before the reload, module text and declarations alike.
+- A reload is all or nothing. If the target module does not exist, does not compile, or no longer compiles with one of the declarations typed at the prompt (because the module now defines the same name, or no longer defines a name the declaration uses), the diagnostics are reported, naming that declaration in the last case, and the session is kept as it was before the reload, module text and declarations alike. A reload never discards what was typed at the prompt.
 
 Execution example:
 

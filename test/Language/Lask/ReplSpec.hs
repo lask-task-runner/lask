@@ -37,26 +37,30 @@ spec = do
       withModule $ \path -> do
         let old = Session "a(): Number = 1\n" ["b(): Number = a() + 1"]
         TIO.writeFile path "a(): Number = 10\n"
-        Right (Reloaded s dropped) <- reloadSession path old
-        s `shouldBe` Session "a(): Number = 10\n" ["b(): Number = a() + 1"]
-        map fst dropped `shouldBe` []
+        r <- reloadSession path old
+        case r of
+          Right s -> s `shouldBe` Session "a(): Number = 10\n" ["b(): Number = a() + 1"]
+          Left _ -> expectationFailure "expected the reload to succeed"
 
-    it "drops a declaration the module now defines, and keeps the rest in order" $
+    it "fails, naming the declaration, when the module now defines its name" $
       withModule $ \path -> do
         let old = Session "" ["b(): Number = 2", "c(): Number = 3", "d(): Number = b() + c()"]
-        TIO.writeFile path "b(): Number = 20\n"
-        Right (Reloaded s dropped) <- reloadSession path old
-        sessionDecls s `shouldBe` ["c(): Number = 3", "d(): Number = b() + c()"]
-        map fst dropped `shouldBe` ["b(): Number = 2"]
-        map (map diagCode . snd) dropped `shouldBe` [[ENameDuplicate]]
+        TIO.writeFile path "c(): Number = 30\n"
+        r <- reloadSession path old
+        case r of
+          Left (ReloadConflict d ds) -> do
+            d `shouldBe` "c(): Number = 3"
+            map diagCode ds `shouldBe` [ENameDuplicate]
+          _ -> expectationFailure "expected ReloadConflict"
 
-    it "drops a declaration whose dependency no longer exists" $
+    it "fails when a declaration's dependency no longer exists" $
       withModule $ \path -> do
         let old = Session "a(): Number = 1\n" ["b(): Number = a()"]
         TIO.writeFile path "z(): Number = 1\n"
-        Right (Reloaded s dropped) <- reloadSession path old
-        sessionDecls s `shouldBe` []
-        map fst dropped `shouldBe` ["b(): Number = a()"]
+        r <- reloadSession path old
+        case r of
+          Left (ReloadConflict d _) -> d `shouldBe` "b(): Number = a()"
+          _ -> expectationFailure "expected ReloadConflict"
 
     it "fails, leaving the caller the old session, when the module does not compile" $
       withModule $ \path -> do
