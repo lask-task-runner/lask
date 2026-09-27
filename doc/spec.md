@@ -83,6 +83,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [11.6 Help Display (`--help`)](#116-help-display---help)
     - [11.7 Environment Materialization (`env`)](#117-environment-materialization-env)
     - [11.8 Command Invocation (`cmd`)](#118-command-invocation-cmd)
+    - [11.9 Interactive Session (`repl`)](#119-interactive-session-repl)
   - [12. Observability](#12-observability)
     - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
     - [12.2 Execution Log](#122-execution-log)
@@ -2527,7 +2528,7 @@ The CLI must provide the following subcommands.
 - `check`: returns static validation results.
 - `run`: executes the specified function. The evaluation result is not output to stdout (11.3).
 - `eval`: executes the specified function and outputs the evaluation result to stdout. The syntax is identical to `run` (11.2).
-- `repl`: provides an execution environment for interactively evaluating expressions and functions.
+- `repl`: provides an execution environment for interactively evaluating expressions and functions (11.9).
 - `envs`: enumerates the execution environments used by tasks and checks their accessibility (11.4).
 - `deps`: manages external dependencies — fetches and verifies them, records new entries, and reports on the dependency graph (11.5).
 - `env`: materializes and inspects the container images the resolved graph requires (11.7).
@@ -3024,6 +3025,47 @@ $ lask cmd go test ./... > report.txt
 2026-09-12T12:56:40.217Z [#golang:1.25:1] $ go test ./...
 2026-09-12T12:56:41.002Z [#golang:1.25:1] 2| warning: unused variable
 2026-09-12T12:56:41.002Z [#golang:1.25:1] exit 0
+```
+
+### 11.9 Interactive Session (`repl`)
+
+`repl` reads the target module once at start and then accepts one input per line. Each input is a session command, a top-level declaration, or an expression.
+
+Input rules:
+
+- An input starting with `:` is a session command. No declaration or expression starts with `:`, so an unknown command is reported as such (`unknown command ':foo'`) and is never parsed as code.
+- A declaration is added to the session if the session still compiles with it; otherwise its diagnostics are reported and the session is unchanged.
+- An expression is evaluated against the session and its result printed. It is not kept in the session.
+- The target module's text is the one read at start or by the last successful `:reload`. Imported modules and the lock file are read from disk on every input, so a change to them takes effect without a reload.
+
+Session commands:
+
+| Command | Meaning |
+| --- | --- |
+| `:reload`, `:r` | Read the target module again (below). |
+| `:quit`, `:q`, `:exit` | End the session. End of input does the same. |
+
+A session command takes no arguments; one given arguments is an error and changes nothing.
+
+Reload rules (`:reload`):
+
+- The target module is read again and compiled on its own, without the session's declarations.
+- If it compiles, it replaces the module text of the session, and the declarations typed at the prompt are re-applied to it in the order they were typed. Each is kept only if the session compiles with it, as when it was typed; one that no longer does (because the module now defines the same name, or no longer defines a name it uses) is dropped and reported with its diagnostics. The rest are kept.
+- Re-applying a declaration compiles it and does not evaluate it, and expressions are not replayed. A reload therefore runs no function and no command.
+- If the target module does not exist or does not compile, its diagnostics are reported and the session is kept as it was before the reload, module text and declarations alike.
+
+Execution example:
+
+```text
+$ lask repl
+lask> double(n: Number): Number = n * 2
+lask> double(size())
+6
+            (main.lask is edited: size() now returns 5)
+lask> :r
+Ok, reloaded main.lask. (1 REPL declaration re-applied)
+lask> double(size())
+10
 ```
 
 ## 12. Observability

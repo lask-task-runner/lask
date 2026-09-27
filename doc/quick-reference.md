@@ -48,7 +48,7 @@ $ lask run release --help
 | `lask run <fn> [args...]` | Execute a task. Writes **nothing** to stdout. |
 | `lask eval <fn> [args...]` | Same, and writes the return value to stdout (JSON by default). |
 | `lask cmd <prog> [args...]` | Run a declared command in its declared image, stdio passed through. |
-| `lask repl` | Evaluate expressions interactively. |
+| `lask repl` | Evaluate expressions interactively. `:r` reloads the module, keeping what was typed. |
 | `lask envs [fn] [--check]` | List the environments a module uses; `--check` tests access. |
 | `lask env build \| list` | Materialize / inspect container images. |
 | `lask deps sync \| add \| why \| diff` | Fetch, verify and report on external dependencies. |
