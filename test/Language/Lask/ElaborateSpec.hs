@@ -841,6 +841,11 @@ spec = do
     it "rejects an environment that reads the standard input" $
       rejects "command { \"go\" } on #docker(\"golang:#{stdin}\")\nv() = $ go vet" ETypeCommandEffect
 
+    it "rejects an environment that waits (spec 15.7)" $
+      rejects
+        "command { \"go\" } on #docker(\"golang:#{timeout(5, \\() -> \"1.25\")}\")\nv() = $ go vet"
+        ETypeCommandEffect
+
     it "rejects an environment that touches the filesystem" $
       rejects
         "command { \"go\" } on #docker(\"golang:#{read_file(\"tag\", #local)}\")\nv() = $ go vet"

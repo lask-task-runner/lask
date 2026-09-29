@@ -677,7 +677,7 @@ Command declarations:
 - A name is a `string_lit` containing no interpolation. The set of command words a module has must be determinable without evaluating it, for the same reason 10.2 requires literal `dockerfile` and `context` arguments.
 - A name is valid exactly when submitting it alone, as a whole command string, to the dispatch procedure of 10.9 yields exactly one candidate whose text is the name itself. Otherwise it is a static error (`E-TYPE-COMMAND-NAME`). The rule is stated against the procedure so that a name that could never be recognized in a command string is rejected where it is written; `docker-compose`, `7z` and `g++` are valid, while `my prog`, `a=b`, `/usr/bin/x` and `foo*` are not.
 - The environment is any expression of type `Environment`; any other type is a static error (`E-TYPE-COMMAND-ENV`). It is elaborated in the module that declares it, and evaluated when a command it selects runs, not when the module is loaded.
-- The environment must not have an effect. It must not reach, directly or through the top-level declarations it references, command execution (15.5, and so no command execution expression), the filesystem (15.11), diagnostic output (15.12), nondeterministic generation (15.13), or the standard input (9.3). Reachability over-approximates as enumeration does (11.4): a reference counts whether or not it is ever called. A violation is a static error (`E-TYPE-COMMAND-EFFECT`). Reading the variables of the process (15.9) is permitted.
+- The environment must not have an effect. It must not reach, directly or through the top-level declarations it references, command execution (15.5, and so no command execution expression), the filesystem (15.11), diagnostic output (15.12), nondeterministic generation (15.13), the functions that wait (15.7), or the standard input (9.3). Reachability over-approximates as enumeration does (11.4): a reference counts whether or not it is ever called. A violation is a static error (`E-TYPE-COMMAND-EFFECT`). Reading the variables of the process (15.9) is permitted.
 - The restriction is what an environment has to satisfy for everything that reads it without running a task. Every image a declaration can name stays enumerable (11.4), since enumeration walks its expression; an image reference built at run time is reported as dynamic, as it is anywhere else (10.3); `cmd` can evaluate the environment without running anything and without consuming the standard input, which belongs to the program (11.8); and the environment means the same wherever the word is used, including in a module that imports it.
 - `#local` is permitted, and is how a module states which programs it runs on the host.
 - A command declaration takes a visibility marker like any other declaration. Omitting it is equivalent to `export`, and makes the words **exported command words** of the module; `internal` keeps them to it. Exporting a word changes nothing in another module until that module imports the word by name.
@@ -1080,7 +1080,7 @@ Evaluation rules:
 - `await h` suspends the current evaluation until `h` completes, and returns the result value after completion.
 - Applying `await h` multiple times to the same handle returns the same completion result.
 - If a failure occurs inside `async e`, that failure is re-raised at the time of `await h`.
-- A handle is **consumed** when it is passed to `await`, `all`, or `race`. A computation whose handle is never consumed is not cut short by the end of the top-level execution (`run` / `eval`, Chapter 11): the execution waits for it, including any computation it starts in turn, and then reports it as the advisory `W-ASYNC-UNAWAITED` (14.2). The report names where it was started and, if it failed, its failure. It changes neither the result nor the exit code of the execution: a failure nobody awaited is reported, not raised.
+- A handle is **consumed** when it is passed to `await`, `all`, or `race`, or when its computation is cancelled because a `timeout` body that started it was abandoned (15.7). A computation whose handle is never consumed is not cut short by the end of the top-level execution (`run` / `eval`, Chapter 11): the execution waits for it, including any computation it starts in turn, and then reports it as the advisory `W-ASYNC-UNAWAITED` (14.2). The report names where it was started and, if it failed, its failure. It changes neither the result nor the exit code of the execution: a failure nobody awaited is reported, not raised.
 - A handle that can be seen from the text alone never to be consumed is reported statically as the advisory `W-ASYNC-UNUSED` (14.2): an expression of type `AsyncHandle<T>` or `Array<AsyncHandle<T>>` that is a statement of a block other than its last, so that its value is discarded (6.5); or a binding in a block of either type whose name no later statement of the block refers to. A handle that is referred to — awaited, passed to a function, stored, returned — is not reported, whether or not it is eventually consumed; `W-ASYNC-UNAWAITED` covers those at run time.
 
 The execution environment may choose the concurrency mechanism for `async` (threads, an event loop, a remote execution queue, etc.) as implementation-defined, but must satisfy the typing rules and evaluation rules above.
@@ -2029,7 +2029,7 @@ Multiple `await`s on the same `h` return the same completion result.
 
 At the end of a top-level execution, before its result is output or its failure reported:
 
-1. While some `h` created during the execution has never been passed to `await`, `all`, or `race`, wait until `A[h]` is no longer `running`.
+1. While some `h` created during the execution has never been passed to `await`, `all`, or `race`, nor cancelled by `timeout` (15.7), wait until `A[h]` is no longer `running`.
 2. Report each such `h` as `W-ASYNC-UNAWAITED` (6.3), in the order the handles were created, with its failure if `A[h] = failure(err)`.
 
 ### 8.7 Command Execution (Core Function)
@@ -2052,7 +2052,7 @@ Error value conversion of failures caused by non-zero exit (carrying over the ex
 
 Stopping an abandoned command:
 
-- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first (15.6).
+- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
 - An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
@@ -2105,6 +2105,7 @@ When a failure is caught, and when it reaches the top level, the failure is mapp
 
 - Runtime error: `code` is `2` (the same value as the exit code classification of 11.3).
 - External I/O error: `code` is `3` (same as above).
+- Giving up on waiting: `code` is `124`, the exit status of GNU `timeout`, for both a `timeout` whose limit passed and an `until` whose delays ran out (15.7). Neither is a failure of the program being waited for, so neither takes the runtime error code `2`, and a handler can tell the two cases apart from other failures by the code alone.
 - Failure via `fail(err)`: the given `err` is used as is. Failures arising from non-zero exits of the command execution expressions `$`, `$1`, and `$2` fall under this case; by the sugar expansion (6.6), `code` = the command's exit code and `message` = the contents of standard error output (signal mapping and capture limits follow the `CommandResult` construction rules of 8.7).
 - Secret information contained in `message` is masked or removed according to the rules of 12.8.
 
@@ -3472,6 +3473,8 @@ Representative codes:
 - `E-RUNTIME-CAST`
 - `E-RUNTIME-VALUE`
 - `E-RUNTIME-REGEX`
+- `E-RUNTIME-TIMEOUT`
+- `E-RUNTIME-UNTIL-EXHAUSTED`
 - `E-IO-STDIN-READ`
 - `E-IO-ENV-RESOLVE`
 - `E-IO-FS`
@@ -3565,6 +3568,8 @@ Representative examples:
 - `E-RUNTIME-CAST`: failure of the runtime type check of `cast` (15.8)
 - `E-RUNTIME-VALUE`: a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13)
 - `E-RUNTIME-REGEX`: a malformed regular expression pattern (15.3)
+- `E-RUNTIME-TIMEOUT`: the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10).
+- `E-RUNTIME-UNTIL-EXHAUSTED`: the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10).
 
 Rules:
 
@@ -3635,7 +3640,7 @@ The built-in library is the set of built-in symbols usable without explicit impo
 Policy:
 
 - Referentially transparent pure functions are preferred.
-- Functions with external side effects are clearly distinguished by name and contract, and are grouped into sections of their own: command execution (15.5), filesystem access (15.11), diagnostic output (15.12), and nondeterministic generation (15.13). Every other section of this chapter is pure.
+- Functions with external side effects are clearly distinguished by name and contract, and are grouped into sections of their own: command execution (15.5), filesystem access (15.11), diagnostic output (15.12), and nondeterministic generation (15.13). Every other section of this chapter is pure, except for the functions of 15.7 that wait (`retry`, `retry_if`, `until`, `timeout`), which pass time and write to the execution log.
 - Access to the filesystem is never implicit. Every function that reads or writes it takes the target `Environment` as a required positional argument (the last one; 15.11), just as `run` does, so the filesystem a program touches is always the one it names.
 - There is no overloading: one built-in name has exactly one signature, because a name resolves to a single type scheme (4.4). Where the same operation is wanted for both `String` and `Array<T>`, the array form carries the `_array` suffix (`concat_array`, `contains_array`, `index_of_array`), and where the same operation is wanted for both `Array<T>` and `Map<T>`, the map case is written by composing with `keys` / `values` / `entries` rather than by a second function.
 
@@ -3926,6 +3931,82 @@ Failure rules:
 
 - `fail` raises a failure carrying the given `Error` value. If uncaught, the process exits with `code` as the exit code (8.10, 11.3).
 
+Retrying and waiting:
+
+The built-in library also provides at least the following functions.
+
+- `retry`: `Function<Array<Number>, Function<T>, T>`
+- `retry_if`: `Function<Array<Number>, Function<Error, Bool>, Function<T>, T>`
+- `until`: `Function<Array<Number>, Function<T, Bool>, Function<T>, T>`
+- `timeout`: `Function<Number, Function<T>, T>`
+- `backoff_fixed`: `Function<Number, Number, Array<Number>>`
+- `backoff_linear`: `Function<Number, Number, Number, Array<Number>>`
+- `backoff_exponential`: `Function<Number, Number, Number, Array<Number>>`
+
+They are functions rather than syntax, for the same reason `recover` is: the body is passed as a zero-argument function, so they compose as calls do.
+
+```lask
+alpine = #alpine:3.22.2
+
+build(): String = $[alpine] echo built
+
+// At most 60 seconds per attempt, and three more attempts after 1, 2 and 4 seconds.
+per_attempt(): String = retry(backoff_exponential(1, 2, 3), \() -> timeout(60, \() -> build()))
+
+// At most 300 seconds in all, the waits between attempts included.
+in_all(): String = timeout(300, \() -> retry(backoff_fixed(5, 10), \() -> build()))
+```
+
+Interval strategies:
+
+- A strategy is an `Array<Number>`: the delay, in seconds, before each further attempt or check. Its length is therefore the bound: `[]` means one attempt and no retry, and a strategy of `n` delays allows `n + 1` attempts. Being ordinary data, a strategy can be written as a literal, built by the functions below, logged, and transformed with the functions of 15.4.
+- `backoff_fixed(delay, count)` is `count` delays of `delay`: `backoff_fixed(2, 3)` is `[2, 2, 2]`.
+- `backoff_linear(initial, step, count)` is `[initial, initial + step, ...]`, `count` long: `backoff_linear(1, 2, 3)` is `[1, 3, 5]`.
+- `backoff_exponential(initial, factor, count)` is `[initial, initial * factor, ...]`, `count` long: `backoff_exponential(1, 2, 4)` is `[1, 2, 4, 8]`.
+- A cap is a composition rather than a function: `map(backoff_exponential(1, 2, 8), \(d) -> min(d, 30))`. Jitter, being nondeterministic, is `backoff_jitter` (15.13).
+- `delay`, `initial`, `step` and `factor` must be finite and non-negative, and `count` a non-negative integer. Anything else, or a strategy growing past a representable delay, is `E-RUNTIME-VALUE`.
+
+Evaluation of `retry(delays, body)` and `retry_if(delays, when, body)`:
+
+1. Every element of `delays` must be finite and non-negative, or the call fails with `E-RUNTIME-VALUE` before the first attempt, so that whether a strategy is rejected does not depend on how the attempts go.
+2. Evaluate `body()`. If it succeeds, return its value.
+3. If it fails, map the failure to an `Error` value `err` (8.10). If no delay remains, or, for `retry_if`, `when(err)` is `false`, re-raise the failure unchanged: the same `Error` value, and therefore the same exit code if it goes uncaught, as `await` does (6.3). `retry` retries any failure.
+4. Otherwise wait for the next delay and continue at step 2. Each retry writes one line to the execution log (12.2) naming the attempt, the `code` of the failure, and the delay.
+5. A failure of `when` is not caught and propagates, as that of a `recover` handler does.
+
+Nothing distinguishes a command that is safe to repeat from one that is not. Retrying one that is not, such as a deployment that half-succeeded, is the author's decision, and a retry keeps no record of what an earlier attempt changed.
+
+Evaluation of `until(delays, done, body)`:
+
+`retry_if` reacts to a failure, `until` to a value. A resource still being created answers 404, which is an answer rather than an error.
+
+```lask
+// The HTTP status of url, without failing on an error status.
+status(url: String): CommandResult =
+  $*[#local] curl -s -o /dev/null -w '%{http_code}' #{shell_quote(url)}
+
+// Poll every 5 seconds, 100 times at most, and give up after 10 minutes in any case.
+wait_ready(url: String): CommandResult =
+  timeout(600, \() ->
+    until(backoff_fixed(5, 100), \(r: CommandResult) -> r.code == 0 && r.stdout == "200", \() -> status(url)))
+```
+
+1. Validate `delays` as `retry` does.
+2. Evaluate `v = body()`, then `done(v)`. If it is `true`, return `v`. The first check is made at once, without a delay.
+3. If it is `false` and a delay remains, wait for it and continue at step 2. Each miss writes one line to the execution log.
+4. If it is `false` and no delay remains, fail with the `Error` `{code: 124, message: ...}` and the diagnostic code `E-RUNTIME-UNTIL-EXHAUSTED` (8.10, 14.5). The message states the number of checks and a summary of the last value, masked according to 12.8.
+5. A failure of `body` or of `done` is not caught and propagates. Waiting through failures is written explicitly, with `$*` (6.6) or `retry_if`.
+
+Evaluation of `timeout(seconds, body)`:
+
+1. `seconds` must be finite and positive; fractions are allowed. Anything else is `E-RUNTIME-VALUE`.
+2. Evaluate `body()`, measuring the time from the call. If it finishes, successfully or not, before `seconds` have passed, its result is the result of the call.
+3. Once `seconds` have passed without it finishing, the body is abandoned: the command it is running is stopped (8.7), and every computation it started with `async`, directly or through the computations those started, is cancelled, and its commands stopped. The call then fails with the `Error` `{code: 124, message: "timed out after <seconds>s"}` and the diagnostic code `E-RUNTIME-TIMEOUT` (8.10, 14.5). There is no grace setting and no per-environment default.
+4. The failure is raised at the `timeout` call, not inside the body. A `try` inside the body does not see it, and its `finally` does not run, because abandoning the body is not a failure of the body; a `try` around the call sees it. Clean-up that must run belongs outside the `timeout`.
+5. A computation the body started is cancelled only when the body is abandoned. When the body finishes in time, what it started runs on as usual (6.3).
+
+`timeout` bounds what it is given, so where it is written decides what it bounds. `timeout(30, \() -> await h)` bounds the wait for `h`, and `h` runs on after the limit; `async timeout(30, \() -> work())` bounds `work` itself.
+
 ### 15.8 Serialization and Type-Migration Helper Functions
 
 The built-in library provides at least the following functions.
@@ -4101,14 +4182,16 @@ The built-in library provides at least the following functions.
 
 - `uuid`: `Function<String>`
 - `random_string`: `Function<Number, String>`
+- `backoff_jitter`: `Function<Array<Number>, Array<Number>>`
 
 Semantics:
 
 - `uuid()` returns a newly generated version 4 UUID in the canonical lowercase hyphenated form of 36 characters.
 - `random_string(n)` returns `n` characters drawn uniformly from `0-9` and `a-z`. `n` must be a non-negative integer; anything else is `E-RUNTIME-VALUE`.
-- Both must draw from a cryptographically secure source of randomness. A generated name is frequently used where a collision would be a failure of the run, and a weak generator makes those collisions correlated across machines.
-- Both are nondeterministic: they are the only built-in functions whose result differs between calls with the same arguments without any external input. They are separated into this section for that reason (15.1).
-- They exist for names that must not collide — a generated file written into a directory that a concurrent run also writes to, a temporary resource suffix, an invalidation token. Without them, such a name has to be a constant, and two runs of the same task race for it.
+- `backoff_jitter(delays)` replaces each delay `d` with a draw from the uniform distribution over `[0, d]` (full jitter), so that clients retrying the same failure do not retry in step (15.7). Every element must be finite and non-negative, or it is `E-RUNTIME-VALUE`. Its draws need not be cryptographically secure.
+- `uuid` and `random_string` must draw from a cryptographically secure source of randomness. A generated name is frequently used where a collision would be a failure of the run, and a weak generator makes those collisions correlated across machines.
+- All three are nondeterministic: they are the only built-in functions whose result differs between calls with the same arguments without any external input. They are separated into this section for that reason (15.1).
+- `uuid` and `random_string` exist for names that must not collide — a generated file written into a directory that a concurrent run also writes to, a temporary resource suffix, an invalidation token. Without them, such a name has to be a constant, and two runs of the same task race for it.
 - A generated value must not be treated as a secret merely because it is unpredictable. Use `mark_secret` (15.9) when a value is to be masked.
 
 ### 15.14 Error Contract

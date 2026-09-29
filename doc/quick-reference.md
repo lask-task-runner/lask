@@ -277,6 +277,24 @@ build(): String = try {
 
 `fail(error(4, "unknown shell"))` raises. Body and `catch` must have the same type; `finally`'s value is discarded. Static errors are found before evaluation and are never catchable. A failure inside `catch` or `finally` propagates outward.
 
+## Retrying and waiting
+
+→ [spec 15.7](spec.md#157-error-handling-functions)
+
+```lask
+command { "make", "curl" } on #local
+
+build(): String = $ make build
+probe(): CommandResult = $* curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/
+
+a(): String = retry(backoff_exponential(1, 2, 3), \() -> build())          // waits 1, 2, 4; then re-raises the last failure
+b(): String = retry_if([5, 5], \(e: Error) -> e.code == 75, \() -> build()) // retries only code 75
+c(): String = timeout(60, \() -> build())                                  // fails with code 124 after 60s
+d(): CommandResult = until(backoff_fixed(2, 30), \(r: CommandResult) -> r.stdout == "200", \() -> probe())
+```
+
+A strategy is the array of delays, so its length bounds the attempts: `backoff_fixed(2, 3)` is `[2, 2, 2]`, `backoff_linear(1, 2, 3)` is `[1, 3, 5]`, `backoff_jitter(ds)` randomizes each into `[0, d]`, and a cap is `map(ds, \(d) -> min(d, 30))`. `timeout` stops the body's commands and raises at the call, so a `try` inside the body never sees it. `until` gives up with code 124 too. A command runs to the end of its line, so wrap one in a function before passing it.
+
 ## Input, output, secrets
 
 → [spec ch. 9](spec.md#9-standard-io-and-data-flow), [6.10](spec.md#610-secret-bindings)
@@ -326,12 +344,12 @@ publish(--tag: String = "latest"): String =
 | Maps | `get` `get_or` `has_key` `keys` `values` `set` `remove` `merge` `entries` `from_entries` `map_values` |
 | Commands | `run` `shell_quote` |
 | Async | `spawn` `await` `all` `race` |
-| Errors | `recover` `fail` `error` |
+| Errors | `recover` `fail` `error` `retry` `retry_if` `until` `timeout` `backoff_fixed` `backoff_linear` `backoff_exponential` |
 | Data | `to_json` `from_json` `encode` `decode` `cast` `base64_encode` `base64_decode` `sha256` `md5` |
 | Environment | `get_env` `find_env` `has_env` `get_env_or` `mark_secret` |
 | Paths | `path_join` `dirname` `basename` `extname` `normalize_path` `is_absolute_path` |
 | Filesystem | `read_file` `write_file` `file_exists` `remove_file` `make_dir` `list_dir` `glob` — each takes the `Environment` as its last argument |
-| Other | `log` `uuid` `random_string` |
+| Other | `log` `uuid` `random_string` `backoff_jitter` |
 
 Absence is reported two ways, deliberately: a function that returns a *position* reports it as `-1` (`index_of`, `find_index`), and one that returns a *value* reports it as `Null` (`find`, `find_env`).
 

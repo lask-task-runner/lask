@@ -9,7 +9,7 @@
 
 alpine = #alpine:3.22.2
 
-command { "cat", "sh" } on alpine
+command { "cat", "sh", "test", "sleep" } on alpine
 
 // Build, retrying once when the disk was full.
 //
@@ -103,6 +103,60 @@ always_fails(): String = try {
 } catch (e) {
   fail(error(4, "second, raised while handling #{e.code}"))
 }
+
+// Retry a step that fails now and then.
+//
+// A retry strategy is the array of delays, in seconds, before each
+// further attempt, so its length is the bound: `backoff_fixed(0.5, 6)`
+// is six waits of half a second, seven attempts in all. Once the
+// delays run out, the last failure is raised unchanged. `retry_if`
+// retries only what the predicate accepts: here the temporary failure
+// (75, EX_TEMPFAIL), and nothing else.
+//
+// @example lask eval flaky-with-retry
+flaky_with_retry(): String = retry_if(
+  backoff_fixed(0.5, 6),
+  \(e: Error) -> e.code == 75,
+  \() -> flaky_step()
+)
+
+// Succeeds one time in two. A command runs to the end of its line, so
+// a command given to retry is wrapped in a function of its own.
+internal flaky_step(): String = $ sh -c '[ $((RANDOM % 2)) -eq 0 ] || exit 75; echo done'
+
+// Wait for a state rather than for a failure to go away.
+//
+// `until(delays, done, body)` evaluates `body()` until `done` accepts
+// its value, and returns that value. `$*` never raises, so "not there
+// yet" is a value here, not an error. When the delays run out it fails
+// with code 124, naming the last value it saw.
+//
+// @param path  The file to wait for.
+// @example lask eval wait-for --path /etc/os-release
+// @example lask eval wait-for --path /nope ; echo $?
+wait_for(--path: String = "/etc/os-release"): CommandResult = until(
+  backoff_exponential(0.25, 2, 3),
+  \(r: CommandResult) -> r.code == 0,
+  \() -> exists(path)
+)
+
+internal exists(path: String): CommandResult = $* test -e #{shell_quote(path)}
+
+// Bound a step in time.
+//
+// Once the limit passes, the body is abandoned — its command is
+// stopped, container and all — and the call fails with code 124, the
+// exit status of GNU `timeout`. The failure is raised at the call, so a
+// `try` around the call catches it and a `try` inside the body does not.
+//
+// @example lask eval too-slow
+too_slow(): String = try {
+  timeout(1, \() -> sleep_for(5))
+} catch (e) {
+  "gave up: #{e.message}"
+}
+
+internal sleep_for(seconds: Number): String = $ sleep #{seconds}
 
 // Static errors are a different thing entirely: `lask check` reports
 // them before anything is evaluated, and no `try` can catch them. A

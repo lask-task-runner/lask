@@ -99,13 +99,16 @@ The thing to take away: `async` starts the work, `await` joins it, and a failure
 
 ## 07-errors
 
-**Docker.** `try` / `catch` / `finally`, `fail` and `error`, `recover`, `$*` for an expected non-zero exit, and how a code becomes the exit code of the process.
+**Docker.** `try` / `catch` / `finally`, `fail` and `error`, `recover`, `$*` for an expected non-zero exit, and how a code becomes the exit code of the process. Then `retry_if` with a backoff strategy, `until` for waiting on a state, and `timeout`.
 
 ```bash
 lask env build
 lask eval build-with-retry
 lask eval classify --path /nope ; echo "exit $?"
 lask run always-fails ; echo "exit $?"
+lask eval flaky-with-retry
+lask eval wait-for --path /nope ; echo "exit $?"
+lask eval too-slow
 ```
 
 The thing to take away: static errors are not catchable. `lask check` finds them before anything is evaluated at all.
