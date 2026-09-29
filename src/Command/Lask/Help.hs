@@ -149,10 +149,11 @@ buildFunctionHelp path src decl mCore doc envs =
 
     docOf n = lookup n (docParams doc)
 
--- | The type parameters a declaration binds (spec 4.2).
+-- | The type parameters a declaration binds (spec 4.2), each with its
+-- bound as written: @T@, @T: orderable@.
 declTypeParams :: AST.Decl -> [Text]
 declTypeParams d = case AST.declF d of
-  AST.DFunction _ tps _ _ _ -> [v | Tok.Spanned _ v <- tps]
+  AST.DFunction _ tps _ _ _ -> [T.drop 1 (T.dropEnd 1 (AST.renderTypeParams [tp])) | tp <- tps]
   _ -> []
 
 -- | The declaration's name with its type parameters, for the places

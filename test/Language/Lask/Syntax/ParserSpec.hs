@@ -70,6 +70,9 @@ celse = CaseArm NoSpan Nothing
 dfun :: Text -> [Param] -> Maybe SType -> Expr -> DeclF
 dfun n = DFunction n []
 
+tparam :: Text -> TypeParam
+tparam v = TypeParam (Spanned NoSpan v) Nothing
+
 dalias :: Text -> SType -> DeclF
 dalias n = DTypeAlias n []
 
@@ -265,7 +268,7 @@ spec = do
         `shouldBe` Right
           [ DFunction
               "first"
-              [Spanned NoSpan "T"]
+              [tparam "T"]
               [Param NoSpan (PPositional "xs" Public (Just (ty (SArray (ty (named Nothing "T"))))))]
               (Just (ty (named Nothing "T")))
               (ex (EIndex (var "xs") (num 0)))
@@ -276,7 +279,7 @@ spec = do
         `shouldBe` Right
           [ DFunction
               "pair"
-              [Spanned NoSpan "A", Spanned NoSpan "B"]
+              [tparam "A", tparam "B"]
               [ Param NoSpan (PPositional "a" Public (Just (ty (named Nothing "A")))),
                 Param NoSpan (PPositional "b" Public (Just (ty (named Nothing "B"))))
               ]
@@ -289,7 +292,7 @@ spec = do
         `shouldBe` Right
           [ DTypeAlias
               "Pair"
-              [Spanned NoSpan "A", Spanned NoSpan "B"]
+              [tparam "A", tparam "B"]
               (ty (SRecord [fld "first" (ty (named Nothing "A")), fld "second" (ty (named Nothing "B"))]))
           ]
       pModule "p: Pair<Number, String> = x"
@@ -299,6 +302,26 @@ spec = do
               Public
               (Just (ty (SNamed Nothing "Pair" [ty SNumber, ty SString])))
               (var "x")
+          ]
+
+    it "parses bounds on type parameters: named, and a type (spec 4.2)" $ do
+      pModule "largest<T: orderable>(xs: Array<T>): T = xs[0]"
+        `shouldBe` Right
+          [ DFunction
+              "largest"
+              [TypeParam (Spanned NoSpan "T") (Just (SBoundNamed (Spanned NoSpan "orderable")))]
+              [Param NoSpan (PPositional "xs" Public (Just (ty (SArray (ty (named Nothing "T"))))))]
+              (Just (ty (named Nothing "T")))
+              (ex (EIndex (var "xs") (num 0)))
+          ]
+      pModule "type Box<K: Number | String, V> = Map<V>"
+        `shouldBe` Right
+          [ DTypeAlias
+              "Box"
+              [ TypeParam (Spanned NoSpan "K") (Just (SBoundType (ty (SUnion [ty SNumber, ty SString])))),
+                tparam "V"
+              ]
+              (ty (SMap (ty (named Nothing "V"))))
           ]
 
     it "parses a union type (spec 4.2)" $

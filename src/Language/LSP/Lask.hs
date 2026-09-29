@@ -66,7 +66,7 @@ import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics, namespaceMember)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
-import Language.Lask.Types (Type (..), renderType)
+import Language.Lask.Types (Type (..), renderBound, renderType)
 import System.FilePath (normalise)
 import qualified Language.Lask.Span as S
 import Language.Lask.Utils (Pretty (pretty))
@@ -558,7 +558,8 @@ hoverMarkdown name typeText docs =
     <> maybe "" ("\n\n---\n\n" <>) docs
 
 -- | The type parameters of a builtin, as they would be written on a
--- declaration: @\<T, U\>@ for @map@. Only while the recorded type is
+-- declaration, with their bounds: @\<T, U\>@ for @map@,
+-- @\<T: orderable\>@ for @sort@. Only while the recorded type is
 -- still the scheme itself; a reference instantiated by its expected
 -- type (spec 4.4) has none left.
 builtinTypeParams :: Text -> Type -> Text
@@ -566,7 +567,11 @@ builtinTypeParams bn t = case Map.lookup bn builtinSchemes of
   Just sch
     | not (null (schemeVars sch)),
       schemeType sch == t ->
-        "<" <> T.intercalate ", " (schemeVars sch) <> ">"
+        "<"
+          <> T.intercalate
+            ", "
+            [v <> maybe "" ((": " <>) . renderBound) (Map.lookup v (schemeBounds sch)) | v <- schemeVars sch]
+          <> ">"
   _ -> ""
 
 -- | The documentation of a declaration: the contiguous block of
@@ -582,7 +587,7 @@ typeParamsOf compiled (Just (declPath, name)) =
          n == name,
          not (null tps)
        ] of
-    (tps : _) -> "<" <> T.intercalate ", " [v | Tok.Spanned _ v <- tps] <> ">"
+    (tps : _) -> AST.renderTypeParams tps
     [] -> ""
   where
     modules = progModules (compiledProgram compiled)

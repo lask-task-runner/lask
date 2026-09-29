@@ -57,6 +57,7 @@ trigger c = case c of
   ETypeKeyword -> check "inc(--x = 0) = x + 1\na = inc(y = 1)\n"
   ETypeIllformed -> check "type T = Array<T>\n"
   ETypeSecretNonString -> check "f(): Number = do {\n  p!!: Number = 1\n  p\n}\n"
+  ETypeBound -> check "f() = sort([true, false])\n"
   EModuleCycle ->
     Check
       [ ("main.lask", "import { a } from \"./a.lask\"\nx = a\n"),

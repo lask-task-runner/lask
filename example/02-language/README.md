@@ -36,12 +36,13 @@ The thing to take away: `a?: T` and `a: T | Null` answer different questions, an
 
 ## 02-functions
 
-**Pure.** Positional, variadic and keyword parameters, lambdas, closures, higher-order functions, `|>` `<|` `>>` `<<`, and type parameters.
+**Pure.** Positional, variadic and keyword parameters, lambdas, closures, higher-order functions, `|>` `<|` `>>` `<<`, and type parameters with bounds.
 
 ```bash
 lask eval greet alice --prefix hi
 lask eval tag-all v1 web api worker
 lask eval compose-demo 3
+lask eval largest '[3, 1, 2]'
 ```
 
 The thing to take away: a keyword parameter must have a default and is bound only by name — and calling through a *function value* loses the parameter list entirely.
