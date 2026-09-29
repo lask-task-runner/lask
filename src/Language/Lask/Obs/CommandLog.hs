@@ -39,6 +39,9 @@ data CommandLogKind
     -- 2 = stderr, spec 6.6 stream numbering) and content.
     ClLine Int Text
   | ClExit Int
+  | -- | The run was abandoned before the process exited, and the
+    -- process was stopped (spec 8.7). Takes the place of 'ClExit'.
+    ClKilled
   deriving (Show, Eq)
 
 data CommandLog = CommandLog
@@ -103,6 +106,7 @@ renderCommandLogText cl =
       ClStart -> "$ " <> summarizeCommand (clCommand cl)
       ClLine fd content -> T.pack (show fd) <> "| " <> content
       ClExit code -> "exit " <> T.pack (show code)
+      ClKilled -> "killed"
 
 -- | JSON Lines format (spec 12.2, 12.3): every line carries
 -- timestamp\/level\/traceId\/exec; @command@ and @env@ appear on the
@@ -118,9 +122,10 @@ renderCommandLogJson traceId cl =
       <> kindFields
   where
     -- Relay lines and the start line are info; exit is info on 0 and
-    -- warn on non-zero (spec 12.3 level rules).
+    -- warn on non-zero, and killed is warn (spec 12.3 level rules).
     level = case clKind cl of
       ClExit code | code /= 0 -> "warn"
+      ClKilled -> "warn"
       _ -> "info"
     kindFields = case clKind cl of
       ClStart ->
@@ -136,6 +141,7 @@ renderCommandLogJson traceId cl =
         [ ("event", A.String "exit"),
           (AK.fromText "code", A.Number (fromIntegral code))
         ]
+      ClKilled -> [("event", A.String "killed")]
 
 -- | Command summary: implementation-defined truncation (spec 12.3).
 summarizeCommand :: Text -> Text

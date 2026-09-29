@@ -12,6 +12,7 @@ import qualified Data.Text as T
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Exit (ExitCode (..))
 import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode)
 import Test.Hspec
 
@@ -410,6 +411,46 @@ spec = beforeAll findLask $ do
 
   -- A computation nothing awaits is waited for at the end of the run,
   -- and reported as an advisory that leaves the outcome alone.
+  describe "stopping the commands race cancels (spec 8.7, 15.6)" $ do
+    it "stops the losing command and what it started, and logs it as killed" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "slow(): String = $[#local] echo $$ > pids; sleep 30 & echo $! >> pids; wait\n\
+            \fast(): String = $[#local] sleep 1; echo fast\n\
+            \f(): String = race([async slow(), async fast()])\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["eval", "f"] ""
+          resExit r `shouldBe` 0
+          resOut r `shouldBe` "\"fast\\n\"\n"
+          resErr r `shouldContain` "killed"
+          pids <- lines <$> readFile (dir </> "pids")
+          length pids `shouldBe` 2
+          alive <- mapM (\p -> readCreateProcessWithExitCode (proc "kill" ["-0", p]) "") pids
+          [c | (c, _, _) <- alive] `shouldSatisfy` notElem ExitSuccess
+
+    it "stops the losing container through the daemon, by its name" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ( "main.lask",
+              "slow(): String = $[#alpine:3.22.2] sleep 30\n\
+              \fast(): String = $[#local] sleep 1; echo fast\n\
+              \f(): String = race([async slow(), async fast()])\n"
+            )
+          ]
+          $ \dir -> do
+            _ <- runLaskEnv lask dir extra ["env", "build"] ""
+            r <- runLaskEnv lask dir extra ["eval", "f"] ""
+            resExit r `shouldBe` 0
+            cs <- calls state
+            let named = [w | c <- cs, "run " `isPrefixOf` c, (flag, w) <- zip (words c) (drop 1 (words c)), flag == "--name"]
+            case named of
+              [name] -> do
+                cs `shouldContain` ["stop -t 3 " <> name]
+                cs `shouldContain` ["rm --force " <> name]
+              _ -> expectationFailure ("expected one named run, got " <> show named)
+
   describe "never-awaited async (spec 6.3, 14.2)" $ do
     it "runs it to completion and reports it, keeping the exit code" $ \lask ->
       withProject [("main.lask", "f(): String = do {\n  h = async $[#local] sh -c 'sleep 1; echo done > side.txt'\n  \"ok\"\n}\n")] $ \dir -> do
