@@ -524,7 +524,7 @@ checkEnvRef sink nextExec presence ref = case refKind ref of
         envJson = A.object [("$type", A.String "Environment"), ("kind", A.String "docker")]
     execNo <- nextExec
     r <-
-      try . runLoggedProcess sink ("#" <> refTarget ref) envJson execNo probeCmd $
+      try . runLoggedProcess sink ("#" <> refTarget ref) envJson execNo probeCmd Nothing $
         proc "docker" ["version", "--format", "{{.Server.Version}}"]
     case r of
       Right (0, _, _) -> presence ref

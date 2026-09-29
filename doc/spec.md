@@ -2050,6 +2050,13 @@ Construction rules for `CommandResult`:
 
 Error value conversion of failures caused by non-zero exit (carrying over the exit code and standard error output) follows 8.10.
 
+Stopping an abandoned command:
+
+- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first (15.6).
+- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed.
+- The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
+- An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
+
 ### 8.8 Evaluation of Environment Expressions (Core Expression)
 
 An environment expression `#kind(args)` (6.7) is a core expression that remains after sugar expansion (7.6) and is evaluated by the following procedure.
@@ -3131,8 +3138,8 @@ Each line is output with the following structure.
 - `timestamp`: UTC ISO 8601 format.
 - Environment summary: follows the notation of environment expressions (6.7). `#local`, `#<image>` (registry reference), `#docker(dockerfile = <path>)` (recipe).
 - Execution number: the sequence number assigned by the relay rules.
-- Kind: `$` (start line; records the executed command string as the content), `1|` (child process's standard output), `2|` (child process's standard error), `exit <code>` (exit, with exit code). `1` and `2` are file descriptor numbers (the same scheme as the stream specifiers in 6.6).
-- The start line (`$`) and the `exit` line must be emitted for every command execution. The command string on the start line may be truncated to an implementation-defined length.
+- Kind: `$` (start line; records the executed command string as the content), `1|` (child process's standard output), `2|` (child process's standard error), `exit <code>` (exit, with exit code), `killed` (the command was abandoned and stopped before it exited; 8.7). `1` and `2` are file descriptor numbers (the same scheme as the stream specifiers in 6.6).
+- The start line (`$`) must be emitted for every command execution, and so must exactly one of the `exit` line and the `killed` line. The command string on the start line may be truncated to an implementation-defined length.
 
 Output example:
 
@@ -3150,11 +3157,13 @@ JSON format (with `--format json`):
 - Start line: in addition to `event: "start"`, `command` (the executed command string) and `env` (the metadata representation of 13.1; named environments include `name`) are required.
 - Relay lines: `stream` (`1` or `2`) and `message` (the line's content) are required. `command` and `env` may be omitted (correlated with the start line via `exec`).
 - Exit line: `event: "exit"` and `code` (exit code) are required.
+- Killed line: `event: "killed"` is required. It has no `code`: the command did not exit on its own.
 
 Level rules:
 
 - Relay lines (`1|`, `2|`) and the start line (`$`) are `info`.
 - `exit` is `info` when the exit code is `0`, and `warn` when non-zero.
+- `killed` is `warn`.
 
 ### 12.4 Stack Traces
 
@@ -3887,7 +3896,7 @@ Semantics:
 - `spawn`/`await` follow the rules of 6.3 and 8.6.
 - Because `await` is a reserved word, it can only be applied in the `AwaitExpr` form (`await h`); when passing it as a function value, write `\(h) -> await h` (6.3).
 - `all` waits for all handles to complete and returns the result array in input order.
-- `race` returns the first result to succeed or fail.
+- `race` returns the first result to succeed or fail. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7).
 
 Failure rules:
 

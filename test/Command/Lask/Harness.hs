@@ -116,7 +116,8 @@ fakeDocker =
       "    [ \"$3\" = \"--format\" ] && cat \"$f\"; exit 0 ;;",
       "  build) tag=''; while [ $# -gt 0 ]; do [ \"$1\" = -t ] && tag=\"$2\"; shift; done",
       "    printf '[]' > \"$S/present/$(key \"$tag\")\" ;;",
-      "  run) echo ran ;;",
+      "  run) case \"$*\" in *'sleep 30'*) sleep 30 ;; esac; echo ran ;;",
+      "  stop|rm) ;;",
       "  *) echo \"fake docker: unsupported: $*\" >&2; exit 2 ;;",
       "esac"
     ]
