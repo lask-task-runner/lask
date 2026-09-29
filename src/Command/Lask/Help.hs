@@ -34,7 +34,6 @@ import qualified Data.Text as T
 import Language.Lask.Doc (DocComment (..))
 import Language.Lask.Elaborate (CoreDecl (..), StaticParams (..))
 import Language.Lask.Span (Position (..), Span (..), spanText)
-import qualified Language.Lask.Lexer.Token as Tok
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..), renderType)
 

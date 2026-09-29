@@ -13,7 +13,7 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirector
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Exit (ExitCode (..))
-import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode)
+import System.Process (proc, readCreateProcessWithExitCode)
 import Test.Hspec
 
 spec :: Spec
@@ -799,11 +799,10 @@ spec = beforeAll findLask $ do
           "export { u } from \"./util.lask\"\n"
             <> "hello(): String = u\n"
         writeFile (repo </> "util.lask") "u: String = \"from-kit\"\n"
-        let git args = readCreateProcessWithExitCode ((proc "git" args) {cwd = Just repo}) ""
-        _ <- git ["init", "--quiet"]
-        _ <- git ["add", "."]
-        _ <- git ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "-m", "init"]
-        _ <- git ["tag", "v1"]
+        git repo ["init", "--quiet"]
+        git repo ["add", "."]
+        git repo ["commit", "--quiet", "-m", "init"]
+        git repo ["tag", "v1"]
         -- Only the entry module is importable; `u` reaches the
         -- consumer through the re-export in main.lask (spec 5).
         writeFile (proj </> "main.lask") $
