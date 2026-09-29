@@ -111,11 +111,14 @@ xs: Array<String | Null> = ["a", null]
 first_or<T>(xs: Array<T>, fallback: T): T =      // a type parameter, never
   if (is_empty(xs)) { fallback } else { xs[0] }  // written at a call site
 n = first_or([1, 2], 0)                          // instantiated at Number here
+
+largest<T: orderable>(xs: Array<T>): T = last(sort(xs))   // a named bound
+label<T: Number | String>(x: T): String = "#{x}"          // a type bound
 ```
 
 Annotations are optional and inference fills the rest: a parameter with neither an annotation nor a default is `Any`, and a mixed array literal is `Array<Any>`. Neither a union nor an optional field is **ever** inferred — each is only ever something someone wrote.
 
-`?` qualifies the key and the field's type qualifies the value: `a: String | Null` must be present and may be null, `a?: String` may be absent. A type parameter is opaque inside its own declaration — it conforms only to itself and `Any` — so a body may pass such a value around but not compare, order or interpolate one. → [4.2](spec.md#42-type-syntax)
+`?` qualifies the key and the field's type qualifies the value: `a: String | Null` must be present and may be null, `a?: String` may be absent. A type parameter is opaque inside its own declaration — it conforms only to itself and `Any` — so a body may pass such a value around but not compare, order or interpolate one, unless a bound says so. `comparable` gives `==`, `stringifiable` gives `#{...}`, and `orderable` gives `sort` and both of the others. A type bound `<T: B>` admits what conforms to `B` and gives what `B` has, though `Any` gives nothing. Built-ins are bounded the same way (`sort<T: orderable>`), and a use outside a bound is `E-TYPE-BOUND`. → [4.2](spec.md#42-type-syntax)
 
 Conformance is small on purpose. Everything conforms to `Any`; a member conforms to its union; nothing else does. There is no variance: `Array<Number>` does not conform to `Array<Any>`, and `Record` conforms only when the required set, the optional set and every field type are identical. Getting *out* of `Any` or a union takes a runtime check — `cast(v)` (fails on anything else) or `case` type dispatch (tests instead of failing). → [4.4](spec.md#44-type-semantics)
 
@@ -367,7 +370,7 @@ Absence is reported two ways, deliberately: a function that returns a *position*
 - `for` takes an array, not a number and not a map.
 - Interpolating a `String | Null` is a type error — resolve it with `case` first.
 - `a?: T` and `a: T | Null` are different questions: the first is about the key, the second about the value.
-- A type parameter is opaque inside its own body: take the operation you need on a `T` as an argument.
+- A type parameter is opaque inside its own body: bound it (`<T: comparable>`), or take the operation you need on a `T` as an argument.
 
 ## Where to look next
 

@@ -382,7 +382,10 @@ FunctionType      = "Function" "<" Type { "," Type } ">" .
 NamedType         = ( upper_id | QualifiedNamedType ) [ TypeArgs ] .
 QualifiedNamedType = lower_id "." upper_id .
 TypeArgs          = "<" Type { "," Type } ">" .
-TypeParams        = "<" upper_id { "," upper_id } ">" .
+TypeParams        = "<" TypeParam { "," TypeParam } ">" .
+TypeParam         = upper_id [ ":" Bound ] .
+Bound             = NamedBound | Type .
+NamedBound        = "comparable" | "orderable" | "stringifiable" .
 TypeAliasDecl     = "type" upper_id [ TypeParams ] "=" Type .
 ```
 
@@ -408,6 +411,33 @@ Type parameters:
 - Declaring a type parameter whose name is that of a type alias visible at the declaration is a duplicate definition error (`E-NAME-DUPLICATE`). Shadowing is not permitted, so a type name means one thing throughout a declaration.
 - A type parameter that appears in no position is permitted. Nothing determines it and nothing needs to.
 - Type parameters are not written at a use site: a call instantiates them from the argument types and the expected type (4.4), and there is no syntax for giving them explicitly.
+
+Bounds:
+
+- A type parameter may carry a **bound**, written after a `:`, which limits the types it may be instantiated to (4.4). One parameter has at most one bound.
+- A **named bound** is one of three predicates, written in lower case:
+  - `comparable`: the comparable types of 6.2.
+  - `orderable`: `Number` and `String`, the types `sort` orders (15.4).
+  - `stringifiable`: the stringifiable types of 6.6.
+- The set of named bounds is closed: a program cannot declare one. A named bound is recognized only in bound position. There it cannot be mistaken for a type, since no type is written in lower case, and elsewhere the words are ordinary identifiers. Any other lower-case word there is an undefined reference error (`E-NAME-UNDEFINED`).
+- A **type bound** is any other type. It admits the types that conform to it (4.4), so `<T: Number | String>` admits `Number`, `String` and `Number | String`. It may be written through a type alias, which is how a program defines a bound of its own:
+
+  ```lask
+  type Key = Number | String
+
+  label<T: Key>(x: T): String = "key #{x}"
+  ```
+
+- A type bound must not mention a type parameter, and must not be `Void`. Either is a static error (`E-TYPE-ILLFORMED`).
+- A bound is a restriction on use sites, not a type class. There are no instances to declare, and a type satisfies a named bound by what it is, by the rules of the section that defines the predicate.
+
+```lask
+largest<T: orderable>(xs: Array<T>): T = last(sort(xs))
+
+dedupe<T: comparable>(xs: Array<T>): Array<T> = unique(xs)
+
+type Index<K: comparable> = Array<Record<key: K, at: Number>>
+```
 
 Parameterised type aliases:
 
@@ -526,7 +556,7 @@ Type annotations are optional, and the following type inference rules apply wher
 - In the form `Function<T1, T2, ..., R>`, the last type argument is the return type, and the preceding ones are the positional parameter types.
 - A `NamedType` is expanded into its `TypeAliasDecl` before type checking, and inference is performed on the expanded type.
 - Overloading is not supported. One symbol has one function type.
-- Abstract types (type classes, etc.) are not supported, and a type parameter carries no constraint: there is no way to require that it be comparable, ordered or stringifiable. A function needing such an operation takes it as an argument instead (15.1).
+- Abstract types (type classes, etc.) are not supported. A type parameter may carry a bound from a closed set of predicates, or a type bound (4.2), and nothing more: an operation beyond what the bounds give is taken as an argument instead (`Function<T, T, Bool>` as an equality).
 - A declaration may declare type parameters (4.2), and its annotations — including those on bindings inside its body — may mention them. They are instantiated per call by the rules of 4.4.
 
 Diagnostic rules on inference failure:
@@ -609,11 +639,25 @@ Polymorphic types:
 - A reference whose expected type is not fully determined is written as a lambda instead, which requires only its parameter types: the body is then a call, and a call instantiates from its arguments. So where `map(xss, reverse)` has no type to instantiate `reverse` at — `map`'s result variable being fixed by nothing — `map(xss, \(xs) -> reverse(xs))` is well-typed, and the result type flows out of the lambda rather than being demanded by it. The two forms are not interchangeable in general: a value reference also loses the declaration parameter information a call keeps (7.5), so keyword arguments and default completion are available in the second and not in the first. An implementation must not silently rewrite one into the other.
 - Implementations may realize polymorphism by any internal mechanism, but must satisfy the observable type-checking results above.
 
+Bounds (4.2):
+
+- A type **satisfies** a named bound when it has the property the bound names (6.2, 15.4, 6.6), and a type bound `B` when it conforms to `B`. A type parameter in scope satisfies what its bound entails (below).
+- Wherever a signature is instantiated — at a call, and at a reference as a function value alike — the type each bounded variable is instantiated to must satisfy its bound. A violation is a static error (`E-TYPE-BOUND`), whose diagnostic names the function, the variable, the bound and the type. A type alias with bounded parameters is held to them where it is applied to type arguments.
+- The same predicates govern the operations that have no signature: `==` / `!=` (6.2) and a `case` value head (6.4) need `comparable`, and interpolation (6.6) needs `stringifiable`. A violation of these is `E-TYPE-BOUND` as well.
+- Built-in functions state their conditions as bounds in their signatures, written `sort<T: orderable>: Function<Array<T>, Array<T>>` (15.1). `cast` (15.8) is not among them, since its target has to be a concrete data type at run time. A type parameter never is, bounded or not, so that condition is well-formedness (`E-TYPE-ILLFORMED`) rather than a bound.
+
+Entailment:
+
+- A bound **entails** a named bound when every type it admits satisfies that named bound.
+- `orderable` entails `comparable` and `stringifiable`, as well as itself. `comparable` and `stringifiable` entail only themselves.
+- A type bound `B` entails a named bound that `B` itself satisfies, except that `Any` entails nothing: every type conforms to `Any`. So `<T: Number | String>` entails `comparable` and `stringifiable`, but not `orderable`, since the union admits itself and a union is not orderable.
+
 Type parameters within the body of their declaration (rigidity):
 
-- Within the body of a declaration that declares type parameters, each type parameter is an opaque type, distinct from every other type including every other type parameter. It conforms only to itself and to `Any`.
-- It is therefore not a comparable type (6.2), not ordered (15.4), not stringifiable (6.6), not a legal target of `cast` (15.8), and not a legal `case` type head (6.4), being neither a union nor `Any`.
-- A value of a type parameter's type can be bound, passed, returned, placed in an `Array` / `Map` / `Record`, and serialized through `Any` — and nothing else. A body that needs an operation on such a value takes the operation as an argument (`Function<T, Number>` as a sort key, `Function<T, T, Bool>` as an equality), which is also how the built-in library states the conditions its own signatures cannot (15.1).
+- Within the body of a declaration that declares type parameters, each type parameter is an opaque type, distinct from every other type including every other type parameter. It conforms to itself, to `Any`, and, when it has a type bound `B`, to whatever `B` conforms to.
+- It satisfies a named bound exactly when its own bound entails it (4.4, bounds). An unbounded type parameter is therefore not a comparable type (6.2), not ordered (15.4), and not stringifiable (6.6); `<T: comparable>` can be compared with `==`, `<T: stringifiable>` interpolated, and `<T: orderable>` sorted, compared and interpolated. No bound makes it a legal target of `cast` (15.8) or a legal `case` type head (6.4), being neither a union nor `Any`.
+- A value of an unbounded type parameter's type can be bound, passed, returned, placed in an `Array` / `Map` / `Record`, and serialized through `Any` — and nothing else. A body that needs an operation beyond what a bound gives takes the operation as an argument (`Function<T, Number>` as a sort key, `Function<T, T, Bool>` as an equality).
+- A bounded type parameter is still distinct from its bound: `<T: Number>` may be passed where `Number` is required, but `x + 1` is a `Number` and not a `T`.
 - A type parameter is opaque only inside the body. At a call site it is instantiated to a concrete type, and the result is that concrete type.
 - This rule has no counterpart for built-in symbols, which have no body in this specification.
 
@@ -1030,8 +1074,8 @@ The types of the operators are as follows.
 - `*`, `/`, `+`, `-` are typed as `Function<Number, Number, Number>`.
 - `<`, `<=`, `>`, `>=` are typed as `Function<Number, Number, Bool>`.
 - `&&`, `||` are typed as `Function<Bool, Bool, Bool>`.
-- `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. When neither side is a union this is the same rule as "the two types match", because conformance between non-union types is identity or promotion to `Any`, and `Any` is not comparable.
-- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, and a union all of whose members are comparable types.
+- `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. In the terms of 4.4 they are `<T: comparable> Function<T, T, Bool>`, instantiated at the wider type, and a type that is not comparable is `E-TYPE-BOUND`. When neither side is a union this is the same rule as "the two types match", because conformance between non-union types is identity or promotion to `Any`, and `Any` is not comparable.
+- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, a union all of whose members are comparable types, and a type parameter whose bound entails `comparable` (4.4). This is the named bound `comparable` (4.2).
 - Therefore `x == null` is well-typed when `x: String | Null`, since `Null` conforms to `String | Null` and that union is comparable. It compares values and does not by itself narrow the type of `x`; narrowing is a property of `case` (6.4).
 - Applying `==` / `!=` to types containing `Function`, `AsyncHandle`, `Void`, or `Any` is a static error. To compare values of `Any`, first move to a concrete type with `cast` (15.8), or narrow with `case` (6.4), and then compare.
 - Equality of structured values (`Array` / `Map` / `Record`) is determined by recursive structural comparison of elements, keys, and fields. Equality of `Environment` follows 8.8.
@@ -1456,8 +1500,8 @@ Typing rules:
 - `run` is typed as `Function<Environment, String, CommandResult>` (7.5).
 - As a result of the desugaring, the expression type of `$ ...`, `$1 ...`, and `$2 ...` is `String`, and the expression type of `$* ...` is `CommandResult`.
 - If `env` does not conform to `Environment`, it is a type error.
-- The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a type error.
-- The stringifiable types are `String`, `Number`, `Bool`, `Any`, and a union all of whose members are stringifiable. Every other type, `Null` included, is not stringifiable, and `to_string` (15.3) accepts exactly the same set. `String | Null` is therefore **not** stringifiable: a value that may be absent cannot be interpolated into a command, and must be resolved by `case` (6.4) or `cast` (15.8) first. `Any` is stringifiable statically and may still fail at runtime (15.3), because its content is unknown until then.
+- The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a static error (`E-TYPE-BOUND`).
+- The stringifiable types are `String`, `Number`, `Bool`, `Any`, a union all of whose members are stringifiable, and a type parameter whose bound entails `stringifiable` (4.4). This is the named bound `stringifiable` (4.2). Every other type, `Null` included, is not stringifiable, and `to_string` (15.3) accepts exactly the same set. `String | Null` is therefore **not** stringifiable: a value that may be absent cannot be interpolated into a command, and must be resolved by `case` (6.4) or `cast` (15.8) first. `Any` is stringifiable statically and may still fail at runtime (15.3), because its content is unknown until then.
 
 Evaluation rules:
 
@@ -1889,6 +1933,7 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-CASE-DUPLICATE`: two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4)
 - `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`; 4.2, 6.4, 15.8)
 - `E-TYPE-SECRET-NON-STRING`: `!!` applied to a binding whose type is not `String` (6.10)
+- `E-TYPE-BOUND`: a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 6.2, 6.4, 6.6)
 - `E-MODULE-CYCLE`: module circular dependency
 - `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
 - `E-MODULE-DEEP-IMPORT`: an external import naming a path inside a dependency tree rather than its entry module (Chapter 5)
@@ -2640,7 +2685,10 @@ Type conformance rules:
 - In `auto` mode, when ambiguous, `String` takes precedence.
 - A parameter whose type is a union is bound when the decoded value conforms to one of its members (4.4); no member is preferred over another, and the decoding mode alone decides what the token becomes. So for a parameter of type `Number | Null`, `--n 8080` binds a `Number` and `--n null` binds `Null` under `auto` or `json`, while under `text` both are `String` and neither conforms.
 - Decoding failure or type mismatch must be reported as an error before function evaluation begins.
-- A function that declares type parameters (4.2) is invoked with every type parameter instantiated at `Any`, and its arguments are decoded and checked against the resulting types. This is sound because a type parameter is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
+- A function that declares type parameters (4.2) is invoked with each type parameter instantiated as follows, and its arguments are decoded and checked against the resulting types.
+  - An unbounded one is instantiated at `Any`. This is sound because it is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
+  - One with a type bound `B` is instantiated at `B`, the widest type it admits.
+  - One with a named bound is decoded at `Any`, then instantiated from the types of the decoded values, as a call instantiates it from the types of its arguments (4.4). Each value in a position of the parameter's type contributes the type a literal of it would have (4.3). The values must agree on one type, and that type must satisfy the bound; otherwise it is a usage error (`E-CLI-USAGE`) before evaluation begins. A body may compare, sort or interpolate such a value, so it cannot be handed one outside its bound.
 - Functions with positional parameters of type `Environment` are excluded from direct CLI invocation (since no decoding mode can construct an `Environment` value, this is a pre-execution error). Keyword parameters of type `Environment` are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive it as `String` etc. and construct the environment expression inside the function.
 
 Difference between `run` and `eval`:
@@ -2819,7 +2867,7 @@ lask eval [--module <path>] [lask options ...] --help
 - Only `run` and `eval` provide function help. As in 11.2, the two are identical in this respect.
 - When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module.
 - Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
-- A function that declares type parameters (4.2) is displayed with them, as `first<T>`, where its declaration is being described: the heading of its help, the list of a module's functions, and an editor hover. Where the name is instead something to type — the usage line, a completion candidate, the function argument of `lask run` — it appears plain, since the type parameters are not written at a use site (4.2). A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
+- A function that declares type parameters (4.2) is displayed with them and their bounds, as `first<T>` or `largest<T: orderable>`, where its declaration is being described: the heading of its help, the list of a module's functions, and an editor hover. Where the name is instead something to type — the usage line, a completion candidate, the function argument of `lask run` — it appears plain, since the type parameters are not written at a use site (4.2). A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
 - The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
 - If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. An implementation may report the advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2).
 - Help display takes precedence over argument binding. Binding errors (11.2) are not reported when `--help` is present: `lask run build --out_dir 1 --help` displays the help and exits `0`.
@@ -3464,6 +3512,7 @@ Representative codes:
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
 - `E-TYPE-SECRET-NON-STRING`
+- `E-TYPE-BOUND`
 - `E-MODULE-CYCLE`
 - `E-MODULE-UNRESOLVED`
 - `E-MODULE-HASH-MISMATCH`
@@ -3546,6 +3595,7 @@ Minimum targets:
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
 - `E-TYPE-SECRET-NON-STRING`
+- `E-TYPE-BOUND`
 - `E-MODULE-CYCLE`
 - `E-MODULE-UNRESOLVED`
 - `E-MODULE-DEEP-IMPORT`
@@ -3665,7 +3715,7 @@ Publication rules:
 
 Typing rules:
 
-- Type variables appearing in the signatures of this chapter (`T`, `U`, etc.) follow the polymorphism rules of 4.4, which a declaration with type parameters (4.2) follows equally. What remains particular to this chapter is the naming of the absent case above, and the conditions a signature cannot state: a built-in may carry one, checked at the call site (`sort`, 15.4), where user code has no way to write one and takes the operation as an argument instead.
+- Type variables appearing in the signatures of this chapter (`T`, `U`, etc.) follow the polymorphism rules of 4.4, which a declaration with type parameters (4.2) follows equally. What remains particular to this chapter is the naming of the absent case above. A condition on a type variable is a bound (4.2), written in the signature as a declaration writes it (`sort<T: orderable>: Function<Array<T>, Array<T>>`) and checked by the same rules; a built-in has no condition its signature cannot state.
 
 ### 15.2 Numeric Operations
 
@@ -3719,7 +3769,7 @@ The built-in library provides at least the following functions.
 - `pad_end`: `Function<String, Number, String, String>`
 - `repeat`: `Function<String, Number, String>`
 - `lines`: `Function<String, Array<String>>`
-- `to_string`: `Function<Any, String>`
+- `to_string<T: stringifiable>`: `Function<T, String>`
 - `to_number`: `Function<String, Number>`
 - `regex_test`: `Function<String, String, Bool>`
 - `regex_match`: `Function<String, String, Array<String>>`
@@ -3740,7 +3790,7 @@ Semantics:
 - `repeat(s, n)` concatenates `n` copies of `s`. `n` is truncated toward zero, and `n <= 0` yields the empty string.
 - `lines(s)` splits `s` on `\n` and removes one trailing `\r` from each line, so both LF and CRLF text split identically. A trailing newline does not produce a final empty element, and the empty string yields the empty array. This is the form to use on the `stdout` of a `CommandResult` (6.6).
 - `to_string(v)` produces the same text that interpolating `v` into a string would (6.6): a `String` unchanged, a `Number` in the canonical form of 13.1, and a `Bool` as `true` or `false`. A runtime value of any other kind, `Null` included, is `E-RUNTIME-VALUE`; use `to_json` (15.8) for structured values.
-- The argument type of `to_string` is `Any`, so the condition that makes the call meaningful is checked at the call site instead: the type of `v` must be stringifiable (6.6). `to_string` of a `String | Null` is therefore a static error (`E-TYPE-MISMATCH`), and the union is narrowed with `case` (6.4) first. As with `==` (6.2) and `sort` (15.4), this is a condition on the instantiated argument type that the signature cannot state. `Any` is stringifiable and remains accepted, with the runtime check above as its guard.
+- The type of `v` must be stringifiable (6.6), which is the bound of `T`. `to_string` of a `String | Null` is therefore a static error (`E-TYPE-BOUND`), and the union is narrowed with `case` (6.4) first. `Any` is stringifiable and remains accepted, with the runtime check above as its guard.
 - `to_number(s)` decodes `s`, ignoring surrounding whitespace, as a number in the JSON number grammar (13.1). Any other text is `E-IO-DATA-DECODE`. This is the form to use on a number read out of command output, and it replaces going through `from_json` and `cast`.
 
 Regular expressions:
@@ -3776,10 +3826,10 @@ The built-in library provides at least the following functions.
 - `take`: `Function<Array<T>, Number, Array<T>>`
 - `drop`: `Function<Array<T>, Number, Array<T>>`
 - `reverse`: `Function<Array<T>, Array<T>>`
-- `sort`: `Function<Array<T>, Array<T>>`
-- `sort_by`: `Function<Array<T>, Function<T, U>, Array<T>>`
-- `contains_array`: `Function<Array<T>, T, Bool>`
-- `index_of_array`: `Function<Array<T>, T, Number>`
+- `sort<T: orderable>`: `Function<Array<T>, Array<T>>`
+- `sort_by<T, U: orderable>`: `Function<Array<T>, Function<T, U>, Array<T>>`
+- `contains_array<T: comparable>`: `Function<Array<T>, T, Bool>`
+- `index_of_array<T: comparable>`: `Function<Array<T>, T, Number>`
 - `find`: `Function<Array<T>, Function<T, Bool>, T | Null>`
 - `find_index`: `Function<Array<T>, Function<T, Bool>, Number>`
 - `every`: `Function<Array<T>, Function<T, Bool>, Bool>`
@@ -3787,7 +3837,7 @@ The built-in library provides at least the following functions.
 - `flatten`: `Function<Array<Array<T>>, Array<T>>`
 - `flat_map`: `Function<Array<T>, Function<T, Array<U>>, Array<U>>`
 - `zip`: `Function<Array<T>, Array<U>, Array<Record<first: T, second: U>>>`
-- `unique`: `Function<Array<T>, Array<T>>`
+- `unique<T: comparable>`: `Function<Array<T>, Array<T>>`
 - `range`: `Function<Number, Number, Array<Number>>`
 - `enumerate`: `Function<Array<T>, Array<Record<index: Number, value: T>>>`
 - `set`: `Function<Map<T>, String, T, Map<T>>`
@@ -3819,13 +3869,13 @@ Element access:
 
 Ordering:
 
-- `sort(xs)` returns the elements in ascending order. The element type must be `Number` or `String`; any other element type is a static error (`E-TYPE-MISMATCH`). As with `==` (6.2), this condition is checked at the call site against the instantiated element type, not expressed in the signature.
-- `sort_by(xs, key)` sorts by the value of `key` applied once to each element, under the same restriction on the key type `U`, and is stable: elements with equal keys keep their input order.
+- `sort(xs)` returns the elements in ascending order. The element type is bounded by `orderable`, so it is `Number` or `String`; any other element type is a static error (`E-TYPE-BOUND`).
+- `sort_by(xs, key)` sorts by the value of `key` applied once to each element, under the same bound on the key type `U`, and is stable: elements with equal keys keep their input order.
 - `String` ordering is lexicographic by Unicode code point. This definition is local to `sort` / `sort_by`, and does not extend the ordering operators `<` `<=` `>` `>=` of 6.2, which remain `Number`-only.
 
 Searching:
 
-- `contains_array(xs, v)` and `index_of_array(xs, v)` compare with the structural equality of `==` (6.2), so the element type must be a comparable type; any other element type is a static error (`E-TYPE-MISMATCH`). `index_of_array` returns `-1` when the value does not occur.
+- `contains_array(xs, v)` and `index_of_array(xs, v)` compare with the structural equality of `==` (6.2), so the element type is bounded by `comparable`; any other element type is a static error (`E-TYPE-BOUND`). `index_of_array` returns `-1` when the value does not occur.
 - `find(xs, p)` returns the first element for which `p` is true, or `Null` when there is none. `p` is applied from left to right and no further element is tested once one is true. The result type `T | Null` is a union (4.2), so the caller resolves it with `case` (6.4) before using the element:
 
   ```lask
@@ -3848,7 +3898,7 @@ Reshaping:
 - `flatten(xss)` concatenates the inner arrays in order, removing exactly one level of nesting.
 - `flat_map(xs, f)` is `flatten(map(xs, f))`, with `f` applied left to right.
 - `zip(xs, ys)` pairs elements at equal positions into records `{first: ..., second: ...}`, and truncates to the shorter of the two inputs.
-- `unique(xs)` removes later elements equal to an earlier one, keeping the first occurrence and the original order. It compares with `==`, so the element type must be comparable, under the same rule as `contains_array`.
+- `unique(xs)` removes later elements equal to an earlier one, keeping the first occurrence and the original order. It compares with `==`, so the element type is bounded by `comparable`, as for `contains_array`.
 - `range(start, end)` returns the ascending integers from `start` up to but not including `end`, and the empty array when `end <= start`. Both arguments must be integers; a non-integer is `E-RUNTIME-VALUE`. It is how a `for` expression (6.4) iterates a number of times, since `for` traverses an array and has no numeric form.
 - `enumerate(xs)` pairs each element with its zero-based index as records `{index: ..., value: ...}`. It is how a `for` expression iterates with an index available, since the body of `for` receives only the element.
 
@@ -4081,7 +4131,7 @@ The built-in library provides at least the following functions.
 - `find_env`: `Function<String, String | Null>`
 - `has_env`: `Function<String, Bool>`
 - `get_env_or`: `Function<String, String, String>`
-- `mark_secret`: `Function<T, T>`, where `T` is `String` or `String | Null`. The condition is checked at the call site (15.1); any other type is `E-TYPE-MISMATCH`.
+- `mark_secret<T: String | Null>`: `Function<T, T>`. `T` is `String`, `String | Null`, or `Null`, which registers nothing; any other type is `E-TYPE-BOUND`.
 
 Semantics:
 

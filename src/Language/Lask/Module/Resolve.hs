@@ -302,18 +302,24 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
         [ v
         | Decl _ f <- moduleDecls (lmModule lm),
           v <- case f of
-            DFunction _ tps _ _ _ -> [n | Spanned _ n <- tps]
-            DTypeAlias _ tps _ -> [n | Spanned _ n <- tps]
+            DFunction _ tps _ _ _ -> typeParamNames tps
+            DTypeAlias _ tps _ -> typeParamNames tps
             _ -> []
         ]
 
+    -- A type bound names types like any annotation; a named bound is
+    -- checked by the elaborator, which knows the set (spec 4.2).
+    checkBound (TypeParam _ (Just (SBoundType t))) = checkType t
+    checkBound _ = []
+
     checkDecl (Decl _ f) = case f of
       DValue _ _ t e -> maybe [] checkType t <> checkExpr [] e
-      DFunction _ _ ps t body ->
-        checkParams [] ps
+      DFunction _ tps ps t body ->
+        concatMap checkBound tps
+          <> checkParams [] ps
           <> maybe [] checkType t
           <> checkExpr [paramNames ps] body
-      DTypeAlias _ _ t -> checkType t
+      DTypeAlias _ tps t -> concatMap checkBound tps <> checkType t
       -- The environment of a command declaration is checked for
       -- static resolvability in "Language.Lask.Elaborate" (spec ch. 5);
       -- here only its name references are resolved.

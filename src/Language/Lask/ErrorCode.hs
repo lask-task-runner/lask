@@ -36,6 +36,7 @@ data ErrorCode
   | ETypeKeyword
   | ETypeIllformed
   | ETypeSecretNonString
+  | ETypeBound
   | EModuleCycle
   | EModuleUnresolved
   | EModuleDeepImport
@@ -101,6 +102,7 @@ codeText c = case c of
   ETypeKeyword -> "E-TYPE-KEYWORD"
   ETypeIllformed -> "E-TYPE-ILLFORMED"
   ETypeSecretNonString -> "E-TYPE-SECRET-NON-STRING"
+  ETypeBound -> "E-TYPE-BOUND"
   EModuleCycle -> "E-MODULE-CYCLE"
   EModuleUnresolved -> "E-MODULE-UNRESOLVED"
   EModuleDeepImport -> "E-MODULE-DEEP-IMPORT"

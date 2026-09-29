@@ -227,6 +227,18 @@ spec = do
       t `shouldSatisfy` maybe False (T.isInfixOf "map<T, U>: Function<Array<T>, Function<T, U>, Array<U>>")
       t `shouldSatisfy` maybe False (T.isInfixOf "`map(xs, f)` applies `f`")
       t `shouldSatisfy` maybe False (T.isInfixOf "spec 15.4")
+    it "shows the bound of a builtin's type parameter (spec 4.2)" $ do
+      h <- hoverAt "test.lask" "f(xs: Array<Number>) = sort(xs)\n" (Position 0 24)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldSatisfy` maybe False (T.isInfixOf "sort<T: orderable>: Function<Array<T>, Array<T>>")
+    it "shows the bounds of a declaration's type parameters" $ do
+      h <- hoverAt "test.lask" "largest<T: orderable>(xs: Array<T>): T = xs[0]\ny = largest([1])\n" (Position 1 5)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldSatisfy` maybe False (T.isInfixOf "largest<T: orderable>")
     it "does not take a local shadowing a builtin for the builtin" $ do
       h <- hoverAt "test.lask" "f(size: Number): Number = size\n" (Position 0 26)
       let t = case h of

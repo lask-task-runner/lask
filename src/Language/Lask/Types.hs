@@ -13,9 +13,18 @@ module Language.Lask.Types
     dataType,
     renderType,
     conformsTo,
+    conformsUnder,
     applySubst,
     comparable,
     orderable,
+    NamedBound (..),
+    Bound (..),
+    namedBoundFromText,
+    renderNamedBound,
+    renderBound,
+    satisfiesNamed,
+    satisfiesBound,
+    boundEntails,
     isGround,
     typeVars,
     wellFormed,
@@ -200,26 +209,105 @@ applySubst s t = case t of
 -- @u@ is requiredField (spec 4.4). Reflexive structural identity, plus
 -- @Any@ as the sole top type. No variance.
 conformsTo :: Type -> Type -> Bool
-conformsTo _ TyAny = True
--- Union elimination: every member has to fit where the union is used.
-conformsTo (TyUnion ts) u = all (`conformsTo` u) ts
--- Union introduction: fitting one member is enough.
-conformsTo t (TyUnion us) = any (conformsTo t) us
-conformsTo t u = t == u
+conformsTo = conformsUnder (const Nothing)
+
+-- | 'conformsTo' inside a declaration whose type parameters may carry
+-- type bounds (spec 4.4): a parameter with the type bound @B@ also
+-- conforms to whatever @B@ conforms to. The first argument gives the
+-- type bound of a parameter in scope.
+conformsUnder :: (Text -> Maybe Type) -> Type -> Type -> Bool
+conformsUnder upper = go
+  where
+    go _ TyAny = True
+    -- Union elimination: every member has to fit where the union is used.
+    go (TyUnion ts) u = all (`go` u) ts
+    go t u
+      | t == u = True
+      -- Union introduction: fitting one member is enough.
+      | TyUnion us <- u, any (go t) us = True
+      | TyVar v <- t, Just b <- upper v = go b u
+      | otherwise = False
+
+-- | The named bounds of a type parameter (spec 4.2): a closed set of
+-- predicates, written in lower case where a bound is expected.
+data NamedBound = BComparable | BOrderable | BStringifiable
+  deriving (Show, Eq, Ord, Enum, Bounded)
+
+-- | The bound of a type parameter (spec 4.2): a named predicate, or a
+-- type that an instantiation has to conform to.
+data Bound = BoundNamed NamedBound | BoundType Type
+  deriving (Show, Eq)
+
+namedBoundFromText :: Text -> Maybe NamedBound
+namedBoundFromText t = lookup t [(renderNamedBound b, b) | b <- [minBound .. maxBound]]
+
+renderNamedBound :: NamedBound -> Text
+renderNamedBound b = case b of
+  BComparable -> "comparable"
+  BOrderable -> "orderable"
+  BStringifiable -> "stringifiable"
+
+renderBound :: Bound -> Text
+renderBound (BoundNamed b) = renderNamedBound b
+renderBound (BoundType t) = renderType t
+
+-- | Whether a type satisfies a named predicate (spec 4.4), given the
+-- bounds of the type parameters in scope: a parameter satisfies it
+-- when its bound entails it, and otherwise not at all.
+satisfiesNamed :: (Text -> Maybe Bound) -> NamedBound -> Type -> Bool
+satisfiesNamed boundOf nb = go
+  where
+    var v = maybe False (\b -> boundEntails b nb) (boundOf v)
+    go t = case t of
+      TyVar v -> var v
+      _ -> case nb of
+        BComparable -> comparableWith var t
+        BOrderable -> orderable t
+        BStringifiable -> stringifiableWith var t
+
+-- | Whether a type satisfies a bound: the predicate for a named one,
+-- conformance for a type bound (spec 4.4).
+satisfiesBound :: (Text -> Maybe Bound) -> Bound -> Type -> Bool
+satisfiesBound boundOf b t = case b of
+  BoundNamed nb -> satisfiesNamed boundOf nb t
+  BoundType u -> conformsUnder upper t u
+  where
+    upper v = case boundOf v of
+      Just (BoundType u) -> Just u
+      _ -> Nothing
+
+-- | Whether every instantiation a bound admits satisfies a named
+-- predicate (spec 4.4). @orderable@ admits only Number and String,
+-- which are comparable and stringifiable. A type bound entails what it
+-- satisfies itself, except @Any@, which every type conforms to. A type
+-- bound mentions no type parameter (4.2), so it is checked alone.
+boundEntails :: Bound -> NamedBound -> Bool
+boundEntails b nb = case b of
+  BoundNamed n -> n == nb || n == BOrderable
+  BoundType TyAny -> False
+  BoundType t -> satisfiesNamed (const Nothing) nb t
 
 -- | Comparable types for @==@\/@!=@ (spec 6.2).
 comparable :: Type -> Bool
-comparable t = case t of
-  TyNumber -> True
-  TyString -> True
-  TyBool -> True
-  TyNull -> True
-  TyEnvironment -> True
-  TyArray e -> comparable e
-  TyMap e -> comparable e
-  TyRecord fs -> all (comparable . fieldType) (Map.elems fs)
-  TyUnion ts -> all comparable ts
-  _ -> False
+comparable = comparableWith (const False)
+
+-- | 'comparable', where a type parameter is comparable as the given
+-- function says (by its bound, spec 4.4).
+comparableWith :: (Text -> Bool) -> Type -> Bool
+comparableWith var = go
+  where
+    go t = case t of
+      TyNumber -> True
+      TyString -> True
+      TyBool -> True
+      TyNull -> True
+      TyEnvironment -> True
+      TyArray e -> go e
+      TyMap e -> go e
+      TyRecord fs -> all (go . fieldType) (Map.elems fs)
+      TyUnion ts -> all go ts
+      TyVar v -> var v
+      _ -> False
 
 -- | Types that @sort@ \/ @sort_by@ can order (spec 15.4).
 --
@@ -278,10 +366,16 @@ wellFormed = go True
 -- | Types accepted inside string\/command interpolation @#{...}@
 -- (spec 6.6: a non-stringifiable interpolation is a type error).
 stringifiable :: Type -> Bool
-stringifiable t = case t of
-  TyString -> True
-  TyNumber -> True
-  TyBool -> True
-  TyAny -> True
-  TyUnion ts -> all stringifiable ts
-  _ -> False
+stringifiable = stringifiableWith (const False)
+
+stringifiableWith :: (Text -> Bool) -> Type -> Bool
+stringifiableWith var = go
+  where
+    go t = case t of
+      TyString -> True
+      TyNumber -> True
+      TyBool -> True
+      TyAny -> True
+      TyUnion ts -> all go ts
+      TyVar v -> var v
+      _ -> False

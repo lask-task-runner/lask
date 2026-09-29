@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Type schemes of builtin symbols (spec 15, and the builtin
--- polymorphism rules of 4.4). Only builtins may carry type variables.
+-- | Type schemes of builtin symbols (spec 15, and the polymorphism
+-- rules of 4.4, which declarations with type parameters share).
 module Language.Lask.Builtins.Sig
   ( Scheme (..),
     builtinSchemes,
@@ -14,21 +14,31 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Language.Lask.Types
 
--- | @Scheme vars params ret@: universally quantified over @vars@,
--- instantiated independently per call (4.4).
+-- | @Scheme vars params ret bounds@: universally quantified over
+-- @vars@, instantiated independently per call (4.4), each instantiation
+-- satisfying the bound of its variable where it has one (4.2).
 data Scheme = Scheme
   { schemeVars :: [Text],
     schemeParams :: [Type],
-    schemeRet :: Type
+    schemeRet :: Type,
+    schemeBounds :: Map Text Bound
   }
   deriving (Show, Eq)
 
 -- | The (possibly polymorphic) function type of a scheme.
 schemeType :: Scheme -> Type
-schemeType (Scheme _ ps r) = TyFun ps r
+schemeType (Scheme _ ps r _) = TyFun ps r
 
 mono :: [Type] -> Type -> Scheme
-mono = Scheme []
+mono ps r = Scheme [] ps r Map.empty
+
+-- | A scheme whose variables carry no bound.
+poly :: [Text] -> [Type] -> Type -> Scheme
+poly vs ps r = Scheme vs ps r Map.empty
+
+-- | A scheme with one bounded variable.
+bounded :: Text -> Bound -> [Text] -> [Type] -> Type -> Scheme
+bounded v b vs ps r = Scheme vs ps r (Map.singleton v b)
 
 -- | @Record<first: T, second: U>@, the result element of @zip@.
 pairType :: Type -> Type -> Type
@@ -88,72 +98,74 @@ builtinSchemes =
       ("pad_end", mono [TyString, TyNumber, TyString] TyString),
       ("repeat", mono [TyString, TyNumber] TyString),
       ("lines", mono [TyString] (TyArray TyString)),
-      ("to_string", mono [TyAny] TyString),
+      ("to_string", bounded "T" (BoundNamed BStringifiable) ["T"] [tv "T"] TyString),
       ("to_number", mono [TyString] TyNumber),
       ("regex_test", mono [TyString, TyString] TyBool),
       ("regex_match", mono [TyString, TyString] (TyArray TyString)),
       ("regex_replace", mono [TyString, TyString, TyString] TyString),
       -- 15.4 array/map/record
-      ("map", Scheme ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] (TyArray (tv "U"))),
-      ("filter", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] (TyArray (tv "T"))),
-      ("reduce", Scheme ["T", "U"] [TyArray (tv "T"), tv "U", TyFun [tv "U", tv "T"] (tv "U")] (tv "U")),
-      ("for_each", Scheme ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] TyVoid),
-      ("append", Scheme ["T"] [TyArray (tv "T"), tv "T"] (TyArray (tv "T"))),
-      ("concat_array", Scheme ["T"] [TyArray (tv "T"), TyArray (tv "T")] (TyArray (tv "T"))),
-      ("get", Scheme ["T"] [TyMap (tv "T"), TyString] (tv "T")),
-      ("has_key", Scheme ["T"] [TyMap (tv "T"), TyString] TyBool),
-      ("keys", Scheme ["T"] [TyMap (tv "T")] (TyArray TyString)),
-      ("values", Scheme ["T"] [TyMap (tv "T")] (TyArray (tv "T"))),
-      ("size", Scheme ["T"] [TyArray (tv "T")] TyNumber),
-      ("is_empty", Scheme ["T"] [TyArray (tv "T")] TyBool),
-      ("first", Scheme ["T"] [TyArray (tv "T")] (tv "T")),
-      ("last", Scheme ["T"] [TyArray (tv "T")] (tv "T")),
-      ("slice", Scheme ["T"] [TyArray (tv "T"), TyNumber, TyNumber] (TyArray (tv "T"))),
-      ("take", Scheme ["T"] [TyArray (tv "T"), TyNumber] (TyArray (tv "T"))),
-      ("drop", Scheme ["T"] [TyArray (tv "T"), TyNumber] (TyArray (tv "T"))),
-      ("reverse", Scheme ["T"] [TyArray (tv "T")] (TyArray (tv "T"))),
+      ("map", poly ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] (TyArray (tv "U"))),
+      ("filter", poly ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] (TyArray (tv "T"))),
+      ("reduce", poly ["T", "U"] [TyArray (tv "T"), tv "U", TyFun [tv "U", tv "T"] (tv "U")] (tv "U")),
+      ("for_each", poly ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] TyVoid),
+      ("append", poly ["T"] [TyArray (tv "T"), tv "T"] (TyArray (tv "T"))),
+      ("concat_array", poly ["T"] [TyArray (tv "T"), TyArray (tv "T")] (TyArray (tv "T"))),
+      ("get", poly ["T"] [TyMap (tv "T"), TyString] (tv "T")),
+      ("has_key", poly ["T"] [TyMap (tv "T"), TyString] TyBool),
+      ("keys", poly ["T"] [TyMap (tv "T")] (TyArray TyString)),
+      ("values", poly ["T"] [TyMap (tv "T")] (TyArray (tv "T"))),
+      ("size", poly ["T"] [TyArray (tv "T")] TyNumber),
+      ("is_empty", poly ["T"] [TyArray (tv "T")] TyBool),
+      ("first", poly ["T"] [TyArray (tv "T")] (tv "T")),
+      ("last", poly ["T"] [TyArray (tv "T")] (tv "T")),
+      ("slice", poly ["T"] [TyArray (tv "T"), TyNumber, TyNumber] (TyArray (tv "T"))),
+      ("take", poly ["T"] [TyArray (tv "T"), TyNumber] (TyArray (tv "T"))),
+      ("drop", poly ["T"] [TyArray (tv "T"), TyNumber] (TyArray (tv "T"))),
+      ("reverse", poly ["T"] [TyArray (tv "T")] (TyArray (tv "T"))),
       -- The element type of sort/sort_by, and of the equality-based
       -- searches below, carries a side condition the signature cannot
       -- state; it is checked at the call site, as for == (6.2).
-      ("sort", Scheme ["T"] [TyArray (tv "T")] (TyArray (tv "T"))),
-      ("sort_by", Scheme ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] (TyArray (tv "T"))),
-      ("contains_array", Scheme ["T"] [TyArray (tv "T"), tv "T"] TyBool),
-      ("index_of_array", Scheme ["T"] [TyArray (tv "T"), tv "T"] TyNumber),
-      ("find", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] (orNull (tv "T"))),
-      ("find_index", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] TyNumber),
-      ("every", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] TyBool),
-      ("any", Scheme ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] TyBool),
-      ("flatten", Scheme ["T"] [TyArray (TyArray (tv "T"))] (TyArray (tv "T"))),
-      ("flat_map", Scheme ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (TyArray (tv "U"))] (TyArray (tv "U"))),
-      ("zip", Scheme ["T", "U"] [TyArray (tv "T"), TyArray (tv "U")] (TyArray (pairType (tv "T") (tv "U")))),
-      ("unique", Scheme ["T"] [TyArray (tv "T")] (TyArray (tv "T"))),
+      -- The conditions of these are bounds (4.2): an order for the
+      -- sorts, equality for the searches.
+      ("sort", bounded "T" (BoundNamed BOrderable) ["T"] [TyArray (tv "T")] (TyArray (tv "T"))),
+      ("sort_by", bounded "U" (BoundNamed BOrderable) ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] (TyArray (tv "T"))),
+      ("contains_array", bounded "T" (BoundNamed BComparable) ["T"] [TyArray (tv "T"), tv "T"] TyBool),
+      ("index_of_array", bounded "T" (BoundNamed BComparable) ["T"] [TyArray (tv "T"), tv "T"] TyNumber),
+      ("find", poly ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] (orNull (tv "T"))),
+      ("find_index", poly ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] TyNumber),
+      ("every", poly ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] TyBool),
+      ("any", poly ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] TyBool),
+      ("flatten", poly ["T"] [TyArray (TyArray (tv "T"))] (TyArray (tv "T"))),
+      ("flat_map", poly ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (TyArray (tv "U"))] (TyArray (tv "U"))),
+      ("zip", poly ["T", "U"] [TyArray (tv "T"), TyArray (tv "U")] (TyArray (pairType (tv "T") (tv "U")))),
+      ("unique", bounded "T" (BoundNamed BComparable) ["T"] [TyArray (tv "T")] (TyArray (tv "T"))),
       ("range", mono [TyNumber, TyNumber] (TyArray TyNumber)),
-      ("enumerate", Scheme ["T"] [TyArray (tv "T")] (TyArray (indexedType (tv "T")))),
-      ("set", Scheme ["T"] [TyMap (tv "T"), TyString, tv "T"] (TyMap (tv "T"))),
-      ("remove", Scheme ["T"] [TyMap (tv "T"), TyString] (TyMap (tv "T"))),
-      ("merge", Scheme ["T"] [TyMap (tv "T"), TyMap (tv "T")] (TyMap (tv "T"))),
-      ("get_or", Scheme ["T"] [TyMap (tv "T"), TyString, tv "T"] (tv "T")),
-      ("entries", Scheme ["T"] [TyMap (tv "T")] (TyArray (entryType (tv "T")))),
-      ("from_entries", Scheme ["T"] [TyArray (entryType (tv "T"))] (TyMap (tv "T"))),
-      ("map_values", Scheme ["T", "U"] [TyMap (tv "T"), TyFun [tv "T"] (tv "U")] (TyMap (tv "U"))),
+      ("enumerate", poly ["T"] [TyArray (tv "T")] (TyArray (indexedType (tv "T")))),
+      ("set", poly ["T"] [TyMap (tv "T"), TyString, tv "T"] (TyMap (tv "T"))),
+      ("remove", poly ["T"] [TyMap (tv "T"), TyString] (TyMap (tv "T"))),
+      ("merge", poly ["T"] [TyMap (tv "T"), TyMap (tv "T")] (TyMap (tv "T"))),
+      ("get_or", poly ["T"] [TyMap (tv "T"), TyString, tv "T"] (tv "T")),
+      ("entries", poly ["T"] [TyMap (tv "T")] (TyArray (entryType (tv "T")))),
+      ("from_entries", poly ["T"] [TyArray (entryType (tv "T"))] (TyMap (tv "T"))),
+      ("map_values", poly ["T", "U"] [TyMap (tv "T"), TyFun [tv "T"] (tv "U")] (TyMap (tv "U"))),
       -- 15.5 command execution. The environment is positional and
       -- requiredField: there is no default execution environment (spec 10.1),
       -- and a keyword parameter must have a default (spec 6.1).
       ("run", mono [TyEnvironment, TyString] commandResultType),
       ("shell_quote", mono [TyString] TyString),
       -- 15.6 parallel/async
-      ("spawn", Scheme ["T"] [TyFun [] (tv "T")] (TyAsync (tv "T"))),
-      ("all", Scheme ["T"] [TyArray (TyAsync (tv "T"))] (TyArray (tv "T"))),
-      ("race", Scheme ["T"] [TyArray (TyAsync (tv "T"))] (tv "T")),
+      ("spawn", poly ["T"] [TyFun [] (tv "T")] (TyAsync (tv "T"))),
+      ("all", poly ["T"] [TyArray (TyAsync (tv "T"))] (TyArray (tv "T"))),
+      ("race", poly ["T"] [TyArray (TyAsync (tv "T"))] (tv "T")),
       -- 15.7 error handling
-      ("recover", Scheme ["T"] [TyFun [] (tv "T"), TyFun [errorType] (tv "T")] (tv "T")),
-      ("fail", Scheme ["T"] [errorType] (tv "T")),
+      ("recover", poly ["T"] [TyFun [] (tv "T"), TyFun [errorType] (tv "T")] (tv "T")),
+      ("fail", poly ["T"] [errorType] (tv "T")),
       ("error", mono [TyNumber, TyString] errorType),
       -- 15.7 retrying and waiting. A strategy is an array of delays.
-      ("retry", Scheme ["T"] [TyArray TyNumber, TyFun [] (tv "T")] (tv "T")),
-      ("retry_if", Scheme ["T"] [TyArray TyNumber, TyFun [errorType] TyBool, TyFun [] (tv "T")] (tv "T")),
-      ("until", Scheme ["T"] [TyArray TyNumber, TyFun [tv "T"] TyBool, TyFun [] (tv "T")] (tv "T")),
-      ("timeout", Scheme ["T"] [TyNumber, TyFun [] (tv "T")] (tv "T")),
+      ("retry", poly ["T"] [TyArray TyNumber, TyFun [] (tv "T")] (tv "T")),
+      ("retry_if", poly ["T"] [TyArray TyNumber, TyFun [errorType] TyBool, TyFun [] (tv "T")] (tv "T")),
+      ("until", poly ["T"] [TyArray TyNumber, TyFun [tv "T"] TyBool, TyFun [] (tv "T")] (tv "T")),
+      ("timeout", poly ["T"] [TyNumber, TyFun [] (tv "T")] (tv "T")),
       ("backoff_fixed", mono [TyNumber, TyNumber] (TyArray TyNumber)),
       ("backoff_linear", mono [TyNumber, TyNumber, TyNumber] (TyArray TyNumber)),
       ("backoff_exponential", mono [TyNumber, TyNumber, TyNumber] (TyArray TyNumber)),
@@ -162,7 +174,7 @@ builtinSchemes =
       ("from_json", mono [TyString] TyAny),
       ("encode", mono [TyAny, TyString] TyString),
       ("decode", mono [TyString, TyString] TyAny),
-      ("cast", Scheme ["T"] [TyAny] (tv "T")),
+      ("cast", poly ["T"] [TyAny] (tv "T")),
       ("base64_encode", mono [TyString] TyString),
       ("base64_decode", mono [TyString] TyString),
       ("sha256", mono [TyString] TyString),
@@ -172,8 +184,8 @@ builtinSchemes =
       ("find_env", mono [TyString] (orNull TyString)),
       ("has_env", mono [TyString] TyBool),
       ("get_env_or", mono [TyString, TyString] TyString),
-      -- T is String or String | Null, checked at the call site (6.10).
-      ("mark_secret", Scheme ["T"] [tv "T"] (tv "T")),
+      -- T is bounded by String | Null (6.10).
+      ("mark_secret", bounded "T" (BoundType (orNull TyString)) ["T"] [tv "T"] (tv "T")),
       -- 15.10 path operations: lexical, so no environment is involved.
       ("path_join", mono [TyArray TyString] TyString),
       ("dirname", mono [TyString] TyString),

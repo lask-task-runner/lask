@@ -13,7 +13,7 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirector
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Exit (ExitCode (..))
-import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode)
+import System.Process (proc, readCreateProcessWithExitCode)
 import Test.Hspec
 
 spec :: Spec
@@ -104,7 +104,7 @@ spec = beforeAll findLask $ do
             )
           ]
 
-    it "instantiates every type parameter at Any" $ \lask ->
+    it "instantiates every unbounded type parameter at Any" $ \lask ->
       withProject proj $ \dir -> do
         r <- runLask lask dir ["eval", "first_or", "[1,2]", "0"] ""
         resExit r `shouldBe` 0
@@ -120,6 +120,43 @@ spec = beforeAll findLask $ do
         resOut r `shouldContain` "first_or<T>"
         -- but not in the line the user is meant to type
         resOut r `shouldContain` "lask run first_or <xs> <fallback>"
+
+  describe "bounded type parameters from the CLI (spec 4.2, 11.2)" $ do
+    let proj =
+          [ ( "main.lask",
+              "largest<T: orderable>(xs: Array<T>): T = last(sort(xs))\n\
+              \label<T: Number | String>(x: T): String = \"value: #{x}\"\n"
+            )
+          ]
+
+    it "instantiates a named bound from the decoded arguments" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "largest", "[3,1,2]"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "3\n"
+        s' <- runLask lask dir ["eval", "largest", "[\"b\",\"a\"]"] ""
+        resOut s' `shouldBe` "\"b\"\n"
+
+    it "refuses arguments outside the bound, or disagreeing on the type" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "largest", "[true,false]"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldContain` "the arguments make T Bool, which is not orderable"
+        m <- runLask lask dir ["eval", "largest", "[1,\"a\"]"] ""
+        resExit m `shouldBe` 4
+        resErr m `shouldContain` "more than one type"
+
+    it "decodes a type-bounded parameter against its bound" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "label", "5"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"value: 5\"\n"
+
+    it "shows the bounds where it describes the declaration" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "--help"] ""
+        resOut r `shouldContain` "largest<T: orderable>"
+        resOut r `shouldContain` "label<T: Number | String>"
 
   -- A re-exported name is a public symbol of the module (spec 5), so
   -- the CLI reaches it as it reaches one the module declares.
@@ -762,11 +799,10 @@ spec = beforeAll findLask $ do
           "export { u } from \"./util.lask\"\n"
             <> "hello(): String = u\n"
         writeFile (repo </> "util.lask") "u: String = \"from-kit\"\n"
-        let git args = readCreateProcessWithExitCode ((proc "git" args) {cwd = Just repo}) ""
-        _ <- git ["init", "--quiet"]
-        _ <- git ["add", "."]
-        _ <- git ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "-m", "init"]
-        _ <- git ["tag", "v1"]
+        git repo ["init", "--quiet"]
+        git repo ["add", "."]
+        git repo ["commit", "--quiet", "-m", "init"]
+        git repo ["tag", "v1"]
         -- Only the entry module is importable; `u` reaches the
         -- consumer through the re-export in main.lask (spec 5).
         writeFile (proj </> "main.lask") $

@@ -59,7 +59,7 @@ import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
-import Language.Lask.Types (Type (..), applySubst)
+import Language.Lask.Types (Type (..))
 import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
 import Paths_lask (version)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
@@ -140,22 +140,17 @@ cmdRunEval printResult runOpts = do
     Left e -> usageError opts e
 
   let orUsageError = either (usageError opts) pure
-      instantiateAtAny vs ps
-        | null vs = ps
-        | otherwise =
-            let at = applySubst (Map.fromList [(v, TyAny) | v <- vs])
-             in StaticParams
-                  [(n, at t) | (n, t) <- spPositional ps]
-                  (fmap (fmap at) (spVariadic ps))
-                  [(n, at t) | (n, t) <- spKeywords ps]
   (posVals, kwVals) <- case cdParams cd of
-    -- A declaration with type parameters is invoked with every one of
-    -- them at Any (spec 11.2): the CLI has no type to instantiate them
-    -- from, and the body cannot misuse what it is handed, a type
-    -- parameter being opaque inside it (4.4).
-    Just params ->
-      orUsageError
-        (bindCliArgs (instantiateAtAny (cdTypeVars cd) params) (runArgDecode runOpts) cliArgs)
+    -- A declaration with type parameters is invoked with each one
+    -- decoded at the widest type it admits, and a named bound checked
+    -- against what was decoded (spec 11.2): a bounded parameter is not
+    -- opaque inside the body, which may compare or sort it (4.4).
+    Just params -> do
+      bound <-
+        orUsageError
+          (bindCliArgs (instantiateForCli (cdTypeVars cd) (cdBounds cd) params) (runArgDecode runOpts) cliArgs)
+      orUsageError (uncurry (checkCliBounds (cdBounds cd) params) bound)
+      pure bound
     Nothing -> case cdType cd of
       TyFun paramTys _ ->
         -- A function-typed value declaration: positional only
