@@ -48,6 +48,8 @@ data ErrorCode
   | ERuntimeCast
   | ERuntimeValue
   | ERuntimeRegex
+  | ERuntimeTimeout
+  | ERuntimeUntilExhausted
   | EIoStdinRead
   | EIoEnvResolve
   | EIoImageMissing
@@ -111,6 +113,8 @@ codeText c = case c of
   ERuntimeCast -> "E-RUNTIME-CAST"
   ERuntimeValue -> "E-RUNTIME-VALUE"
   ERuntimeRegex -> "E-RUNTIME-REGEX"
+  ERuntimeTimeout -> "E-RUNTIME-TIMEOUT"
+  ERuntimeUntilExhausted -> "E-RUNTIME-UNTIL-EXHAUSTED"
   EIoStdinRead -> "E-IO-STDIN-READ"
   EIoEnvResolve -> "E-IO-ENV-RESOLVE"
   EIoImageMissing -> "E-IO-IMAGE-MISSING"

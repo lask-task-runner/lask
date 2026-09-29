@@ -149,6 +149,14 @@ builtinSchemes =
       ("recover", Scheme ["T"] [TyFun [] (tv "T"), TyFun [errorType] (tv "T")] (tv "T")),
       ("fail", Scheme ["T"] [errorType] (tv "T")),
       ("error", mono [TyNumber, TyString] errorType),
+      -- 15.7 retrying and waiting. A strategy is an array of delays.
+      ("retry", Scheme ["T"] [TyArray TyNumber, TyFun [] (tv "T")] (tv "T")),
+      ("retry_if", Scheme ["T"] [TyArray TyNumber, TyFun [errorType] TyBool, TyFun [] (tv "T")] (tv "T")),
+      ("until", Scheme ["T"] [TyArray TyNumber, TyFun [tv "T"] TyBool, TyFun [] (tv "T")] (tv "T")),
+      ("timeout", Scheme ["T"] [TyNumber, TyFun [] (tv "T")] (tv "T")),
+      ("backoff_fixed", mono [TyNumber, TyNumber] (TyArray TyNumber)),
+      ("backoff_linear", mono [TyNumber, TyNumber, TyNumber] (TyArray TyNumber)),
+      ("backoff_exponential", mono [TyNumber, TyNumber, TyNumber] (TyArray TyNumber)),
       -- 15.8 serialization / cast
       ("to_json", mono [TyAny] TyString),
       ("from_json", mono [TyString] TyAny),
@@ -187,7 +195,8 @@ builtinSchemes =
       ("log", mono [TyString] TyVoid),
       -- 15.13 nondeterministic
       ("uuid", mono [] TyString),
-      ("random_string", mono [TyNumber] TyString)
+      ("random_string", mono [TyNumber] TyString),
+      ("backoff_jitter", mono [TyArray TyNumber] (TyArray TyNumber))
       -- The reserved identifier stdin (9.3) is a String value, not a
       -- function; the elaborator resolves it specially.
     ]

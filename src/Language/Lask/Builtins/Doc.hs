@@ -260,6 +260,43 @@ builtinDocs =
           ]
       ),
       ("error", doc "15.7" ["`error(code, message)` builds the `Error` value `{code: code, message: message}`."]),
+      ( "retry",
+        doc
+          "15.7"
+          [ "`retry(delays, body)` evaluates `body()`, and after a failure waits the next delay in seconds and evaluates it again, until it succeeds or the delays run out. `[]` means one attempt.",
+            "Once the delays run out, the last failure is re-raised unchanged. Build `delays` with `backoff_fixed`, `backoff_linear` or `backoff_exponential`, or write the array."
+          ]
+      ),
+      ( "retry_if",
+        doc
+          "15.7"
+          [ "`retry_if(delays, when, body)` is `retry`, retrying only a failure for which `when(e)` is true. Any other failure is re-raised at once, unchanged.",
+            "`\\(e) -> e.code == 124` retries a `timeout` or an exhausted `until`."
+          ]
+      ),
+      ( "until",
+        doc
+          "15.7"
+          [ "`until(delays, done, body)` evaluates `body()` until `done(v)` is true for its value `v`, and returns that `v`. After each miss it waits the next delay in seconds; the first check is immediate.",
+            "When the delays run out it fails with `code` `124` and `E-RUNTIME-UNTIL-EXHAUSTED`, naming the last value. A failure of `body` or `done` is not retried."
+          ]
+      ),
+      ( "timeout",
+        doc
+          "15.7"
+          [ "`timeout(seconds, body)` evaluates `body()`. Once `seconds` have passed without it finishing, the body is abandoned: its commands are stopped, the computations it started with `async` are cancelled, and the call fails with `code` `124` and `E-RUNTIME-TIMEOUT`.",
+            "The failure is raised at the call, so a `try` inside the body never sees it. Put clean-up outside the `timeout`."
+          ]
+      ),
+      ("backoff_fixed", doc "15.7" ["`backoff_fixed(delay, count)` is `count` delays of `delay` seconds: `backoff_fixed(2, 3)` is `[2, 2, 2]`."]),
+      ("backoff_linear", doc "15.7" ["`backoff_linear(initial, step, count)` is `count` delays growing by `step`: `backoff_linear(1, 2, 3)` is `[1, 3, 5]`."]),
+      ( "backoff_exponential",
+        doc
+          "15.7"
+          [ "`backoff_exponential(initial, factor, count)` is `count` delays multiplied by `factor`: `backoff_exponential(1, 2, 4)` is `[1, 2, 4, 8]`.",
+            "Cap it with `map`: `map(backoff_exponential(1, 2, 8), \\(d) -> min(d, 30))`."
+          ]
+      ),
       -- 15.8 serialization / cast
       ("to_json", doc "15.8" ["`to_json(v)` encodes `v` as JSON."]),
       ( "from_json",
@@ -387,6 +424,11 @@ builtinDocs =
       ),
       -- 15.13 nondeterministic
       ("uuid", doc "15.13" ["`uuid()` returns a new random version 4 UUID in lowercase hyphenated form."]),
+      ( "backoff_jitter",
+        doc
+          "15.13"
+          ["`backoff_jitter(delays)` replaces each delay `d` with a uniform random draw from `[0, d]` (full jitter), so that clients retrying together spread out."]
+      ),
       ( "random_string",
         doc
           "15.13"

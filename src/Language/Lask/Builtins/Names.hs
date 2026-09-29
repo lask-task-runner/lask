@@ -41,8 +41,8 @@ reservedIdentifiers = Set.singleton "stdin"
 
 -- | The builtins with an effect outside the program (spec 15.1):
 -- command execution (15.5), the filesystem (15.11), diagnostic output
--- (15.12) and nondeterministic generation (15.13), plus the standard
--- input (9.3). @shell_quote@ sits in 15.5 but is pure, so it is not
+-- (15.12) and nondeterministic generation (15.13), plus the functions
+-- of 15.7 that wait and log, and the standard input (9.3). @shell_quote@ sits in 15.5 but is pure, so it is not
 -- here. The environment of a command declaration may reach none of
 -- them (spec ch. 5).
 effectfulBuiltinNames :: Set Text
@@ -59,6 +59,11 @@ effectfulBuiltinNames =
       "log",
       "uuid",
       "random_string",
+      "backoff_jitter",
+      "retry",
+      "retry_if",
+      "until",
+      "timeout",
       "stdin"
     ]
 
@@ -164,6 +169,13 @@ builtinValueNames =
       "recover",
       "fail",
       "error",
+      "retry",
+      "retry_if",
+      "until",
+      "timeout",
+      "backoff_fixed",
+      "backoff_linear",
+      "backoff_exponential",
       -- 15.8 serialization / cast
       "to_json",
       "from_json",
@@ -199,7 +211,8 @@ builtinValueNames =
       "log",
       -- 15.13 nondeterministic
       "uuid",
-      "random_string"
+      "random_string",
+      "backoff_jitter"
     ]
 
 -- | Builtin type aliases that user code must not redefine

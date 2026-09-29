@@ -93,6 +93,9 @@ trigger c = case c of
     Invoke "pick(r: Record<a: Number>): Number = r.a\nf() = pick(cast(from_json(\"{\\\"a\\\": \\\"s\\\"}\")))\n" ["eval", "f"] 2
   ERuntimeValue -> Invoke "f() = sqrt(0 - 1)\n" ["eval", "f"] 2
   ERuntimeRegex -> Invoke "f() = regex_test(\"a\", \"(\")\n" ["eval", "f"] 2
+  -- Giving up on waiting is code 124, as GNU timeout exits.
+  ERuntimeTimeout -> Invoke "slow(): String = $[#local] sleep 5\nf() = timeout(0.2, \\() -> slow())\n" ["eval", "f"] 124
+  ERuntimeUntilExhausted -> Invoke "f() = until([0], \\(v: String) -> v == \"y\", \\() -> \"n\")\n" ["eval", "f"] 124
   -- External I/O errors (spec 14.6) default to exit 3.
   EIoStdinRead -> Scripted 3 $ \lask ->
     withProject [("main.lask", "f(): String = stdin\n")] $ \dir -> do
