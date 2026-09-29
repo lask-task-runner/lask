@@ -166,13 +166,16 @@ The thing to take away: every format decodes to the same handful of value kinds,
 
 ## 12-io-and-secrets
 
-**Docker** for the two secret tasks. `stdin`, the stdout contract, `get_env` / `find_env` / `has_env` / `get_env_or`, `!!` secret bindings, `mark_secret`, and `log`.
+**Docker** for the two secret tasks. `stdin`, the stdout contract, `get_env` / `find_env` / `has_env` / `get_env_or`, `!!` secret bindings, `mark_secret`, secret references, and `log`.
 
 ```bash
 echo '{"name":"api","port":8080}' | lask eval service-line
 printf 'api\nweb-frontend\n' | lask eval longest-name
 APP_ENV=prod lask eval where-am-i
 lask env build && lask run show-token     # watch the log mask it
+# the same task, with the token held in Vault (spec 9.8)
+LASK_SECRETS=vault VAULT_ADDR=https://vault.example.com VAULT_TOKEN=... \
+  APP_TOKEN='{vault://secret/app#token}' lask secrets check show-token
 ```
 
 The thing to take away: `run` writes nothing to stdout and `eval` writes the return value there, which is what makes `lask eval a | lask run b` a pipeline.

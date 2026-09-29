@@ -13,6 +13,7 @@ import Control.Monad (void)
 import Data.List (isInfixOf)
 import qualified Data.Text as T
 import Language.Lask.ErrorCode (ErrorCode (..), codeText)
+import Language.Lask.SecretStore.FakeVault (FakeVault (..), withFakeVault)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
@@ -116,10 +117,24 @@ trigger c = case c of
       runLaskEnv lask dir extra ["env", "build"] ""
   EIoFs -> Invoke "f() = read_file(\"nope.txt\", #local)\n" ["eval", "f"] 3
   EIoDataDecode -> Invoke "f() = from_json(\"{oops\")\n" ["eval", "f"] 3
+  -- Secret references (spec 9.8), read by `f` from PW.
+  EIoSecretProvider -> secret Nothing [("LASK_SECRETS", ""), ("PW", "{vault://secret/app#password}")]
+  EIoSecretRef -> secret Nothing (unreachable <> [("PW", "{vault://secret/app}")])
+  EIoSecretUnreachable -> secret Nothing (unreachable <> [("PW", "{vault://secret/app#password}")])
+  EIoSecretAuth -> secret (Just "nope") [("PW", "{vault://secret/app#password}")]
+  EIoSecretNotFound -> secret (Just "root") [("PW", "{vault://secret/nope#password}")]
   -- CLI usage errors (spec 11.3).
   ECliUsage -> Invoke "f(n: Number) = n\n" ["eval", "f", "abc"] 4
   where
     check src = Check [("main.lask", src)]
+    -- Run `f` with these variables, against the fake Vault logged in
+    -- to with the token given, or against no Vault at all.
+    secret token extra = Scripted 3 $ \lask ->
+      withProject [("main.lask", "f(): String = get_env(\"PW\")\n")] $ \dir -> case token of
+        Nothing -> runLaskEnv lask dir extra ["eval", "f"] ""
+        Just t -> withFakeVault $ \fv ->
+          runLaskEnv lask dir (extra <> [("LASK_SECRETS", "vault"), ("VAULT_ADDR", fvAddr fv), ("VAULT_TOKEN", t)]) ["eval", "f"] ""
+    unreachable = [("LASK_SECRETS", "vault"), ("VAULT_ADDR", "http://127.0.0.1:1"), ("VAULT_TOKEN", "root")]
     pinned = [("main.lask", "command { \"cat\" } on #alpine:3.22.2\nhi(): String = $ cat x\n")]
 
 -- | A project depending on a single-file module published at a

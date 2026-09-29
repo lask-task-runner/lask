@@ -21,7 +21,7 @@ import Language.Lask.Runtime.Eval (applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Secrets (maskSecrets, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue)
-import System.Environment (setEnv, unsetEnv)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import Test.Hspec
 
 -- | Mock command runner: no real processes in unit tests.
@@ -62,7 +62,7 @@ runWith runner src name = do
       Right scopes -> case elaborateProgram prog scopes of
         Left ds -> pure (Left (Nothing, T.pack (show (map diagCode ds))))
         Right cp -> do
-          ctx <- mkRtCtx cp "in-data\n" (RtHooks runner mockFileRunner noLogSink noAsyncTracker)
+          ctx <- mkRtCtx cp "in-data\n" (RtHooks runner mockFileRunner noLogSink noAsyncTracker (fmap (fmap T.pack) . lookupEnv . T.unpack))
           out <- try $ do
             v <- topValue ctx ("main.lask", name)
             case v of

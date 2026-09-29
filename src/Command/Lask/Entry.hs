@@ -9,7 +9,8 @@ where
 
 import Command.Lask.ArgCodec
 import Command.Lask.Complete (completionScript)
-import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom, collectRecipes)
+import Command.Lask.Envs (EnvRef (..), collectEnvReadsFrom, collectEnvRefs, collectEnvRefsFrom, collectRecipes)
+import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
@@ -52,6 +53,7 @@ import Language.Lask.Runtime.Environment
 import Command.Lask.Images (ImageRow (..), Materialized (..), imageRows, loadPins, materialize)
 import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
+import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
 import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, noAsyncTracker, renderSite)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, evalCore, mkRtCtx, topValue)
@@ -62,6 +64,7 @@ import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..), applySubst)
 import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
 import Paths_lask (version)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.FilePath (takeDirectory, (</>))
 import System.IO (hIsTerminalDevice, hPutStrLn, stderr, stdin)
@@ -81,6 +84,8 @@ runRootCommand cmd = case cmd of
   CmdDepsDiff opts name -> cmdDepsDiff opts name
   CmdEnvBuild opts -> cmdEnvBuild opts
   CmdEnvList opts -> cmdEnvList opts
+  CmdSecretsList o -> cmdSecrets False o
+  CmdSecretsCheck o -> cmdSecrets True o
   CmdCmd cmdOpts -> cmdCmd cmdOpts
   CmdCompletion sh -> TIO.putStr (completionScript sh)
   CmdVersion -> cmdVersion
@@ -188,7 +193,8 @@ cmdRunEval printResult runOpts = do
         | optJsonFormat opts = jsonLogSink traceId writeErr
         | otherwise = textLogSink writeErr
   tracker <- newAsyncTracker
-  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner logSink tracker)
+  secrets <- newSecretResolver
+  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner logSink tracker (readEnvVar secrets))
   let sink
         | optJsonFormat opts = writeErr . encodeEvent
         | otherwise = noSink
@@ -511,6 +517,27 @@ cmdEnvs envsOpts = do
         results
   let failed = [() | (_, Just (Left _)) <- results]
   exitWith (if null failed then ExitSuccess else ExitFailure 3)
+
+-- | @lask secrets list@ \/ @check@ (spec 11.10). Without a function,
+-- every variable; with one, the variables it reads by name, and every
+-- variable when a name it reads is computed. The module is compiled
+-- only when a function is named, so the command also works outside a
+-- project.
+cmdSecrets :: Bool -> SecretsOpts -> IO ()
+cmdSecrets isCheck o = do
+  let opts = secretsCommon o
+  env <- Map.fromList <$> getEnvironment
+  scope <- case secretsFunction o of
+    Nothing -> pure AllVariables
+    Just fn -> do
+      compiled <- compileOrExit opts
+      case publicDecl compiled (kebabToSnake fn) of
+        Nothing -> usageError opts ("no such function: '" <> fn <> "'")
+        Just (key, _) ->
+          pure (maybe AllVariables (OnlyVariables fn) (collectEnvReadsFrom (compiledCore compiled) key))
+  if isCheck
+    then secretsCheck (optJsonFormat opts) (secretsRead o) env scope
+    else secretsList (optJsonFormat opts) env scope
 
 -- | Probe accessibility (spec 11.4): no command execution, no side
 -- effects; docker checks daemon connectivity, remote checks SSH
@@ -865,7 +892,8 @@ cmdCmd cmdOpts = do
             "'" <> name <> "' is not a command of this module; try 'lask cmd --list'"
         Just envCore -> do
           traceId <- maybe newTraceId pure (optTraceId opts)
-          envValue <- evalCommandEnv core envCore >>= either (failureExit opts traceId) pure
+          secrets <- newSecretResolver
+          envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
           writeErr <- newLineWriter stderr
           let sink
                 | optJsonFormat opts = jsonCommandLog traceId writeErr
@@ -912,7 +940,7 @@ listCommands opts core table = do
           )
   where
     row pins (name, envCore) = do
-      r <- evalCommandEnv core envCore
+      r <- evalCommandEnv readEnvVarUnresolved core envCore
       case r >>= resolveEnv of
         Left lf -> pure (name, "?", "<" <> failureMessage lf <> ">", False)
         Right resolved -> do
@@ -939,10 +967,11 @@ imagePresent pins baseDir resolved = case resolved of
 -- command declaration can reach no effect (ch. 5), so nothing here can
 -- run a command, touch a file or read the standard input, which
 -- belongs to the program. The hooks refuse rather than run anything if
--- that guarantee is ever broken.
-evalCommandEnv :: CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
-evalCommandEnv core c = do
-  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())) noAsyncTracker)
+-- that guarantee is ever broken. It may read the environment, through
+-- the reader given (spec 9.8).
+evalCommandEnv :: (Text -> IO (Maybe Text)) -> CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
+evalCommandEnv readEnv core c = do
+  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())) noAsyncTracker readEnv)
   r <- try (evalCore ctx Map.empty c)
   pure $ case r of
     Left lf -> Left lf

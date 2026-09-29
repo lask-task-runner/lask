@@ -83,6 +83,11 @@ required_profile(): String = get_env("AWS_PROFILE")
 // `String` only, means nothing to the type system, and does not mask
 // `eval`'s own output: it protects the log, not the result.
 //
+// APP_TOKEN may also hold a secret reference, such as
+// `{vault://secret/app#token}`. With `LASK_SECRETS=vault` and Vault's
+// own variables set, the value is read from Vault and masked the same
+// way: the task stays as it is, and only the environment changes.
+//
 // @param token  Stands in for a credential read from the environment.
 // @example lask run show-token
 show_token(--token!!: String = get_env_or("APP_TOKEN", "s3cr3t-value")): Void = do {

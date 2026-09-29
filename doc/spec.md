@@ -64,6 +64,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [9.5 Role of Standard Output](#95-role-of-standard-output)
     - [9.6 Role of Standard Error](#96-role-of-standard-error)
     - [9.7 Inter-Function Data Flow and Pipes](#97-inter-function-data-flow-and-pipes)
+    - [9.8 Secret References](#98-secret-references)
   - [10. Execution Environments](#10-execution-environments)
     - [10.1 The `Environment` Type and Environment Expressions](#101-the-environment-type-and-environment-expressions)
     - [10.2 Target Environment Profiles and Environment Constructor Signatures](#102-target-environment-profiles-and-environment-constructor-signatures)
@@ -84,6 +85,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [11.7 Environment Materialization (`env`)](#117-environment-materialization-env)
     - [11.8 Command Invocation (`cmd`)](#118-command-invocation-cmd)
     - [11.9 Interactive Session (`repl`)](#119-interactive-session-repl)
+    - [11.10 Secret References (`secrets`)](#1110-secret-references-secrets)
   - [12. Observability](#12-observability)
     - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
     - [12.2 Execution Log](#122-execution-log)
@@ -2248,6 +2250,83 @@ fanout(xs: Array<String>) =
   map(xs, \(x) -> concat("item:", x))
 ```
 
+### 9.8 Secret References
+
+A secret reference is a process environment variable whose value names a secret held in an external store rather than holding it. It is resolved when a program reads the variable (15.9), so that a program reads a credential the same way whether the environment holds the credential itself or says where to fetch it. What changes between one environment and another is the environment, never the program:
+
+```bash
+# production
+export LASK_SECRETS="vault"
+export VAULT_ADDR="https://vault.example.com"
+export VAULT_ROLE_ID="..." VAULT_SECRET_ID="..."
+export AWS_ACCESS_KEY_ID="{vault://aws/creds/deploy#access_key}"
+export AWS_SECRET_ACCESS_KEY="{vault://aws/creds/deploy#secret_key}"
+
+# development
+export AWS_ACCESS_KEY_ID="AKIA..."
+export AWS_SECRET_ACCESS_KEY="..."
+```
+
+```lask
+aws(key_id: String, secret: String) =
+  #docker("amazon/aws-cli:2.31.9", env = {"AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret})
+
+deploy(
+  --key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
+  --secret!!: String = get_env("AWS_SECRET_ACCESS_KEY")
+): String = $[aws(key_id, secret)] aws sts get-caller-identity
+```
+
+Form:
+
+```ebnf
+SecretReference = "{" , Scheme , "://" , Body , "}" ;
+Scheme          = lower , { lower | digit | "+" | "." | "-" } ;
+Body            = char , { char } ;   (* scheme-specific *)
+```
+
+- A variable is a reference only when its **whole** value has this form. A reference embedded in a longer value (`"x-{vault://...}"`) is not recognized, and the value is read as it is.
+- A value that starts with `{`, a scheme and `://` but does not end the reference with its closing `}` is a malformed reference (`E-IO-SECRET-REF`), never an ordinary value: a mistyped reference must not be handed on as a password.
+- The scheme selects the store. The schemes an implementation provides are listed below; any other is `E-IO-SECRET-PROVIDER`.
+
+Enabling stores:
+
+- The process environment variable `LASK_SECRETS` lists the schemes a run may resolve, separated by commas or white space (`LASK_SECRETS=vault`). A reference whose scheme is not listed is `E-IO-SECRET-PROVIDER`, whatever else is configured.
+- The list is read from the environment, not from the program, so that which stores a program may reach is decided by whoever runs it.
+
+Reading:
+
+- `get_env`, `find_env` and `get_env_or` (15.9) resolve a reference and return the value it names. A reference that cannot be resolved is an external I/O error (14.6) whose message names the variable and the reference and never a value or a credential. In particular `find_env` does not return `Null` for it: the variable is set, and what it names must exist.
+- `has_env` does not resolve a reference, and makes no request: a variable holding one is set.
+- A value resolved from a reference is registered for masking (12.8). This is the one case in which a value is registered because of where it came from: writing a reference is how the environment declares the value secret. Binding it to a `!!`-marked name (6.10) remains good practice and changes nothing.
+- A run reads each secret at most once. Two references that name the same secret (the same path and version, differing in their field at most) are answered by the same read, also when they are read concurrently (6.3). For a store that issues a new credential on every read, this is what makes the fields of one credential agree.
+- A resolved value is kept in memory for the rest of the run only. Nothing is written to disk.
+- Resolution never changes the process environment. A command reads the variables of its execution environment (10.6), and a `local` command that reads the variable itself sees the reference, not the secret; a value reaches a command only as the program passes it on, for instance as `#docker(..., env = {"TOKEN": get_env("TOKEN")})`.
+- Nothing that does not evaluate a program resolves a reference: `check`, `serve`, completion and help never reach a store. `cmd --list` (11.8) reports a command whose environment reads a reference without resolving it.
+
+The `vault` scheme (HashiCorp Vault, and stores serving the same HTTP API, such as OpenBao):
+
+```ebnf
+VaultBody = Path , [ "?version=" , digit , { digit } ] , "#" , Field ;
+Path      = Name , { "/" , Name } ;
+```
+
+- The path is written as `vault kv get` takes it, and the field names one key of the secret: `{vault://secret/app#password}`. The field is required.
+- Whether the path is on a key/value version 2 mount is asked of the server. There the path is read at its `data/` location and `version` selects a version, the latest when omitted. On any other mount the path is read as written, and a `version` is `E-IO-SECRET-REF`. When the server will not say, the path is read as written.
+- Configuration comes from Vault's own variables, so that an environment prepared for the Vault CLI serves unchanged: `VAULT_ADDR` (required), `VAULT_NAMESPACE`, and `VAULT_CACERT`, which trusts the certificate authority in that file instead of the system's.
+- Credentials are, in order of precedence: `VAULT_TOKEN`; AppRole login with `VAULT_ROLE_ID` and `VAULT_SECRET_ID`; the token `vault login` leaves in `~/.vault-token`. None of them is `E-IO-SECRET-PROVIDER`. A run logs in at most once.
+- A response is awaited for at most ten seconds.
+
+Errors (14.6), all catchable and exiting with code `3` when uncaught (14.8):
+
+| Code | Condition |
+| --- | --- |
+| `E-IO-SECRET-PROVIDER` | The scheme is unknown or not enabled in `LASK_SECRETS`, or the store is not configured. |
+| `E-IO-SECRET-REF` | The reference is malformed. |
+| `E-IO-SECRET-UNREACHABLE` | The store cannot be reached or does not answer, or cannot serve reads (for Vault: sealed or uninitialized). |
+| `E-IO-SECRET-AUTH` | Login fails, or the credentials do not allow reading the path. |
+| `E-IO-SECRET-NOT-FOUND` | The path, the version or the field does not exist. |
+
 ## 10. Execution Environments
 
 This chapter defines the execution environments that can be specified when invoking commands, and their responsibilities.
@@ -2541,6 +2620,7 @@ The CLI must provide the following subcommands.
 - `deps`: manages external dependencies — fetches and verifies them, records new entries, and reports on the dependency graph (11.5).
 - `env`: materializes and inspects the container images the resolved graph requires (11.7).
 - `cmd`: invokes a declared command (Chapter 5) in its declared environment (11.8).
+- `secrets`: lists the secret references in the environment and checks that the stores they name can be read from (11.10).
 
 Basic invocation syntax:
 
@@ -2575,6 +2655,8 @@ lask env build [--module <path>]
 lask env list [--module <path>]
 lask cmd [--module <path>] <command> [args ...]
 lask cmd --list [--module <path>]
+lask secrets list [--module <path>] [<function>]
+lask secrets check [--module <path>] [<function>] [--read]
 ```
 
 Policy on environment specification:
@@ -3076,6 +3158,52 @@ lask> double(size())
 10
 ```
 
+### 11.10 Secret References (`secrets`)
+
+`secrets` reports on the secret references (9.8) in the process environment: which variables hold one, and whether the stores they name can be reached, logged in to and read from. It is meant to be run before a task, on the machine and with the environment the task will run with.
+
+```text
+lask secrets list  [--module <path>] [<function>]
+lask secrets check [--module <path>] [<function>] [--read]
+```
+
+Scope:
+
+- Without a function, every variable of the process environment is considered, and no module is read: `secrets` also works outside a project.
+- With a function, only the variables it can read are considered: the names given as string literals to `get_env`, `find_env` and `get_env_or` in the declarations it reaches, and in the environments of the module's command declarations. Reachability over-approximates as in 11.4. When a name is computed, or one of these functions is passed as a value, any variable may be read, and every variable is considered.
+- Neither subcommand prints a secret value or a credential.
+
+`list`:
+
+- Reports each variable in scope that holds a reference: its name, the scheme, the reference, and whether the reference is well formed and its store enabled and configured. It makes no request to any store.
+- It exits `0`: it reports, and a problem it finds is reported as a status, not as a failure.
+
+`check` goes through each store in stages and stops a store at its first failed stage; the references to a store that stopped are reported as skipped:
+
+| Stage | What is established | Vault |
+| --- | --- | --- |
+| `config` | The scheme is enabled in `LASK_SECRETS` and the store is configured (9.8). | `VAULT_ADDR`, credentials |
+| `reachable` | The store answers and can serve reads. Reported as skipped for a store that has no such notion. | `sys/health` |
+| `auth` | The credentials log in. The report names the method, the lifetime and the policies of the session. | token lookup, AppRole login |
+| each reference | The credentials may read the path and, where the store keeps versions, the version exists. The value is not read. | `sys/capabilities-self`, the key/value metadata |
+
+- The stores checked are those enabled in `LASK_SECRETS` and those the references in scope name, so that a store can be checked before any variable refers to it.
+- A reference is not read by default, because reading can have effects: a store that issues a credential on every read issues one. `--read` also reads each reference and checks that its field exists; a credential issued by that read under a lease is revoked at once.
+- It exits `0` when every stage and every reference passed, and `3` otherwise (14.8).
+- With `--format json`, the report is one JSON document on stdout: `{"stores": [...], "malformed": [...]}`, where each store has its `scheme`, `target`, `stages` and `references`, and each stage or reference has a `status` of `ok`, `NG` or `skipped`, a `message`, and the error `code` when it failed.
+
+Example:
+
+```text
+$ lask secrets check deploy
+vault  https://vault.example.com
+  config     ok  enabled in LASK_SECRETS, https://vault.example.com
+  reachable  ok  active, v1.20.4
+  auth       ok  approle, ttl 1h, policies [default, deploy]
+  AWS_ACCESS_KEY_ID  vault://aws/creds/deploy#access_key  ok  readable (value not read)
+  SSL_KEY            vault://secret/cert?version=3#key    NG  E-IO-SECRET-NOT-FOUND: vault: 'secret/cert?version=3': version 3 does not exist or was deleted (latest 2)
+```
+
 ## 12. Observability
 
 This chapter defines the means of observing execution.
@@ -3238,6 +3366,7 @@ Masking mechanism:
 
 - A value is in scope for masking once it is registered as sensitive. Registration happens for every value bound to a `!!`-marked name, and for every explicit `mark_secret` call (6.10).
 - Registration is opt-in and is never inferred from a value's origin. In particular, reading a value with `get_env` (15.9) does not register it: most environment variables (a region, a log level) are not sensitive, and masking them would degrade the usefulness of logs without improving safety. A credential read from the environment is marked at its binding, as in `--secret_key!!: String = get_env("...")`.
+- The one exception is a value resolved from a secret reference (9.8), which is registered when it is resolved. It is not inferred: the environment declared the value secret by holding a reference to it rather than the value.
 - Registration is by value, not by name, type, or source: masking is applied by finding registered values as exact substrings of observation data and replacing each match with a fixed mask, regardless of which command, binding, or interpolation the value passed through to get there.
 - Masking is applied only to observation data (the command execution log of 12.3: the logged command text and relayed output lines) at the point that data is produced. It is never applied to a `CommandResult`'s `stdout` / `stderr` (8.7) or to any other value as observed by the running program (including `eval`'s primary result on stdout, 9.5/11.3): those must remain faithful to the real value.
 - Because matching is by exact substring, a value that has been transformed (case conversion, replacement, slicing, encoding, hashing, ...) since registration is no longer found and is not masked. This is a known limitation, not a defect: full protection would require tracking sensitive values through transformations (taint tracking), which this specification does not require of implementations.
@@ -3479,6 +3608,11 @@ Representative codes:
 - `E-IO-ENV-RESOLVE`
 - `E-IO-FS`
 - `E-IO-DATA-DECODE`
+- `E-IO-SECRET-PROVIDER`
+- `E-IO-SECRET-REF`
+- `E-IO-SECRET-UNREACHABLE`
+- `E-IO-SECRET-AUTH`
+- `E-IO-SECRET-NOT-FOUND`
 - `E-CLI-USAGE`
 
 Advisory codes:
@@ -3589,6 +3723,7 @@ Representative examples:
 - `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
 - `E-IO-FS`: filesystem access failure (the filesystem functions of 15.11)
 - `E-IO-DATA-DECODE`: failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8)
+- `E-IO-SECRET-PROVIDER`, `E-IO-SECRET-REF`, `E-IO-SECRET-UNREACHABLE`, `E-IO-SECRET-AUTH`, `E-IO-SECRET-NOT-FOUND`: failure resolving a secret reference (9.8)
 
 Rules:
 
@@ -4092,7 +4227,8 @@ Semantics:
 - The four differ only in what an unset variable means — a failure, a `Null`, a `Bool`, or a fallback — and follow the naming rules of 15.1. `find_env` is the only one of them whose result can be absent, and `get_env_or(name, fallback)` is exactly the `case` over `find_env(name)` that returns `fallback` for `Null`.
 - All four read the process environment of the Lask process itself. They do not read the variables of an execution `Environment` (10.6); a command reads those through the shell it runs in.
 - `find_env`, `has_env` and `get_env_or` are ordinary built-in symbols and may be shadowed by a user definition (15.1). Only `get_env` and `mark_secret` are core functions.
-- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. `!!` accepts `String | Null` (6.10), so a credential that may be unset can be read with `find_env` and still be masked when present.
+- A variable holding a secret reference (9.8) is resolved by `get_env`, `find_env` and `get_env_or`, which return the value it names; `has_env` does not resolve it.
+- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. The exception is a value resolved from a secret reference, which is registered (9.8). Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. `!!` accepts `String | Null` (6.10), so a credential that may be unset can be read with `find_env` and still be masked when present.
 - `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged. When `v` is `null`, nothing is registered (6.10).
 - `mark_secret` is a core function and must not be directly declared or overridden by user code (7.2). It is the desugaring target of `!!` secret bindings (6.10); user code may also call it directly to register a value that isn't declared with `!!`.
 - Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out; `String | Null` in, `String | Null` out) and no effect on control flow: it is not a source of failure.

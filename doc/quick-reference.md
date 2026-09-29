@@ -52,6 +52,7 @@ $ lask run release --help
 | `lask envs [fn] [--check]` | List the environments a module uses; `--check` tests access. |
 | `lask env build \| list` | Materialize / inspect container images. |
 | `lask deps sync \| add \| why \| diff` | Fetch, verify and report on external dependencies. |
+| `lask secrets list \| check [fn]` | List the secret references in the environment; check that their stores can be reached and read. |
 | `lask serve` | Language server (LSP). |
 | `lask completion <shell>` | Emit a completion script (bash, zsh, fish). |
 | `lask version` | Print the version. |
@@ -310,6 +311,13 @@ deploy(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")) = do {
 ```
 
 `!!` marks a binding secret: the value is masked in the command execution log wherever it later appears. It is allowed on `String` and `String | Null` — a `null` registers nothing, so a secret can default to `null` like any optional parameter — carries no meaning in the type system, and never masks a `CommandResult` or `eval`'s own output. → [12.8](spec.md#128-protection-of-sensitive-information-and-retention-policy)
+
+A variable whose whole value is a secret reference is resolved when `get_env`, `find_env` or `get_env_or` reads it, and the value is masked like a `!!` one. The program stays the same; only the environment changes. `LASK_SECRETS` lists the stores a run may use. `lask secrets check [fn]` tells you whether they can be reached and read before a task runs. → [9.8](spec.md#98-secret-references), [11.10](spec.md#1110-secret-references-secrets)
+
+```bash
+export LASK_SECRETS=vault VAULT_ADDR=https://vault.example.com VAULT_TOKEN=...
+export AWS_SECRET_ACCESS_KEY="{vault://secret/aws#secret_key}"   # {vault://<path>[?version=n]#<field>}
+```
 
 ## Documentation comments
 

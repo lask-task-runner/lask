@@ -348,7 +348,8 @@ builtinDocs =
         doc
           "15.9"
           [ "`get_env(name)` returns the process environment variable `name`, for a variable the task requires.",
-            "An unset variable is `E-RUNTIME-ACCESS`. The value isn't masked unless it's bound with `!!`."
+            "An unset variable is `E-RUNTIME-ACCESS`. The value isn't masked unless it's bound with `!!`.",
+            "A variable holding a secret reference such as `{vault://secret/app#password}` is resolved from its store, and the value is masked (9.8)."
           ]
       ),
       ( "find_env",

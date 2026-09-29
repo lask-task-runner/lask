@@ -29,6 +29,7 @@ import qualified Crypto.Hash.SHA256 as SHA256
 import Data.Bits ((.&.), (.|.))
 import Data.List (sortBy)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific, fromFloatDigits, isInteger, toRealFloat)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -46,7 +47,7 @@ import Language.Lask.Runtime.CancelScope (cancelScope, spawnInScopes, withScope)
 import Language.Lask.Runtime.Secrets (maskSecrets, registerSecret)
 import Language.Lask.Runtime.Value
 import System.Entropy (getEntropy)
-import System.Environment (getEnvironment, lookupEnv)
+import System.Environment (lookupEnv)
 import System.Random (randomRIO)
 import qualified System.Timeout as Timeout
 
@@ -87,7 +88,10 @@ data RtHooks = RtHooks
     hookLog :: LogSink,
     -- | Which computations were started and which were awaited
     -- (spec 6.3).
-    hookAsync :: AsyncTracker
+    hookAsync :: AsyncTracker,
+    -- | Read an environment variable for @get_env@, @find_env@ and
+    -- @get_env_or@, resolving a secret reference (spec 9.8).
+    hookReadEnv :: Text -> IO (Maybe Text)
   }
 
 callBuiltin :: Apply -> RtHooks -> Text -> [Value] -> [(Text, Value)] -> IO Value
@@ -383,23 +387,26 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("glob", [VString p, VEnv env]) -> file env (FileGlob p)
   -- 15.9 environment access / secret marking ---------------------------------
   -- Reading the environment does not by itself make a value secret:
-  -- masking is opt-in through `!!` / `mark_secret` (spec 6.10, 12.8).
-  -- get_ presupposes presence, so an unset variable is a failure and
-  -- not a value (spec 15.1, 15.9). find_env is the form that looks.
+  -- masking is opt-in through `!!` / `mark_secret` (spec 6.10, 12.8),
+  -- except for a value resolved from a secret reference (9.8),
+  -- which the reader registers. get_ presupposes presence, so an unset
+  -- variable is a failure and not a value (spec 15.1, 15.9). find_env
+  -- is the form that looks.
   ("get_env", [VString key]) -> do
-    envs <- getEnvironment
-    case lookup (T.unpack key) envs of
-      Just value -> pure (VString (T.pack value))
+    found <- hookReadEnv hooks key
+    case found of
+      Just value -> pure (VString value)
       Nothing ->
         throwIO . runtimeFailure ERuntimeAccess $
           "environment variable is not set: '" <> key <> "'"
-  ("find_env", [VString key]) ->
-    maybe VNull (VString . T.pack) <$> lookupEnv (T.unpack key)
-  -- The desugaring target of `!!` secret bindings (spec 6.10): register
-  -- the value for log masking (12.8) and hand it back untouched.
+  ("find_env", [VString key]) -> maybe VNull VString <$> hookReadEnv hooks key
+  -- Whether a variable is set is answered without resolving it: a
+  -- reference is set, whatever it names.
   ("has_env", [VString key]) -> VBool . maybe False (const True) <$> lookupEnv (T.unpack key)
   ("get_env_or", [VString key, VString fallback]) ->
-    VString . maybe fallback T.pack <$> lookupEnv (T.unpack key)
+    VString . fromMaybe fallback <$> hookReadEnv hooks key
+  -- The desugaring target of `!!` secret bindings (spec 6.10): register
+  -- the value for log masking (12.8) and hand it back untouched.
   ("mark_secret", [VString value]) -> do
     registerSecret value
     pure (VString value)

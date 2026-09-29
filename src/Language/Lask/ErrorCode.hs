@@ -56,6 +56,11 @@ data ErrorCode
   | EIoImageDigest
   | EIoFs
   | EIoDataDecode
+  | EIoSecretProvider
+  | EIoSecretRef
+  | EIoSecretUnreachable
+  | EIoSecretAuth
+  | EIoSecretNotFound
   | ECliUsage
   deriving (Show, Eq, Ord, Enum, Bounded)
 
@@ -121,6 +126,11 @@ codeText c = case c of
   EIoImageDigest -> "E-IO-IMAGE-DIGEST"
   EIoFs -> "E-IO-FS"
   EIoDataDecode -> "E-IO-DATA-DECODE"
+  EIoSecretProvider -> "E-IO-SECRET-PROVIDER"
+  EIoSecretRef -> "E-IO-SECRET-REF"
+  EIoSecretUnreachable -> "E-IO-SECRET-UNREACHABLE"
+  EIoSecretAuth -> "E-IO-SECRET-AUTH"
+  EIoSecretNotFound -> "E-IO-SECRET-NOT-FOUND"
   ECliUsage -> "E-CLI-USAGE"
 
 stageText :: Stage -> Text
