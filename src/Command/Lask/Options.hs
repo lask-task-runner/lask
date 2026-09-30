@@ -6,6 +6,7 @@ module Command.Lask.Options
     CommonOpts (..),
     RunOpts (..),
     EnvsOpts (..),
+    SecretsOpts (..),
     CmdOpts (..),
     DepsAddSource (..),
     pRootCommand,
@@ -48,6 +49,13 @@ data EnvsOpts = EnvsOpts
     envsCheck :: Bool
   }
 
+-- | @lask secrets list@ \/ @check@ (spec 11.10).
+data SecretsOpts = SecretsOpts
+  { secretsCommon :: CommonOpts,
+    secretsFunction :: Maybe Text,
+    secretsRead :: Bool
+  }
+
 -- | @lask cmd@ (spec 11.8): a declared command and everything after
 -- its name, or @--list@.
 data CmdOpts = CmdOpts
@@ -70,6 +78,8 @@ data RootCommand
   | CmdDepsDiff CommonOpts Text
   | CmdEnvBuild CommonOpts
   | CmdEnvList CommonOpts
+  | CmdSecretsList SecretsOpts
+  | CmdSecretsCheck SecretsOpts
   | CmdCmd CmdOpts
   | CmdCompletion Shell
   | CmdVersion
@@ -190,6 +200,7 @@ pRootCommand =
         <> command "envs" (withHelp (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))
         <> command "deps" (withHelp pDepsCommand (progDesc "Manage external dependencies"))
         <> command "env" (withHelp pEnvCommand (progDesc "Materialize and inspect container images"))
+        <> command "secrets" (withHelp pSecretsCommand (progDesc "List and check secret references"))
         <> command
           "cmd"
           ( info
@@ -233,6 +244,31 @@ pEnvCommand =
           "list"
           (info (CmdEnvList <$> pCommon) (progDesc "Report every image reference and whether it is present"))
     )
+
+pSecretsCommand :: Parser RootCommand
+pSecretsCommand =
+  hsubparser
+    ( command
+        "list"
+        ( info
+            (CmdSecretsList <$> pSecretsOpts (pure False))
+            (progDesc "List the secret references in the environment, without reaching any store")
+        )
+        <> command
+          "check"
+          ( info
+              ( CmdSecretsCheck
+                  <$> pSecretsOpts (switch (long "read" <> help "Also read each value (issues a dynamic secret, then revokes it)"))
+              )
+              (progDesc "Check that each store can be reached, logged in to and read from")
+          )
+    )
+  where
+    pSecretsOpts pRead =
+      SecretsOpts
+        <$> pCommon
+        <*> optional (T.pack <$> argument str (metavar "FUNCTION"))
+        <*> pRead
 
 pDepsCommand :: Parser RootCommand
 pDepsCommand =

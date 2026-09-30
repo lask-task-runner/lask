@@ -553,6 +553,7 @@ rootCommands =
       },
     Cmd "deps" "Manage external dependencies" depsSubs [helpOpt] [] NoBoundary,
     Cmd "env" "Materialize and inspect container images" envSubs [helpOpt] [] NoBoundary,
+    Cmd "secrets" "List and check secret references" secretsSubs [helpOpt] [] NoBoundary,
     (plain "cmd" "Run a declared command in its declared environment" (commonOpts <> [switchOpt "list" "List the commands the module declares"]))
       { cmdPos = [PosCommandWord],
         -- Spec 11.8: every token after the command word reaches the
@@ -615,6 +616,19 @@ rootCommands =
       [ (valueOpt "git" VOpaque "Git repository URL") {optBlocks = ["url"]},
         (valueOpt "rev" VOpaque "Tag or commit") {optNeeds = ["git"]},
         (valueOpt "url" VOpaque "Archive or single .lask file URL") {optBlocks = ["git", "rev"]}
+      ]
+
+    secretsSubs =
+      [ (plain "list" "List the secret references in the environment, without reaching any store" commonOpts)
+          { cmdPos = [PosFunction]
+          },
+        ( plain
+            "check"
+            "Check that each store can be reached, logged in to and read from"
+            (commonOpts <> [switchOpt "read" "Also read each value (issues a dynamic secret, then revokes it)"])
+        )
+          { cmdPos = [PosFunction]
+          }
       ]
 
     envSubs =
