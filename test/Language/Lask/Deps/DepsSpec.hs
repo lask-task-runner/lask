@@ -71,12 +71,12 @@ spec = do
   describe "confirm in the project file (spec chapter 5)" $ do
     let confirmOf = fmap depsConfirm . parseDepsFile . BL8.pack
     it "reads when and phrase, and makes dependencies optional" $ do
-      let Right c = confirmOf "{\"confirm\": {\"deploy\": {\"when\": {\"env\": [\"prod\", \"production\"]}}, \"reset_db\": {\"phrase\": \"reset #{db}\"}, \"destroy\": {}}}"
+      Right c <- pure $ confirmOf "{\"confirm\": {\"deploy\": {\"when\": {\"env\": [\"prod\", \"production\"]}}, \"reset_db\": {\"phrase\": \"reset #{db}\"}, \"destroy\": {}}}"
       fmap crWhen (Map.lookup "deploy" c) `shouldBe` Just [("env", ["prod", "production"])]
       fmap crPhrase (Map.lookup "reset_db" c) `shouldBe` Just (Just "reset #{db}")
       fmap crWhen (Map.lookup "destroy" c) `shouldBe` Just []
     it "records where each key is written" $ do
-      let Right c = confirmOf "{\n  \"confirm\": {\n    \"destroy\": {}\n  }\n}"
+      Right c <- pure $ confirmOf "{\n  \"confirm\": {\n    \"destroy\": {}\n  }\n}"
       (Map.lookup "destroy" c >>= crAt) `shouldBe` Just (3, 5)
     it "rejects an unknown key at the top level, so a misspelt confirm is not ignored" $
       confirmOf "{\"confrim\": {\"destroy\": {}}}" `shouldSatisfy` isLeft
@@ -87,10 +87,10 @@ spec = do
       confirmOf "{\"confirm\": {\"destroy\": {\"phrase\": \" \"}}}" `shouldSatisfy` isLeft
       confirmOf "{\"confirm\": []}" `shouldSatisfy` isLeft
     it "keeps confirm when deps add rewrites the file" $ do
-      let Right df = parseDepsFile "{\"dependencies\": {}, \"confirm\": {\"deploy\": {\"when\": {\"env\": [\"prod\"]}, \"phrase\": \"go\"}}}"
-          added = df {depsEntries = Map.insert "kit" (DepGit "https://x/kit" "v1") (depsEntries df)}
-          Right back = parseDepsFile (renderDepsFile added)
+      Right df <- pure $ parseDepsFile "{\"dependencies\": {}, \"confirm\": {\"deploy\": {\"when\": {\"env\": [\"prod\"]}, \"phrase\": \"go\"}}}"
+      let added = df {depsEntries = Map.insert "kit" (DepGit "https://x/kit" "v1") (depsEntries df)}
           strip = Map.map (\r -> r {crAt = Nothing})
+      Right back <- pure $ parseDepsFile (renderDepsFile added)
       strip (depsConfirm back) `shouldBe` strip (depsConfirm df)
       depsEntries back `shouldBe` depsEntries added
 
