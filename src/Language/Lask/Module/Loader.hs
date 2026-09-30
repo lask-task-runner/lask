@@ -78,7 +78,11 @@ data Program = Program
     progBaseDir :: FilePath,
     progModules :: Map FilePath LoadedModule,
     -- | Topological order, dependencies first; entry module last.
-    progOrder :: [FilePath]
+    progOrder :: [FilePath],
+    -- | The root project file, when there is one. Only the root's is
+    -- kept: what a dependency's own project file says about
+    -- confirmation does not apply to whoever imports it (spec 5).
+    progProject :: Maybe DepsFile
   }
   deriving (Show)
 
@@ -145,7 +149,8 @@ loadProgramEnv env entryPath = do
                 { progEntry = entry,
                   progBaseDir = baseDir,
                   progModules = mods,
-                  progOrder = reverse order
+                  progOrder = reverse order,
+                  progProject = rootDeps
                 }
   where
     -- Every declared dependency must be covered by the lock file

@@ -11,11 +11,12 @@ import Command.Lask.ArgCodec
 import Command.Lask.Complete (completionScript)
 import Command.Lask.Envs (EnvRef (..), collectEnvReadsFrom, collectEnvRefs, collectEnvRefsFrom, collectRecipes)
 import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
+import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
 import Control.Applicative ((<|>))
-import Control.Exception (SomeException, fromException, try)
+import Control.Exception (IOException, SomeException, fromException, try)
 import Control.Monad (forM, forM_, unless, when)
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
@@ -64,10 +65,10 @@ import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..))
 import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
 import Paths_lask (version)
-import System.Environment (getEnvironment)
+import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.FilePath (takeDirectory, (</>))
-import System.IO (hIsTerminalDevice, hPutStrLn, stderr, stdin)
+import System.IO (hFlush, hIsTerminalDevice, hPutStrLn, stderr, stdin)
 import System.Process (proc)
 
 runRootCommand :: RootCommand -> IO ()
@@ -167,6 +168,9 @@ cmdRunEval printResult runOpts = do
             cliArgs
       _ -> usageError opts ("'" <> fnName <> "' is not a callable function")
 
+  -- Before anything is evaluated, and before stdin is read: a refused
+  -- confirmation leaves nothing half done (spec 11.2).
+  confirmOrExit opts (runConfirm runOpts) compiled fnName key cd posVals kwVals
   stdinText <- readStdinOrExit opts
   traceId <- maybe newTraceId pure (optTraceId opts)
   -- One serialized stderr line writer shared by command logs and
@@ -313,7 +317,12 @@ cmdHelp subcommand runOpts = do
       -- The name is the one the module publishes, which a renaming
       -- re-export makes different from the declaration's.
       helpOf envs (n, HelpSource hp hsrc hcomments d key) =
-        (buildFunctionHelp hp hsrc d (coreOf key) (docFor hsrc hcomments d) envs) {fhName = n}
+        (buildFunctionHelp hp hsrc d (coreOf key) (docFor hsrc hcomments d) envs)
+          { fhName = n,
+            fhConfirm = do
+              prog <- partialProgram partial
+              describeRule . snd <$> ruleFor prog (partialScopes partial) key
+          }
 
   case runFunction runOpts of
     -- The option help is always available, whatever state the module
@@ -744,6 +753,54 @@ usageError opts msg = do
         A.object [("code", A.String (codeText ECliUsage)), ("message", A.String msg)]
     else TIO.hPutStrLn stderr (codeText ECliUsage <> ": " <> msg)
   exitWith (ExitFailure 4)
+
+-- | The confirmation the project file asks for before this call
+-- (spec 5, 11.2). Asked at the terminal when stdin and stderr are
+-- terminals; @--confirm@ approves it instead, unless @LASK_CONFIRM=tty@
+-- says that only a typed confirmation counts. Exits 4 when refused.
+confirmOrExit :: CommonOpts -> Bool -> Compiled -> Text -> (FilePath, Text) -> CoreDecl -> [Value] -> [(Text, Value)] -> IO ()
+confirmOrExit opts approved compiled fnName key cd posVals kwVals = do
+  mode <- lookupEnv "LASK_CONFIRM"
+  ttyOnly <- case mode of
+    Nothing -> pure False
+    Just "" -> pure False
+    Just "tty" -> pure True
+    Just other -> usageError opts ("LASK_CONFIRM must be 'tty', not '" <> T.pack other <> "'")
+  when (approved && ttyOnly) $
+    usageError opts "--confirm is not accepted while LASK_CONFIRM=tty; confirm at the terminal"
+  let prompt = do
+        (_, rule) <- ruleFor (compiledProgram compiled) (compiledScopes compiled) key
+        confirmationFor fnName rule cd posVals kwVals
+  case prompt of
+    Nothing -> pure ()
+    Just _ | approved -> pure ()
+    Just p -> do
+      terminal <- (&&) <$> hIsTerminalDevice stdin <*> hIsTerminalDevice stderr
+      unless terminal . notConfirmed p $
+        "there is no terminal to confirm at; pass --confirm to approve"
+          <> (if ttyOnly then " (not accepted while LASK_CONFIRM=tty)" else "")
+      TIO.hPutStr stderr $
+        promptFunction p
+          <> " will run"
+          <> (if null (promptMatched p) then "" else " with " <> T.intercalate ", " (promptMatched p))
+          <> ".\nType '"
+          <> promptPhrase p
+          <> "' to continue: "
+      hFlush stderr
+      typed <- try TIO.getLine :: IO (Either IOException Text)
+      case typed of
+        Right t | T.strip t == promptPhrase p -> pure ()
+        Right _ -> notConfirmed p "what was typed does not match"
+        Left _ -> notConfirmed p "the input ended"
+  where
+    notConfirmed p why = do
+      let msg = "'" <> promptFunction p <> "' was not confirmed (expected '" <> promptPhrase p <> "'): " <> why
+      if optJsonFormat opts
+        then
+          TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
+            A.object [("code", A.String (codeText ECliNotConfirmed)), ("message", A.String msg)]
+        else TIO.hPutStrLn stderr (codeText ECliNotConfirmed <> ": " <> msg)
+      exitWith (ExitFailure 4)
 
 readStdinOrExit :: CommonOpts -> IO Text
 readStdinOrExit opts = do

@@ -15,6 +15,7 @@ where
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import Language.Lask.Confirm (validateConfirm)
 import Language.Lask.Diagnostic (Diagnostic)
 import Language.Lask.Elaborate (CoreProgram, elaborateProgram)
 import Language.Lask.Module.Loader (LoadedModule (..), ModuleReader, Program (..), collapseDots, fileReader, loadProgramWith)
@@ -49,7 +50,11 @@ compileWith reader entry = do
     prog <- r
     scopes <- validateProgram prog
     core <- elaborateProgram prog scopes
-    pure (Compiled prog scopes core)
+    -- The project file's confirmations refer to the program; one
+    -- that no longer does is an error, never silently dropped (spec 5).
+    case validateConfirm prog scopes core of
+      [] -> pure (Compiled prog scopes core)
+      ds -> Left ds
 
 -- | Compile an in-editor document: the entry module's text is
 -- provided directly; imported modules are read from disk.

@@ -593,7 +593,8 @@ rootCommands =
               ]
           )
           "How to encode the eval result",
-        Opt "help" (Just 'h') Nothing "Show the help of FUNCTION, or list the module's functions" [] []
+        Opt "help" (Just 'h') Nothing "Show the help of FUNCTION, or list the module's functions" [] [],
+        switchOpt "confirm" "Approve the confirmation lask.json asks for"
       ]
 
     depsSubs =

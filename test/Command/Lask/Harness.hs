@@ -6,6 +6,7 @@ module Command.Lask.Harness
     Result (..),
     runLask,
     runLaskEnv,
+    runLaskInTerminal,
     withProject,
     fakeDocker,
     calls,
@@ -20,6 +21,7 @@ import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Info (os)
 import System.Process (CreateProcess (cwd, env), proc, readCreateProcessWithExitCode, readProcess)
 
 -- | Run git in a repository as a throwaway identity, failing the test
@@ -68,6 +70,27 @@ runLaskEnv lask dir extraEnv args input = do
     readCreateProcessWithExitCode ((proc lask args) {cwd = Just dir, env = Just fullEnv}) input
   pure (Result (exitOf code) out err)
   where
+    exitOf ExitSuccess = 0
+    exitOf (ExitFailure n) = n
+
+-- | Run the binary on a pseudo-terminal, as a person at a terminal
+-- would, typing one line once it has started. @script(1)@ provides the
+-- terminal; its options differ between BSD (macOS) and util-linux.
+-- The line is sent after a pause, and the input is held open a while
+-- longer: sent at once, the end of input can reach the terminal before
+-- the line does. What the terminal shows, stdout and stderr alike,
+-- comes back as 'resOut'.
+runLaskInTerminal :: FilePath -> FilePath -> [String] -> String -> IO Result
+runLaskInTerminal lask dir args typed = do
+  let command = unwords (map shellQuote (lask : args))
+      onTerminal
+        | os == "darwin" = "script -q /dev/null " <> command
+        | otherwise = "script -qec " <> shellQuote command <> " /dev/null"
+      feed = "(sleep 1; printf '%s\\n' " <> shellQuote typed <> "; sleep 2) | " <> onTerminal
+  (code, out, err) <- readCreateProcessWithExitCode ((proc "sh" ["-c", feed]) {cwd = Just dir}) ""
+  pure (Result (exitOf code) out err)
+  where
+    shellQuote a = "'" <> concatMap (\c -> if c == '\'' then "'\\''" else [c]) a <> "'"
     exitOf ExitSuccess = 0
     exitOf (ExitFailure n) = n
 
