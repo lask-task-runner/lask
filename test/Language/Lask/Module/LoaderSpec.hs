@@ -83,10 +83,10 @@ failsWith files depsFiles code = do
     other -> expectationFailure ("expected " <> show code <> ", got " <> show other)
 
 singleDep :: Text -> DepsFile
-singleDep _hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask")])
+singleDep _hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask")]) Map.empty
 
 treeDep :: Text -> DepsFile
-treeDep _hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1")])
+treeDep _hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1")]) Map.empty
 
 spec :: Spec
 spec = do
@@ -182,7 +182,7 @@ spec = do
           ("/cache/sha256-abc.lask", "send(x: String): String = x")
         ]
         [ (".", treeDep "sha256-t"),
-          ("/cache/sha256-t", DepsFile (Map.fromList [("notify", notifyEntry)]))
+          ("/cache/sha256-t", DepsFile (Map.fromList [("notify", notifyEntry)]) Map.empty)
         ]
     it "does not leak the root scope into external trees" $
       failsWith
@@ -192,7 +192,7 @@ spec = do
         ]
         -- notify is declared at the ROOT only; the tree has no
         -- dependency file, so its bare import must not resolve.
-        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1"), ("notify", notifyEntry)]))]
+        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1"), ("notify", notifyEntry)]) Map.empty)]
         EModuleUnresolved
     it "detects cycles inside external trees" $
       failsWith

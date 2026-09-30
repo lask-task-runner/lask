@@ -55,7 +55,7 @@ hintsFor path src = do
 spec :: Spec
 spec = do
   describe "document diagnostics (spec 14.2)" $ do
-    let severities src = map (\d -> (d ^. L.severity, d ^. L.code)) <$> documentDiagnostics "main.lask" src
+    let severities src = map (\d -> (d ^. L.severity, d ^. L.code)) . fst <$> documentDiagnostics "main.lask" src
     it "shows an advisory of a valid document as a warning" $
       severities "f(): String = do {\n  async \"x\"\n  \"done\"\n}"
         `shouldReturn` [(Just DiagnosticSeverity_Warning, Just (InR "W-ASYNC-UNUSED"))]

@@ -43,6 +43,7 @@ data ErrorCode
   | EModuleLockStale
   | EModuleRevMoved
   | EModuleHashMismatch
+  | EModuleConfirmTarget
   | ERuntimeDivByZero
   | ERuntimeCommandNonzero
   | ERuntimeAccess
@@ -63,6 +64,7 @@ data ErrorCode
   | EIoSecretAuth
   | EIoSecretNotFound
   | ECliUsage
+  | ECliNotConfirmed
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 -- | @W-\<CATEGORY\>-\<DETAIL\>@ advisory codes (spec 14.2): a probable
@@ -114,6 +116,7 @@ codeText c = case c of
   EModuleLockStale -> "E-MODULE-LOCK-STALE"
   EModuleRevMoved -> "E-MODULE-REV-MOVED"
   EModuleHashMismatch -> "E-MODULE-HASH-MISMATCH"
+  EModuleConfirmTarget -> "E-MODULE-CONFIRM-TARGET"
   ERuntimeDivByZero -> "E-RUNTIME-DIV-BY-ZERO"
   ERuntimeCommandNonzero -> "E-RUNTIME-COMMAND-NONZERO"
   ERuntimeAccess -> "E-RUNTIME-ACCESS"
@@ -134,6 +137,7 @@ codeText c = case c of
   EIoSecretAuth -> "E-IO-SECRET-AUTH"
   EIoSecretNotFound -> "E-IO-SECRET-NOT-FOUND"
   ECliUsage -> "E-CLI-USAGE"
+  ECliNotConfirmed -> "E-CLI-NOT-CONFIRMED"
 
 stageText :: Stage -> Text
 stageText s = case s of

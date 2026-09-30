@@ -47,7 +47,7 @@ import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Control.Exception (IOException)
 import qualified Control.Exception as E
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
-import Data.List (minimumBy, sortOn)
+import Data.List (minimumBy, partition, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, listToMaybe, mapMaybe, maybeToList)
 import Data.Ord (comparing)
@@ -67,7 +67,9 @@ import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
 import Language.Lask.Types (Type (..), renderBound, renderType)
-import System.FilePath (normalise)
+import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
+import Language.Lask.Deps.File (defaultDepsFileName)
+import Language.Lask.Confirm (describeRule, ruleFor)
 import qualified Language.Lask.Span as S
 import Language.Lask.Utils (Pretty (pretty))
 
@@ -214,23 +216,38 @@ sendDocumentDiagnostics logger msg = do
   mdoc <- getVirtualFile doc
   case mdoc of
     Just file -> do
-      ds <- liftIO $ documentDiagnostics path (virtualFileText file)
+      (ds, projectDs) <- liftIO $ documentDiagnostics path (virtualFileText file)
       sendDiagnostics doc (Just $ virtualFileVersion file) ds
+      -- What is wrong in the project file is shown there, and cleared
+      -- there once it is fixed (spec 5).
+      let project = takeDirectory path </> defaultDepsFileName
+      sendDiagnostics (LSP.toNormalizedUri (LSP.filePathToUri project)) Nothing projectDs
     Nothing -> sendDiagnostics doc Nothing []
 
 -- | What the editor shows for a document: its errors, or, when it is
 -- valid, the advisories found in it (spec 14.2) as warnings.
-documentDiagnostics :: FilePath -> Text -> IO [LSP.Diagnostic]
+--
+-- The second list is for the project file: a @confirm@ entry that no
+-- longer refers to the program is reported where it is written.
+documentDiagnostics :: FilePath -> Text -> IO ([LSP.Diagnostic], [LSP.Diagnostic])
 documentDiagnostics path src = do
   r <- compileText path src
   pure $ case r of
-    Left ds -> map errorDiagnostic ds
+    Left ds ->
+      let (inProject, inModule) = partition inProjectFile ds
+       in (map errorDiagnostic inModule, map errorDiagnostic inProject)
     Right c ->
-      [ advisoryDiagnostic a
-      | a <- cpAdvisories (compiledCore c),
-        S.Span (S.Position inFile _ _) _ <- [D.advSpan a],
-        inFile == path
-      ]
+      ( [ advisoryDiagnostic a
+        | a <- cpAdvisories (compiledCore c),
+          S.Span (S.Position inFile _ _) _ <- [D.advSpan a],
+          inFile == path
+        ],
+        []
+      )
+  where
+    inProjectFile d = case D.diagSpan d of
+      S.Span (S.Position inFile _ _) _ -> takeFileName inFile == defaultDepsFileName
+      S.NoSpan -> False
 
 -- | The filesystem path of a document URI. Imports and the
 -- environment definition file resolve relative to this path, so the
@@ -506,7 +523,7 @@ hoverAt path src (Position pl pc) = do
                   shown = hiName hi <> builtinTypeParams bn (hiType hi)
               pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
             Nothing -> do
-              docs <- declDocs compiled path src (hiDecl hi)
+              docs <- withConfirmNote compiled (hiDecl hi) <$> declDocs compiled path src (hiDecl hi)
               let shown = hiName hi <> typeParamsOf compiled (hiDecl hi)
               pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
   where
@@ -535,10 +552,19 @@ hoverAt path src (Position pl pc) = do
           case named of
             ((sp, n) : _) -> case Map.lookup (entry, n) (cpDecls core) of
               Just cd -> do
-                docs <- declDocs compiled docPath docSrc (Just (entry, n))
+                docs <- withConfirmNote compiled (Just (entry, n)) <$> declDocs compiled docPath docSrc (Just (entry, n))
                 pure (Just (mkHover n (renderType (cdType cd)) docs sp))
               Nothing -> pure Nothing
             [] -> pure Nothing
+
+-- | A declaration's hover documentation, with the confirmation the
+-- project file asks for before it runs, when it does (spec 5).
+withConfirmNote :: Compiled -> Maybe (FilePath, Text) -> Maybe Text -> Maybe Text
+withConfirmNote compiled key docs = case key >>= ruleFor (compiledProgram compiled) (compiledScopes compiled) of
+  Nothing -> docs
+  Just (_, rule) ->
+    let note = "**Confirmation:** " <> describeRule rule <> " (`lask.json`)"
+     in Just (maybe note (<> "\n\n" <> note) docs)
 
 mkHover :: Text -> Text -> Maybe Text -> S.Span -> Hover
 mkHover name typeText docs sp =

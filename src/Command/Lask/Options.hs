@@ -37,6 +37,9 @@ data RunOpts = RunOpts
     -- name it reaches 'runArgs' instead and is handled there
     -- (spec 11.2).
     runHelp :: Bool,
+    -- | @--confirm@: approve the confirmation the project file asks
+    -- for (spec 11.2).
+    runConfirm :: Bool,
     -- | Absent for @lask run --help@, which lists the module's
     -- functions instead of calling one.
     runFunction :: Maybe Text,
@@ -156,6 +159,7 @@ pRunOpts =
           <> short 'h'
           <> help "Show the help of FUNCTION, or list the module's functions"
       )
+    <*> switch (long "confirm" <> help "Approve the confirmation lask.json asks for")
     <*> optional (T.pack <$> argument str (metavar "FUNCTION"))
     <*> many (T.pack <$> argument str (metavar "ARGS..."))
 

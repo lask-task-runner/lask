@@ -82,6 +82,9 @@ trigger c = case c of
       git repo ["commit", "--quiet", "-am", "move"]
       git repo ["tag", "--force", "v1"]
       run ["deps", "sync"]
+  -- A confirm entry of the project file that names no function.
+  EModuleConfirmTarget ->
+    Check [("main.lask", "a(): String = \"a\"\n"), ("lask.json", "{\"confirm\": {\"b\": {}}}")]
   EModuleHashMismatch -> Scripted 3 $ \lask ->
     withUrlDep lask $ \published _ run -> do
       writeFile published "send(x: String): String = concat(\"evil:\", x)\n"
@@ -126,6 +129,11 @@ trigger c = case c of
   EIoSecretNotFound -> secret (Just "root") [("PW", "{vault://secret/nope#password}")]
   -- CLI usage errors (spec 11.3).
   ECliUsage -> Invoke "f(n: Number) = n\n" ["eval", "f", "abc"] 4
+  -- A task lask.json asks confirmation for, run with no terminal to
+  -- confirm at and no --confirm.
+  ECliNotConfirmed -> Scripted 4 $ \lask ->
+    withProject [("main.lask", "destroy(): String = \"gone\"\n"), ("lask.json", "{\"confirm\": {\"destroy\": {}}}")] $ \dir ->
+      runLask lask dir ["eval", "destroy"] ""
   where
     check src = Check [("main.lask", src)]
     -- Run `f` with these variables, against the fake Vault logged in

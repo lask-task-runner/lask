@@ -24,7 +24,7 @@ spec = do
             \\"notify\": {\"url\": \"https://example.com/notify.lask\", \"hash\": \"sha256-bb\"}}}"
       parseDepsFile (BL8.pack json)
         `shouldBe` Right
-          ( DepsFile . Map.fromList $
+          ( flip DepsFile Map.empty . Map.fromList $
               [ ("deploy_kit", DepGit "https://example.com/kit" "v1.2.0"),
                 ("notify", DepUrl "https://example.com/notify.lask")
               ]
@@ -33,10 +33,10 @@ spec = do
     -- the lock (spec chapter 5).
     it "does not require a hash" $
       parseDepsFile "{\"dependencies\": {\"a\": {\"url\": \"https://x/a.lask\"}}}"
-        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]))
+        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]) Map.empty)
     it "still accepts a hash written by an older project file" $
       parseDepsFile "{\"dependencies\": {\"a\": {\"url\": \"https://x/a.lask\", \"hash\": \"sha256-aa\"}}}"
-        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]))
+        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]) Map.empty)
     it "requires rev with git" $
       parseDepsFile "{\"dependencies\": {\"a\": {\"git\": \"https://x/r\", \"hash\": \"sha256-aa\"}}}"
         `shouldSatisfy` isLeft
@@ -58,7 +58,7 @@ spec = do
         `shouldSatisfy` isLeft
     it "round-trips through render" $ do
       let df =
-            DepsFile . Map.fromList $
+            flip DepsFile Map.empty . Map.fromList $
               [ ("kit", DepGit "https://example.com/kit" "abc123"),
                 ("notify", DepUrl "https://example.com/notify.lask")
               ]
@@ -67,6 +67,32 @@ spec = do
       entryIsSingleFile (DepUrl "https://x/notify.lask") `shouldBe` True
       entryIsSingleFile (DepUrl "https://x/kit.tar.gz") `shouldBe` False
       entryIsSingleFile (DepGit "https://x/r" "v1") `shouldBe` False
+
+  describe "confirm in the project file (spec chapter 5)" $ do
+    let confirmOf = fmap depsConfirm . parseDepsFile . BL8.pack
+    it "reads when and phrase, and makes dependencies optional" $ do
+      let Right c = confirmOf "{\"confirm\": {\"deploy\": {\"when\": {\"env\": [\"prod\", \"production\"]}}, \"reset_db\": {\"phrase\": \"reset #{db}\"}, \"destroy\": {}}}"
+      fmap crWhen (Map.lookup "deploy" c) `shouldBe` Just [("env", ["prod", "production"])]
+      fmap crPhrase (Map.lookup "reset_db" c) `shouldBe` Just (Just "reset #{db}")
+      fmap crWhen (Map.lookup "destroy" c) `shouldBe` Just []
+    it "records where each key is written" $ do
+      let Right c = confirmOf "{\n  \"confirm\": {\n    \"destroy\": {}\n  }\n}"
+      (Map.lookup "destroy" c >>= crAt) `shouldBe` Just (3, 5)
+    it "rejects an unknown key at the top level, so a misspelt confirm is not ignored" $
+      confirmOf "{\"confrim\": {\"destroy\": {}}}" `shouldSatisfy` isLeft
+    it "rejects an unknown key in an entry, and malformed values" $ do
+      confirmOf "{\"confirm\": {\"destroy\": {\"prase\": \"x\"}}}" `shouldSatisfy` isLeft
+      confirmOf "{\"confirm\": {\"deploy\": {\"when\": {\"env\": \"prod\"}}}}" `shouldSatisfy` isLeft
+      confirmOf "{\"confirm\": {\"deploy\": {\"when\": {\"env\": []}}}}" `shouldSatisfy` isLeft
+      confirmOf "{\"confirm\": {\"destroy\": {\"phrase\": \" \"}}}" `shouldSatisfy` isLeft
+      confirmOf "{\"confirm\": []}" `shouldSatisfy` isLeft
+    it "keeps confirm when deps add rewrites the file" $ do
+      let Right df = parseDepsFile "{\"dependencies\": {}, \"confirm\": {\"deploy\": {\"when\": {\"env\": [\"prod\"]}, \"phrase\": \"go\"}}}"
+          added = df {depsEntries = Map.insert "kit" (DepGit "https://x/kit" "v1") (depsEntries df)}
+          Right back = parseDepsFile (renderDepsFile added)
+          strip = Map.map (\r -> r {crAt = Nothing})
+      strip (depsConfirm back) `shouldBe` strip (depsConfirm df)
+      depsEntries back `shouldBe` depsEntries added
 
   describe "content hashes (spec chapter 5)" $ do
     it "hashes bytes in the sha256-hex format" $ do

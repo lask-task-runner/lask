@@ -839,14 +839,30 @@ Project file:
       "rev": "v1.2.0"
     },
     "notify": {"url": "https://example.com/tasks/notify.lask"}
+  },
+  "confirm": {
+    "deploy": {"when": {"env": ["prod", "production"]}},
+    "destroy": {},
+    "reset_db": {"phrase": "reset #{db}"}
   }
 }
 ```
 
+- The top level has two keys, both optional: `dependencies` and `confirm` (below). Any other key is an error, so that a misspelt key is never silently ignored.
 - The top-level `dependencies` map associates a dependency name (a string conforming to `lower_id`; 3.2) with an entry.
 - An entry has exactly one source: `git` (a repository URL; `rev` — a tag or a full commit SHA — is required) or `url` (an archive or a single `.lask` file). A branch must not be given as `rev`.
 - Secrets (credentials, tokens) must not be written in this file.
-- Entries are typically recorded with `lask deps add` (11.5).
+- Entries are typically recorded with `lask deps add` (11.5). Rewriting the file keeps its `confirm` map.
+
+Confirmation:
+
+A project states which of its functions ask for a typed confirmation before they run (11.2). This is a guard against operational mistakes, not a security boundary. What must not happen at all is for the target's own permissions to prevent. Confirmation is declared here rather than in code, as dependencies are: code states what a task does, and whether running it needs a deliberate act is a property of the project.
+
+- `confirm` maps a function name to an entry. The name is a public symbol of the entry module (a re-exported function included), as the CLI names it (11.2). An entry belongs to the declaration the name resolves to.
+- `when` (optional) maps a parameter name to a non-empty array of values. Confirmation is required when any one of the named parameters equals one of its values. Without `when`, confirmation is always required.
+- `phrase` (optional) is what has to be typed. `#{name}` interpolates the value of the parameter `name`. By default it is the value of the first parameter that matched `when`, and the function's name when there is no `when`.
+- An entry takes no other key. Only the root project's file is read. A dependency's own `confirm` does not apply to whoever imports it.
+- `check`, `run`, `eval` and `envs` check every entry against the program, whether or not anything calls the function. The function must be a public function of the entry module, every parameter `when` names and every parameter `phrase` interpolates must be a parameter of it, and every value in `when` must conform to its parameter's type, as a CLI argument would (11.2). A violation is a static error (`E-MODULE-CONFIRM-TARGET`) located at the entry's key in `lask.json`. A protection that silently stopped applying would be worse than none.
 
 Lock file:
 
@@ -1940,6 +1956,7 @@ The error kinds reported by static verification include at least the following.
 - `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
 - `E-MODULE-DEEP-IMPORT`: an external import naming a path inside a dependency tree rather than its entry module (Chapter 5)
 - `E-MODULE-LOCK-STALE`: the lock file is missing, incomplete, or inconsistent with the project file (Chapter 5)
+- `E-MODULE-CONFIRM-TARGET`: a `confirm` entry of the project file names a function, a parameter or a value that does not fit the program (Chapter 5)
 
 Error diagnostics include at least the following.
 
@@ -2773,6 +2790,17 @@ Type conformance rules:
   - One with a named bound is decoded at `Any`, then instantiated from the types of the decoded values, as a call instantiates it from the types of its arguments (4.4). Each value in a position of the parameter's type contributes the type a literal of it would have (4.3). The values must agree on one type, and that type must satisfy the bound; otherwise it is a usage error (`E-CLI-USAGE`) before evaluation begins. A body may compare, sort or interpolate such a value, so it cannot be handed one outside its bound.
 - Functions with positional parameters of type `Environment` are excluded from direct CLI invocation (since no decoding mode can construct an `Environment` value, this is a pre-execution error). Keyword parameters of type `Environment` are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive it as `String` etc. and construct the environment expression inside the function.
 
+Confirmation:
+
+- When the project file asks for confirmation before the function the CLI calls (Chapter 5), the CLI obtains it after the arguments are bound and before anything is evaluated or stdin is read. A refused confirmation therefore leaves nothing done.
+- Only the called function's entry is consulted. Functions it calls are not asked about: a prompt in the middle of a run would come after earlier steps had taken effect.
+- A `when` condition is judged on the bound arguments. A keyword parameter the command line leaves out has its default when that default is a literal. Any other default is known only once the run has started, so a condition on it is taken to hold.
+- When stdin and stderr are both terminals, the CLI writes to stderr the function, the arguments that matched `when`, and the phrase, and reads one line from stdin. The run proceeds only if the line, with surrounding white space removed, equals the phrase.
+- `--confirm`, a `lask` option placed before the function name, approves the confirmation without asking. It takes no value.
+- Without a terminal and without `--confirm`, the run is refused.
+- The environment variable `LASK_CONFIRM` may be set to `tty`, where runs without a terminal (an agent's, for instance) must not confirm: `--confirm` is then a usage error (`E-CLI-USAGE`), and only a typed confirmation counts. Any other non-empty value is a usage error.
+- A refused confirmation is `E-CLI-NOT-CONFIRMED`, with exit code `4`. Its message names the function and the expected phrase.
+
 Difference between `run` and `eval`:
 
 - The only difference between `run` and `eval` is the handling of the evaluation result. `eval` outputs the evaluation result to stdout, and `run` does not (11.3).
@@ -2816,7 +2844,7 @@ Exit code contract:
 - `0`: success
 - Uncaught failure: the `code` of the `Error` value (8.10). Command failure passes through that command's exit code; other runtime errors default to `2`; external I/O errors (including image materialization failure and environment resolution failure) default to `3`; `fail` passes through the specified value. If `code` is not an integer in 1–255, it is normalized to `1`.
 - `1`: syntax or static validation error (detected before evaluation; no `Error` value is generated)
-- `4`: CLI usage error (invalid option, missing argument, etc.)
+- `4`: CLI usage error (invalid option, missing argument, etc.), including a refused confirmation (`E-CLI-NOT-CONFIRMED`, 11.2)
 
 Overlap of exit codes:
 
@@ -2961,6 +2989,7 @@ Sources of help information:
 - Default values are displayed as their source text and **must not be evaluated**, since evaluating them may have side effects.
 - The default value of a parameter marked `!!` (6.10) is displayed as `<secret>` and must never be displayed in plaintext (12.8).
 - The environments used are enumerated by the reachability analysis of 11.4. A recipe-form environment is shown by its Dockerfile path. When the enumeration yields only `#local`, the section is omitted.
+- When the project file asks for confirmation before the function (Chapter 5), a `Confirmation:` section states the condition (`requires confirmation when env is prod or production`), and JSON output carries it as `confirm` (`null` otherwise). An editor hover shows the same.
 
 Rendering rules:
 
@@ -3645,6 +3674,7 @@ Representative codes:
 - `E-MODULE-CYCLE`
 - `E-MODULE-UNRESOLVED`
 - `E-MODULE-HASH-MISMATCH`
+- `E-MODULE-CONFIRM-TARGET`
 - `E-RUNTIME-DIV-BY-ZERO`
 - `E-RUNTIME-COMMAND-NONZERO`
 - `E-RUNTIME-ACCESS`
@@ -3663,6 +3693,7 @@ Representative codes:
 - `E-IO-SECRET-AUTH`
 - `E-IO-SECRET-NOT-FOUND`
 - `E-CLI-USAGE`
+- `E-CLI-NOT-CONFIRMED`
 
 Advisory codes:
 
@@ -3734,6 +3765,7 @@ Minimum targets:
 - `E-MODULE-UNRESOLVED`
 - `E-MODULE-DEEP-IMPORT`
 - `E-MODULE-LOCK-STALE`
+- `E-MODULE-CONFIRM-TARGET`
 
 Rules:
 

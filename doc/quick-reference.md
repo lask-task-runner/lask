@@ -57,9 +57,17 @@ $ lask run release --help
 | `lask completion <shell>` | Emit a completion script (bash, zsh, fish). |
 | `lask version` | Print the version. |
 
-Options come **before** the function name — everything after it belongs to the function. `--module <path>` (default `main.lask`), `--format text\|json`, `--stdout-encode text\|json\|pretty-json` (default `json`), `--arg-decode text\|json\|auto` (default `auto`), `--trace-id`, `--no-color`. → [11.2](spec.md#112-function-invocation)
+Options come **before** the function name — everything after it belongs to the function. `--module <path>` (default `main.lask`), `--format text\|json`, `--stdout-encode text\|json\|pretty-json` (default `json`), `--arg-decode text\|json\|auto` (default `auto`), `--trace-id`, `--no-color`, `--confirm`. → [11.2](spec.md#112-function-invocation)
 
 A task's signature is its command line. `-` maps to `_`, so `release(--dry_run = false)` is reachable as `lask run release --dry-run true`, and `show_version` as `lask run show-version`.
+
+A task can ask for a typed confirmation before it runs, declared in `lask.json` rather than in code. It is a guard against mistakes, not a security boundary. `lask check` rejects an entry that names no function, parameter or fitting value. → [ch. 5](spec.md#5-declarations-and-modules), [11.2](spec.md#112-function-invocation)
+
+```json
+{"confirm": {"deploy": {"when": {"env": ["prod"]}}, "destroy": {}, "reset_db": {"phrase": "reset #{db}"}}}
+```
+
+At a terminal the phrase is typed; elsewhere `--confirm` approves, unless `LASK_CONFIRM=tty`. Refused is exit `4` (`E-CLI-NOT-CONFIRMED`). Only the function the CLI calls is asked about.
 
 Exit codes: `0` success · `1` syntax or static error · `4` CLI usage error · otherwise the `code` of the uncaught `Error` — a failed command passes its own exit code through. → [11.3](spec.md#113-inputoutput-contract), [14.8](spec.md#148-correspondence-to-cli-exit-codes)
 
