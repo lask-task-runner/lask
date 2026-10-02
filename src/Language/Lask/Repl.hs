@@ -38,6 +38,7 @@ import Language.Lask.Runtime.Environment (mkCommandRunner, mkFileRunner)
 import Language.Lask.Runtime.Image (lockPins, unlockedPins)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
 import Language.Lask.Runtime.Eval (mkRtCtx, topValue)
+import Language.Lask.Runtime.Secrets (maskFailure)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, failureMessage)
 import Language.Lask.Syntax.Parser (parseExpr)
@@ -177,7 +178,7 @@ loop modulePath session = do
         r <- liftIO (evalSession modulePath source')
         case r of
           Left ds -> mapM_ (outputStrLn . pretty) ds
-          Right (Left lf) -> outputStrLn (renderFailure lf)
+          Right (Left lf) -> liftIO (maskFailure lf) >>= outputStrLn . renderFailure
           Right (Right v) -> case v of
             VVoid -> pure ()
             _ -> outputStrLn (T.unpack (encodeValue v))

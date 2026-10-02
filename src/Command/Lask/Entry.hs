@@ -16,8 +16,8 @@ import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
 import Control.Applicative ((<|>))
-import Control.Exception (IOException, SomeException, fromException, try)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Exception (IOException, SomeException, fromException, toException, try)
+import Control.Monad (forM, forM_, unless, when, (>=>))
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
@@ -58,6 +58,7 @@ import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnv
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
 import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, noAsyncTracker, renderSite)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, evalCore, mkRtCtx, topValue)
+import Language.Lask.Runtime.Secrets (maskFailure)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
@@ -210,7 +211,7 @@ cmdRunEval printResult runOpts = do
   -- by the end of the process, and reported (spec 6.3). Whatever it
   -- did, the run keeps its own outcome and exit code.
   unawaited <- drainUnawaited tracker
-  mapM_ (writeErr . unawaitedDiagnostic opts traceId) unawaited
+  mapM_ (fmap (unawaitedDiagnostic opts traceId) . maskOutcome >=> writeErr) unawaited
   case result of
     Left lf -> failureExit opts traceId lf
     Right v -> do
@@ -218,6 +219,13 @@ cmdRunEval printResult runOpts = do
         VVoid -> pure ()
         _ -> TIO.putStrLn (encodeResult (runStdoutEncode runOpts) v)
       exitSuccess
+
+-- | A computation's outcome with the failure it ended in masked, for
+-- the advisory that reports it (spec 12.8).
+maskOutcome :: (AsyncSite, Either SomeException Value) -> IO (AsyncSite, Either SomeException Value)
+maskOutcome (site, Left ex)
+  | Just lf <- fromException ex = (\m -> (site, Left (toException m))) <$> maskFailure lf
+maskOutcome outcome = pure outcome
 
 -- | The advisory @W-ASYNC-UNAWAITED@ (spec 6.3, 14.2) for one
 -- computation that was never awaited, with how it ended.
@@ -416,7 +424,10 @@ encodeResult enc v = case enc of
 -- trace, spec 12.3) and exit with the error value's code, normalized
 -- to 1..255 (spec 8.10, 11.3).
 failureExit :: CommonOpts -> TraceId -> LaskFailure -> IO a
-failureExit opts traceId lf = do
+failureExit opts traceId uncaught = do
+  -- The message of a failed command is its stderr, so a secret it
+  -- printed is in the failure as much as in the relayed lines (12.8).
+  lf <- maskFailure uncaught
   let codeLabel = maybe "E-RUNTIME" codeText (lfCode lf)
       -- Stage discriminates error-diagnostic lines in the JSON Lines
       -- stream (spec 12.2: code + stage).

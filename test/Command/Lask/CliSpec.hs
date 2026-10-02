@@ -838,6 +838,35 @@ spec = beforeAll findLask $ do
           r <- runLask lask dir ["eval", "f"] ""
           resExit r `shouldBe` 0
           resErr r `shouldSatisfy` (not . isInfixOf "s3cret")
+    let leaky =
+          "use(t: String): String = t\n\
+          \leak(--token!!: String = \"s3cr3t-value\"): String = do {\n\
+          \  use(token)\n\
+          \  $[#local] sh -c \"echo #{token} >&2; exit 1\"\n\
+          \}\n\
+          \caught(--token!!: String = \"s3cr3t-value\"): String = try {\n\
+          \  $[#local] sh -c \"echo #{token} >&2; exit 1\"\n\
+          \} catch (e) {\n\
+          \  e.message\n\
+          \}\n"
+    it "masks a secret a failed command printed in the final diagnostic (12.8)" $ \lask ->
+      withProject [("main.lask", leaky)] $ \dir -> do
+        r <- runLask lask dir ["run", "leak"] ""
+        resExit r `shouldBe` 1
+        resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO: ***"
+        resErr r `shouldSatisfy` (not . isInfixOf "s3cr3t")
+    it "masks secrets in execution events and JSON diagnostics (12.6, 12.8)" $ \lask ->
+      withProject [("main.lask", leaky)] $ \dir -> do
+        r <- runLask lask dir ["run", "--format", "json", "leak"] ""
+        resExit r `shouldBe` 1
+        resErr r `shouldSatisfy` isInfixOf "\"kind\":\"call\""
+        resErr r `shouldSatisfy` isInfixOf "\"code\":\"E-RUNTIME-COMMAND-NONZERO\""
+        resErr r `shouldSatisfy` (not . isInfixOf "s3cr3t")
+    it "leaves a caught error value unmasked for the program (12.8)" $ \lask ->
+      withProject [("main.lask", leaky)] $ \dir -> do
+        r <- runLask lask dir ["eval", "caught"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"s3cr3t-value\\n\"\n"
 
   describe "observability (spec 12, 13.3)" $ do
     let src =

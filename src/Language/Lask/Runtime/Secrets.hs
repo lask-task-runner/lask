@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Secret masking for command execution logs (spec 12.8).
+-- | Secret masking for what lask writes to stderr (spec 12.8): the
+-- execution and command execution logs, execution events, and error
+-- diagnostics.
 --
 -- Masking is opt-in: a value enters the registry only by being bound
 -- to a @!!@-marked name, or by an explicit @mark_secret@ call (spec
@@ -23,6 +25,8 @@ module Language.Lask.Runtime.Secrets
   ( registerSecret,
     maskSecrets,
     maskSecretsJson,
+    maskValue,
+    maskFailure,
     resetSecretRegistryForTests,
   )
 where
@@ -32,9 +36,11 @@ import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sortOn)
+import qualified Data.Map.Strict as Map
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
+import Language.Lask.Runtime.Value (EnvValue (..), LaskFailure (..), Value (..))
 import System.IO.Unsafe (unsafePerformIO)
 
 -- | The fixed replacement text for a masked secret.
@@ -56,10 +62,26 @@ secretRegistry = unsafePerformIO (newIORef [])
 -- credential. The empty string is skipped since 'replaceAll' treats
 -- it as a no-op match anyway; registering it would only grow the
 -- registry for nothing.
+--
+-- A value that spans lines (a PEM private key, say) is also registered
+-- line by line, since output is relayed a line at a time and the whole
+-- value never appears in one line. A line shorter than
+-- 'minLineLength' is not: it is a fragment rather than a credential,
+-- and a line such as @}@ would otherwise be masked wherever it occurs.
 registerSecret :: Text -> IO ()
 registerSecret value
   | T.null value = pure ()
-  | otherwise = atomicModifyIORef' secretRegistry (\vs -> (value : vs, ()))
+  | otherwise = atomicModifyIORef' secretRegistry (\vs -> (value : fragments <> vs, ()))
+  where
+    fragments
+      | T.any (== '\n') value =
+          filter ((>= minLineLength) . T.length) (map (T.dropWhileEnd (== '\r')) (T.lines value))
+      | otherwise = []
+
+-- | The shortest line of a multi-line secret that is registered on its
+-- own.
+minLineLength :: Int
+minLineLength = 8
 
 -- | Replaces every occurrence of every registered secret with 'mask'.
 -- Longest values are matched first, so a registered secret that is a
@@ -67,8 +89,8 @@ registerSecret value
 -- partially-masked remainder (e.g. a password and a longer token that
 -- happens to embed it).
 --
--- Only for the copy of a command\/output line written to the command
--- execution log (spec 12.3) — never apply this to a 'CommandResult'
+-- Only for the copy of a line written to stderr (spec 12.8) — never
+-- apply this to a 'CommandResult'
 -- returned to a running Lask program; the language must still see the
 -- real value (8.7).
 --
@@ -101,6 +123,30 @@ maskSecretsJson v = case v of
   _ -> pure v
   where
     entry (k, x) = (,) <$> (AK.fromText <$> maskSecrets (AK.toText k)) <*> maskSecretsJson x
+
+-- | 'maskSecrets' over every string a value holds, map keys included.
+-- For a value about to be written to stderr — an event's arguments or
+-- result, or an error value in a diagnostic — and never for one the
+-- program goes on to use.
+maskValue :: Value -> IO Value
+maskValue v = case v of
+  VString t -> VString <$> maskSecrets t
+  VArray xs -> VArray <$> traverse maskValue xs
+  VMap m -> VMap . Map.fromList <$> traverse entry (Map.toList m)
+  VRecord m -> VRecord <$> traverse maskValue m
+  VEnv (EnvValue kind params) -> VEnv . EnvValue kind <$> traverse maskValue params
+  _ -> pure v
+  where
+    entry (k, x) = (,) <$> maskSecrets k <*> maskValue x
+
+-- | A failure as an error diagnostic reports it (spec 12.8, 14.3): its
+-- error value and stack frames masked. Only for the copy written out;
+-- a failure the program can still catch keeps its real value.
+maskFailure :: LaskFailure -> IO LaskFailure
+maskFailure lf = do
+  err <- maskValue (lfError lf)
+  frames <- traverse maskSecrets (lfFrames lf)
+  pure lf {lfError = err, lfFrames = frames}
 
 replaceAll :: Text -> Text -> Text -> Text
 replaceAll needle replacement haystack

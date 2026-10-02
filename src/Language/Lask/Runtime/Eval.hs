@@ -31,6 +31,7 @@ import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.Events
+import Language.Lask.Runtime.Secrets (maskSecretsJson)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (functionRefJson)
 import Language.Lask.Types (Field (..), Type (..), renderType, requiredNames)
@@ -233,9 +234,12 @@ instrument ctx lam args action
     isAnonymous = T.isPrefixOf "<" (lamName lam)
     frameLabel = lamName lam <> " (" <> T.pack (lamModule lam) <> ")"
     summarizeArgs = summarizeValue (VArray (V.fromList args))
+    -- Arguments, results and errors are masked as the event is made
+    -- (spec 12.8): a secret passed to a function is in its CallEvent.
     emit kind payload = do
       now <- getCurrentTime
-      rtEmit ctx (Event kind (rtTraceId ctx) now (functionRefJson lam) payload)
+      masked <- traverse (traverse maskSecretsJson) payload
+      rtEmit ctx (Event kind (rtTraceId ctx) now (functionRefJson lam) masked)
 
 binOp :: RtCtx -> PrimOp -> Value -> Value -> IO Value
 binOp _ op a b = case op of
