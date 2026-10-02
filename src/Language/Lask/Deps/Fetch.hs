@@ -26,7 +26,7 @@ import Language.Lask.Deps.Cache (cachePathFor, holdsPinned)
 import Language.Lask.Deps.Lock (LockEntry (..), childPath)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Hash (hashFile, hashTree, symlinksUnder)
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
+import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
 import Language.Lask.ErrorCode (ErrorCode (EIoEnvResolve, EModuleHashMismatch, EModuleRevMoved), Stage (StageIo))
 import Language.Lask.Span (Span (NoSpan))
 import System.Directory
@@ -172,21 +172,30 @@ syncAll cacheDir locked rootDeps =
           case r of
             Left d -> ((path, entry, Left d) :) <$> go seen' rest
             Right p -> do
-              transitive <- transitiveEntries (pinHash p) entry
-              ((path, entry, Right p) :) <$> go seen' (rest <> transitive)
+              transitive <- transitiveEntries path (pinHash p) entry
+              case transitive of
+                -- A project file the tree carries but that cannot be
+                -- read leaves its dependencies unknown, which is a
+                -- failure of this entry rather than an empty list.
+                Left d -> ((path, entry, Left d) :) <$> go seen' rest
+                Right more -> ((path, entry, Right p) :) <$> go seen' (rest <> more)
       where
         path = childPath parent name
         seen' = Set.insert path seen
 
-    transitiveEntries :: Text -> DepEntry -> IO [(Text, Text, DepEntry)]
-    transitiveEntries hash entry
-      | entryIsSingleFile entry = pure []
+    -- The dependencies a fetched tree declares, under the path of the
+    -- tree that declares them: the lock keys them as @parent>child@
+    -- (spec chapter 5), which is how the loader looks them up.
+    transitiveEntries :: Text -> Text -> DepEntry -> IO (Either Diagnostic [(Text, Text, DepEntry)])
+    transitiveEntries parent hash entry
+      | entryIsSingleFile entry = pure (Right [])
       | otherwise = do
           let root = cachePathFor cacheDir hash False
           sub <- loadDepsFile (root </> defaultDepsFileName)
           pure $ case sub of
-            Right (Just df) -> [("", n, e) | (n, e) <- Map.toList (depsEntries df)]
-            _ -> []
+            Right (Just df) -> Right [(parent, n, e) | (n, e) <- Map.toList (depsEntries df)]
+            Right Nothing -> Right []
+            Left d -> Left (withNote ("in the " <> T.pack defaultDepsFileName <> " of dependency '" <> parent <> "'") d)
 
 -- Fetch primitives -----------------------------------------------------------
 
