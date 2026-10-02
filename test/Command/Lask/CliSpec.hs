@@ -1010,6 +1010,57 @@ spec = beforeAll findLask $ do
         r2 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
         r2 `shouldBe` Result 0 "\"from-kitfrom-kit\"\n" ""
 
+    -- A dependency reached through another is locked as parent>child
+    -- (spec chapter 5), the key the loader looks it up by.
+    it "locks a transitive dependency under its parent, and imports through it" $ \lask ->
+      withSystemTempDirectory "lask-deps-transitive" $ \root -> do
+        let cache = root </> "cache"
+            util = root </> "util"
+            kit = root </> "kit"
+            proj = root </> "proj"
+            extraEnv = [("LASK_CACHE_DIR", cache)]
+            repoWith dir files = do
+              createDirectoryIfMissing True dir
+              mapM_ (\(f, c) -> writeFile (dir </> f) c) files
+              git dir ["init", "--quiet"]
+              git dir ["add", "."]
+              git dir ["commit", "--quiet", "-m", "init"]
+              git dir ["tag", "v1"]
+        repoWith util [("main.lask", "u(): String = \"from-util\"\n")]
+        repoWith
+          kit
+          [ ("lask.json", "{\"dependencies\": {\"util\": {\"git\": \"file://" <> util <> "\", \"rev\": \"v1\"}}}\n"),
+            ("main.lask", "import { u } from \"util\"\nhello(): String = u()\n")
+          ]
+        createDirectoryIfMissing True proj
+        writeFile (proj </> "main.lask") "import { hello } from \"kit\"\nf(): String = hello()\n"
+        r1 <- runLaskEnv lask proj extraEnv ["deps", "add", "kit", "--git", "file://" <> kit, "--rev", "v1"] ""
+        resExit r1 `shouldBe` 0
+        lock <- readFile (proj </> "lask.lock.json")
+        lock `shouldSatisfy` isInfixOf "\"kit>util\""
+        r2 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
+        r2 `shouldBe` Result 0 "\"from-util\"\n" ""
+        r3 <- runLaskEnv lask proj extraEnv ["deps", "sync", "--frozen"] ""
+        resExit r3 `shouldBe` 0
+
+    it "reports a dependency whose own project file cannot be read, and writes nothing" $ \lask ->
+      withSystemTempDirectory "lask-deps-transitive" $ \root -> do
+        let kit = root </> "kit"
+            proj = root </> "proj"
+        createDirectoryIfMissing True kit
+        writeFile (kit </> "lask.json") "{\"dependencies\": {\"util\": {\"git\": \"https://x/util\"}}}\n"
+        writeFile (kit </> "main.lask") "hello(): String = \"hi\"\n"
+        git kit ["init", "--quiet"]
+        git kit ["add", "."]
+        git kit ["commit", "--quiet", "-m", "init"]
+        git kit ["tag", "v1"]
+        createDirectoryIfMissing True proj
+        writeFile (proj </> "main.lask") "import { hello } from \"kit\"\nf(): String = hello()\n"
+        r <- runLaskEnv lask proj [("LASK_CACHE_DIR", root </> "cache")] ["deps", "add", "kit", "--git", "file://" <> kit, "--rev", "v1"] ""
+        resExit r `shouldBe` 3
+        resErr r `shouldSatisfy` isInfixOf "of dependency 'kit'"
+        doesFileExist (proj </> "lask.json") `shouldReturn` False
+
     it "requires a source option for deps add (exit 4)" $ \lask ->
       withProject [("main.lask", "a = 1\n")] $ \dir -> do
         r <- runLask lask dir ["deps", "add", "kit"] ""
