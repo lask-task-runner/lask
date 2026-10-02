@@ -851,6 +851,7 @@ Project file:
 - The top level has two keys, both optional: `dependencies` and `confirm` (below). Any other key is an error, so that a misspelt key is never silently ignored.
 - The top-level `dependencies` map associates a dependency name (a string conforming to `lower_id`; 3.2) with an entry.
 - An entry has exactly one source: `git` (a repository URL; `rev` — a tag or a full commit SHA — is required) or `url` (an archive or a single `.lask` file). A branch must not be given as `rev`.
+- `git`, `rev` and `url` must not start with `-` and must not contain whitespace or control characters, so that no value can be taken for an option of the tool that fetches it. A `url` must be an `https://`, `http://` or `file://` URL, and a redirect followed while fetching it must not move from `https` to `http`. A violation is a static error (`E-MODULE-UNRESOLVED`), in the project file and in `lask deps add` (11.5) alike.
 - Secrets (credentials, tokens) must not be written in this file.
 - Entries are typically recorded with `lask deps add` (11.5). Rewriting the file keeps its `confirm` map.
 
@@ -890,7 +891,8 @@ Lock file:
 
 - Keys of `modules` are dependency paths: a direct dependency is its name; a transitive dependency is `parent>child`. Duplicate fetches of the same content are permitted and each occurrence is recorded (no version unification is performed).
 - `rev` in the lock must be a full 40-hexadecimal-digit commit SHA. `requested` preserves the reference that was resolved.
-- `hash` (a content hash of the fetched source) is required for every entry. The same entry must always yield identical source code.
+- `hash` (a content hash of the fetched source) is required for every entry, in the form `sha256-` followed by 64 lower-case hexadecimal digits. The same entry must always yield identical source code.
+- A lock entry whose `hash` or `rev` is not of its form is a static error (`E-MODULE-LOCK-STALE`).
 - `images` records the container images the resolved graph requires (10.3). Keys are `<dependency path>#<image key>`, where the dependency path is empty for the root project.
 - A registry reference is recorded once for the whole graph, under the empty path, whichever module writes it: one reference names one image wherever it appears, and resolving it when a command runs (10.4) needs nothing but the reference. Its entry holds the reference as written (`ref`) and the digest it is pinned to (`digest`).
 - An entry that no image of the program references any more is dropped when the images are next materialized.

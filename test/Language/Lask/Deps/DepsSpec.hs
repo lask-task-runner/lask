@@ -4,12 +4,14 @@ module Language.Lask.Deps.DepsSpec (spec) where
 
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy.Char8 as BL8
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
+import Language.Lask.Deps.Fetch (ensureEntry)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Hash
-import System.Directory (createDirectoryIfMissing)
+import Language.Lask.Deps.Lock (LockEntry (..), parseLockFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
@@ -67,6 +69,51 @@ spec = do
       entryIsSingleFile (DepUrl "https://x/notify.lask") `shouldBe` True
       entryIsSingleFile (DepUrl "https://x/kit.tar.gz") `shouldBe` False
       entryIsSingleFile (DepGit "https://x/r" "v1") `shouldBe` False
+
+  describe "sources handed to git and curl (spec chapter 5)" $ do
+    let entryOf json = parseDepsFile (BL8.pack ("{\"dependencies\": {\"a\": " <> json <> "}}"))
+    it "rejects a git URL, rev or url that would be read as an option" $ do
+      entryOf "{\"git\": \"--upload-pack=touch pwned\", \"rev\": \"v1\"}" `shouldSatisfy` isLeft
+      entryOf "{\"git\": \"https://x/r\", \"rev\": \"--orphan=x\"}" `shouldSatisfy` isLeft
+      entryOf "{\"url\": \"-Kconfig\"}" `shouldSatisfy` isLeft
+    it "rejects whitespace and control characters" $ do
+      entryOf "{\"git\": \"https://x/r --upload-pack=x\", \"rev\": \"v1\"}" `shouldSatisfy` isLeft
+      entryOf "{\"git\": \"https://x/r\", \"rev\": \"v1\\n\"}" `shouldSatisfy` isLeft
+    it "fetches a url over https, http or from a file only" $ do
+      entryOf "{\"url\": \"https://x/a.lask\"}" `shouldSatisfy` isRight
+      entryOf "{\"url\": \"http://x/a.lask\"}" `shouldSatisfy` isRight
+      entryOf "{\"url\": \"file:///srv/a.lask\"}" `shouldSatisfy` isRight
+      entryOf "{\"url\": \"ftp://x/a.lask\"}" `shouldSatisfy` isLeft
+      entryOf "{\"url\": \"x/a.lask\"}" `shouldSatisfy` isLeft
+    it "keeps git URLs of every form git takes" $ do
+      entryOf "{\"git\": \"git@github.com:example/kit.git\", \"rev\": \"v1\"}" `shouldSatisfy` isRight
+      entryOf "{\"git\": \"file:///srv/kit\", \"rev\": \"v1\"}" `shouldSatisfy` isRight
+    it "never runs what a URL names, even when one reaches the fetch unchecked" $
+      withSystemTempDirectory "lask-inject" $ \dir -> do
+        let marker = dir </> "pwned"
+            url = T.pack ("--upload-pack=touch " <> marker <> "; false")
+            sha = T.replicate 40 "a"
+            locked = LockEntry (Just url) Nothing (Just "v1") (Just sha) ("sha256-" <> T.replicate 64 "0")
+        -- With no lock the source is cloned; with a pinned commit the
+        -- reference is first checked with ls-remote.
+        cloned <- ensureEntry (dir </> "cache") Nothing "a" (DepGit url "v1")
+        listed <- ensureEntry (dir </> "cache") (Just locked) "a" (DepGit url "v1")
+        cloned `shouldSatisfy` isLeft
+        listed `shouldSatisfy` isLeft
+        doesFileExist marker `shouldReturn` False
+
+  describe "lock file entries (spec chapter 5)" $ do
+    let lockWith fields = parseLockFile (BL8.pack ("{\"lock_version\": 1, \"modules\": {\"a\": {" <> fields <> "}}}"))
+        hash = "\"hash\": \"sha256-" <> replicate 64 'c' <> "\""
+    it "accepts a sha256 hash and a full commit SHA" $
+      lockWith (hash <> ", \"rev\": \"" <> replicate 40 'b' <> "\"") `shouldSatisfy` isRight
+    it "rejects a hash that is not sha256 and 64 hexadecimal digits" $ do
+      lockWith "\"hash\": \"..\"" `shouldSatisfy` isLeft
+      lockWith "\"hash\": \"sha256-../../x\"" `shouldSatisfy` isLeft
+      lockWith "\"hash\": \"sha256-abc\"" `shouldSatisfy` isLeft
+    it "rejects a rev that is not a full commit SHA" $ do
+      lockWith (hash <> ", \"rev\": \"--orphan=x\"") `shouldSatisfy` isLeft
+      lockWith (hash <> ", \"rev\": \"v1.2.0\"") `shouldSatisfy` isLeft
 
   describe "confirm in the project file (spec chapter 5)" $ do
     let confirmOf = fmap depsConfirm . parseDepsFile . BL8.pack

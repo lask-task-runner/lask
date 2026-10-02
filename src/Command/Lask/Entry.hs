@@ -701,6 +701,13 @@ cmdDepsAdd opts name source = do
       entry = case source of
         AddGit url rev -> DepGit url rev
         AddUrl url -> DepUrl url
+  -- The entry reaches git and curl without passing through the project
+  -- file's parser, so it is checked the same way here.
+  case validateSource name entry of
+    Left d -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+      exitWith (ExitFailure 1)
+    Right () -> pure ()
   cacheDir <- cacheDirFor baseDir
   existingE <- loadDepsFile depsPath
   existing <- case existingE of

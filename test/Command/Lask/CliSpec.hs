@@ -964,6 +964,15 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["deps", "add", "kit"] ""
         resExit r `shouldSatisfy` (/= 0)
 
+    it "refuses a deps add source that git would read as an option, and writes nothing" $ \lask ->
+      withProject [("main.lask", "a = 1\n")] $ \dir -> do
+        let marker = dir </> "pwned"
+        r <- runLask lask dir ["deps", "add", "kit", "--git=--upload-pack=touch " <> marker, "--rev", "v1"] ""
+        resExit r `shouldBe` 1
+        resErr r `shouldContain` "must not start with '-'"
+        doesFileExist marker `shouldReturn` False
+        doesFileExist (dir </> "lask.json") `shouldReturn` False
+
     it "reports malformed dependency files with exit 1" $ \lask ->
       withProject
         [ ("main.lask", "a = 1\n"),

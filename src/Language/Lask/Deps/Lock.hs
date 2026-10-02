@@ -29,6 +29,7 @@ import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Data.Char (isDigit)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -120,13 +121,29 @@ parseLockFile bytes = do
 
     entry (path, v) = do
       o <- asObject ("lock entry '" <> path <> "'") v
-      case str o "hash" of
-        Nothing -> Left (err ("lock entry '" <> path <> "': missing 'hash'"))
-        Just h ->
+      -- The hash names a cache location and the rev is checked out, so
+      -- each must have its one form (spec chapter 5): a hash such as
+      -- '..' would name a directory outside the cache, and a rev that
+      -- starts with '-' would be read by git as an option.
+      case (str o "hash", str o "rev") of
+        (Nothing, _) -> Left (err ("lock entry '" <> path <> "': missing 'hash'"))
+        (Just h, _)
+          | not (isContentHash h) ->
+              Left (err ("lock entry '" <> path <> "': 'hash' must be sha256- and 64 hexadecimal digits: '" <> h <> "'"))
+        (_, Just r)
+          | not (isCommitSha r) ->
+              Left (err ("lock entry '" <> path <> "': 'rev' must be a full 40-digit commit SHA: '" <> r <> "'"))
+        (Just h, rev) ->
           Right
             ( path,
-              LockEntry (str o "git") (str o "url") (str o "requested") (str o "rev") h
+              LockEntry (str o "git") (str o "url") (str o "requested") rev h
             )
+
+    isContentHash h = case T.stripPrefix "sha256-" h of
+      Just hex -> T.length hex == 64 && T.all isLowerHex hex
+      Nothing -> False
+    isCommitSha r = T.length r == 40 && T.all isLowerHex r
+    isLowerHex c = isDigit c || (c >= 'a' && c <= 'f')
 
     image (key, v) = do
       o <- asObject ("lock image '" <> key <> "'") v

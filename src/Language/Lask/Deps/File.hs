@@ -15,6 +15,7 @@ module Language.Lask.Deps.File
     loadDepsFile,
     parseDepsFile,
     renderDepsFile,
+    validateSource,
   )
 where
 
@@ -25,6 +26,7 @@ import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Data.Char (isControl, isSpace)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -143,6 +145,7 @@ parseDepsFile bytes = do
           Left (err ("dependency '" <> name <> "': 'git' and 'url' are mutually exclusive"))
         (Nothing, Nothing) ->
           Left (err ("dependency '" <> name <> "': needs exactly one source ('git' or 'url')"))
+      validateSource name parsed
       -- `hash` used to live here; it is now the lock's (spec chapter 5).
       -- The key is still tolerated so existing project files load.
       let known = ["git", "rev", "url", "hash"]
@@ -195,6 +198,29 @@ parseDepsFile bytes = do
       _ -> Left (err ("dependency name must be a lower-case identifier: '" <> name <> "'"))
     identChar c =
       c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
+
+-- | Whether a source can be handed to @git@ and @curl@ (spec chapter
+-- 5). Each goes on their command lines as one argument, so a value
+-- that starts with @-@ would be read as an option — @git ls-remote
+-- --upload-pack=\<command\>@ runs the command — and is refused here,
+-- for @deps add@ as for the project file. A @url@ is fetched over
+-- @https@, @http@ or from a local @file@, and nothing else.
+validateSource :: Text -> DepEntry -> Either Diagnostic ()
+validateSource name entry = case entry of
+  DepGit g rev -> do
+    word "git" g
+    word "rev" rev
+  DepUrl u -> do
+    word "url" u
+    if any (`T.isPrefixOf` u) ["https://", "http://", "file://"]
+      then Right ()
+      else bad "url" u "must be an https://, http:// or file:// URL"
+  where
+    word key v
+      | "-" `T.isPrefixOf` v = bad key v "must not start with '-'"
+      | T.any (\c -> isSpace c || isControl c) v = bad key v "must not contain whitespace or control characters"
+      | otherwise = Right ()
+    bad key v why = Left (err ("dependency '" <> name <> "': '" <> key <> "' " <> why <> ": '" <> v <> "'"))
 
 -- | Serialize for @lask deps add@ (spec 11.5).
 renderDepsFile :: DepsFile -> BL.ByteString
