@@ -192,7 +192,9 @@ fetchToTemp cacheDir source = do
   withTempDirectory cacheDir ".fetch" $ \tmp -> case source of
     SrcGit url rev -> do
       let dest = tmp </> "src"
-      r1 <- runTool "git" ["clone", "--quiet", T.unpack url, dest]
+      -- `--` ends the options, so a URL is never read as one, whatever
+      -- reached this point unchecked.
+      r1 <- runTool "git" ["clone", "--quiet", "--", T.unpack url, dest]
       case r1 of
         Left e -> pure (Left (fetchErr ("git clone failed for " <> url <> ": " <> e)))
         Right () -> do
@@ -209,7 +211,7 @@ fetchToTemp cacheDir source = do
     SrcUrl url
       | ".lask" `T.isSuffixOf` url -> do
           let dest = tmp </> "src.lask"
-          r <- runTool "curl" ["-fsSL", T.unpack url, "-o", dest]
+          r <- download url dest
           case r of
             Left e -> pure (Left (fetchErr ("download failed for " <> url <> ": " <> e)))
             Right () -> do
@@ -219,7 +221,7 @@ fetchToTemp cacheDir source = do
       | otherwise -> do
           let archive = tmp </> "archive"
               extractDir = tmp </> "extract"
-          r <- runTool "curl" ["-fsSL", T.unpack url, "-o", archive]
+          r <- download url archive
           case r of
             Left e -> pure (Left (fetchErr ("download failed for " <> url <> ": " <> e)))
             Right () -> do
@@ -248,6 +250,18 @@ fetchToTemp cacheDir source = do
       pure keep
 
     fetchErr = mkDiagnostic EIoEnvResolve StageIo NoSpan
+
+-- | Download a URL to a file. The URL is passed as the value of
+-- @--url@, so it is never read as an option, and only the schemes a
+-- project file accepts are fetched (spec chapter 5). A redirect may not
+-- leave https for plain http, nor reach a local file.
+download :: Text -> FilePath -> IO (Either Text ())
+download url dest =
+  runTool
+    "curl"
+    ["-fsSL", "--proto", "=https,http,file", "--proto-redir", redirectable, "--url", T.unpack url, "-o", dest]
+  where
+    redirectable = if "http://" `T.isPrefixOf` url then "=https,http" else "=https"
 
 -- | Move a verified fetch result into its content-addressed location.
 moveInto :: FilePath -> FilePath -> IO ()
@@ -296,7 +310,7 @@ resolveGitRev :: Text -> Text -> IO (Maybe (Text, [Text]))
 resolveGitRev url rev
   | isFullSha rev = pure (Just (rev, []))
   | otherwise = do
-      r <- try (readCreateProcessWithExitCode (proc "git" ["ls-remote", T.unpack url, T.unpack rev, T.unpack rev <> "^{}"]) "")
+      r <- try (readCreateProcessWithExitCode (proc "git" ["ls-remote", "--", T.unpack url, T.unpack rev, T.unpack rev <> "^{}"]) "")
       pure $ case r of
         Left e -> const Nothing (e :: IOException)
         Right (ExitSuccess, out, _) ->
