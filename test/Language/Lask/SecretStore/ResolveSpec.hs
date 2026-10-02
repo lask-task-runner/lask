@@ -8,7 +8,7 @@ module Language.Lask.SecretStore.ResolveSpec (spec) where
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Exception (try)
 import Data.Either (isLeft)
-import Data.IORef (writeIORef)
+import Data.IORef (readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Language.Lask.ErrorCode (ErrorCode (..))
@@ -17,7 +17,8 @@ import Language.Lask.Runtime.Value (LaskFailure (..))
 import Language.Lask.SecretStore.FakeVault
 import Language.Lask.SecretStore.Resolve
 import Language.Lask.SecretStore.Types
-import Language.Lask.SecretStore.Vault (VaultRef (..), parseVaultRef)
+import Language.Lask.SecretStore.Vault (VaultRef (..), parseVaultRef, redirectTarget)
+import Network.HTTP.Types (status302, status307)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
@@ -128,6 +129,34 @@ spec = do
     it "reports a malformed reference before asking the store anything" $ do
       r <- resolveWith [("LASK_SECRETS", "vault"), ("VAULT_ADDR", "http://127.0.0.1:1"), ("VAULT_TOKEN", "root"), ("X", "{vault://secret/app}")] "X"
       r `shouldFailWith` EIoSecretRef
+
+  describe "redirects" $ do
+    let readVia fv = resolveWith (vaultEnv fv <> [("X", "{vault://secret/app#password}")]) "X"
+    it "follows a standby's 307 once, to the node it names" $
+      withFakeVault $ \active -> withFakeVault $ \standby -> do
+        writeIORef (fvRedirect standby) (Just (status307, fvAddr active))
+        readVia standby `shouldReturn` Right (Just "v2pass")
+        readIORef (fvTokens active) >>= (`shouldSatisfy` elem "root")
+    it "never sends the token where any other redirect points" $
+      withFakeVault $ \elsewhere -> withFakeVault $ \fv -> do
+        writeIORef (fvRedirect fv) (Just (status302, fvAddr elsewhere))
+        r <- readVia fv
+        r `shouldFailWith` EIoSecretUnreachable
+        readIORef (fvTokens elsewhere) `shouldReturn` []
+    it "takes a path against the origin, and refuses https to http" $ do
+      redirectTarget "https://standby:8200/v1/a" (Just "https://active:8200/v1/a") `shouldBe` Right "https://active:8200/v1/a"
+      redirectTarget "http://standby:8200/v1/a" (Just "/v1/b") `shouldBe` Right "http://standby:8200/v1/b"
+      redirectTarget "https://standby:8200/v1/a" (Just "http://active:8200/v1/a") `shouldSatisfy` isLeft
+      redirectTarget "https://standby:8200/v1/a" (Just "//evil/v1/a") `shouldSatisfy` isLeft
+      redirectTarget "https://standby:8200/v1/a" (Just "ftp://active/v1/a") `shouldSatisfy` isLeft
+      redirectTarget "https://standby:8200/v1/a" Nothing `shouldSatisfy` isLeft
+    it "follows no more than one redirect" $
+      withFakeVault $ \elsewhere -> withFakeVault $ \second -> withFakeVault $ \first -> do
+        writeIORef (fvRedirect first) (Just (status307, fvAddr second))
+        writeIORef (fvRedirect second) (Just (status307, fvAddr elsewhere))
+        r <- readVia first
+        r `shouldFailWith` EIoSecretUnreachable
+        readIORef (fvTokens elsewhere) `shouldReturn` []
 
   describe "the stages of a check" $
     it "establish readability without reading, and release what a read issued" $

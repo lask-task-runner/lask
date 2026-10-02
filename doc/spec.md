@@ -2380,6 +2380,7 @@ Path      = Name , { "/" , Name } ;
 - Configuration comes from Vault's own variables, so that an environment prepared for the Vault CLI serves unchanged: `VAULT_ADDR` (required), `VAULT_NAMESPACE`, and `VAULT_CACERT`, which trusts the certificate authority in that file instead of the system's.
 - Credentials are, in order of precedence: `VAULT_TOKEN`; AppRole login with `VAULT_ROLE_ID` and `VAULT_SECRET_ID`; the token `vault login` leaves in `~/.vault-token`. None of them is `E-IO-SECRET-PROVIDER`. A run logs in at most once.
 - A response is awaited for at most ten seconds.
+- A request carries the token, so it follows at most one redirect: the `307` or `308` with which a standby node names the active one, as the Vault CLI follows it. Any other redirect, a second one, or one from `https` to `http` is not followed and is `E-IO-SECRET-UNREACHABLE`.
 
 Errors (14.6), all catchable and exiting with code `3` when uncaught (14.8):
 
