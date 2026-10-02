@@ -29,21 +29,19 @@ The recording above and the excerpt below come from [example/01-projects/02-weba
 
 ## Why Lask
 
-Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, *reusable*, *runnable* and *discoverable*.
+Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, *runnable* and *secure*.
 
-**Approachable**. A directory with one `.lask` file in it is already a project: no scaffolding, no config file, nothing to install but Lask and Docker. The surface is small, and most of it is borrowed from languages you already write — C-family braces and calls, `try` / `catch`, `async` / `await`, TypeScript's type notation — so `Array<String>`, `String | Null` and `--name: String = "World"` need no explanation. Ten minutes with the [Quick Reference](doc/quick-reference.md) covers the whole language and CLI — one page that a coding model can hold in context too, instead of an SDK's worth of API surface.
+**Approachable**. One `.lask` file in a directory is already a project: no scaffolding, no config, nothing to install but Lask and Docker. The syntax is borrowed from languages you already write — C-family braces, `try` / `catch`, `async` / `await`, TypeScript's type notation — and the whole language and CLI fit on one [Quick Reference](doc/quick-reference.md) page, short enough for you to read in ten minutes and for a coding model to hold in context.
 
-**Verifiable**. `lask check` resolves every name, argument and type before a single command runs — over the very definitions CI will execute, with no second copy in YAML to drift out of sync. The same errors appear in your editor as you type, so a typo costs seconds instead of a red CI log.
+**Verifiable**. `lask check` resolves every name, argument and type before a single command runs, over the very definitions CI will execute — no second copy in YAML to drift. The same errors appear in your editor as you type, so a typo costs seconds, not a red CI log.
 
-**Portable**. An execution environment is a value: pin an image once with `command { "go" } on #golang:1.22`, and every command that names it runs there — reproducibly, on your laptop and in CI alike. A command that names no environment is a static error, never a silent fall back to the host, so the only things to install are Lask and Docker.
+**Portable**. An execution environment is a value: pin an image once with `command { "go" } on #golang:1.22`, and every command that names it runs there, on your laptop and in CI alike. A command that names no environment is a static error, never a silent fall back to the host.
 
-**Programmable**. A task is an ordinary function — typed keyword arguments with defaults, a return value, callable on its own. Control flow, error handling and concurrency belong to the language rather than to shell convention. That language is a DSL and not a general-purpose one, so the same task takes fewer lines than an SDK in Go or TypeScript would, with no project to build around it.
+**Programmable**. A task is an ordinary function — typed keyword arguments with defaults, a return value — and control flow, error handling and concurrency belong to the language, not to shell convention. Tasks call each other inside a project, and are imported across projects, along with the environments they run in: `import command { "go" } from "tools"`. Being a DSL, it takes fewer lines than an SDK in Go or TypeScript, with no project to build around it.
 
-**Reusable**. Inside a project, tasks call each other like the functions they are; across projects, shared tasks live in their own repository and are imported rather than copied — and so do the environments programs run in, with `import command { "go" } from "tools"`. Imports are pinned by content hash in a committed lock file, so every machine resolves the same code and a run reaches no network.
+**Runnable**. Every piece runs on its own: a task with `lask run`, an expression in the REPL, a one-off command in its container with `lask cmd go test ./...`. A task's signature is its command line — `release(--dry_run = false)` is `lask run release --dry-run true` — and its doc comment (`@param`, `@return`, `@example`) is the single source for both `--help` and the editor's hover, alongside the inferred return type and every image the task will need.
 
-**Runnable**. The CLI is small, and every piece of a project runs on its own: a task with `lask run`, an expression in the REPL, or a one-off command inside its own container with `lask cmd go test ./...`. Nothing has to be pushed, and nothing has to be run through a shell to try it. A task's signature is its command line, too: keyword arguments become flags, so `release(--dry_run = false)` is `lask run release --dry-run true` with nothing to wire up.
-
-**Discoverable**. A documentation comment above a task — `@param`, `@return`, `@example` — is the single source for both `--help` and the editor's hover, so prose never drifts from the code it describes. Types are already in the source, so `--help` needs no hand-written usage string: it reports the signature, the inferred return type, and every image the task will need before you run it.
+**Secure**. Secrets stay out of the code and out of the log: a `!!` binding is masked wherever its value appears, and an environment variable like `{vault://secret/aws#secret_key}` is resolved from Vault when read, so the same program runs with or without a vault. Imports are pinned by content hash in a committed lock file, and only `lask deps sync` touches the network. Every command runs in a container you can lock down with `network = "none"`, `read_only = true` or `cap_drop`, and a task like `deploy` can ask for a typed confirmation before it runs.
 
 ## Comparison
 
