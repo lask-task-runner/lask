@@ -16,6 +16,10 @@
 -- Tokens: @root@ may do anything; @limited@ may read @secret/app@ and
 -- nothing else, not even its metadata. AppRole login with role
 -- @role@ and secret @secret@ issues @limited@.
+--
+-- When 'fvRedirect' is set, every request is answered with that status
+-- and a @Location@ of the given base followed by the request's path,
+-- as a standby node or a hostile server would answer it.
 module Language.Lask.SecretStore.FakeVault
   ( FakeVault (..),
     withFakeVault,
@@ -41,7 +45,10 @@ data FakeVault = FakeVault
     fvRequests :: IORef [Text],
     -- | The leases revoked, in order.
     fvRevoked :: IORef [Text],
-    fvSealed :: IORef Bool
+    fvSealed :: IORef Bool,
+    -- | Every @X-Vault-Token@ received, in order.
+    fvTokens :: IORef [Text],
+    fvRedirect :: IORef (Maybe (Status, String))
   }
 
 -- | Serve the fake on a free port for the duration of an action.
@@ -51,15 +58,17 @@ withFakeVault action = do
   revoked <- newIORef []
   sealed <- newIORef False
   issued <- newIORef (0 :: Int)
-  testWithApplication (pure (app requests revoked sealed issued)) $ \port ->
-    action (FakeVault ("http://127.0.0.1:" <> show port) requests revoked sealed)
+  tokens <- newIORef []
+  redirect <- newIORef Nothing
+  testWithApplication (pure (app requests revoked sealed issued tokens redirect)) $ \port ->
+    action (FakeVault ("http://127.0.0.1:" <> show port) requests revoked sealed tokens redirect)
 
 -- | How many requests had this @METHOD path@ prefix.
 requestsTo :: FakeVault -> Text -> IO Int
 requestsTo fv prefix = length . filter (prefix `T.isPrefixOf`) <$> readIORef (fvRequests fv)
 
-app :: IORef [Text] -> IORef [Text] -> IORef Bool -> IORef Int -> Application
-app requests revoked sealedRef issued req respond = do
+app :: IORef [Text] -> IORef [Text] -> IORef Bool -> IORef Int -> IORef [Text] -> IORef (Maybe (Status, String)) -> Application
+app requests revoked sealedRef issued tokens redirectRef req respond = do
   body <- strictRequestBody req
   let verb = TE.decodeUtf8 (requestMethod req)
       path = T.intercalate "/" (drop 1 (pathInfo req))
@@ -72,8 +81,13 @@ app requests revoked sealedRef issued req respond = do
       root = token == Just "root"
       limited = token == Just "limited"
   atomicModifyIORef' requests (\rs -> (rs <> [verb <> " " <> path <> query], ()))
+  mapM_ (\t -> atomicModifyIORef' tokens (\ts -> (ts <> [t], ()))) token
   sealed <- readIORef sealedRef
+  redirect <- readIORef redirectRef
   case (verb, path) of
+    _
+      | Just (status, base) <- redirect ->
+          respond (responseLBS status [("Location", TE.encodeUtf8 (T.pack base) <> rawPathInfo req <> rawQueryString req)] "")
     ("GET", "sys/health")
       | sealed -> reply status503 (A.object [("sealed", A.Bool True), ("version", "1.20.4")])
       | otherwise -> reply status200 (A.object [("sealed", A.Bool False), ("version", "1.20.4")])

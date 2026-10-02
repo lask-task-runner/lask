@@ -16,6 +16,7 @@
 module Language.Lask.SecretStore.Vault
   ( VaultRef (..),
     parseVaultRef,
+    redirectTarget,
     vaultProvider,
   )
 where
@@ -42,7 +43,7 @@ import Language.Lask.SecretStore.Types
 import qualified Network.Connection as NC
 import Network.HTTP.Client hiding (host, path)
 import Network.HTTP.Client.TLS (mkManagerSettings, tlsManagerSettings)
-import Network.HTTP.Types (hContentType)
+import Network.HTTP.Types (hContentType, hLocation)
 import qualified Network.TLS as TLS
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
@@ -185,28 +186,54 @@ data Reply = Reply
 -- | One request to @/v1/\<path\>@. A failure to get any response is
 -- 'EIoSecretUnreachable'. The message is built from the failure alone:
 -- the request carries the token in a header, so it is never shown.
+--
+-- Redirects are not left to the HTTP client, which would follow any of
+-- them, several times over, with the token still attached. A standby
+-- node answers 307 or 308 with the active node's address, and that one
+-- redirect is followed, as the Vault CLI follows it; any other
+-- redirect, a second one, or one from https to http is a failure.
 call :: Config -> Maybe Session -> BC.ByteString -> Text -> Maybe A.Value -> IO (Either SecretError Reply)
 call cfg session verb path body = do
   r <- try $ do
-    req0 <- parseRequest (T.unpack (cfgAddr cfg <> "/v1/" <> path))
-    let headers =
-          [("X-Vault-Token", TE.encodeUtf8 (sessToken s)) | Just s <- [session]]
-            <> [("X-Vault-Namespace", TE.encodeUtf8 ns) | Just ns <- [cfgNamespace cfg]]
-            <> [(hContentType, "application/json") | Just _ <- [body]]
-        req =
-          req0
-            { method = verb,
-              requestHeaders = headers,
-              requestBody = maybe (requestBody req0) (RequestBodyLBS . A.encode) body,
-              redactHeaders = Set.insert "X-Vault-Token" (redactHeaders req0)
-            }
-    httpLbs req (cfgManager cfg)
+    let url = cfgAddr cfg <> "/v1/" <> path
+    resp <- send url
+    case statusCodeOf resp of
+      s
+        | s `elem` [307, 308] -> case redirectTarget url (locationOf resp) of
+            Left why -> pure (Left why)
+            Right next -> do
+              resp' <- send next
+              pure $
+                if isRedirect (statusCodeOf resp')
+                  then Left "redirected more than once"
+                  else Right resp'
+        | isRedirect s -> pure (Left ("refused a redirect with status " <> T.pack (show s)))
+        | otherwise -> pure (Right resp)
   pure $ case r of
-    Left e -> Left (SecretError EIoSecretUnreachable ("vault: " <> cfgAddr cfg <> ": " <> describe e))
-    Right resp ->
+    Left e -> Left (unreachable (describe e))
+    Right (Left why) -> Left (unreachable why)
+    Right (Right resp) ->
       Right (Reply (statusCodeOf resp) (A.decode (responseBody resp)))
   where
+    send url = do
+      req0 <- parseRequest (T.unpack url)
+      let headers =
+            [("X-Vault-Token", TE.encodeUtf8 (sessToken s)) | Just s <- [session]]
+              <> [("X-Vault-Namespace", TE.encodeUtf8 ns) | Just ns <- [cfgNamespace cfg]]
+              <> [(hContentType, "application/json") | Just _ <- [body]]
+          req =
+            req0
+              { method = verb,
+                requestHeaders = headers,
+                requestBody = maybe (requestBody req0) (RequestBodyLBS . A.encode) body,
+                redactHeaders = Set.insert "X-Vault-Token" (redactHeaders req0),
+                redirectCount = 0
+              }
+      httpLbs req (cfgManager cfg)
+    unreachable why = SecretError EIoSecretUnreachable ("vault: " <> cfgAddr cfg <> ": " <> why)
     statusCodeOf = fromEnum . responseStatus
+    isRedirect s = s >= 300 && s < 400
+    locationOf resp = TE.decodeUtf8Lenient <$> lookup hLocation (responseHeaders resp)
     describe e = case e of
       HttpExceptionRequest _ content -> case content of
         ConnectionFailure inner -> "cannot connect: " <> T.pack (show inner)
@@ -215,6 +242,31 @@ call cfg session verb path body = do
         InternalException inner -> T.pack (show inner)
         other -> T.pack (takeWhile (/= '\n') (show other))
       InvalidUrlException url why -> "invalid URL '" <> T.pack url <> "': " <> T.pack why
+
+-- | Where a redirect from a URL leads, or why it is not followed. A
+-- path is taken against the URL's own origin; a redirect may not leave
+-- https for http, which would send the token in the clear.
+--
+-- >>> redirectTarget (T.pack "https://standby:8200/v1/a") (Just (T.pack "https://active:8200/v1/a"))
+-- Right "https://active:8200/v1/a"
+-- >>> redirectTarget (T.pack "http://standby:8200/v1/a") (Just (T.pack "/v1/b"))
+-- Right "http://standby:8200/v1/b"
+-- >>> redirectTarget (T.pack "https://standby:8200/v1/a") (Just (T.pack "http://active:8200/v1/a"))
+-- Left "refused a redirect from https to http: 'http://active:8200/v1/a'"
+redirectTarget :: Text -> Maybe Text -> Either Text Text
+redirectTarget from location = case location of
+  Nothing -> Left "redirected with no location"
+  Just loc
+    | "https://" `T.isPrefixOf` loc -> Right loc
+    | "http://" `T.isPrefixOf` loc ->
+        if "https://" `T.isPrefixOf` from
+          then Left ("refused a redirect from https to http: '" <> loc <> "'")
+          else Right loc
+    | "/" `T.isPrefixOf` loc, not ("//" `T.isPrefixOf` loc) -> Right (origin <> loc)
+    | otherwise -> Left ("refused a redirect to '" <> loc <> "'")
+  where
+    (scheme, rest) = T.breakOn "://" from
+    origin = scheme <> "://" <> T.takeWhile (/= '/') (T.drop 3 rest)
 
 -- | The @errors@ Vault puts in a failed response, for a message.
 vaultErrors :: Reply -> Text
