@@ -22,10 +22,10 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Language.Lask.Deps.Cache (cachePathFor)
+import Language.Lask.Deps.Cache (cachePathFor, holdsPinned)
 import Language.Lask.Deps.Lock (LockEntry (..), childPath)
 import Language.Lask.Deps.File
-import Language.Lask.Deps.Hash (hashFile, hashTree)
+import Language.Lask.Deps.Hash (hashFile, hashTree, symlinksUnder)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
 import Language.Lask.ErrorCode (ErrorCode (EIoEnvResolve, EModuleHashMismatch, EModuleRevMoved), Stage (StageIo))
 import Language.Lask.Span (Span (NoSpan))
@@ -34,6 +34,7 @@ import System.Directory
     doesDirectoryExist,
     doesFileExist,
     listDirectory,
+    pathIsSymbolicLink,
     removeDirectoryRecursive,
     removeFile,
     renameDirectory,
@@ -105,7 +106,10 @@ ensureEntry cacheDir locked name entry = case entry of
       pinnedRev = if sameRef then locked >>= lkRev else Nothing
   where
     expected = lkHash <$> locked
-    isCached h = existsAny (cachePathFor cacheDir h (entryIsSingleFile entry))
+    single = entryIsSingleFile entry
+    -- An entry is checked rather than trusted for being there: a shared
+    -- or tampered cache must not stand in for what the lock pins.
+    isCached h = holdsPinned (cachePathFor cacheDir h single) h single
 
     fetchVerified source = do
       r <- fetchToTemp cacheDir source
@@ -124,11 +128,14 @@ ensureEntry cacheDir locked name entry = case entry of
                   <> computedHash
                   <> ")"
           | otherwise -> do
-              let target = cachePathFor cacheDir computedHash (entryIsSingleFile entry)
-              alreadyThere <- existsAny target
-              if alreadyThere
+              let target = cachePathFor cacheDir computedHash single
+              intact <- holdsPinned target computedHash single
+              if intact
                 then cleanup tmpPath
-                else moveInto tmpPath target
+                else do
+                  -- Whatever is there under this hash is not its content.
+                  cleanup target
+                  moveInto tmpPath target
               pure (Right (Pinned computedHash commit))
 
     moved ref commit old =
@@ -205,9 +212,10 @@ fetchToTemp cacheDir source = do
               commit <- runToolOut "git" ["-C", dest, "rev-parse", "HEAD"]
               hasGitDir <- doesDirectoryExist (dest </> ".git")
               when hasGitDir (removeDirectoryRecursive (dest </> ".git"))
-              h <- hashTree dest
-              keep <- promote tmp dest False
-              pure (Right (keep, h, either (const Nothing) (Just . T.strip) commit))
+              withoutLinks dest $ do
+                h <- hashTree dest
+                keep <- promote tmp dest False
+                pure (Right (keep, h, either (const Nothing) (Just . T.strip) commit))
     SrcUrl url
       | ".lask" `T.isSuffixOf` url -> do
           let dest = tmp </> "src.lask"
@@ -238,9 +246,10 @@ fetchToTemp cacheDir source = do
                       isDir <- doesDirectoryExist (extractDir </> one)
                       pure (if isDir then extractDir </> one else extractDir)
                     _ -> pure extractDir
-                  h <- hashTree root
-                  keep <- promote tmp root False
-                  pure (Right (keep, h, Nothing))
+                  withoutLinks root $ do
+                    h <- hashTree root
+                    keep <- promote tmp root False
+                    pure (Right (keep, h, Nothing))
   where
     -- withTempDirectory deletes the temp dir on exit; move the result
     -- out to a sibling location first.
@@ -250,6 +259,19 @@ fetchToTemp cacheDir source = do
       pure keep
 
     fetchErr = mkDiagnostic EIoEnvResolve StageIo NoSpan
+
+    -- A symbolic link in a dependency would let its content depend on
+    -- whatever the link points to on the machine that reads it, outside
+    -- what the hash covers (spec chapter 5); such a source is refused.
+    withoutLinks root k = do
+      links <- symlinksUnder root
+      case links of
+        [] -> k
+        _ ->
+          pure . Left . fetchErr $
+            "the source contains symbolic links, which a dependency may not: "
+              <> T.intercalate ", " (map T.pack (take 5 links))
+              <> (if length links > 5 then ", ..." else "")
 
 -- | Download a URL to a file. The URL is passed as the value of
 -- @--url@, so it is never read as an option, and only the schemes a
@@ -277,12 +299,17 @@ moveInto from target = do
 cleanup :: FilePath -> IO ()
 cleanup path = do
   r <- try $ do
-    isDir <- doesDirectoryExist path
-    if isDir
-      then removeDirectoryRecursive path
-      else do
-        fileThere <- doesFileExist path
-        when fileThere (removeFile path)
+    -- A link is removed itself, never what it points to.
+    isLink <- pathIsSymbolicLink path
+    isDir <- if isLink then pure False else doesDirectoryExist path
+    if isLink
+      then removeFile path
+      else
+        if isDir
+          then removeDirectoryRecursive path
+          else do
+            fileThere <- doesFileExist path
+            when fileThere (removeFile path)
   pure (either (\e -> let _ = (e :: IOException) in ()) id r)
 
 existsAny :: FilePath -> IO Bool

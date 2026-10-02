@@ -7,11 +7,13 @@ import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Either (isLeft, isRight)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
-import Language.Lask.Deps.Fetch (ensureEntry)
+import Language.Lask.Deps.Cache (cachePathFor, holdsPinned)
+import Language.Lask.Deps.Fetch (Pinned (..), ensureEntry)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Hash
 import Language.Lask.Deps.Lock (LockEntry (..), parseLockFile)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing, createFileLink, doesFileExist)
+import System.Process (callProcess)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
@@ -189,3 +191,71 @@ spec = do
         BS8.writeFile (dir </> ".git" </> "HEAD") "ref: refs/heads/main\n"
         hashTree dir
       h1 `shouldBe` h2
+    it "never follows a symbolic link, and covers its target text instead" $
+      withSystemTempDirectory "lask-tree" $ \outside -> do
+        BS8.writeFile (outside </> "secret") "one\n"
+        let tree dir = do
+              BS8.writeFile (dir </> "a.lask") "a = 1\n"
+              createFileLink (outside </> "secret") (dir </> "link.lask")
+        h1 <- withSystemTempDirectory "lask-tree" $ \dir -> tree dir >> hashTree dir
+        BS8.writeFile (outside </> "secret") "two\n"
+        h2 <- withSystemTempDirectory "lask-tree" $ \dir -> tree dir >> hashTree dir
+        plain <- withSystemTempDirectory "lask-tree" $ \dir -> do
+          BS8.writeFile (dir </> "a.lask") "a = 1\n"
+          hashTree dir
+        h1 `shouldBe` h2
+        h1 `shouldNotBe` plain
+        withSystemTempDirectory "lask-tree" $ \dir -> tree dir >> (symlinksUnder dir `shouldReturn` ["link.lask"])
+
+  describe "cache verification (spec chapter 5)" $ do
+    it "accepts an entry that holds its hash, and nothing else" $
+      withSystemTempDirectory "lask-cache" $ \cache -> do
+        let src = cache </> "src"
+        createDirectoryIfMissing True src
+        BS8.writeFile (src </> "main.lask") "a = 1\n"
+        h <- hashTree src
+        let entry = cachePathFor cache h False
+        createDirectoryIfMissing True entry
+        BS8.writeFile (entry </> "main.lask") "a = 1\n"
+        holdsPinned entry h False `shouldReturn` True
+        BS8.writeFile (entry </> "main.lask") "a = 2\n"
+        holdsPinned entry h False `shouldReturn` False
+        holdsPinned (cachePathFor cache ("sha256-" <> T.replicate 64 "0") False) h False `shouldReturn` False
+    it "does not accept an entry that is a symbolic link" $
+      withSystemTempDirectory "lask-cache" $ \cache -> do
+        BS8.writeFile (cache </> "real.lask") "a = 1\n"
+        h <- hashFile (cache </> "real.lask")
+        let entry = cachePathFor cache h True
+        createFileLink (cache </> "real.lask") entry
+        holdsPinned entry h True `shouldReturn` False
+
+  describe "fetching into the cache (spec chapter 5, 11.5)" $ do
+    let repoWith dir files = do
+          createDirectoryIfMissing True dir
+          mapM_ (\(f, c) -> BS8.writeFile (dir </> f) c) files
+          git dir ["init", "--quiet"]
+          git dir ["add", "."]
+          git dir ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "init"]
+          git dir ["tag", "v1"]
+        git dir args = callProcess "git" (["-C", dir] <> args)
+    it "replaces a cache entry that does not hold what the lock pins" $
+      withSystemTempDirectory "lask-fetch" $ \root -> do
+        let repo = root </> "kit"
+            cache = root </> "cache"
+            url = T.pack ("file://" <> repo)
+        repoWith repo [("main.lask", "hello() = 1\n")]
+        Right first <- ensureEntry cache Nothing "kit" (DepGit url "v1")
+        let entry = cachePathFor cache (pinHash first) False
+            locked = LockEntry (Just url) Nothing (Just "v1") (pinRev first) (pinHash first)
+        BS8.writeFile (entry </> "main.lask") "hello() = 666\n"
+        again <- ensureEntry cache (Just locked) "kit" (DepGit url "v1")
+        again `shouldBe` Right first
+        BS8.readFile (entry </> "main.lask") `shouldReturn` "hello() = 1\n"
+    it "refuses a source that contains a symbolic link" $
+      withSystemTempDirectory "lask-fetch" $ \root -> do
+        let repo = root </> "kit"
+        createDirectoryIfMissing True repo
+        createFileLink "/etc/hosts" (repo </> "hosts.lask")
+        repoWith repo [("main.lask", "hello() = 1\n")]
+        r <- ensureEntry (root </> "cache") Nothing "kit" (DepGit (T.pack ("file://" <> repo)) "v1")
+        r `shouldSatisfy` isLeft
