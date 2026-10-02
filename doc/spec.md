@@ -1733,7 +1733,7 @@ build(): String = do {
    KeywordParameter (6.1). It is not a standalone production. *)
 ```
 
-A secret binding is a `ValueDecl` (5), `BindStmt` (6.5), positional parameter, or keyword parameter (6.1) whose name is marked `!!`. It declares that whatever value ends up bound to that name must be masked out of the command execution log (12.3) wherever it later appears, per the sensitive-information protection contract of 12.8.
+A secret binding is a `ValueDecl` (5), `BindStmt` (6.5), positional parameter, or keyword parameter (6.1) whose name is marked `!!`. It declares that whatever value ends up bound to that name must be masked out of what is written to stderr — logs, execution events and error diagnostics — wherever it later appears, per the sensitive-information protection contract of 12.8.
 
 Semantics:
 
@@ -1767,8 +1767,8 @@ Typing rules:
 
 Scope of the masking effect:
 
-- Masking (12.8) applies only to observation data: the command execution log (12.3), in both the logged command text and relayed output lines.
-- Masking never applies to a `CommandResult`'s `stdout` / `stderr` (8.7) or to a function's return value as observed by the running program (a `!!`-marked value flows through ordinary evaluation unchanged). In particular, `eval`'s primary result on stdout (9.5, 11.3) is never masked: if a program's return value is derived from a secret binding, outputting it faithfully is the whole point of that program, and the primary-result contract of 11.3 takes precedence.
+- Masking (12.8) applies only to what the implementation writes to stderr: the execution and command execution logs (12.2, 12.3), execution events (12.6), and error diagnostics (14.3).
+- Masking never applies to a `CommandResult`'s `stdout` / `stderr` (8.7) or to a function's return value or a caught error value as observed by the running program (a `!!`-marked value flows through ordinary evaluation unchanged). In particular, `eval`'s primary result on stdout (9.5, 11.3) is never masked: if a program's return value is derived from a secret binding, outputting it faithfully is the whole point of that program, and the primary-result contract of 11.3 takes precedence.
 - The matching rule is exact-value substring matching (12.8), not static or dynamic taint tracking through the type system. A transformation that changes the value's character sequence (e.g. `to_upper`, `replace`, slicing, encoding) breaks the match for the transformed result; a transformation that only embeds the value unchanged inside a larger string (e.g. `concat`, string interpolation) does not.
 - A variadic parameter cannot be marked `!!` (6.1).
 
@@ -3447,7 +3447,9 @@ Masking mechanism:
 - Registration is opt-in and is never inferred from a value's origin. In particular, reading a value with `get_env` (15.9) does not register it: most environment variables (a region, a log level) are not sensitive, and masking them would degrade the usefulness of logs without improving safety. A credential read from the environment is marked at its binding, as in `--secret_key!!: String = get_env("...")`.
 - The one exception is a value resolved from a secret reference (9.8), which is registered when it is resolved. It is not inferred: the environment declared the value secret by holding a reference to it rather than the value.
 - Registration is by value, not by name, type, or source: masking is applied by finding registered values as exact substrings of observation data and replacing each match with a fixed mask, regardless of which command, binding, or interpolation the value passed through to get there.
-- Masking is applied only to observation data (the command execution log of 12.3: the logged command text and relayed output lines) at the point that data is produced. It is never applied to a `CommandResult`'s `stdout` / `stderr` (8.7) or to any other value as observed by the running program (including `eval`'s primary result on stdout, 9.5/11.3): those must remain faithful to the real value.
+- Masking is applied to everything the implementation writes to stderr, at the point it is produced: the execution log (12.2), the command execution log (12.3: the logged command text, the environment metadata, and relayed output lines), execution events (12.6: arguments, results and error values), and error diagnostics (14.3: the message, the error value and the stack trace), including a failure reported in an advisory. The message of a failed command execution is its stderr (6.6), so a secret a command prints reaches the final diagnostic as well as the relayed lines.
+- Masking is never applied to a `CommandResult`'s `stdout` / `stderr` (8.7) or to any other value as observed by the running program — an error value caught by `try` / `catch` (6.9) included — nor to `eval`'s primary result on stdout (9.5/11.3): those must remain faithful to the real value.
+- A registered value that contains a line break is also registered line by line, since output is relayed one line at a time (12.3) and the whole value never appears within one line. A line shorter than 8 characters is not registered on its own: it is a fragment rather than a credential, and masking it would hide unrelated output.
 - Because matching is by exact substring, a value that has been transformed (case conversion, replacement, slicing, encoding, hashing, ...) since registration is no longer found and is not masked. This is a known limitation, not a defect: full protection would require tracking sensitive values through transformations (taint tracking), which this specification does not require of implementations.
 
 Retention policy:
