@@ -109,7 +109,8 @@ withProject files action =
 -- not need a daemon. Its state is files under @$FAKE_DOCKER_STATE@:
 -- @registry/<ref>@ holds the digest a tag resolves to upstream,
 -- @present/<name>@ an image on the daemon with its repository digests,
--- and @calls@ every invocation.
+-- @calls@ every invocation, and @env@ each variable a @run@ named by
+-- @--env NAME@ with the value the client's environment gave it.
 fakeDocker :: String
 fakeDocker =
   unlines
@@ -139,7 +140,14 @@ fakeDocker =
       "    [ \"$3\" = \"--format\" ] && cat \"$f\"; exit 0 ;;",
       "  build) tag=''; while [ $# -gt 0 ]; do [ \"$1\" = -t ] && tag=\"$2\"; shift; done",
       "    printf '[]' > \"$S/present/$(key \"$tag\")\" ;;",
-      "  run) case \"$*\" in *'sleep 30'*) sleep 30 ;; esac; echo ran ;;",
+      -- A variable named by `--env NAME` is taken from the client's
+      -- environment, as docker takes it; @env@ records what it found.
+      "  run) prev=''",
+      "    for a in \"$@\"; do",
+      "      if [ \"$prev\" = --env ]; then case \"$a\" in *=*) ;; *) eval \"v=\\${$a-UNSET}\"; echo \"$a=$v\" >> \"$S/env\" ;; esac; fi",
+      "      prev=\"$a\"",
+      "    done",
+      "    case \"$*\" in *'sleep 30'*) sleep 30 ;; esac; echo ran ;;",
       "  stop|rm) ;;",
       "  *) echo \"fake docker: unsupported: $*\" >&2; exit 2 ;;",
       "esac"

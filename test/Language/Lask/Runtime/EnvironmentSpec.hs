@@ -167,10 +167,21 @@ spec = do
         `shouldBe` ["--tmpfs", "/tmp", "--tmpfs", "/run"]
 
     it "joins a table option into the form its flag expects" $ do
-      optionArgs [("env", VMap (Map.fromList [("CI", VString "1"), ("LANG", VString "C")]))]
-        `shouldBe` ["--env", "CI=1", "--env", "LANG=C"]
       optionArgs [("add_hosts", VMap (Map.fromList [("api", VString "10.0.0.2")]))]
         `shouldBe` ["--add-host", "api:10.0.0.2"]
+
+    -- A command line is visible to every user of the host, so a value
+    -- passed to the container never appears on it (spec 10.2).
+    it "names an env variable on the command line and gives its value to the docker client" $ do
+      let env = [("env", VMap (Map.fromList [("CI", VNumber 1), ("TOKEN", VString "s3cr3t")]))]
+      optionArgs env `shouldBe` ["--env", "CI", "--env", "TOKEN"]
+      dockerClientEnv (Map.fromList env) `shouldBe` [("CI", "1"), ("TOKEN", "s3cr3t")]
+
+    it "keeps a variable the docker client reads itself on the command line" $ do
+      let env = [("env", VMap (Map.fromList [(k, VString "v") | k <- ["DOCKER_HOST", "HTTPS_PROXY", "no_proxy", "PATH", "HOME"]]))]
+      optionArgs env
+        `shouldBe` ["--env", "DOCKER_HOST=v", "--env", "HOME=v", "--env", "HTTPS_PROXY=v", "--env", "PATH=v", "--env", "no_proxy=v"]
+      dockerClientEnv (Map.fromList env) `shouldBe` []
 
     -- Null is how an argument says "not given" (spec 10.2); "" is a
     -- value the caller means, and is passed on.
@@ -180,7 +191,7 @@ spec = do
         [ ("env", VMap (Map.fromList [("A", VNull), ("B", VString "")])),
           ("tmpfs", VArray (V.fromList [VNull, VString "/t"]))
         ]
-        `shouldBe` ["--env", "B=", "--tmpfs", "/t"]
+        `shouldBe` ["--env", "B", "--tmpfs", "/t"]
 
     it "says nothing for a switch left false, which is the daemon's own default" $ do
       optionArgs [("init", VBool True), ("read_only", VBool True)]

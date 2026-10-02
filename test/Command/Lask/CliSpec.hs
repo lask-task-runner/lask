@@ -50,6 +50,28 @@ spec = beforeAll findLask $ do
         cs <- calls state
         [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` all ("alpine@sha256:aaa" `isInfixOf`)
 
+    -- A command line is visible to every user of the host (spec 10.2).
+    it "passes env values to the container without putting them on the command line" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ( "main.lask",
+              "command { \"cat\" } on #docker(\"alpine:3.22.2\", env = {\"TOKEN\": \"s3cr3t\", \"EMPTY\": \"\", \"DOCKER_HOST\": \"tcp://x\"})\n\
+              \hi(): String = $ cat x\n"
+            )
+          ]
+          $ \dir -> do
+            _ <- runLaskEnv lask dir extra ["env", "build"] ""
+            r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+            resExit r `shouldBe` 0
+            runs <- filter ("run " `isPrefixOf`) <$> calls state
+            runs `shouldSatisfy` all (not . isInfixOf "s3cr3t")
+            runs `shouldSatisfy` all (isInfixOf "--env TOKEN ")
+            -- docker reads DOCKER_HOST itself, so it stays an argument.
+            runs `shouldSatisfy` all (isInfixOf "--env DOCKER_HOST=tcp://x")
+            seen <- lines <$> readFile (state </> "env")
+            seen `shouldSatisfy` elem "TOKEN=s3cr3t"
+            seen `shouldSatisfy` elem "EMPTY="
+
     it "keeps the pinned image when the tag moves upstream" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
         _ <- runLaskEnv lask dir extra ["env", "build"] ""

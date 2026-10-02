@@ -23,6 +23,7 @@ module Language.Lask.Runtime.Environment
     recipeBuildArgs,
     dockerArgs,
     dockerShellArgs,
+    dockerClientEnv,
   )
 where
 
@@ -76,10 +77,11 @@ import Language.Lask.Runtime.ProcessStop
 import Language.Lask.Runtime.Secrets (maskSecrets, maskSecretsJson)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (valueToJson)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hClose, hIsTerminalDevice, stderr, stdin, stdout)
 import System.Process
-  ( CreateProcess (cwd, delegate_ctlc, std_err, std_in, std_out),
+  ( CreateProcess (cwd, delegate_ctlc, env, std_err, std_in, std_out),
     ProcessHandle,
     StdStream (CreatePipe, Inherit),
     createProcess,
@@ -217,7 +219,7 @@ dockerOptArgs opts = concatMap emit (Map.toAscList opts)
       -- Execution context.
       "workdir" -> one "-w" v
       "user" -> one "--user" v
-      "env" -> pairs "=" "--env" v
+      "env" -> envArgs v
       "platform" -> one "--platform" v
       "hostname" -> one "--hostname" v
       "init" -> switch "--init" v
@@ -247,21 +249,71 @@ dockerOptArgs opts = concatMap emit (Map.toAscList opts)
       where
         entries m = [(k, scalar x) | (k, x) <- Map.toAscList m]
 
+    -- A variable the docker client is given (see 'dockerClientEnv') is
+    -- only named here, so its value never reaches the process list.
+    envArgs v = case v of
+      VMap m ->
+        concat
+          [ ["--env", T.unpack (if passedByName k then k else k <> "=" <> t)]
+          | (k, Just t) <- [(k, scalar x) | (k, x) <- Map.toAscList m]
+          ]
+      _ -> []
+
     -- A false switch is the daemon's default, so it is left unsaid
     -- rather than passed as @--flag=false@.
     switch flag v = case v of
       VBool True -> [flag]
       _ -> []
 
-    scalar v = case v of
-      VString t -> Just t
-      VNumber n -> Just (T.pack (formatNum n))
-      VBool b -> Just (if b then "true" else "false")
-      _ -> Nothing
+    scalar = optionScalar
 
+-- | An option value as the text its flag takes; 'Nothing' for null,
+-- which leaves the option out (spec 10.2).
+optionScalar :: Value -> Maybe Text
+optionScalar v = case v of
+  VString t -> Just t
+  VNumber n -> Just (T.pack (formatNum n))
+  VBool b -> Just (if b then "true" else "false")
+  _ -> Nothing
+  where
     formatNum n
       | isInteger n = formatScientific Sci.Fixed (Just 0) n
       | otherwise = formatScientific Sci.Fixed Nothing n
+
+-- | The variables of the @env@ option that reach the container through
+-- the environment of the @docker@ client rather than its command line
+-- (spec 10.2). A command line is visible to every user of the host
+-- through the process list, and @env@ is where a program passes a
+-- credential to a container, so @--env NAME@ is given with the value
+-- set in the client's environment, from which docker takes it.
+dockerClientEnv :: Map Text Value -> [(String, String)]
+dockerClientEnv opts = case Map.lookup "env" opts of
+  Just (VMap m) -> [(T.unpack k, T.unpack t) | (k, x) <- Map.toAscList m, passedByName k, Just t <- [optionScalar x]]
+  _ -> []
+
+-- | Whether a variable is passed by name. Not one the docker client
+-- itself reads — which daemon it talks to, through which proxy, with
+-- which configuration — since setting it in the client's environment
+-- would change what the client does; nor a name docker could not take
+-- as one, containing @=@. Those stay on the command line, as before.
+passedByName :: Text -> Bool
+passedByName k =
+  not (T.null k)
+    && not (T.any (== '=') k)
+    && not ("DOCKER_" `T.isPrefixOf` upper || "_PROXY" `T.isSuffixOf` upper)
+    && upper `notElem` ["PATH", "HOME", "SSH_AUTH_SOCK"]
+  where
+    upper = T.toUpper k
+
+-- | Launch the @docker@ client with these arguments, giving it the
+-- variables 'dockerClientEnv' names on top of lask's own environment.
+dockerProcess :: Map Text Value -> [String] -> IO CreateProcess
+dockerProcess opts args = case dockerClientEnv opts of
+  [] -> pure (proc "docker" args)
+  extra -> do
+    inherited <- getEnvironment
+    let names = map fst extra
+    pure (proc "docker" args) {env = Just (extra <> [kv | kv@(k, _) <- inherited, k `notElem` names])}
 
 -- | Arguments for @docker run@ of one program with its argument
 -- vector (spec 11.8): no shell is created, so the program name becomes
@@ -322,7 +374,7 @@ runDeclaredCommand pins baseDir0 sink forceRelay envValue prog argv = do
             Left failure -> pure (Left failure)
             Right Nothing -> pure (Left (ioFailure EIoEnvResolve "internal: a container environment resolved to the host"))
             Right (Just (image, opts)) ->
-              launch (proc "docker" (dockerExecArgs baseDir image opts interactive prog argv))
+              launch =<< dockerProcess opts (dockerExecArgs baseDir image opts interactive prog argv)
   where
     allTerminals =
       and <$> mapM hIsTerminalDevice [stdin, stdout, stderr]
@@ -421,7 +473,8 @@ mkCommandRunner pins baseDir0 sink = do
           Right (Just (image, opts)) -> do
             name <- newContainerName
             -- docker exit code 125 = daemon/run infrastructure error.
-            run EIoEnvResolve (Just name) (proc "docker" (dockerArgs baseDir name image opts cmd)) (Just 125)
+            cp <- dockerProcess opts (dockerArgs baseDir name image opts cmd)
+            run EIoEnvResolve (Just name) cp (Just 125)
 
 -- | The image a resolved environment runs in, or 'Nothing' for the
 -- local one (spec 10.4). A registry reference resolves to the image the
@@ -684,7 +737,8 @@ containerFileOp summary baseDir image opts op = case op of
     run cmd mStdin = do
       name <- newContainerName
       let args = dockerShellArgs baseDir name image opts (mStdin /= Nothing) cmd
-      r <- try (runQuietProcess (Just name) (proc "docker" args) mStdin)
+      cp <- dockerProcess opts args
+      r <- try (runQuietProcess (Just name) cp mStdin)
       pure $ case r of
         Left e ->
           Left (ioFailure EIoEnvResolve ("cannot launch docker: " <> T.pack (show (e :: IOException))))
