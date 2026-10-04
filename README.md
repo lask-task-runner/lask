@@ -5,7 +5,7 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <div align="center">
-  <img alt="Lask in 30 seconds: a command tried in the REPL runs in a Docker container; saved as a task in main.lask, with a typo flagged in the editor and fixed; lask run release runs each step in its own container; the same run on a laptop and in any CI, on the same pinned images" src="doc/assets/lask-pv-short.gif" width="960">
+  <img alt="Lask in 20 seconds: write tasks in main.lask, with a typo flagged in the editor and fixed; lask run release runs each step in its own container on Docker; the same run on a laptop and on GitHub Actions, Jenkins, GitLab CI and CircleCI, on the same pinned images" src="doc/assets/lask-pv-short.gif" width="960">
   <br>
   <a href="doc/assets/lask-pv.mp4">▶ Watch the full 1-minute tour (MP4)</a>
 </div>

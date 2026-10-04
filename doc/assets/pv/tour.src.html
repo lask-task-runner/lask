@@ -269,7 +269,8 @@ function driveRun(prefix, u, rows, panel) {
   // font shrinks so all 22 lines fit once the burst starts
   UPD.push(t => {
     if (t < s || t >= e) return;
-    const src = document.getElementById("replCmd").getBoundingClientRect();
+    const srcEl = document.getElementById("replCmd");   // absent when a cut skips the REPL
+    const src = srcEl ? srcEl.getBoundingClientRect() : { left: 240 + 62 + 13 * CW22, top: 186 };
     const LAND = s + 1.3, q2 = ease(ramp(t, s + .2, LAND));
     fly.style.visibility = t >= s + .2 && t < LAND ? "visible" : "hidden";
     fly.style.left = lerp(src.left, 240 + 62 + 13 * CW22, q2) + "px";
@@ -310,8 +311,8 @@ function driveRun(prefix, u, rows, panel) {
 // ===== 7: lask run release =====
 {
   const s = S7, e = S8;
-  const panel = runPanel("r", 640, 140, 610, 496, s + .2, e, `<span class="d" style="font:600 16px var(--mono)">zsh — my-project</span>`);
-  UPD.push(t => { if (t >= s && t < e) driveRun("r", t - (s + .3), 13, panel); });
+  const panel = runPanel("r", 640, 140, 610, 496, s + .2, e, `<span class="d" style="font:600 16px var(--mono)">zsh — my-project</span>`, "", true);
+  UPD.push(t => { if (t >= s && t < e) driveRun("r", t - (s + .3), 12, panel); });
 }
 
 // ===== 8: the same run on a laptop and in a CI's web UI, side by side =====
@@ -567,27 +568,35 @@ window.VIEW = [1280, 720];
 
 // ---------- the README cut (tour.html?short): about 30 seconds, one highlight per step ----------
 if (new URLSearchParams(location.search).has("short")) {
-  // Played at real speed; the CI looks and Vault are left to the full MP4.
-  const PIECES = [ // [full start, full end]
-    [0, 3.4],                      // lambda + task -> Lask
-    [S4 + .5, S4 + 5.2],           // the REPL line runs in a container
-    [22.4, 26.0],                  // saved as a task; a typo flagged in the editor, then fixed
-    [26.0, 28.6],                  // the rest of the job, in one burst
-    [S7 + .3, S7 + 6.8],           // lask run release
-    [S8 + .8, S8 + 2.9],           // the same run on a laptop and in CI, on Docker
-    [S8 + 9.0, S9 - .02],           // ...on any CI, stopping before step 5 begins
-    [T.endA, T.endA + 4.5],        // lask make it simple
+  // About 20 seconds: write and fix the code, run it on Docker, run it on every CI. The REPL and Vault are left to the full MP4.
+  const PIECES = [ // [full start, full end, playback speed]
+    [0, 2.4, 1],                   // lambda + task -> Lask
+    [22.4, 25.6, 1.15],            // more code; a typo flagged in the editor, then fixed
+    [26.0, 27.9, 1],               // the rest of the job, in one burst
+    [S7 + .3, S7 + 6.8, 1.4],      // lask run release, each step in a container on Docker
+    [S8 + 2.6, S8 + 9.4, 1.25],    // the same run on every CI
+    [T.endA, T.endA + 3.8, 1],     // lask make it simple
   ];
   let c0 = 0;
-  const SEGS = PIECES.map(([fa, fb]) => { const seg = [c0, c0 + (fb - fa), fa, fb]; c0 += fb - fa; return seg; });
+  const SEGS = PIECES.map(([fa, fb, k]) => { const seg = [c0, c0 + (fb - fa) / k, fa, fb]; c0 += (fb - fa) / k; return seg; });
   window.DURATION = c0;
-  stage.querySelectorAll(".lbl span").forEach(e => { if (e.textContent === "/ 5") e.textContent = "/ 4"; });
+  stage.querySelectorAll(".lbl").forEach(e => { if (/\/ 5/.test(e.textContent)) e.style.display = "none"; });
+  stage.querySelectorAll(".h").forEach(e => { if (e.textContent === "Keep it as a task.") e.textContent = "Write a task."; });
   const label = [...stage.querySelectorAll("span")].find(e => e.textContent === "⏱ Lask in 1 minute");
-  if (label) label.textContent = "⏱ Lask in 30 seconds";
+  if (label) label.textContent = "⏱ Lask in 20 seconds";
+  // the progress bar follows this cut, one segment per piece, not the full timeline
+  // one segment per step: intro, write (fix + burst), run, every CI, end
+  const BAR = [[0], [1, 2], [3], [4], [5]].map(ix => [SEGS[ix[0]][0], SEGS[ix[ix.length - 1]][1]]);
+  progEl.innerHTML = BAR.map(([a, b]) => `<div style="flex:${b - a};position:relative;border-radius:2px;background:#ffffff1a;overflow:hidden"><div class="pf" style="position:absolute;inset:0;transform-origin:0 50%;transform:scaleX(0)"></div></div>`).join("");
   const renderFull = render;
   window.render = ts => {
     const [a, b, fa, fb] = SEGS.find(([a, b]) => ts >= a && ts < b) || SEGS[SEGS.length - 1];
     renderFull(fa + (fb - fa) * clamp((ts - a) / (b - a)));
+    progEl.querySelectorAll(".pf").forEach((f, i) => {
+      const [sa, sb] = BAR[i], cur = ts >= sa && ts < sb;
+      f.style.transform = `scaleX(${ramp(ts, sa, sb)})`;
+      f.style.background = cur ? "#85e89d" : "#9aa5b1";
+    });
   };
 }
 
