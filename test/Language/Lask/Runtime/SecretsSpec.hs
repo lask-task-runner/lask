@@ -2,7 +2,11 @@
 
 module Language.Lask.Runtime.SecretsSpec (spec) where
 
+import qualified Data.Map.Strict as Map
+import qualified Data.Vector as V
+import Language.Lask.ErrorCode (ErrorCode (ERuntimeCommandNonzero))
 import Language.Lask.Runtime.Secrets
+import Language.Lask.Runtime.Value
 import Test.Hspec
 
 spec :: Spec
@@ -43,3 +47,31 @@ spec = before_ resetSecretRegistryForTests . after_ resetSecretRegistryForTests 
       maskSecrets "value=late-secret" `shouldReturn` "value=late-secret"
       registerSecret "late-secret"
       maskSecrets "value=late-secret" `shouldReturn` "value=***"
+
+  describe "multi-line secrets (spec 12.8)" $ do
+    let pem = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\nq1w2e3\n-----END PRIVATE KEY-----\n"
+    it "masks each line of the value, as output is relayed a line at a time" $ do
+      registerSecret pem
+      maskSecrets "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC" `shouldReturn` "***"
+      maskSecrets "-----BEGIN PRIVATE KEY-----" `shouldReturn` "***"
+    it "still masks the whole value where it appears whole" $ do
+      registerSecret pem
+      maskSecrets ("key=" <> pem) `shouldReturn` "key=***"
+    it "does not register a line shorter than 8 characters on its own" $ do
+      registerSecret pem
+      maskSecrets "q1w2e3" `shouldReturn` "q1w2e3"
+    it "keeps a single-line secret whole, however short" $ do
+      registerSecret "q1w2"
+      maskSecrets "q1w2" `shouldReturn` "***"
+
+  describe "masking values and failures (spec 12.8)" $ do
+    it "masks every string a value holds, map keys included" $ do
+      registerSecret "tok-123"
+      let v = VRecord (Map.fromList [("args", VArray (V.fromList [VString "a tok-123"])), ("m", VMap (Map.fromList [("tok-123", VNumber 1)]))])
+      masked <- maskValue v
+      masked `shouldBe` VRecord (Map.fromList [("args", VArray (V.fromList [VString "a ***"])), ("m", VMap (Map.fromList [("***", VNumber 1)]))])
+    it "masks a failure's error value and frames, keeping its code" $ do
+      registerSecret "tok-123"
+      let lf = LaskFailure (Just ERuntimeCommandNonzero) (errorValue 1 "denied for tok-123\n") ["deploy (main.lask)"]
+      masked <- maskFailure lf
+      masked `shouldBe` LaskFailure (Just ERuntimeCommandNonzero) (errorValue 1 "denied for ***\n") ["deploy (main.lask)"]

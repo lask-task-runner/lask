@@ -4,78 +4,46 @@
 [![release](https://img.shields.io/github/v/release/lask-task-runner/lask?sort=semver)](https://github.com/lask-task-runner/lask/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+<div align="center">
+  <img alt="Lask in 20 seconds: write tasks in main.lask, with a typo flagged in the editor and fixed; lask run release runs each step in its own container on Docker; the same run on a laptop and on GitHub Actions, Jenkins, GitLab CI and CircleCI, on the same pinned images" src="doc/assets/lask-pv-short.gif" width="960">
+  <br>
+  <a href="doc/assets/lask-pv.mp4">▶ Watch the full 1-minute tour (MP4)</a>
+</div>
+
+<sub>Docker is a trademark of Docker, Inc. Other names belong to their owners; their use does not imply endorsement.</sub>
+
 Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
 
-Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger or Earthly too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
+Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
 
-Lask aims to stay simple and light to use while matching what the heavyweight platforms can do.
+Lask aims to stay simple and light to use, while bringing along the parts of the heavyweight platforms that most automation needs: pinned environments, checks before anything runs, concurrency and reuse.
+
+The recording above and the excerpt below come from [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws), which builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed. For the language itself, [example/02-language](example/02-language) is a tour of the whole language, one runnable module per topic.
 
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="doc/assets/main-dark.svg">
-    <img alt="Lask task definitions: three pinned environments as values, two test suites running concurrently in separate containers, then a build and either a terraform plan or apply" src="doc/assets/main-light.svg" width="611">
+    <source media="(prefers-color-scheme: dark)" srcset="doc/assets/example-dark.svg">
+    <img alt="An excerpt of the example's main.lask: Python and Node commands declared on pinned images from an imported tools module, a one-line unit-test task, and a typed end-to-end test task that runs Playwright in its own image" src="doc/assets/example-light.svg" width="620">
   </picture>
 </div>
 
-<details>
-<summary>Copy the source of this example</summary>
-
-```lask
-// Environments are values: pin an image once, reuse it everywhere.
-go    = #golang:1.22
-node  = #node:20
-// A custom image builds from a Dockerfile and is used the same way.
-infra = #docker(dockerfile = "Dockerfile", context = ".")
-
-// Declare which image provides each program, and the commands below
-// name only what they run. There is no default: a command with no
-// environment is an error, never a silent fall back to the host.
-command { "go" } on go
-command { "npm" } on node
-command { "terraform" } on infra
-
-test_api(): String = $ go test ./...
-test_web(): String = $ npm test
-
-// Both suites run concurrently; the build and deploy follow in order.
-//
-// @param dry_run  Run `terraform plan` instead of `terraform apply`.
-// @example lask run release --dry-run true
-release(--dry_run = false) = do {
-  api = async test_api()
-  web = async test_web()
-  await api
-  await web
-  $ go build
-  if (dry_run) {
-    $ terraform plan
-  } else {
-    $ terraform apply -auto-approve
-  }
-}
-```
-
-</details>
-
-Beyond the snippet above: [example/02-language](example/02-language) is a tour of the whole language, one runnable module per topic, and [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws) builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed.
+<p align="center"><a href="example/01-projects/02-webapp-on-aws/main.lask">See the full main.lask →</a></p>
 
 ## Why Lask
 
-Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, *reusable*, *runnable* and *discoverable*.
+Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, *runnable* and *secure*.
 
-**Approachable**. A directory with one `.lask` file in it is already a project: no scaffolding, no config file, nothing to install but Lask and Docker. The surface is small, and most of it is borrowed from languages you already write — C-family braces and calls, `try` / `catch`, `async` / `await`, TypeScript's type notation — so `Array<String>`, `String | Null` and `--name: String = "World"` need no explanation. Ten minutes with the [Quick Reference](doc/quick-reference.md) covers the whole language and CLI — one page that a coding model can hold in context too, instead of an SDK's worth of API surface.
+**Approachable**. One `.lask` file in a directory is already a project: no scaffolding, no config, nothing to install but Lask and Docker. The syntax is borrowed from languages you already write — C-family braces, `try` / `catch`, `async` / `await`, TypeScript's type notation — and the whole language and CLI fit on one [Quick Reference](doc/quick-reference.md) page, short enough for you to read in ten minutes and for a coding model to hold in context.
 
-**Verifiable**. `lask check` resolves every name, argument and type before a single command runs — over the very definitions CI will execute, with no second copy in YAML to drift out of sync. The same errors appear in your editor as you type, so a typo costs seconds instead of a red CI log.
+**Verifiable**. `lask check` resolves every name, argument and type before a single command runs, over the very definitions CI will execute — no second copy in YAML to drift. The same errors appear in your editor as you type, so a typo costs seconds, not a red CI log.
 
-**Portable**. An execution environment is a value: pin an image once with `command { "go" } on #golang:1.22`, and every command that names it runs there — reproducibly, on your laptop and in CI alike. A command that names no environment is a static error, never a silent fall back to the host, so the only things to install are Lask and Docker.
+**Portable**. An execution environment is a value: pin an image once with `command { "go" } on #golang:1.22`, and every command that names it runs there, on your laptop and in CI alike. A command that names no environment is a static error, never a silent fall back to the host.
 
-**Programmable**. A task is an ordinary function — typed keyword arguments with defaults, a return value, callable on its own. Control flow, error handling and concurrency belong to the language rather than to shell convention. That language is a DSL and not a general-purpose one, so the same task takes fewer lines than an SDK in Go or TypeScript would, with no project to build around it.
+**Programmable**. A task is an ordinary function — typed keyword arguments with defaults, a return value — and control flow, error handling and concurrency belong to the language, not to shell convention. Tasks call each other inside a project, and are imported across projects, along with the environments they run in: `import command { "go" } from "tools"`. Being a DSL, it takes fewer lines than an SDK in Go or TypeScript, with no project to build around it.
 
-**Reusable**. Inside a project, tasks call each other like the functions they are; across projects, shared tasks live in their own repository and are imported rather than copied — and so do the environments programs run in, with `import command { "go" } from "tools"`. Imports are pinned by content hash in a committed lock file, so every machine resolves the same code and a run reaches no network.
+**Runnable**. Every piece runs on its own: a task with `lask run`, an expression in the REPL, a one-off command in its container with `lask cmd go test ./...`. A task's signature is its command line — `release(--dry_run = false)` is `lask run release --dry-run true` — and its doc comment (`@param`, `@return`, `@example`) is the single source for both `--help` and the editor's hover, alongside the inferred return type and every image the task will need.
 
-**Runnable**. The CLI is small, and every piece of a project runs on its own: a task with `lask run`, an expression in the REPL, or a one-off command inside its own container with `lask cmd go test ./...`. Nothing has to be pushed, and nothing has to be run through a shell to try it. A task's signature is its command line, too: keyword arguments become flags, so `release(--dry_run = false)` is `lask run release --dry-run true` with nothing to wire up.
-
-**Discoverable**. A documentation comment above a task — `@param`, `@return`, `@example` — is the single source for both `--help` and the editor's hover, so prose never drifts from the code it describes. Types are already in the source, so `--help` needs no hand-written usage string: it reports the signature, the inferred return type, and every image the task will need before you run it.
+**Secure**. Secrets stay out of the code and out of the log: a `!!` binding is masked wherever its value appears, and an environment variable like `{vault://secret/aws#secret_key}` is resolved from Vault when read, so the same program runs with or without a vault. Imports are pinned by content hash in a committed lock file, and only `lask deps sync` touches the network. Every command runs in a container you can lock down with `network = "none"`, `read_only = true` or `cap_drop`, and a task like `deploy` can ask for a typed confirmation before it runs.
 
 ## Comparison
 
@@ -229,11 +197,7 @@ The script only ever asks the binary, so it keeps working across upgrades. Compl
 
 ## Example
 
-<div align="center">
-  <img alt="Terminal recording: lask check reports an error in the module; once it is fixed, lask run cowsay-hello Lask pulls the image, traces the command it runs inside it, and prints the cow" src="doc/assets/lask-cowsay.gif" width="831">
-</div>
-
-An error `lask check` finds, and a task that runs. Before a task first runs in a container, `lask env build` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
+Before a task first runs in a container, `lask env build` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
 
 Run a command in any image straight from the REPL, with nothing installed locally:
 
@@ -256,7 +220,7 @@ $ lask cmd <command> [args...]     # run a declared command in its declared imag
 $ lask envs [--check]              # list/check referenced environments
 $ lask env build | list            # materialize / inspect container images
 $ lask deps sync                   # fetch + verify external dependencies
-$ lask deps add <name> --git <url> --rev <rev>   # or --url <url>
+$ lask deps add <name> <source>    # add a dependency: --git <url> --rev <rev>, or --url <url>
 $ lask deps why <name>             # show why a dependency is in the graph
 $ lask repl                        # interactive session
 $ lask serve                       # language server (LSP)
@@ -267,7 +231,13 @@ The [Quick Reference](doc/quick-reference.md) covers the whole language and CLI 
 
 ## Status
 
-Lask is pre-1.0: features are `experimental` until 1.0, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released.
+Lask is pre-1.0: features are `experimental` until 1.0, and breaking changes are still possible. See [doc/compatibility.md](doc/compatibility.md) for what `stable` will mean once released. Until then, [feedback](#feedback) shapes what becomes stable.
+
+## Feedback
+
+Questions, ideas and feedback of any kind are welcome in [GitHub Discussions](https://github.com/lask-task-runner/lask/discussions): ask in [Q&A](https://github.com/lask-task-runner/lask/discussions/categories/q-a), suggest a feature in [Ideas](https://github.com/lask-task-runner/lask/discussions/categories/ideas), or share what you built in [Show and tell](https://github.com/lask-task-runner/lask/discussions/categories/show-and-tell). If something in this README or the [Quick Reference](doc/quick-reference.md) was unclear, or a task you wanted to write did not fit the language, that is worth a discussion too.
+
+Found a bug? Please open an [issue](https://github.com/lask-task-runner/lask/issues).
 
 ## Development
 

@@ -9,7 +9,7 @@ import Data.List (nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.LSP.Lask (completionAt, hoverAt, inlayHintsIn, lexSemanticTokens, semanticTokens, uriPath)
+import Language.LSP.Lask (completionAt, documentDiagnostics, hoverAt, inlayHintsIn, lexSemanticTokens, semanticTokens, uriPath)
 import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.Lask (checkText)
@@ -54,6 +54,17 @@ hintsFor path src = do
 
 spec :: Spec
 spec = do
+  describe "document diagnostics (spec 14.2)" $ do
+    let severities src = map (\d -> (d ^. L.severity, d ^. L.code)) . fst <$> documentDiagnostics "main.lask" src
+    it "shows an advisory of a valid document as a warning" $
+      severities "f(): String = do {\n  async \"x\"\n  \"done\"\n}"
+        `shouldReturn` [(Just DiagnosticSeverity_Warning, Just (InR "W-ASYNC-UNUSED"))]
+    it "shows an error as an error" $
+      severities "x: Number = \"s\""
+        `shouldReturn` [(Just DiagnosticSeverity_Error, Just (InR "E-TYPE-MISMATCH"))]
+    it "shows nothing for a clean document" $
+      severities "a = 1" `shouldReturn` []
+
   describe "comments" $ do
     it "emits comment tokens for line comments" $
       -- "// hi" occupies columns 0-4 on line 0.
@@ -216,6 +227,18 @@ spec = do
       t `shouldSatisfy` maybe False (T.isInfixOf "map<T, U>: Function<Array<T>, Function<T, U>, Array<U>>")
       t `shouldSatisfy` maybe False (T.isInfixOf "`map(xs, f)` applies `f`")
       t `shouldSatisfy` maybe False (T.isInfixOf "spec 15.4")
+    it "shows the bound of a builtin's type parameter (spec 4.2)" $ do
+      h <- hoverAt "test.lask" "f(xs: Array<Number>) = sort(xs)\n" (Position 0 24)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldSatisfy` maybe False (T.isInfixOf "sort<T: orderable>: Function<Array<T>, Array<T>>")
+    it "shows the bounds of a declaration's type parameters" $ do
+      h <- hoverAt "test.lask" "largest<T: orderable>(xs: Array<T>): T = xs[0]\ny = largest([1])\n" (Position 1 5)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldSatisfy` maybe False (T.isInfixOf "largest<T: orderable>")
     it "does not take a local shadowing a builtin for the builtin" $ do
       h <- hoverAt "test.lask" "f(size: Number): Number = size\n" (Position 0 26)
       let t = case h of

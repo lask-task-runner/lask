@@ -95,6 +95,19 @@ numbers(): Array<Number> = prepend(0, [1, 2])
 // Instantiate `prepend` at String, with a keyword argument.
 words(): Array<String> = prepend("a", ["b"], extra = ["z"])
 
+// The largest element, for any type that has an order.
+//
+// Inside its body a type parameter can only be passed around, unless a
+// bound says more. `orderable` admits Number and String, so the body
+// may sort — and a call with an array of Bool is rejected at the call,
+// as `sort` itself would be. `comparable` and `stringifiable` give `==`
+// and `#{...}` the same way, and a type bound `<T: Number | String>`
+// admits whatever conforms to that type.
+//
+// @example lask eval largest '[3, 1, 2]'
+// @example lask eval largest '["pear", "apple"]'
+largest<T: orderable>(xs: Array<T>): T = last(sort(xs))
+
 // Build a function that adds a fixed number.
 //
 // Lambdas are written `\(x) -> e`, and close over what is in scope.

@@ -5,17 +5,21 @@ module Language.Lask.ElaborateSpec (spec) where
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import Language.Lask.Diagnostic (Diagnostic, diagCode)
+import Language.Lask.Diagnostic (Advisory (..), Diagnostic, diagCode)
 import Language.Lask.Elaborate
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
+import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Types (renderType)
 import Test.Hspec
 
 -- | Full front-end pipeline over in-memory sources.
 elab :: [(FilePath, Text)] -> IO (Either [ErrorCode] (Map (FilePath, Text) CoreDecl))
-elab files = do
+elab files = fmap cpDecls <$> elabProgram files
+
+elabProgram :: [(FilePath, Text)] -> IO (Either [ErrorCode] CoreProgram)
+elabProgram files = do
   r <- loadProgramWith reader "main.lask"
   pure $ case r of
     Left ds -> Left (codes ds)
@@ -23,7 +27,7 @@ elab files = do
       Left ds -> Left (codes ds)
       Right scopes -> case elaborateProgram prog scopes of
         Left ds -> Left (codes ds)
-        Right cp -> Right (cpDecls cp)
+        Right cp -> Right cp
   where
     reader p = pure (maybe (Left "not found") Right (lookup p files))
     codes :: [Diagnostic] -> [ErrorCode]
@@ -38,6 +42,18 @@ typeOf src name = do
     Right decls -> case Map.lookup ("main.lask", name) decls of
       Just cd -> Right (renderType (cdType cd))
       Nothing -> Left []
+
+-- | The lines of main.lask where an advisory is reported; the program
+-- itself must be valid.
+advisedAt :: AdvisoryCode -> Text -> IO [Int]
+advisedAt code src = do
+  r <- elabProgram [("main.lask", src)]
+  case r of
+    Left cs -> expectationFailure ("expected success, got " <> show cs) >> pure []
+    Right cp -> pure [l | Advisory c (Span (Position _ l _) _) _ <- cpAdvisories cp, c == code]
+
+unusedAt :: Text -> [Int] -> Expectation
+unusedAt src expected = advisedAt WAsyncUnused src >>= (`shouldBe` expected)
 
 hasType :: Text -> Text -> Text -> Expectation
 hasType src name expected = typeOf src name >>= (`shouldBe` Right expected)
@@ -199,11 +215,48 @@ spec = do
       accepts "listy<T>(...xs: Array<T>): Array<T> = xs\ng(): Array<Number> = listy(1, 2, 3)"
       rejects "listy<T>(...xs: Array<T>): Array<T> = xs\ng(): Array<Number> = listy(1, \"a\")" ETypeMismatch
     it "treats a type parameter as opaque in the body (rigidity)" $ do
-      rejects "eq<T>(a: T, b: T): Bool = a == b" ETypeMismatch
-      rejects "show<T>(x: T): String = \"v=#{x}\"" ETypeMismatch
-      rejects "render<T>(x: T): String = to_string(x)" ETypeMismatch
-      rejects "sorted<T>(xs: Array<T>): Array<T> = sort(xs)" ETypeMismatch
+      rejects "eq<T>(a: T, b: T): Bool = a == b" ETypeBound
+      rejects "show<T>(x: T): String = \"v=#{x}\"" ETypeBound
+      rejects "render<T>(x: T): String = to_string(x)" ETypeBound
+      rejects "sorted<T>(xs: Array<T>): Array<T> = sort(xs)" ETypeBound
       rejects "narrow<T>(x: T): Number = case (x) {\n  Number -> 1\n  else -> 0\n}" ETypeMismatch
+    it "gives a bounded type parameter what its bound entails (spec 4.4)" $ do
+      accepts "eq<T: comparable>(a: T, b: T): Bool = a == b"
+      accepts "show<T: stringifiable>(x: T): String = \"v=#{x}\""
+      accepts "render<T: stringifiable>(x: T): String = to_string(x)"
+      accepts "sorted<T: orderable>(xs: Array<T>): Array<T> = sort(xs)"
+      -- orderable entails comparable and stringifiable.
+      accepts "f<T: orderable>(xs: Array<T>): String = \"#{contains_array(xs, xs[0])} #{xs[0]}\""
+      -- A type bound entails what the type satisfies, and conforms to it.
+      accepts "g<T: Number | String>(a: T, b: T): String = if (a == b) { \"#{a}\" } else { \"\" }"
+      accepts "inc<T: Number>(x: T): Number = x + 1"
+      accepts "wide<T: Number>(x: T): Number | String = x"
+      -- ... but not what the type does not: a union is not orderable,
+      -- and Any gives nothing, since every type conforms to it.
+      rejects "s<T: Number | String>(xs: Array<T>): Array<T> = sort(xs)" ETypeBound
+      rejects "e<T: Any>(a: T, b: T): Bool = a == b" ETypeBound
+      -- A bounded parameter is still distinct from its bound.
+      rejects "back<T: Number>(x: T): T = x + 1" ETypeMismatch
+    it "holds a use to the bounds of what it uses (spec 4.4)" $ do
+      rejects "largest<T: orderable>(xs: Array<T>): T = xs[0]\nf() = largest([true])" ETypeBound
+      accepts "largest<T: orderable>(xs: Array<T>): T = xs[0]\nf() = largest([\"a\"])"
+      rejects "label<T: Number | String>(x: T): String = \"#{x}\"\nf() = label(true)" ETypeBound
+      accepts "type Key = Number | String\nlabel<T: Key>(x: T): String = \"#{x}\"\nf() = label(1)"
+      -- A bound passes through a call from one generic to another.
+      accepts "a<T: orderable>(xs: Array<T>): Array<T> = sort(xs)\nb<U: orderable>(xs: Array<U>): Array<U> = a(xs)"
+      rejects "a<T: orderable>(xs: Array<T>): Array<T> = sort(xs)\nb<U: comparable>(xs: Array<U>): Array<U> = a(xs)" ETypeBound
+    it "holds a reference as a value to the bounds, as a call is (spec 4.4)" $ do
+      rejects "s: Function<Array<Bool>, Array<Bool>> = sort" ETypeBound
+      accepts "s: Function<Array<Number>, Array<Number>> = sort"
+      rejects "u: Function<Array<Function<Number>>, Array<Function<Number>>> = unique" ETypeBound
+      rejects "l<T: orderable>(xs: Array<T>): Array<T> = xs\nf: Function<Array<Bool>, Array<Bool>> = l" ETypeBound
+    it "checks the bounds of a type alias where it is applied (spec 4.2)" $ do
+      accepts "type Box<T: comparable> = Record<v: T>\nb: Box<Number> = {v: 1}"
+      rejects "type Box<T: comparable> = Record<v: T>\nb: Box<Function<Number>> = {v: \\() -> 1}" ETypeBound
+    it "rejects a malformed bound" $ do
+      rejects "k<T: nope>(x: T): T = x" ENameUndefined
+      rejects "k<T, U: Array<T>>(x: T): T = x" ETypeIllformed
+      rejects "k<T: Void>(x: T): T = x" ETypeIllformed
     it "lets a type parameter be moved around, which is all it can be" $ do
       accepts "ident<T>(x: T): T = x"
       accepts "pair<T>(x: T): Array<T> = [x, x]"
@@ -266,6 +319,39 @@ spec = do
       rejects "type Pair<A, B> = Record<first: A, second: B>\nf(p: Pair): Number = 1" ETypeArity
     it "checks well-formedness after expansion" $
       rejects "type Bad<A> = Array<A>\nf(x: Bad<Void>): Number = 1" ETypeIllformed
+    it "checks an alias that nothing uses" $ do
+      rejects "type R = Record<a: Number, a: String>" ETypeFieldDuplicate
+      rejects "type R = Array<Void>" ETypeIllformed
+      rejects "type P<A> = Record<a: A, a: A>" ETypeFieldDuplicate
+    it "accepts a well-formed alias that nothing uses" $ do
+      accepts "type R = Void"
+      accepts "type P<A> = Array<A>"
+    it "checks an alias of an imported module that nothing uses" $
+      rejectsFiles
+        [ ("main.lask", "import { a } from \"./lib.lask\"\nx = a"),
+          ("lib.lask", "a = 1\ntype R = Record<a: Number, a: String>")
+        ]
+        ETypeFieldDuplicate
+
+  describe "unused async handles (spec 6.3, 14.2)" $ do
+    it "reports a discarded handle" $
+      unusedAt "f(): String = do {\n  async \"x\"\n  \"done\"\n}" [2]
+    it "reports a handle bound to a name nothing refers to" $
+      unusedAt "f(): String = do {\n  h = async \"x\"\n  \"done\"\n}" [2]
+    it "reports the handles of a discarded for over an async body" $
+      unusedAt "f(): String = do {\n  for (s : [\"a\"]) {\n    async s\n  }\n  \"done\"\n}" [2]
+    it "reports a discarded call that returns a handle" $
+      unusedAt "g(): AsyncHandle<String> = async \"x\"\nf(): String = do {\n  g()\n  \"done\"\n}" [3]
+    it "is only advice: the program stays valid" $
+      accepts "f(): String = do {\n  async \"x\"\n  \"done\"\n}"
+    it "does not report a handle that is awaited, consumed, passed on or returned" $ do
+      unusedAt "f(): String = do {\n  h = async \"x\"\n  await h\n}" []
+      unusedAt "f(): Array<String> = do {\n  h = async \"x\"\n  all([h])\n}" []
+      unusedAt "w(h: AsyncHandle<String>): String = await h\nf(): String = do {\n  h = async \"x\"\n  w(h)\n}" []
+      unusedAt "f(): AsyncHandle<String> = do {\n  h = async \"x\"\n  h\n}" []
+      unusedAt "f(): AsyncHandle<String> = do {\n  \"x\"\n  async \"y\"\n}" []
+      unusedAt "f(): Array<AsyncHandle<String>> = do {\n  h = async \"x\"\n  hs = [h]\n  hs\n}" []
+      unusedAt "f(): Function<String> = do {\n  h = async \"x\"\n  \\() -> await h\n}" []
 
   describe "operators (spec 6.2)" $ do
     it "types arithmetic as Number" $ hasType "x = 1 + 2 * 3" "x" "Number"
@@ -273,7 +359,7 @@ spec = do
     it "types comparisons as Bool" $ hasType "x = 1 < 2" "x" "Bool"
     it "requires equal comparable types for ==" $ rejects "x = 1 == \"a\"" ETypeMismatch
     it "rejects == on functions" $
-      rejects "f(x: Number) = x\ng(x: Number) = x\nb = f == g" ETypeMismatch
+      rejects "f(x: Number) = x\ng(x: Number) = x\nb = f == g" ETypeBound
     it "allows == on environments" $ hasType "b = #local == #alpine:3.12" "b" "Bool"
     it "types pipes as application" $
       hasType "g(x: Number) = x + 1\ny = 3 |> g" "y" "Number"
@@ -316,9 +402,9 @@ spec = do
       accepts "f(x: String | Null): Bool = x == null"
       rejects "f(x: String | Null): Bool = x == 1" ETypeMismatch
     it "refuses to interpolate a union that may be absent (spec 6.6)" $
-      rejects "f(x: String | Null): String = \"v=#{x}\"" ETypeMismatch
+      rejects "f(x: String | Null): String = \"v=#{x}\"" ETypeBound
     it "refuses to_string of a union that may be absent (spec 15.3)" $
-      rejects "f(x: String | Null): String = to_string(x)" ETypeMismatch
+      rejects "f(x: String | Null): String = to_string(x)" ETypeBound
     it "interpolates a union all of whose members are stringifiable" $
       accepts "f(x: String | Number): String = \"v=#{x}\""
     it "rejects a member that is not a data type (spec 4.2)" $ do
@@ -368,7 +454,7 @@ spec = do
     it "requires the arm bodies to agree" $
       rejects "f(x: String) = case (x) {\n  \"a\" -> 1\n  else -> \"z\"\n}" ETypeMismatch
     it "rejects a scrutinee that cannot be compared (spec 6.2)" $
-      rejects "f(x: Any) = case (x) {\n  \"a\" -> 1\n  else -> 2\n}" ETypeMismatch
+      rejects "f(x: Any) = case (x) {\n  \"a\" -> 1\n  else -> 2\n}" ETypeBound
     it "rejects a literal head an earlier arm already matches" $
       rejects
         "f(x: String) = case (x) {\n  \"a\" -> 1\n  \"b\", \"a\" -> 2\n  else -> 3\n}"
@@ -535,7 +621,7 @@ spec = do
     it "rejects a container option of the wrong type" $
       rejects "e = #docker(\"alpine:3.20\", tmpfs = \"/tmp\")" ETypeMismatch
     it "rejects interpolating non-stringifiable values" $
-      rejects "u = {a: 1}\ns = \"v=#{u}\"" ETypeMismatch
+      rejects "u = {a: 1}\ns = \"v=#{u}\"" ETypeBound
 
   describe "command imports and exports (spec ch. 5)" $ do
     let tools =
@@ -792,6 +878,11 @@ spec = do
     it "rejects an environment that reads the standard input" $
       rejects "command { \"go\" } on #docker(\"golang:#{stdin}\")\nv() = $ go vet" ETypeCommandEffect
 
+    it "rejects an environment that waits (spec 15.7)" $
+      rejects
+        "command { \"go\" } on #docker(\"golang:#{timeout(5, \\() -> \"1.25\")}\")\nv() = $ go vet"
+        ETypeCommandEffect
+
     it "rejects an environment that touches the filesystem" $
       rejects
         "command { \"go\" } on #docker(\"golang:#{read_file(\"tag\", #local)}\")\nv() = $ go vet"
@@ -869,8 +960,9 @@ spec = do
       rejects "n!!: Number | Null = null" ETypeSecretNonString
       rejects "f(--x!!: String | Number = 1) = x" ETypeSecretNonString
 
-    it "rejects mark_secret of anything but String or String | Null" $
-      rejects "f() = mark_secret(1)" ETypeMismatch
+    it "rejects mark_secret of anything outside its bound String | Null" $ do
+      rejects "f() = mark_secret(1)" ETypeBound
+      accepts "f(): Null = mark_secret(null)"
 
     it "rejects !! on a non-String value declaration" $
       rejects "n!!: Number = 1" ETypeSecretNonString

@@ -296,13 +296,18 @@ pTypeAliasDecl = do
 
 -- | The type parameters a declaration binds (spec 4.2). A @\<@ after
 -- the name of a declaration can begin nothing else, so no lookahead is
--- needed (spec 5).
-pTypeParams :: P [Spanned Text]
+-- needed (spec 5). A bound follows a @:@: a lower-case word names a
+-- predicate, since no type is written in lower case, and anything else
+-- is a type.
+pTypeParams :: P [TypeParam]
 pTypeParams = option [] $ do
   _ <- op OpLt
-  vs <- sepBy1 upperId (sym TComma)
+  vs <- sepBy1 pTypeParam (sym TComma)
   _ <- closeAngle
   pure vs
+  where
+    pTypeParam = TypeParam <$> upperId <*> optional (sym TColon *> pBound)
+    pBound = choice [try (SBoundNamed <$> lowerId <* notFollowedBy (sym TDot)), SBoundType <$> pType]
 
 pValueOrFunction :: P Decl
 pValueOrFunction = do

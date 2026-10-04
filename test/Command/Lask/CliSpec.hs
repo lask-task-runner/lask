@@ -6,118 +6,17 @@
 module Command.Lask.CliSpec (spec) where
 
 import Command.Lask.Complete (Opt (..), Plan (..), classify)
+import Command.Lask.Harness
+import Data.IORef (readIORef)
 import Data.List (isInfixOf, isPrefixOf, nub, sort)
 import qualified Data.Text as T
-import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, removeDirectoryRecursive)
-import System.Environment (getEnvironment)
-import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, (</>))
+import Language.Lask.SecretStore.FakeVault (FakeVault (..), requestsTo, withFakeVault)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive)
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process (CreateProcess (cwd, env), proc, readCreateProcessWithExitCode, readProcess)
+import System.Exit (ExitCode (..))
+import System.Process (proc, readCreateProcessWithExitCode)
 import Test.Hspec
-
--- | Locate the freshly built binary via stack.
-findLask :: IO FilePath
-findLask = do
-  stackBin <- findExecutable "stack"
-  case stackBin of
-    Nothing -> fail "stack not found"
-    Just _ -> do
-      root <- readProcess "stack" ["path", "--local-install-root"] ""
-      pure (takeWhile (/= '\n') root </> "bin" </> "lask")
-
-data Result = Result
-  { resExit :: Int,
-    resOut :: String,
-    resErr :: String
-  }
-  deriving (Show, Eq)
-
-runLask :: FilePath -> FilePath -> [String] -> String -> IO Result
-runLask lask dir = runLaskEnv lask dir []
-
--- | Run the binary with extra environment variables (e.g.
--- @LASK_CACHE_DIR@ for hermetic dependency tests).
-runLaskEnv :: FilePath -> FilePath -> [(String, String)] -> [String] -> String -> IO Result
-runLaskEnv lask dir extraEnv args input = do
-  baseEnv <- getEnvironment
-  let fullEnv = extraEnv <> [(k, v) | (k, v) <- baseEnv, k `notElem` map fst extraEnv]
-  (code, out, err) <-
-    readCreateProcessWithExitCode ((proc lask args) {cwd = Just dir, env = Just fullEnv}) input
-  pure (Result (exitOf code) out err)
-  where
-    exitOf ExitSuccess = 0
-    exitOf (ExitFailure n) = n
-
-withProject :: [(FilePath, String)] -> (FilePath -> IO a) -> IO a
-withProject files action =
-  withSystemTempDirectory "lask-e2e" $ \dir -> do
-    mapM_
-      ( \(name, content) -> do
-          createDirectoryIfMissing True (takeDirectory (dir </> name))
-          writeFile (dir </> name) content
-      )
-      files
-    action dir
-
--- | A stand-in for the docker CLI, for tests of image pinning that must
--- not need a daemon. Its state is files under @$FAKE_DOCKER_STATE@:
--- @registry/<ref>@ holds the digest a tag resolves to upstream,
--- @present/<name>@ an image on the daemon with its repository digests,
--- and @calls@ every invocation.
-fakeDocker :: String
-fakeDocker =
-  unlines
-    [ "#!/bin/sh",
-      "S=\"$FAKE_DOCKER_STATE\"",
-      "mkdir -p \"$S/present\" \"$S/registry\"",
-      "echo \"$*\" >> \"$S/calls\"",
-      "key() { printf '%s' \"$1\" | tr '/:@' '___'; }",
-      "repo() { r=\"${1%@*}\"; last=\"${r##*/}\"; case \"$last\" in *:*) r=\"${r%:*}\";; esac; printf '%s' \"$r\"; }",
-      "case \"$1\" in",
-      "  version) echo 27.0.0 ;;",
-      "  pull)",
-      "    ref=\"$3\"",
-      "    case \"$ref\" in",
-      "      *@*) digest=\"${ref#*@}\" ;;",
-      "      *) [ -f \"$S/registry/$(key \"$ref\")\" ] || { echo \"manifest unknown: $ref\" >&2; exit 1; }",
-      "         digest=$(cat \"$S/registry/$(key \"$ref\")\") ;;",
-      "    esac",
-      "    name=\"$(repo \"$ref\")@$digest\"",
-      "    printf '[\"%s\"]' \"$name\" > \"$S/present/$(key \"$ref\")\"",
-      "    printf '[\"%s\"]' \"$name\" > \"$S/present/$(key \"$name\")\"",
-      "    echo \"$name\" ;;",
-      "  image)",
-      "    ref=\"$5\"; [ \"$3\" = \"--format\" ] || ref=\"$3\"",
-      "    f=\"$S/present/$(key \"$ref\")\"",
-      "    [ -f \"$f\" ] || { echo \"Error: No such image: $ref\" >&2; exit 1; }",
-      "    [ \"$3\" = \"--format\" ] && cat \"$f\"; exit 0 ;;",
-      "  build) tag=''; while [ $# -gt 0 ]; do [ \"$1\" = -t ] && tag=\"$2\"; shift; done",
-      "    printf '[]' > \"$S/present/$(key \"$tag\")\" ;;",
-      "  run) echo ran ;;",
-      "  *) echo \"fake docker: unsupported: $*\" >&2; exit 2 ;;",
-      "esac"
-    ]
-
--- | The invocations the fake docker has recorded, one per line.
-calls :: FilePath -> IO [String]
-calls state = lines <$> readFile (state </> "calls")
-
--- | Run an action with the fake docker first on PATH and upstream
--- @alpine:3.22.2@ resolving to @sha256:aaa@. The action receives the
--- state directory and the extra environment to run lask with.
-withFakeDocker :: (FilePath -> [(String, String)] -> IO a) -> IO a
-withFakeDocker action =
-  withSystemTempDirectory "fake-docker" $ \root -> do
-    let bin = root </> "bin"
-        state = root </> "state"
-    createDirectoryIfMissing True bin
-    createDirectoryIfMissing True (state </> "registry")
-    writeFile (bin </> "docker") fakeDocker
-    _ <- readProcess "chmod" ["+x", bin </> "docker"] ""
-    writeFile (state </> "registry" </> "alpine_3.22.2") "sha256:aaa"
-    path <- maybe "" id . lookup "PATH" <$> getEnvironment
-    action state [("PATH", bin <> ":" <> path), ("FAKE_DOCKER_STATE", state)]
 
 spec :: Spec
 spec = beforeAll findLask $ do
@@ -150,6 +49,28 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 0
         cs <- calls state
         [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` all ("alpine@sha256:aaa" `isInfixOf`)
+
+    -- A command line is visible to every user of the host (spec 10.2).
+    it "passes env values to the container without putting them on the command line" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ( "main.lask",
+              "command { \"cat\" } on #docker(\"alpine:3.22.2\", env = {\"TOKEN\": \"s3cr3t\", \"EMPTY\": \"\", \"DOCKER_HOST\": \"tcp://x\"})\n\
+              \hi(): String = $ cat x\n"
+            )
+          ]
+          $ \dir -> do
+            _ <- runLaskEnv lask dir extra ["env", "build"] ""
+            r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+            resExit r `shouldBe` 0
+            runs <- filter ("run " `isPrefixOf`) <$> calls state
+            runs `shouldSatisfy` all (not . isInfixOf "s3cr3t")
+            runs `shouldSatisfy` all (isInfixOf "--env TOKEN ")
+            -- docker reads DOCKER_HOST itself, so it stays an argument.
+            runs `shouldSatisfy` all (isInfixOf "--env DOCKER_HOST=tcp://x")
+            seen <- lines <$> readFile (state </> "env")
+            seen `shouldSatisfy` elem "TOKEN=s3cr3t"
+            seen `shouldSatisfy` elem "EMPTY="
 
     it "keeps the pinned image when the tag moves upstream" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
@@ -207,7 +128,7 @@ spec = beforeAll findLask $ do
             )
           ]
 
-    it "instantiates every type parameter at Any" $ \lask ->
+    it "instantiates every unbounded type parameter at Any" $ \lask ->
       withProject proj $ \dir -> do
         r <- runLask lask dir ["eval", "first_or", "[1,2]", "0"] ""
         resExit r `shouldBe` 0
@@ -223,6 +144,43 @@ spec = beforeAll findLask $ do
         resOut r `shouldContain` "first_or<T>"
         -- but not in the line the user is meant to type
         resOut r `shouldContain` "lask run first_or <xs> <fallback>"
+
+  describe "bounded type parameters from the CLI (spec 4.2, 11.2)" $ do
+    let proj =
+          [ ( "main.lask",
+              "largest<T: orderable>(xs: Array<T>): T = last(sort(xs))\n\
+              \label<T: Number | String>(x: T): String = \"value: #{x}\"\n"
+            )
+          ]
+
+    it "instantiates a named bound from the decoded arguments" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "largest", "[3,1,2]"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "3\n"
+        s' <- runLask lask dir ["eval", "largest", "[\"b\",\"a\"]"] ""
+        resOut s' `shouldBe` "\"b\"\n"
+
+    it "refuses arguments outside the bound, or disagreeing on the type" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "largest", "[true,false]"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldContain` "the arguments make T Bool, which is not orderable"
+        m <- runLask lask dir ["eval", "largest", "[1,\"a\"]"] ""
+        resExit m `shouldBe` 4
+        resErr m `shouldContain` "more than one type"
+
+    it "decodes a type-bounded parameter against its bound" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "label", "5"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"value: 5\"\n"
+
+    it "shows the bounds where it describes the declaration" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "--help"] ""
+        resOut r `shouldContain` "largest<T: orderable>"
+        resOut r `shouldContain` "label<T: Number | String>"
 
   -- A re-exported name is a public symbol of the module (spec 5), so
   -- the CLI reaches it as it reaches one the module declares.
@@ -374,6 +332,150 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 1
         resOut r `shouldBe` ""
 
+  describe "secret references (spec 9.8, 11.10)" $ do
+    let proj =
+          [ ( "main.lask",
+              "command { \"echo\" } on #local\n\
+              \show(): String = $ echo \"pw #{get_env(\"PW\")}\"\n\
+              \pw(): String = get_env(\"PW\")\n\
+              \deploy(--key!!: String = get_env(\"AK\")): String = key\n"
+            )
+          ]
+        refs =
+          [ ("PW", "{vault://secret/app#password}"),
+            ("AK", "{vault://aws/creds/deploy#access_key}"),
+            ("DB", "{vault://kv1/db#url}")
+          ]
+        vaultWith fv token = [("LASK_SECRETS", "vault"), ("VAULT_ADDR", fvAddr fv), ("VAULT_TOKEN", token)]
+
+    it "resolves a reference where the program reads it, and masks the value" $ \lask ->
+      withFakeVault $ \fv -> withProject proj $ \dir -> do
+        e <- runLaskEnv lask dir (refs <> vaultWith fv "root") ["eval", "pw"] ""
+        resExit e `shouldBe` 0
+        resOut e `shouldBe` "\"v2pass\"\n"
+        r <- runLaskEnv lask dir (refs <> vaultWith fv "root") ["run", "show"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldContain` "pw ***"
+        resErr r `shouldNotContain` "v2pass"
+
+    it "runs the same program with the value itself in the environment" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLaskEnv lask dir [("PW", "plain"), ("LASK_SECRETS", "")] ["eval", "pw"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"plain\"\n"
+
+    it "lists references without reaching a store" $ \lask ->
+      withProject proj $ \dir -> do
+        let env = refs <> [("OP", "{op://vault/item/field}"), ("LASK_SECRETS", "vault"), ("VAULT_ADDR", "http://127.0.0.1:1"), ("VAULT_TOKEN", "root")]
+        r <- runLaskEnv lask dir env ["secrets", "list"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "PW"
+        resOut r `shouldContain` "secret/app#password"
+        resOut r `shouldContain` "E-IO-SECRET-PROVIDER"
+        scoped <- runLaskEnv lask dir env ["secrets", "list", "deploy"] ""
+        resOut scoped `shouldContain` "AK"
+        resOut scoped `shouldNotContain` "PW"
+
+    it "checks each stage without reading a value, and exits 0 when all pass" $ \lask ->
+      withFakeVault $ \fv -> withProject proj $ \dir -> do
+        r <- runLaskEnv lask dir (refs <> vaultWith fv "root") ["secrets", "check"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "active, v1.20.4"
+        resOut r `shouldContain` "readable, version 2 (latest) (value not read)"
+        requestsTo fv "GET aws/creds/deploy" `shouldReturn` 0
+
+    it "reads and gives back a dynamic secret with --read" $ \lask ->
+      withFakeVault $ \fv -> withProject proj $ \dir -> do
+        r <- runLaskEnv lask dir (refs <> vaultWith fv "root") ["secrets", "check", "--read", "deploy"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "lease revoked"
+        resOut r `shouldNotContain` "AK1"
+        readIORef (fvRevoked fv) `shouldReturn` ["aws/creds/deploy/L1"]
+
+    it "exits 3 and names what failed, in text and JSON" $ \lask ->
+      withFakeVault $ \fv -> withProject proj $ \dir -> do
+        r <- runLaskEnv lask dir (refs <> vaultWith fv "limited") ["secrets", "check"] ""
+        resExit r `shouldBe` 3
+        resOut r `shouldContain` "E-IO-SECRET-AUTH"
+        j <- runLaskEnv lask dir (refs <> vaultWith fv "limited") ["secrets", "check", "--format", "json"] ""
+        resExit j `shouldBe` 3
+        resOut j `shouldContain` "\"code\":\"E-IO-SECRET-AUTH\""
+        bad <- runLaskEnv lask dir (refs <> vaultWith fv "nope") ["secrets", "check"] ""
+        resExit bad `shouldBe` 3
+        resOut bad `shouldContain` "not checked: the store is not available"
+
+  describe "confirmation before a task runs (spec 5, 11.2)" $ do
+    let proj =
+          [ ( "main.lask",
+              "deploy(--env: String = \"staging\"): String = $[#local] touch deployed-#{env} && echo #{env}\n\
+              \destroy(): String = $[#local] touch destroyed && echo gone\n\
+              \release(): String = deploy(env = \"prod\")\n"
+            ),
+            ("lask.json", "{\"confirm\": {\"deploy\": {\"when\": {\"env\": [\"prod\"]}}, \"destroy\": {}}}")
+          ]
+
+    it "refuses without a terminal, before anything runs" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "destroy"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldContain` "E-CLI-NOT-CONFIRMED"
+        resErr r `shouldContain` "--confirm"
+        doesFileExist (dir </> "destroyed") `shouldReturn` False
+
+    it "runs with --confirm, and when no condition holds" $ \lask ->
+      withProject proj $ \dir -> do
+        confirmed <- runLask lask dir ["run", "--confirm", "destroy"] ""
+        resExit confirmed `shouldBe` 0
+        doesFileExist (dir </> "destroyed") `shouldReturn` True
+        staging <- runLask lask dir ["run", "deploy"] ""
+        resExit staging `shouldBe` 0
+        prod <- runLask lask dir ["run", "deploy", "--env", "prod"] ""
+        resExit prod `shouldBe` 4
+
+    it "asks only about the function the CLI calls" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "release"] ""
+        resExit r `shouldBe` 0
+        doesFileExist (dir </> "deployed-prod") `shouldReturn` True
+
+    it "accepts only a typed confirmation under LASK_CONFIRM=tty" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLaskEnv lask dir [("LASK_CONFIRM", "tty")] ["run", "--confirm", "destroy"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldContain` "E-CLI-USAGE"
+        doesFileExist (dir </> "destroyed") `shouldReturn` False
+        bad <- runLaskEnv lask dir [("LASK_CONFIRM", "yes")] ["run", "deploy"] ""
+        resExit bad `shouldBe` 4
+
+    it "asks at a terminal, and runs only on the phrase" $ \lask ->
+      withProject proj $ \dir -> do
+        typedRight <- runLaskInTerminal lask dir ["run", "deploy", "--env", "prod"] "prod"
+        resOut typedRight `shouldContain` "deploy will run with env=prod."
+        resOut typedRight `shouldContain` "Type 'prod' to continue"
+        resExit typedRight `shouldBe` 0
+        doesFileExist (dir </> "deployed-prod") `shouldReturn` True
+        typedWrong <- runLaskInTerminal lask dir ["run", "destroy"] "yes"
+        resExit typedWrong `shouldBe` 4
+        resOut typedWrong `shouldContain` "E-CLI-NOT-CONFIRMED"
+        doesFileExist (dir </> "destroyed") `shouldReturn` False
+
+    it "shows the requirement in help" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "deploy", "--help"] ""
+        resOut r `shouldContain` "Confirmation:"
+        resOut r `shouldContain` "requires confirmation when env is prod"
+
+    it "is checked by lask check, pointing into lask.json" $ \lask ->
+      withProject [("main.lask", "deploy(--env: String = \"staging\"): String = env\n"), ("lask.json", "{\n  \"confirm\": {\n    \"deploi\": {}\n  }\n}")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resExit r `shouldBe` 1
+        resOut r `shouldContain` "lask.json:3:5: E-MODULE-CONFIRM-TARGET"
+        resOut r `shouldContain` "did you mean 'deploy'"
+        typo <- withProject [("main.lask", "a(): String = \"a\"\n"), ("lask.json", "{\"confrim\": {}}")] $ \d ->
+          runLask lask d ["check"] ""
+        resExit typo `shouldBe` 1
+        resOut typo `shouldContain` "unknown key: 'confrim'"
+
   describe "spec 16.1: minimal program" $ do
     it "eval prints the JSON result, run prints nothing" $ \lask ->
       withProject [("main.lask", "hello() = \"hello, lask\"\n")] $ \dir -> do
@@ -476,6 +578,11 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["run", "f"] ""
         resExit r `shouldBe` 42
         resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO"
+    it "passes a command's exit code through await" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 75\n  await h\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 75
+        resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO"
     it "uses the Error code of uncaught fail" $ \lask ->
       withProject [("main.lask", "f(): Number = fail({code: 75, message: \"retry later\"})\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""
@@ -507,6 +614,107 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["run", "nope"] ""
         resExit r `shouldBe` 4
 
+  -- A computation nothing awaits is waited for at the end of the run,
+  -- and reported as an advisory that leaves the outcome alone.
+  describe "stopping the commands race cancels (spec 8.7, 15.6)" $ do
+    it "stops the losing command and what it started, and logs it as killed" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "slow(): String = $[#local] echo $$ > pids; sleep 30 & echo $! >> pids; wait\n\
+            \fast(): String = $[#local] sleep 1; echo fast\n\
+            \f(): String = race([async slow(), async fast()])\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["eval", "f"] ""
+          resExit r `shouldBe` 0
+          resOut r `shouldBe` "\"fast\\n\"\n"
+          resErr r `shouldContain` "killed"
+          pids <- lines <$> readFile (dir </> "pids")
+          length pids `shouldBe` 2
+          alive <- mapM (\p -> readCreateProcessWithExitCode (proc "kill" ["-0", p]) "") pids
+          [c | (c, _, _) <- alive] `shouldSatisfy` notElem ExitSuccess
+
+    it "stops the losing container through the daemon, by its name" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ( "main.lask",
+              "slow(): String = $[#alpine:3.22.2] sleep 30\n\
+              \fast(): String = $[#local] sleep 1; echo fast\n\
+              \f(): String = race([async slow(), async fast()])\n"
+            )
+          ]
+          $ \dir -> do
+            _ <- runLaskEnv lask dir extra ["env", "build"] ""
+            r <- runLaskEnv lask dir extra ["eval", "f"] ""
+            resExit r `shouldBe` 0
+            cs <- calls state
+            let named = [w | c <- cs, "run " `isPrefixOf` c, (flag, w) <- zip (words c) (drop 1 (words c)), flag == "--name"]
+            case named of
+              [name] -> do
+                cs `shouldContain` ["stop -t 3 " <> name]
+                cs `shouldContain` ["rm --force " <> name]
+              _ -> expectationFailure ("expected one named run, got " <> show named)
+
+  describe "never-awaited async (spec 6.3, 14.2)" $ do
+    it "runs it to completion and reports it, keeping the exit code" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] sh -c 'sleep 1; echo done > side.txt'\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"ok\"\n"
+        resErr r `shouldContain` "W-ASYNC-UNAWAITED: the async at main.lask:2:7 was never awaited"
+        resErr r `shouldContain` "and completed"
+        readFile (dir </> "side.txt") `shouldReturn` "done\n"
+    it "reports its failure without taking over the exit code" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 3\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldContain` "failed with E-RUNTIME-COMMAND-NONZERO (exit code 3)"
+    it "reports it when the function itself fails, which keeps its own exit code" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] echo side\n  $[#local] exit 5\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "f"] ""
+        resExit r `shouldBe` 5
+        resErr r `shouldContain` "W-ASYNC-UNAWAITED: the async at main.lask:2:7"
+    it "does not report a handle consumed by await, all, race, or another function" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "wait(h: AsyncHandle<String>): String = await h\n\
+            \f(): String = do {\n\
+            \  a = async \"a\"\n\
+            \  b = async \"b\"\n\
+            \  c = async \"c\"\n\
+            \  d = async \"d\"\n\
+            \  e = async \"e\"\n\
+            \  x = await a\n\
+            \  ys = all([b, c])\n\
+            \  z = race([d])\n\
+            \  w = wait(e)\n\
+            \  \"ok\"\n\
+            \}\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["eval", "f"] ""
+          r `shouldBe` Result 0 "\"ok\"\n" ""
+    it "does not report the rest of an all whose first handle failed" $ \lask ->
+      withProject [("main.lask", "f(): Array<String> = do {\n  a = async $[#local] exit 4\n  b = async $[#local] echo b\n  all([a, b])\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldNotContain` "W-ASYNC-UNAWAITED"
+    it "reports it as a JSON Lines warning under --format json" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 3\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "--format", "json", "f"] ""
+        resExit r `shouldBe` 0
+        let warnings = [l | l <- lines (resErr r), "W-ASYNC-UNAWAITED" `isInfixOf` l]
+        length warnings `shouldBe` 1
+        mapM_
+          (\field -> concat warnings `shouldContain` field)
+          [ "\"severity\":\"warning\"",
+            "\"stage\":\"runtime\"",
+            "\"location\":{\"column\":7,\"file\":\"main.lask\",\"line\":2}",
+            "\"failure\":{\"code\":\"E-RUNTIME-COMMAND-NONZERO\""
+          ]
+
   describe "output encodings (spec 11.3, 13.1)" $ do
     it "encodes records as JSON by default" $ \lask ->
       withProject [("main.lask", "u() = {name: \"a\", age: 20}\n")] $ \dir -> do
@@ -526,6 +734,17 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", "a = 1\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""
         r `shouldBe` Result 0 "the module is valid\n" ""
+    it "check reports advisories and still exits 0 (spec 14.2)" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  async \"x\"\n  \"done\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        r
+          `shouldBe` Result
+            0
+            "main.lask:2:3-2:12: W-ASYNC-UNUSED [static]: this statement discards an async handle, so it is never awaited\nthe module is valid\n"
+            ""
+        j <- runLask lask dir ["check", "--format", "json"] ""
+        resExit j `shouldBe` 0
+        mapM_ (resOut j `shouldContain`) ["\"code\":\"W-ASYNC-UNUSED\"", "\"severity\":\"warning\"", "\"stage\":\"static\""]
     it "check reports diagnostics as JSON with --format json" $ \lask ->
       withProject [("main.lask", "x: Number = \"s\"\n")] $ \dir -> do
         r <- runLask lask dir ["check", "--format", "json"] ""
@@ -641,6 +860,35 @@ spec = beforeAll findLask $ do
           r <- runLask lask dir ["eval", "f"] ""
           resExit r `shouldBe` 0
           resErr r `shouldSatisfy` (not . isInfixOf "s3cret")
+    let leaky =
+          "use(t: String): String = t\n\
+          \leak(--token!!: String = \"s3cr3t-value\"): String = do {\n\
+          \  use(token)\n\
+          \  $[#local] sh -c \"echo #{token} >&2; exit 1\"\n\
+          \}\n\
+          \caught(--token!!: String = \"s3cr3t-value\"): String = try {\n\
+          \  $[#local] sh -c \"echo #{token} >&2; exit 1\"\n\
+          \} catch (e) {\n\
+          \  e.message\n\
+          \}\n"
+    it "masks a secret a failed command printed in the final diagnostic (12.8)" $ \lask ->
+      withProject [("main.lask", leaky)] $ \dir -> do
+        r <- runLask lask dir ["run", "leak"] ""
+        resExit r `shouldBe` 1
+        resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO: ***"
+        resErr r `shouldSatisfy` (not . isInfixOf "s3cr3t")
+    it "masks secrets in execution events and JSON diagnostics (12.6, 12.8)" $ \lask ->
+      withProject [("main.lask", leaky)] $ \dir -> do
+        r <- runLask lask dir ["run", "--format", "json", "leak"] ""
+        resExit r `shouldBe` 1
+        resErr r `shouldSatisfy` isInfixOf "\"kind\":\"call\""
+        resErr r `shouldSatisfy` isInfixOf "\"code\":\"E-RUNTIME-COMMAND-NONZERO\""
+        resErr r `shouldSatisfy` (not . isInfixOf "s3cr3t")
+    it "leaves a caught error value unmasked for the program (12.8)" $ \lask ->
+      withProject [("main.lask", leaky)] $ \dir -> do
+        r <- runLask lask dir ["eval", "caught"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"s3cr3t-value\\n\"\n"
 
   describe "observability (spec 12, 13.3)" $ do
     let src =
@@ -748,11 +996,10 @@ spec = beforeAll findLask $ do
           "export { u } from \"./util.lask\"\n"
             <> "hello(): String = u\n"
         writeFile (repo </> "util.lask") "u: String = \"from-kit\"\n"
-        let git args = readCreateProcessWithExitCode ((proc "git" args) {cwd = Just repo}) ""
-        _ <- git ["init", "--quiet"]
-        _ <- git ["add", "."]
-        _ <- git ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--quiet", "-m", "init"]
-        _ <- git ["tag", "v1"]
+        git repo ["init", "--quiet"]
+        git repo ["add", "."]
+        git repo ["commit", "--quiet", "-m", "init"]
+        git repo ["tag", "v1"]
         -- Only the entry module is importable; `u` reaches the
         -- consumer through the re-export in main.lask (spec 5).
         writeFile (proj </> "main.lask") $
@@ -763,10 +1010,70 @@ spec = beforeAll findLask $ do
         r2 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
         r2 `shouldBe` Result 0 "\"from-kitfrom-kit\"\n" ""
 
+    -- A dependency reached through another is locked as parent>child
+    -- (spec chapter 5), the key the loader looks it up by.
+    it "locks a transitive dependency under its parent, and imports through it" $ \lask ->
+      withSystemTempDirectory "lask-deps-transitive" $ \root -> do
+        let cache = root </> "cache"
+            util = root </> "util"
+            kit = root </> "kit"
+            proj = root </> "proj"
+            extraEnv = [("LASK_CACHE_DIR", cache)]
+            repoWith dir files = do
+              createDirectoryIfMissing True dir
+              mapM_ (\(f, c) -> writeFile (dir </> f) c) files
+              git dir ["init", "--quiet"]
+              git dir ["add", "."]
+              git dir ["commit", "--quiet", "-m", "init"]
+              git dir ["tag", "v1"]
+        repoWith util [("main.lask", "u(): String = \"from-util\"\n")]
+        repoWith
+          kit
+          [ ("lask.json", "{\"dependencies\": {\"util\": {\"git\": \"file://" <> util <> "\", \"rev\": \"v1\"}}}\n"),
+            ("main.lask", "import { u } from \"util\"\nhello(): String = u()\n")
+          ]
+        createDirectoryIfMissing True proj
+        writeFile (proj </> "main.lask") "import { hello } from \"kit\"\nf(): String = hello()\n"
+        r1 <- runLaskEnv lask proj extraEnv ["deps", "add", "kit", "--git", "file://" <> kit, "--rev", "v1"] ""
+        resExit r1 `shouldBe` 0
+        lock <- readFile (proj </> "lask.lock.json")
+        lock `shouldSatisfy` isInfixOf "\"kit>util\""
+        r2 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
+        r2 `shouldBe` Result 0 "\"from-util\"\n" ""
+        r3 <- runLaskEnv lask proj extraEnv ["deps", "sync", "--frozen"] ""
+        resExit r3 `shouldBe` 0
+
+    it "reports a dependency whose own project file cannot be read, and writes nothing" $ \lask ->
+      withSystemTempDirectory "lask-deps-transitive" $ \root -> do
+        let kit = root </> "kit"
+            proj = root </> "proj"
+        createDirectoryIfMissing True kit
+        writeFile (kit </> "lask.json") "{\"dependencies\": {\"util\": {\"git\": \"https://x/util\"}}}\n"
+        writeFile (kit </> "main.lask") "hello(): String = \"hi\"\n"
+        git kit ["init", "--quiet"]
+        git kit ["add", "."]
+        git kit ["commit", "--quiet", "-m", "init"]
+        git kit ["tag", "v1"]
+        createDirectoryIfMissing True proj
+        writeFile (proj </> "main.lask") "import { hello } from \"kit\"\nf(): String = hello()\n"
+        r <- runLaskEnv lask proj [("LASK_CACHE_DIR", root </> "cache")] ["deps", "add", "kit", "--git", "file://" <> kit, "--rev", "v1"] ""
+        resExit r `shouldBe` 3
+        resErr r `shouldSatisfy` isInfixOf "of dependency 'kit'"
+        doesFileExist (proj </> "lask.json") `shouldReturn` False
+
     it "requires a source option for deps add (exit 4)" $ \lask ->
       withProject [("main.lask", "a = 1\n")] $ \dir -> do
         r <- runLask lask dir ["deps", "add", "kit"] ""
         resExit r `shouldSatisfy` (/= 0)
+
+    it "refuses a deps add source that git would read as an option, and writes nothing" $ \lask ->
+      withProject [("main.lask", "a = 1\n")] $ \dir -> do
+        let marker = dir </> "pwned"
+        r <- runLask lask dir ["deps", "add", "kit", "--git=--upload-pack=touch " <> marker, "--rev", "v1"] ""
+        resExit r `shouldBe` 1
+        resErr r `shouldContain` "must not start with '-'"
+        doesFileExist marker `shouldReturn` False
+        doesFileExist (dir </> "lask.json") `shouldReturn` False
 
     it "reports malformed dependency files with exit 1" $ \lask ->
       withProject

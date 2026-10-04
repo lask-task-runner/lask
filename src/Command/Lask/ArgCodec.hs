@@ -12,19 +12,33 @@ module Command.Lask.ArgCodec
     parseCliArgs,
     decodeArgValue,
     bindCliArgs,
+    instantiateForCli,
+    checkCliBounds,
   )
 where
 
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BL
+import Data.List (nub)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Language.Lask.Elaborate (StaticParams (..))
 import Language.Lask.Runtime.Eval (castValueEither, renderCastMismatch)
-import Language.Lask.Runtime.Value (Value (VString))
+import Language.Lask.Runtime.Value (Value (..))
 import Language.Lask.Serialize (valueFromJson)
-import Language.Lask.Types (Type (TyEnvironment))
+import Language.Lask.Types
+  ( Bound (..),
+    Field (..),
+    Type (..),
+    applySubst,
+    renderNamedBound,
+    renderType,
+    requiredField,
+    satisfiesNamed,
+  )
 import Language.Lask.Utils (kebabToSnake)
 
 data ArgDecodeMode = DecodeText | DecodeJson | DecodeAuto
@@ -160,3 +174,81 @@ bindCliArgs params mode cliArgs =
           -- `cast`: the user wrote a command line, not a cast.
           | otherwise ->
               Left (what <> " '" <> raw <> "' does not fit the parameter type" <> renderCastMismatch cm)
+
+-- | The parameters of a declaration with type parameters, as the CLI
+-- binds them (spec 11.2): a parameter with a type bound at its bound,
+-- and every other at @Any@. The CLI has no type to instantiate them
+-- from, so it decodes against the widest type each admits, and a
+-- named bound is checked afterwards against what was decoded
+-- ('checkCliBounds').
+instantiateForCli :: [Text] -> Map Text Bound -> StaticParams -> StaticParams
+instantiateForCli vs bounds ps
+  | null vs = ps
+  | otherwise =
+      StaticParams
+        [(n, at t) | (n, t) <- spPositional ps]
+        (fmap (fmap at) (spVariadic ps))
+        [(n, at t) | (n, t) <- spKeywords ps]
+  where
+    at = applySubst (Map.fromList [(v, widest v) | v <- vs])
+    widest v = case Map.lookup v bounds of
+      Just (BoundType b) -> b
+      _ -> TyAny
+
+-- | A type parameter with a named bound is instantiated from the
+-- arguments the CLI decoded, as a call instantiates it from the types
+-- of its arguments (spec 11.2): the arguments have to agree on one
+-- type, and that type has to satisfy the bound.
+checkCliBounds :: Map Text Bound -> StaticParams -> [Value] -> [(Text, Value)] -> Either Text ()
+checkCliBounds bounds params posVals kwVals =
+  mapM_ check [(v, nb) | (v, BoundNamed nb) <- Map.toList bounds]
+  where
+    (boundVals, extraVals) = splitAt (length (spPositional params)) posVals
+    slots =
+      zip (map snd (spPositional params)) boundVals
+        <> [(elemTy, x) | Just (_, elemTy) <- [spVariadic params], x <- extraVals]
+        <> [(t, x) | (n, x) <- kwVals, Just t <- [lookup n (spKeywords params)]]
+    check (v, nb) = case nub (concat [evidence v t x | (t, x) <- slots]) of
+      [] -> Right ()
+      [t]
+        | satisfiesNamed (const Nothing) nb t -> Right ()
+        | otherwise ->
+            Left ("the arguments make " <> v <> " " <> renderType t <> ", which is not " <> renderNamedBound nb)
+      ts ->
+        Left
+          ( "the arguments give "
+              <> v
+              <> " more than one type ("
+              <> T.intercalate ", " (map renderType ts)
+              <> "); it has to be one "
+              <> renderNamedBound nb
+              <> " type"
+          )
+
+-- | The types a decoded value gives a type variable, where the
+-- parameter's type places the variable.
+evidence :: Text -> Type -> Value -> [Type]
+evidence v pat val = case (pat, val) of
+  (TyVar w, _) | w == v -> [valueType val]
+  (TyArray p, VArray xs) -> concatMap (evidence v p) xs
+  (TyMap p, VMap m) -> concatMap (evidence v p) (Map.elems m)
+  (TyRecord fs, VRecord m) ->
+    concat [evidence v (fieldType f) x | (k, f) <- Map.toList fs, Just x <- [Map.lookup k m]]
+  _ -> []
+
+-- | The type of a decoded value, as a literal of it would infer (4.3):
+-- a heterogeneous array is @Array<Any>@.
+valueType :: Value -> Type
+valueType val = case val of
+  VNumber _ -> TyNumber
+  VString _ -> TyString
+  VBool _ -> TyBool
+  VNull -> TyNull
+  VArray xs -> TyArray (common (map valueType (foldr (:) [] xs)))
+  VMap m -> TyMap (common (map valueType (Map.elems m)))
+  VRecord m -> TyRecord (Map.map (requiredField . valueType) m)
+  _ -> TyAny
+  where
+    common ts = case nub ts of
+      [t] -> t
+      _ -> TyAny

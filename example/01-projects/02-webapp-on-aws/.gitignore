@@ -1,6 +1,7 @@
 .env
 __pycache__/
 infra/.terraform/
+infra/.terraform.tfstate.lock.info
 infra/terraform.tfstate
 infra/terraform.tfstate.backup
 infra/archive.zip

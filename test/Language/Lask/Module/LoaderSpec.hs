@@ -30,7 +30,10 @@ fakeEnv files depsFiles =
       leCacheDir = "/cache",
       -- A path exists if it is a known file or a directory prefix of
       -- one (cache tree roots).
-      leExists = \p -> pure (p `elem` paths || any (\f -> (p <> "/") `isPrefixOf` f) paths)
+      leExists = \p -> pure (p `elem` paths || any (\f -> (p <> "/") `isPrefixOf` f) paths),
+      -- The fixtures hold what their hashes name unless a test says
+      -- otherwise.
+      leHolds = \_ _ _ -> pure True
     }
   where
     paths = map fst files
@@ -83,10 +86,10 @@ failsWith files depsFiles code = do
     other -> expectationFailure ("expected " <> show code <> ", got " <> show other)
 
 singleDep :: Text -> DepsFile
-singleDep _hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask")])
+singleDep _hash = DepsFile (Map.fromList [("notify", DepUrl "https://x/notify.lask")]) Map.empty
 
 treeDep :: Text -> DepsFile
-treeDep _hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1")])
+treeDep _hash = DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1")]) Map.empty
 
 spec :: Spec
 spec = do
@@ -173,6 +176,31 @@ spec = do
         ]
         [(".", treeDep "sha256-t")]
 
+    it "refuses a local import that leaves the dependency's tree" $
+      failsWith
+        [ ("main.lask", "import { hello } from \"kit\"\nf() = hello()"),
+          ("/cache/sha256-t/main.lask", "import { secret } from \"../../main.lask\"\nhello() = secret"),
+          ("/main.lask", "secret = 1")
+        ]
+        [(".", treeDep "sha256-t")]
+        EModuleUnresolved
+    it "refuses a local import from a single-file dependency" $
+      failsWith
+        [ ("main.lask", "import { send } from \"notify\"\nf() = send(\"a\")"),
+          ("/cache/sha256-abc.lask", "import { x } from \"./sha256-other.lask\"\nsend(s: String): String = s"),
+          ("/cache/sha256-other.lask", "x = 1")
+        ]
+        [(".", singleDep "sha256-abc")]
+        EModuleUnresolved
+    it "reports a cache entry that does not hold what the lock pins as unresolved" $ do
+      let files =
+            [ ("main.lask", "import { hello } from \"kit\"\nf() = hello()"),
+              ("/cache/sha256-t/main.lask", "hello() = 1")
+            ]
+          env = (fakeEnv files [(".", treeDep "sha256-t")]) {leHolds = \_ _ _ -> pure False}
+      r <- loadProgramEnv env "main.lask"
+      either (map diagCode) (const []) r `shouldBe` [EModuleUnresolved]
+
   describe "transitive dependencies (spec chapter 5)" $ do
     let notifyEntry = DepUrl "https://x/notify.lask"
     it "resolves bare imports of an external tree against its own dependency file" $
@@ -182,7 +210,7 @@ spec = do
           ("/cache/sha256-abc.lask", "send(x: String): String = x")
         ]
         [ (".", treeDep "sha256-t"),
-          ("/cache/sha256-t", DepsFile (Map.fromList [("notify", notifyEntry)]))
+          ("/cache/sha256-t", DepsFile (Map.fromList [("notify", notifyEntry)]) Map.empty)
         ]
     it "does not leak the root scope into external trees" $
       failsWith
@@ -192,7 +220,7 @@ spec = do
         ]
         -- notify is declared at the ROOT only; the tree has no
         -- dependency file, so its bare import must not resolve.
-        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1"), ("notify", notifyEntry)]))]
+        [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1"), ("notify", notifyEntry)]) Map.empty)]
         EModuleUnresolved
     it "detects cycles inside external trees" $
       failsWith

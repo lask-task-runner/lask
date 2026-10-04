@@ -36,12 +36,13 @@ The thing to take away: `a?: T` and `a: T | Null` answer different questions, an
 
 ## 02-functions
 
-**Pure.** Positional, variadic and keyword parameters, lambdas, closures, higher-order functions, `|>` `<|` `>>` `<<`, and type parameters.
+**Pure.** Positional, variadic and keyword parameters, lambdas, closures, higher-order functions, `|>` `<|` `>>` `<<`, and type parameters with bounds.
 
 ```bash
 lask eval greet alice --prefix hi
 lask eval tag-all v1 web api worker
 lask eval compose-demo 3
+lask eval largest '[3, 1, 2]'
 ```
 
 The thing to take away: a keyword parameter must have a default and is bound only by name — and calling through a *function value* loses the parameter list entirely.
@@ -99,13 +100,16 @@ The thing to take away: `async` starts the work, `await` joins it, and a failure
 
 ## 07-errors
 
-**Docker.** `try` / `catch` / `finally`, `fail` and `error`, `recover`, `$*` for an expected non-zero exit, and how a code becomes the exit code of the process.
+**Docker.** `try` / `catch` / `finally`, `fail` and `error`, `recover`, `$*` for an expected non-zero exit, and how a code becomes the exit code of the process. Then `retry_if` with a backoff strategy, `until` for waiting on a state, and `timeout`.
 
 ```bash
 lask env build
 lask eval build-with-retry
 lask eval classify --path /nope ; echo "exit $?"
 lask run always-fails ; echo "exit $?"
+lask eval flaky-with-retry
+lask eval wait-for --path /nope ; echo "exit $?"
+lask eval too-slow
 ```
 
 The thing to take away: static errors are not catchable. `lask check` finds them before anything is evaluated at all.
@@ -163,13 +167,16 @@ The thing to take away: every format decodes to the same handful of value kinds,
 
 ## 12-io-and-secrets
 
-**Docker** for the two secret tasks. `stdin`, the stdout contract, `get_env` / `find_env` / `has_env` / `get_env_or`, `!!` secret bindings, `mark_secret`, and `log`.
+**Docker** for the two secret tasks. `stdin`, the stdout contract, `get_env` / `find_env` / `has_env` / `get_env_or`, `!!` secret bindings, `mark_secret`, secret references, and `log`.
 
 ```bash
 echo '{"name":"api","port":8080}' | lask eval service-line
 printf 'api\nweb-frontend\n' | lask eval longest-name
 APP_ENV=prod lask eval where-am-i
 lask env build && lask run show-token     # watch the log mask it
+# the same task, with the token held in Vault (spec 9.8)
+LASK_SECRETS=vault VAULT_ADDR=https://vault.example.com VAULT_TOKEN=... \
+  APP_TOKEN='{vault://secret/app#token}' lask secrets check show-token
 ```
 
 The thing to take away: `run` writes nothing to stdout and `eval` writes the return value there, which is what makes `lask eval a | lask run b` a pipeline.

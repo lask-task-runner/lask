@@ -4,12 +4,16 @@ module Language.Lask.Deps.DepsSpec (spec) where
 
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy.Char8 as BL8
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
+import Language.Lask.Deps.Cache (cachePathFor, holdsPinned)
+import Language.Lask.Deps.Fetch (Pinned (..), ensureEntry)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Hash
-import System.Directory (createDirectoryIfMissing)
+import Language.Lask.Deps.Lock (LockEntry (..), parseLockFile)
+import System.Directory (createDirectoryIfMissing, createFileLink, doesFileExist)
+import System.Process (callProcess)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
@@ -24,7 +28,7 @@ spec = do
             \\"notify\": {\"url\": \"https://example.com/notify.lask\", \"hash\": \"sha256-bb\"}}}"
       parseDepsFile (BL8.pack json)
         `shouldBe` Right
-          ( DepsFile . Map.fromList $
+          ( flip DepsFile Map.empty . Map.fromList $
               [ ("deploy_kit", DepGit "https://example.com/kit" "v1.2.0"),
                 ("notify", DepUrl "https://example.com/notify.lask")
               ]
@@ -33,10 +37,10 @@ spec = do
     -- the lock (spec chapter 5).
     it "does not require a hash" $
       parseDepsFile "{\"dependencies\": {\"a\": {\"url\": \"https://x/a.lask\"}}}"
-        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]))
+        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]) Map.empty)
     it "still accepts a hash written by an older project file" $
       parseDepsFile "{\"dependencies\": {\"a\": {\"url\": \"https://x/a.lask\", \"hash\": \"sha256-aa\"}}}"
-        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]))
+        `shouldBe` Right (DepsFile (Map.fromList [("a", DepUrl "https://x/a.lask")]) Map.empty)
     it "requires rev with git" $
       parseDepsFile "{\"dependencies\": {\"a\": {\"git\": \"https://x/r\", \"hash\": \"sha256-aa\"}}}"
         `shouldSatisfy` isLeft
@@ -58,7 +62,7 @@ spec = do
         `shouldSatisfy` isLeft
     it "round-trips through render" $ do
       let df =
-            DepsFile . Map.fromList $
+            flip DepsFile Map.empty . Map.fromList $
               [ ("kit", DepGit "https://example.com/kit" "abc123"),
                 ("notify", DepUrl "https://example.com/notify.lask")
               ]
@@ -67,6 +71,77 @@ spec = do
       entryIsSingleFile (DepUrl "https://x/notify.lask") `shouldBe` True
       entryIsSingleFile (DepUrl "https://x/kit.tar.gz") `shouldBe` False
       entryIsSingleFile (DepGit "https://x/r" "v1") `shouldBe` False
+
+  describe "sources handed to git and curl (spec chapter 5)" $ do
+    let entryOf json = parseDepsFile (BL8.pack ("{\"dependencies\": {\"a\": " <> json <> "}}"))
+    it "rejects a git URL, rev or url that would be read as an option" $ do
+      entryOf "{\"git\": \"--upload-pack=touch pwned\", \"rev\": \"v1\"}" `shouldSatisfy` isLeft
+      entryOf "{\"git\": \"https://x/r\", \"rev\": \"--orphan=x\"}" `shouldSatisfy` isLeft
+      entryOf "{\"url\": \"-Kconfig\"}" `shouldSatisfy` isLeft
+    it "rejects whitespace and control characters" $ do
+      entryOf "{\"git\": \"https://x/r --upload-pack=x\", \"rev\": \"v1\"}" `shouldSatisfy` isLeft
+      entryOf "{\"git\": \"https://x/r\", \"rev\": \"v1\\n\"}" `shouldSatisfy` isLeft
+    it "fetches a url over https, http or from a file only" $ do
+      entryOf "{\"url\": \"https://x/a.lask\"}" `shouldSatisfy` isRight
+      entryOf "{\"url\": \"http://x/a.lask\"}" `shouldSatisfy` isRight
+      entryOf "{\"url\": \"file:///srv/a.lask\"}" `shouldSatisfy` isRight
+      entryOf "{\"url\": \"ftp://x/a.lask\"}" `shouldSatisfy` isLeft
+      entryOf "{\"url\": \"x/a.lask\"}" `shouldSatisfy` isLeft
+    it "keeps git URLs of every form git takes" $ do
+      entryOf "{\"git\": \"git@github.com:example/kit.git\", \"rev\": \"v1\"}" `shouldSatisfy` isRight
+      entryOf "{\"git\": \"file:///srv/kit\", \"rev\": \"v1\"}" `shouldSatisfy` isRight
+    it "never runs what a URL names, even when one reaches the fetch unchecked" $
+      withSystemTempDirectory "lask-inject" $ \dir -> do
+        let marker = dir </> "pwned"
+            url = T.pack ("--upload-pack=touch " <> marker <> "; false")
+            sha = T.replicate 40 "a"
+            locked = LockEntry (Just url) Nothing (Just "v1") (Just sha) ("sha256-" <> T.replicate 64 "0")
+        -- With no lock the source is cloned; with a pinned commit the
+        -- reference is first checked with ls-remote.
+        cloned <- ensureEntry (dir </> "cache") Nothing "a" (DepGit url "v1")
+        listed <- ensureEntry (dir </> "cache") (Just locked) "a" (DepGit url "v1")
+        cloned `shouldSatisfy` isLeft
+        listed `shouldSatisfy` isLeft
+        doesFileExist marker `shouldReturn` False
+
+  describe "lock file entries (spec chapter 5)" $ do
+    let lockWith fields = parseLockFile (BL8.pack ("{\"lock_version\": 1, \"modules\": {\"a\": {" <> fields <> "}}}"))
+        hash = "\"hash\": \"sha256-" <> replicate 64 'c' <> "\""
+    it "accepts a sha256 hash and a full commit SHA" $
+      lockWith (hash <> ", \"rev\": \"" <> replicate 40 'b' <> "\"") `shouldSatisfy` isRight
+    it "rejects a hash that is not sha256 and 64 hexadecimal digits" $ do
+      lockWith "\"hash\": \"..\"" `shouldSatisfy` isLeft
+      lockWith "\"hash\": \"sha256-../../x\"" `shouldSatisfy` isLeft
+      lockWith "\"hash\": \"sha256-abc\"" `shouldSatisfy` isLeft
+    it "rejects a rev that is not a full commit SHA" $ do
+      lockWith (hash <> ", \"rev\": \"--orphan=x\"") `shouldSatisfy` isLeft
+      lockWith (hash <> ", \"rev\": \"v1.2.0\"") `shouldSatisfy` isLeft
+
+  describe "confirm in the project file (spec chapter 5)" $ do
+    let confirmOf = fmap depsConfirm . parseDepsFile . BL8.pack
+    it "reads when and phrase, and makes dependencies optional" $ do
+      Right c <- pure $ confirmOf "{\"confirm\": {\"deploy\": {\"when\": {\"env\": [\"prod\", \"production\"]}}, \"reset_db\": {\"phrase\": \"reset #{db}\"}, \"destroy\": {}}}"
+      fmap crWhen (Map.lookup "deploy" c) `shouldBe` Just [("env", ["prod", "production"])]
+      fmap crPhrase (Map.lookup "reset_db" c) `shouldBe` Just (Just "reset #{db}")
+      fmap crWhen (Map.lookup "destroy" c) `shouldBe` Just []
+    it "records where each key is written" $ do
+      Right c <- pure $ confirmOf "{\n  \"confirm\": {\n    \"destroy\": {}\n  }\n}"
+      (Map.lookup "destroy" c >>= crAt) `shouldBe` Just (3, 5)
+    it "rejects an unknown key at the top level, so a misspelt confirm is not ignored" $
+      confirmOf "{\"confrim\": {\"destroy\": {}}}" `shouldSatisfy` isLeft
+    it "rejects an unknown key in an entry, and malformed values" $ do
+      confirmOf "{\"confirm\": {\"destroy\": {\"prase\": \"x\"}}}" `shouldSatisfy` isLeft
+      confirmOf "{\"confirm\": {\"deploy\": {\"when\": {\"env\": \"prod\"}}}}" `shouldSatisfy` isLeft
+      confirmOf "{\"confirm\": {\"deploy\": {\"when\": {\"env\": []}}}}" `shouldSatisfy` isLeft
+      confirmOf "{\"confirm\": {\"destroy\": {\"phrase\": \" \"}}}" `shouldSatisfy` isLeft
+      confirmOf "{\"confirm\": []}" `shouldSatisfy` isLeft
+    it "keeps confirm when deps add rewrites the file" $ do
+      Right df <- pure $ parseDepsFile "{\"dependencies\": {}, \"confirm\": {\"deploy\": {\"when\": {\"env\": [\"prod\"]}, \"phrase\": \"go\"}}}"
+      let added = df {depsEntries = Map.insert "kit" (DepGit "https://x/kit" "v1") (depsEntries df)}
+          strip = Map.map (\r -> r {crAt = Nothing})
+      Right back <- pure $ parseDepsFile (renderDepsFile added)
+      strip (depsConfirm back) `shouldBe` strip (depsConfirm df)
+      depsEntries back `shouldBe` depsEntries added
 
   describe "content hashes (spec chapter 5)" $ do
     it "hashes bytes in the sha256-hex format" $ do
@@ -116,3 +191,71 @@ spec = do
         BS8.writeFile (dir </> ".git" </> "HEAD") "ref: refs/heads/main\n"
         hashTree dir
       h1 `shouldBe` h2
+    it "never follows a symbolic link, and covers its target text instead" $
+      withSystemTempDirectory "lask-tree" $ \outside -> do
+        BS8.writeFile (outside </> "secret") "one\n"
+        let tree dir = do
+              BS8.writeFile (dir </> "a.lask") "a = 1\n"
+              createFileLink (outside </> "secret") (dir </> "link.lask")
+        h1 <- withSystemTempDirectory "lask-tree" $ \dir -> tree dir >> hashTree dir
+        BS8.writeFile (outside </> "secret") "two\n"
+        h2 <- withSystemTempDirectory "lask-tree" $ \dir -> tree dir >> hashTree dir
+        plain <- withSystemTempDirectory "lask-tree" $ \dir -> do
+          BS8.writeFile (dir </> "a.lask") "a = 1\n"
+          hashTree dir
+        h1 `shouldBe` h2
+        h1 `shouldNotBe` plain
+        withSystemTempDirectory "lask-tree" $ \dir -> tree dir >> (symlinksUnder dir `shouldReturn` ["link.lask"])
+
+  describe "cache verification (spec chapter 5)" $ do
+    it "accepts an entry that holds its hash, and nothing else" $
+      withSystemTempDirectory "lask-cache" $ \cache -> do
+        let src = cache </> "src"
+        createDirectoryIfMissing True src
+        BS8.writeFile (src </> "main.lask") "a = 1\n"
+        h <- hashTree src
+        let entry = cachePathFor cache h False
+        createDirectoryIfMissing True entry
+        BS8.writeFile (entry </> "main.lask") "a = 1\n"
+        holdsPinned entry h False `shouldReturn` True
+        BS8.writeFile (entry </> "main.lask") "a = 2\n"
+        holdsPinned entry h False `shouldReturn` False
+        holdsPinned (cachePathFor cache ("sha256-" <> T.replicate 64 "0") False) h False `shouldReturn` False
+    it "does not accept an entry that is a symbolic link" $
+      withSystemTempDirectory "lask-cache" $ \cache -> do
+        BS8.writeFile (cache </> "real.lask") "a = 1\n"
+        h <- hashFile (cache </> "real.lask")
+        let entry = cachePathFor cache h True
+        createFileLink (cache </> "real.lask") entry
+        holdsPinned entry h True `shouldReturn` False
+
+  describe "fetching into the cache (spec chapter 5, 11.5)" $ do
+    let repoWith dir files = do
+          createDirectoryIfMissing True dir
+          mapM_ (\(f, c) -> BS8.writeFile (dir </> f) c) files
+          git dir ["init", "--quiet"]
+          git dir ["add", "."]
+          git dir ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "init"]
+          git dir ["tag", "v1"]
+        git dir args = callProcess "git" (["-C", dir] <> args)
+    it "replaces a cache entry that does not hold what the lock pins" $
+      withSystemTempDirectory "lask-fetch" $ \root -> do
+        let repo = root </> "kit"
+            cache = root </> "cache"
+            url = T.pack ("file://" <> repo)
+        repoWith repo [("main.lask", "hello() = 1\n")]
+        Right first <- ensureEntry cache Nothing "kit" (DepGit url "v1")
+        let entry = cachePathFor cache (pinHash first) False
+            locked = LockEntry (Just url) Nothing (Just "v1") (pinRev first) (pinHash first)
+        BS8.writeFile (entry </> "main.lask") "hello() = 666\n"
+        again <- ensureEntry cache (Just locked) "kit" (DepGit url "v1")
+        again `shouldBe` Right first
+        BS8.readFile (entry </> "main.lask") `shouldReturn` "hello() = 1\n"
+    it "refuses a source that contains a symbolic link" $
+      withSystemTempDirectory "lask-fetch" $ \root -> do
+        let repo = root </> "kit"
+        createDirectoryIfMissing True repo
+        createFileLink "/etc/hosts" (repo </> "hosts.lask")
+        repoWith repo [("main.lask", "hello() = 1\n")]
+        r <- ensureEntry (root </> "cache") Nothing "kit" (DepGit (T.pack ("file://" <> repo)) "v1")
+        r `shouldSatisfy` isLeft

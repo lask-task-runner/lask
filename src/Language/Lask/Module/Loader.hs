@@ -25,12 +25,14 @@ module Language.Lask.Module.Loader
 where
 
 import Control.Exception (IOException, try)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor)
+import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..), childPath, defaultLockFileName, loadLockFile, lookupHash)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
@@ -56,7 +58,10 @@ data LoaderEnv = LoaderEnv
     -- | The content hash the lock pins for a dependency path.
     leLockedHash :: Text -> Maybe Text,
     -- | Existence check for cache entries (files and directories).
-    leExists :: FilePath -> IO Bool
+    leExists :: FilePath -> IO Bool,
+    -- | Whether a cache entry holds the content of the hash, given
+    -- whether it is a single file.
+    leHolds :: FilePath -> Text -> Bool -> IO Bool
   }
 
 -- | The per-module resolution context: the module's directory (for
@@ -70,7 +75,10 @@ data ModCtx = ModCtx
     -- chapter 5): empty for the root project, @kit@ for a direct
     -- dependency, @kit>notify@ for one reached through it. The lock
     -- file is keyed by it.
-    mcPath :: Text
+    mcPath :: Text,
+    -- | The root of the dependency the module belongs to; 'Nothing'
+    -- in the root project. A local import may not leave it.
+    mcRoot :: Maybe FilePath
   }
 
 data Program = Program
@@ -78,7 +86,11 @@ data Program = Program
     progBaseDir :: FilePath,
     progModules :: Map FilePath LoadedModule,
     -- | Topological order, dependencies first; entry module last.
-    progOrder :: [FilePath]
+    progOrder :: [FilePath],
+    -- | The root project file, when there is one. Only the root's is
+    -- kept: what a dependency's own project file says about
+    -- confirmation does not apply to whoever imports it (spec 5).
+    progProject :: Maybe DepsFile
   }
   deriving (Show)
 
@@ -106,6 +118,16 @@ defaultLoaderEnv reader entryPath = do
   -- The content hash that pins each dependency comes from the lock
   -- file (spec chapter 5); the project file records intent only.
   lock <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
+  -- Each entry is hashed once per load, however many modules import it.
+  verified <- newIORef Map.empty
+  let holds path hash single = do
+        known <- Map.lookup (path, hash) <$> readIORef verified
+        case known of
+          Just ok -> pure ok
+          Nothing -> do
+            ok <- holdsPinned path hash single
+            atomicModifyIORef' verified (\m -> (Map.insert (path, hash) ok m, ()))
+            pure ok
   pure
     LoaderEnv
       { leReader = reader,
@@ -113,7 +135,8 @@ defaultLoaderEnv reader entryPath = do
         leLoadLock = \dir -> loadLockFile (dir </> defaultLockFileName),
         leCacheDir = cacheDir,
         leLockedHash = \p -> lock >>= flip lookupHash p,
-        leExists = \p -> (||) <$> doesFileExist p <*> doesDirectoryExist p
+        leExists = \p -> (||) <$> doesFileExist p <*> doesDirectoryExist p,
+        leHolds = holds
       }
 
 loadProgram :: FilePath -> IO (Either [Diagnostic] Program)
@@ -136,7 +159,7 @@ loadProgramEnv env entryPath = do
     (Right rootDeps, Right lock) -> case lockGap rootDeps lock of
       Just d -> pure (Left [d])
       Nothing -> do
-        result <- go (ModCtx baseDir rootDeps "") [] Map.empty [] entry
+        result <- go (ModCtx baseDir rootDeps "" Nothing) [] Map.empty [] entry
         pure $ case result of
           Left ds -> Left ds
           Right (mods, order) ->
@@ -145,7 +168,8 @@ loadProgramEnv env entryPath = do
                 { progEntry = entry,
                   progBaseDir = baseDir,
                   progModules = mods,
-                  progOrder = reverse order
+                  progOrder = reverse order,
+                  progProject = rootDeps
                 }
   where
     -- Every declared dependency must be covered by the lock file
@@ -258,7 +282,14 @@ resolveImport :: LoaderEnv -> ModCtx -> Text -> IO (Either Diagnostic (FilePath,
 resolveImport env ctx pathText
   | isLocal = do
       let file = collapseDots (normalise (mcDir ctx </> T.unpack pathText))
-      pure (Right (file, ctx {mcDir = takeDirectory file}))
+      pure $ case mcRoot ctx of
+        -- A dependency reaches only its own files: its hash covers
+        -- nothing else (spec chapter 5).
+        Just root
+          | not (splitDirectories root `isPrefixOf` splitDirectories (takeDirectory file)) ->
+              Left . unresolved $
+                "'" <> pathText <> "' leaves dependency '" <> mcPath ctx <> "'; a dependency may import only its own files"
+        _ -> Right (file, ctx {mcDir = takeDirectory file})
   | otherwise = do
       let (depName, rest) = T.breakOn "/" pathText
       case mcDeps ctx >>= Map.lookup depName . depsEntries of
@@ -274,42 +305,52 @@ resolveImport env ctx pathText
                 <> childPath (mcPath ctx) depName
                 <> "'; run 'lask deps sync'"
           Just hash -> do
-            let base = cachePathFor (leCacheDir env) hash (entryIsSingleFile entry)
+            let single = entryIsSingleFile entry
+                base = cachePathFor (leCacheDir env) hash single
             present <- leExists env base
+            intact <- if present then leHolds env base hash single else pure False
             if not present
               then
                 pure . Left . unresolved $
                   "dependency '" <> depName <> "' is not in the cache; run 'lask deps sync'"
-              else if entryIsSingleFile entry
+              else
+                if not intact
                   then
-                    if T.null rest
-                        then pure (Right (base, ModCtx (takeDirectory base) Nothing depPath))
-                      else
-                        pure . Left . unresolved $
-                          "dependency '" <> depName <> "' is a single file and has no submodules"
+                    pure . Left . unresolved $
+                      "dependency '" <> depName <> "': the cache does not hold the content the lock pins ("
+                        <> hash
+                        <> "); run 'lask deps sync'"
                   else
-                    -- Only the entry module of a tree is reachable from
-                    -- outside it (spec 5): a public API spanning several
-                    -- files is re-exported from main.lask.
-                    if not (T.null rest)
+                    if single
                       then
-                        pure . Left . deepImport $
-                          "'" <> pathText <> "' names a path inside dependency '"
-                            <> depName
-                            <> "'; only its entry module is importable"
-                      else do
-                        let file = collapseDots (normalise (base </> "main.lask"))
-                        fileOk <- leExists env file
-                        if not fileOk
-                          then
+                        if T.null rest
+                          then pure (Right (base, ModCtx (takeDirectory base) Nothing depPath (Just base)))
+                          else
                             pure . Left . unresolved $
-                              "dependency '" <> depName <> "' has no main.lask"
+                              "dependency '" <> depName <> "' is a single file and has no submodules"
+                      else
+                        -- Only the entry module of a tree is reachable from
+                        -- outside it (spec 5): a public API spanning several
+                        -- files is re-exported from main.lask.
+                        if not (T.null rest)
+                          then
+                            pure . Left . deepImport $
+                              "'" <> pathText <> "' names a path inside dependency '"
+                                <> depName
+                                <> "'; only its entry module is importable"
                           else do
-                            treeDepsE <- leLoadDeps env base
-                            case treeDepsE of
-                              Left d -> pure (Left d)
-                              Right treeDeps ->
-                                pure (Right (file, ModCtx (takeDirectory file) treeDeps depPath))
+                            let file = collapseDots (normalise (base </> "main.lask"))
+                            fileOk <- leExists env file
+                            if not fileOk
+                              then
+                                pure . Left . unresolved $
+                                  "dependency '" <> depName <> "' has no main.lask"
+                              else do
+                                treeDepsE <- leLoadDeps env base
+                                case treeDepsE of
+                                  Left d -> pure (Left d)
+                                  Right treeDeps ->
+                                    pure (Right (file, ModCtx (takeDirectory file) treeDeps depPath (Just (collapseDots (normalise base)))))
   where
     depPath = childPath (mcPath ctx) (fst (T.breakOn "/" pathText))
     isLocal = "./" `T.isPrefixOf` pathText || "../" `T.isPrefixOf` pathText

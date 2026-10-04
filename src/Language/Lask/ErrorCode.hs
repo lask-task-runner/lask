@@ -3,8 +3,10 @@
 -- | Error codes and stages defined by spec chapter 14.
 module Language.Lask.ErrorCode
   ( ErrorCode (..),
+    AdvisoryCode (..),
     Stage (..),
     codeText,
+    advisoryText,
     stageText,
   )
 where
@@ -17,7 +19,6 @@ data ErrorCode
   | ESyntaxReturnPosition
   | ESyntaxCaseElse
   | ENameUndefined
-  | ENameAmbiguous
   | ENameDuplicate
   | ETypeMismatch
   | ETypeArity
@@ -35,27 +36,46 @@ data ErrorCode
   | ETypeKeyword
   | ETypeIllformed
   | ETypeSecretNonString
+  | ETypeBound
   | EModuleCycle
   | EModuleUnresolved
   | EModuleDeepImport
   | EModuleLockStale
   | EModuleRevMoved
   | EModuleHashMismatch
+  | EModuleConfirmTarget
   | ERuntimeDivByZero
   | ERuntimeCommandNonzero
-  | ERuntimeAwaitFailed
   | ERuntimeAccess
   | ERuntimeCast
   | ERuntimeValue
   | ERuntimeRegex
+  | ERuntimeTimeout
+  | ERuntimeUntilExhausted
   | EIoStdinRead
   | EIoEnvResolve
   | EIoImageMissing
   | EIoImageDigest
   | EIoFs
   | EIoDataDecode
+  | EIoSecretProvider
+  | EIoSecretRef
+  | EIoSecretUnreachable
+  | EIoSecretAuth
+  | EIoSecretNotFound
   | ECliUsage
+  | ECliNotConfirmed
   deriving (Show, Eq, Ord, Enum, Bounded)
+
+-- | @W-\<CATEGORY\>-\<DETAIL\>@ advisory codes (spec 14.2): a probable
+-- mistake that is not an error.
+data AdvisoryCode
+  = WAsyncUnused
+  deriving (Show, Eq, Ord, Enum, Bounded)
+
+advisoryText :: AdvisoryCode -> Text
+advisoryText c = case c of
+  WAsyncUnused -> "W-ASYNC-UNUSED"
 
 -- | Error stage (spec 14.3).
 data Stage
@@ -72,7 +92,6 @@ codeText c = case c of
   ESyntaxReturnPosition -> "E-SYNTAX-RETURN-POSITION"
   ESyntaxCaseElse -> "E-SYNTAX-CASE-ELSE"
   ENameUndefined -> "E-NAME-UNDEFINED"
-  ENameAmbiguous -> "E-NAME-AMBIGUOUS"
   ENameDuplicate -> "E-NAME-DUPLICATE"
   ETypeMismatch -> "E-TYPE-MISMATCH"
   ETypeArity -> "E-TYPE-ARITY"
@@ -90,26 +109,35 @@ codeText c = case c of
   ETypeKeyword -> "E-TYPE-KEYWORD"
   ETypeIllformed -> "E-TYPE-ILLFORMED"
   ETypeSecretNonString -> "E-TYPE-SECRET-NON-STRING"
+  ETypeBound -> "E-TYPE-BOUND"
   EModuleCycle -> "E-MODULE-CYCLE"
   EModuleUnresolved -> "E-MODULE-UNRESOLVED"
   EModuleDeepImport -> "E-MODULE-DEEP-IMPORT"
   EModuleLockStale -> "E-MODULE-LOCK-STALE"
   EModuleRevMoved -> "E-MODULE-REV-MOVED"
   EModuleHashMismatch -> "E-MODULE-HASH-MISMATCH"
+  EModuleConfirmTarget -> "E-MODULE-CONFIRM-TARGET"
   ERuntimeDivByZero -> "E-RUNTIME-DIV-BY-ZERO"
   ERuntimeCommandNonzero -> "E-RUNTIME-COMMAND-NONZERO"
-  ERuntimeAwaitFailed -> "E-RUNTIME-AWAIT-FAILED"
   ERuntimeAccess -> "E-RUNTIME-ACCESS"
   ERuntimeCast -> "E-RUNTIME-CAST"
   ERuntimeValue -> "E-RUNTIME-VALUE"
   ERuntimeRegex -> "E-RUNTIME-REGEX"
+  ERuntimeTimeout -> "E-RUNTIME-TIMEOUT"
+  ERuntimeUntilExhausted -> "E-RUNTIME-UNTIL-EXHAUSTED"
   EIoStdinRead -> "E-IO-STDIN-READ"
   EIoEnvResolve -> "E-IO-ENV-RESOLVE"
   EIoImageMissing -> "E-IO-IMAGE-MISSING"
   EIoImageDigest -> "E-IO-IMAGE-DIGEST"
   EIoFs -> "E-IO-FS"
   EIoDataDecode -> "E-IO-DATA-DECODE"
+  EIoSecretProvider -> "E-IO-SECRET-PROVIDER"
+  EIoSecretRef -> "E-IO-SECRET-REF"
+  EIoSecretUnreachable -> "E-IO-SECRET-UNREACHABLE"
+  EIoSecretAuth -> "E-IO-SECRET-AUTH"
+  EIoSecretNotFound -> "E-IO-SECRET-NOT-FOUND"
   ECliUsage -> "E-CLI-USAGE"
+  ECliNotConfirmed -> "E-CLI-NOT-CONFIRMED"
 
 stageText :: Stage -> Text
 stageText s = case s of

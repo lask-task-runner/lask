@@ -2,12 +2,15 @@
 
 module Language.Lask.Runtime.EvalSpec (spec) where
 
-import Control.Exception (try)
+import Control.Concurrent (threadDelay)
+import Control.Exception (onException, try)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Either (isRight)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner, RtHooks (..))
+import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
 import Language.Lask.Obs.ExecLog (noLogSink)
 import Language.Lask.Diagnostic (diagCode)
 import Language.Lask.Elaborate (elaborateProgram)
@@ -18,7 +21,7 @@ import Language.Lask.Runtime.Eval (applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Secrets (maskSecrets, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue)
-import System.Environment (setEnv, unsetEnv)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import Test.Hspec
 
 -- | Mock command runner: no real processes in unit tests.
@@ -46,7 +49,11 @@ mockFileRunner _env op = pure $ case op of
 -- | Compile main.lask, evaluate declaration @name@; a closure result
 -- is applied to zero arguments. Result is canonical JSON.
 run :: Text -> Text -> IO (Either (Maybe ErrorCode, Text) Text)
-run src name = do
+run = runWith mockRunner
+
+-- | 'run' with a given command runner.
+runWith :: CommandRunner -> Text -> Text -> IO (Either (Maybe ErrorCode, Text) Text)
+runWith runner src name = do
   r <- loadProgramWith reader "main.lask"
   case r of
     Left ds -> pure (Left (Nothing, T.pack (show (map diagCode ds))))
@@ -55,7 +62,7 @@ run src name = do
       Right scopes -> case elaborateProgram prog scopes of
         Left ds -> pure (Left (Nothing, T.pack (show (map diagCode ds))))
         Right cp -> do
-          ctx <- mkRtCtx cp "in-data\n" (RtHooks mockRunner mockFileRunner noLogSink)
+          ctx <- mkRtCtx cp "in-data\n" (RtHooks runner mockFileRunner noLogSink noAsyncTracker (fmap (fmap T.pack) . lookupEnv . T.unpack))
           out <- try $ do
             v <- topValue ctx ("main.lask", name)
             case v of
@@ -85,6 +92,25 @@ failsWith src name code = do
   case r of
     Left (Just c, _) | c == code -> pure ()
     other -> expectationFailure ("expected " <> show code <> ", got " <> show other)
+
+-- | A runner with state, for retrying and waiting (spec 15.7):
+-- @flaky@ exits 7 until its third call, @tick@ prints how many times
+-- it has been called, and @hang@ blocks until it is stopped, which it
+-- records. The second result counts the commands run.
+statefulRunner :: IO (CommandRunner, IO Int, IO Bool)
+statefulRunner = do
+  calls <- newIORef (0 :: Int)
+  stopped <- newIORef False
+  let runner env cmd = do
+        n <- atomicModifyIORef' calls (\k -> (k + 1, k + 1))
+        case cmd of
+          "flaky" -> pure (Right (if n >= 3 then (0, "ok\n", "") else (7, "", "flaky failed")))
+          "tick" -> pure (Right (0, T.pack (show n), ""))
+          "hang" -> do
+            threadDelay 10000000 `onException` writeIORef stopped True
+            pure (Right (0, "", ""))
+          _ -> mockRunner env cmd
+  pure (runner, readIORef calls, readIORef stopped)
 
 spec :: Spec
 spec = do
@@ -255,6 +281,15 @@ spec = do
         "2"
     it "repeated await returns the same result" $
       evalsTo "f() = do {\n  h = async 21\n  (await h) + (await h)\n}" "f" "42"
+    it "rethrows the failure unchanged, with its own code (spec 6.3, 15.6)" $ do
+      failsWith "f() = do {\n  h = async (1 / 0)\n  await h\n}" "f" ERuntimeDivByZero
+      failsWith "f() = all([async 1, async (1 / 0)])" "f" ERuntimeDivByZero
+      evalsTo
+        "f() = do {\n  h = async $[#local] boom\n  try {\n    out = await h\n    0\n  } catch (e) {\n    e.code\n  }\n}"
+        "f"
+        "7"
+    it "fails race on an empty array as an argument outside its domain" $
+      failsWith "hs: Array<AsyncHandle<Number>> = []\nf() = race(hs)" "f" ERuntimeValue
 
   describe "serialization and cast (spec 13, 15.8)" $ do
     it "encodes records to JSON" $
@@ -665,6 +700,101 @@ spec = do
       evalsTo "f() = extname(\"a/c.tar.gz\")" "f" "\".gz\""
       evalsTo "f() = normalize_path(\"a/./b/../c\")" "f" "\"a/c\""
       evalsTo "f() = is_absolute_path(\"/a\")" "f" "true"
+
+  describe "retry strategies (spec 15.7)" $ do
+    it "builds fixed, linear and exponential delays" $ do
+      evalsTo "f() = backoff_fixed(2, 3)" "f" "[2,2,2]"
+      evalsTo "f() = backoff_linear(1, 2, 3)" "f" "[1,3,5]"
+      evalsTo "f() = backoff_exponential(1, 2, 4)" "f" "[1,2,4,8]"
+      evalsTo "f() = backoff_fixed(1, 0)" "f" "[]"
+    it "caps a strategy by composing, with no function of its own" $
+      evalsTo "f() = map(backoff_exponential(1, 2, 6), \\(d: Number) -> min(d, 10))" "f" "[1,2,4,8,10,10]"
+    it "rejects a negative delay or a count that is not a non-negative integer" $ do
+      failsWith "f() = backoff_fixed(0 - 1, 3)" "f" ERuntimeValue
+      failsWith "f() = backoff_linear(1, 2, 1.5)" "f" ERuntimeValue
+      failsWith "f() = backoff_exponential(1, 2, 0 - 1)" "f" ERuntimeValue
+    it "rejects a strategy that grows past any representable delay" $
+      failsWith "f() = backoff_exponential(1, 10, 400)" "f" ERuntimeValue
+    it "jitters each delay within [0, d] (spec 15.13)" $ do
+      evalsTo "f() = every(backoff_jitter([1, 2, 4]), \\(d: Number) -> d >= 0 && d <= 4)" "f" "true"
+      evalsTo "f() = backoff_jitter([0, 0])" "f" "[0,0]"
+
+  describe "retry and retry_if (spec 15.7)" $ do
+    let flaky = "flaky(): String = $[#local] flaky\n"
+    it "retries a failure until the body succeeds" $ do
+      (runner, calls, _) <- statefulRunner
+      runWith runner (flaky <> "f() = retry([0, 0, 0], \\() -> flaky())") "f" `shouldReturn` Right "\"ok\\n\""
+      calls `shouldReturn` 3
+    it "re-raises the last failure unchanged once the delays run out" $ do
+      (runner, calls, _) <- statefulRunner
+      r <- runWith runner (flaky <> "f() = retry([0], \\() -> flaky())") "f"
+      r `shouldBe` Left (Just ERuntimeCommandNonzero, "{\"code\":7,\"message\":\"flaky failed\"}")
+      calls `shouldReturn` 2
+    it "runs the body once for no delays" $ do
+      (runner, calls, _) <- statefulRunner
+      _ <- runWith runner (flaky <> "f() = retry([], \\() -> flaky())") "f"
+      calls `shouldReturn` 1
+    it "retries only what the predicate accepts" $ do
+      (runner, calls, _) <- statefulRunner
+      ok <- runWith runner (flaky <> "f() = retry_if([0, 0], \\(e: Error) -> e.code == 7, \\() -> flaky())") "f"
+      ok `shouldBe` Right "\"ok\\n\""
+      calls `shouldReturn` 3
+      (runner', calls', _) <- statefulRunner
+      r <- runWith runner' (flaky <> "f() = retry_if([0, 0], \\(e: Error) -> e.code == 2, \\() -> flaky())") "f"
+      fmap (const ()) r `shouldBe` Left (Just ERuntimeCommandNonzero, "{\"code\":7,\"message\":\"flaky failed\"}")
+      calls' `shouldReturn` 1
+    it "propagates a failure of the predicate" $
+      failsWith "boom(): String = fail(error(3, \"x\"))\nf() = retry_if([0], \\(e: Error) -> 1 / 0 == 1, \\() -> boom())" "f" ERuntimeDivByZero
+    it "checks every delay before the first attempt" $ do
+      (runner, calls, _) <- statefulRunner
+      r <- runWith runner (flaky <> "f() = retry([0, 0 - 1], \\() -> flaky())") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeValue) . fst) (const False)
+      calls `shouldReturn` 0
+
+  describe "until (spec 15.7)" $ do
+    let tick = "tick(): String = $[#local] tick\n"
+    it "returns the first value the condition accepts" $ do
+      (runner, calls, _) <- statefulRunner
+      runWith runner (tick <> "f() = until([0, 0, 0], \\(v: String) -> v == \"3\", \\() -> tick())") "f"
+        `shouldReturn` Right "\"3\""
+      calls `shouldReturn` 3
+    it "fails with code 124, naming the last value, once the delays run out" $ do
+      (runner, calls, _) <- statefulRunner
+      r <- runWith runner (tick <> "f() = until([0], \\(v: String) -> v == \"9\", \\() -> tick())") "f"
+      r `shouldBe` Left (Just ERuntimeUntilExhausted, "{\"code\":124,\"message\":\"condition not met after 2 checks; last value: \\\"2\\\"\"}")
+      calls `shouldReturn` 2
+    it "does not retry a failure of the body" $
+      failsWith "f(): Number = until([0, 0], \\(v: Number) -> v > 0, \\() -> 1 / 0)" "f" ERuntimeDivByZero
+
+  describe "timeout (spec 15.7)" $ do
+    let hang = "hang(): String = $[#local] hang\n"
+    it "returns the body's value when it finishes in time" $
+      evalsTo "f() = timeout(5, \\() -> \"done\")" "f" "\"done\""
+    it "abandons the body at the limit and fails with code 124, stopping its command" $ do
+      (runner, _, stopped) <- statefulRunner
+      r <- runWith runner (hang <> "f() = timeout(0.1, \\() -> hang())") "f"
+      r `shouldBe` Left (Just ERuntimeTimeout, "{\"code\":124,\"message\":\"timed out after 0.1s\"}")
+      stopped `shouldReturn` True
+    it "raises at the call, so a try inside the body does not see it" $ do
+      (runner, _, _) <- statefulRunner
+      runWith
+        runner
+        (hang <> "f() = try { timeout(0.1, \\() -> try { hang() } catch (e) { \"inner\" }) } catch (e) { \"outer #{e.code}\" }")
+        "f"
+        `shouldReturn` Right "\"outer 124\""
+    it "cancels the computations the body started with async" $ do
+      (runner, _, stopped) <- statefulRunner
+      r <- runWith runner (hang <> "f() = timeout(0.1, \\() -> do {\n  h = async hang()\n  await h\n})") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeTimeout) . fst) (const False)
+      stopped `shouldReturn` True
+    it "composes with retry_if, which can retry exactly the timeouts" $ do
+      (runner, calls, _) <- statefulRunner
+      r <- runWith runner (hang <> "f() = retry_if([0, 0], \\(e: Error) -> e.code == 124, \\() -> timeout(0.05, \\() -> hang()))") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeTimeout) . fst) (const False)
+      calls `shouldReturn` 3
+    it "rejects a limit that is not a positive number of seconds" $ do
+      failsWith "f() = timeout(0, \\() -> 1)" "f" ERuntimeValue
+      failsWith "f() = timeout(0 - 1, \\() -> 1)" "f" ERuntimeValue
 
   describe "nondeterministic generation (spec 15.13)" $ do
     it "generates a version 4 uuid in canonical form" $ do

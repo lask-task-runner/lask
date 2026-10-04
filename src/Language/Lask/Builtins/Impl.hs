@@ -16,8 +16,9 @@ module Language.Lask.Builtins.Impl
   )
 where
 
-import Control.Concurrent.Async (async, cancel, waitAnyCatch, waitCatch)
-import Control.Exception (SomeException, fromException, throwIO, try)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (cancel, waitAnyCatch, waitCatch)
+import Control.Exception (throwIO, try)
 import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
@@ -28,6 +29,7 @@ import qualified Crypto.Hash.SHA256 as SHA256
 import Data.Bits ((.&.), (.|.))
 import Data.List (sortBy)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific, fromFloatDigits, isInteger, toRealFloat)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -39,10 +41,15 @@ import qualified Language.Lask.Builtins.Path as P
 import qualified Language.Lask.Builtins.Regex as Re
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.ExecLog (LogSink)
+import Language.Lask.Obs.Events (summarizeValue)
+import Language.Lask.Runtime.AsyncTrack (AsyncTracker (..), siteOf)
+import Language.Lask.Runtime.CancelScope (cancelScope, spawnInScopes, withScope)
 import Language.Lask.Runtime.Secrets (maskSecrets, registerSecret)
 import Language.Lask.Runtime.Value
 import System.Entropy (getEntropy)
-import System.Environment (getEnvironment, lookupEnv)
+import System.Environment (lookupEnv)
+import System.Random (randomRIO)
+import qualified System.Timeout as Timeout
 
 -- | Apply a function value to positional and keyword arguments.
 type Apply = Value -> [Value] -> [(Text, Value)] -> IO Value
@@ -78,7 +85,13 @@ type FileRunner = EnvValue -> FileOp -> IO (Either LaskFailure Value)
 data RtHooks = RtHooks
   { hookRunCommand :: CommandRunner,
     hookRunFile :: FileRunner,
-    hookLog :: LogSink
+    hookLog :: LogSink,
+    -- | Which computations were started and which were awaited
+    -- (spec 6.3).
+    hookAsync :: AsyncTracker,
+    -- | Read an environment variable for @get_env@, @find_env@ and
+    -- @get_env_or@, resolving a secret reference (spec 9.8).
+    hookReadEnv :: Text -> IO (Maybe Text)
   }
 
 callBuiltin :: Apply -> RtHooks -> Text -> [Value] -> [(Text, Value)] -> IO Value
@@ -268,20 +281,29 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     pure (VString ("'" <> T.replace "'" "'\\''" v <> "'"))
   -- 15.6 parallel/async ------------------------------------------------------
   ("spawn", [f]) -> do
-    a <- async (apply f [] [])
+    -- Started inside the timeout bodies it runs in, so that it is
+    -- cancelled with any of them that is abandoned (15.7).
+    a <- spawnInScopes (apply f [] [])
+    trackSpawned (hookAsync hooks) (siteOf f) a
     pure (VAsync (AsyncHandle a))
   ("await", [VAsync (AsyncHandle a)]) -> awaitHandle a
   ("all", [VArray xs]) -> do
     let handles = [a | VAsync (AsyncHandle a) <- V.toList xs]
+    -- All of them are consumed, even if one fails before the rest are
+    -- reached.
+    mapM_ (trackAwaited (hookAsync hooks)) handles
     VArray . V.fromList <$> mapM awaitHandle handles
   ("race", [VArray xs]) -> do
     let handles = [a | VAsync (AsyncHandle a) <- V.toList xs]
     case handles of
-      [] -> throwIO (runtimeFailure ERuntimeAwaitFailed "race on an empty array")
+      [] -> throwIO (domainError "race on an empty array")
       _ -> do
+        -- Every handle given to race is consumed: the winner is
+        -- received, and the rest are cancelled.
+        mapM_ (trackAwaited (hookAsync hooks)) handles
         (_, r) <- waitAnyCatch handles
         mapM_ cancel handles
-        either rethrowAsync pure r
+        either throwIO pure r
   -- 15.7 error handling ---------------------------------------------------------
   ("recover", [body, handler]) -> do
     r <- try' (apply body [] [])
@@ -293,6 +315,50 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   -- E-RUNTIME-COMMAND-NONZERO for diagnostics (14.5).
   ("%commandFail", [err]) -> throwIO (LaskFailure (Just ERuntimeCommandNonzero) err [])
   ("error", [VNumber code, VString msg]) -> pure (errorValue code msg)
+  -- Retrying and waiting (15.7). A strategy is the array of delays
+  -- before each further attempt, so its length bounds the attempts.
+  ("retry", [VArray ds, body]) -> do
+    delays <- delaysOf "retry" ds
+    retryLoop delays Nothing body
+  ("retry_if", [VArray ds, when, body]) -> do
+    delays <- delaysOf "retry_if" ds
+    retryLoop delays (Just when) body
+  ("until", [VArray ds, done, body]) -> do
+    delays <- delaysOf "until" ds
+    untilLoop delays done body
+  ("timeout", [VNumber s, body])
+    | not (finiteNumber s) || s <= 0 ->
+        throwIO (domainError ("timeout takes a positive number of seconds, not " <> formatNumber s))
+    | otherwise -> do
+        r <- withScope $ \sid -> do
+          res <- Timeout.timeout (micros s) (apply body [] [])
+          case res of
+            Just v -> pure (Just v)
+            Nothing -> do
+              -- Cancelled with the body, so none of them is left to
+              -- report as never awaited (6.3).
+              cancelScope sid >>= mapM_ (trackAwaited (hookAsync hooks))
+              pure Nothing
+        -- Raised here, at the call, rather than inside the body: no
+        -- try inside the body sees it.
+        maybe (throwIO (waitFailure ERuntimeTimeout ("timed out after " <> formatNumber s <> "s"))) pure r
+  ("backoff_fixed", [VNumber d, VNumber n]) -> do
+    count <- countOf "backoff_fixed" n
+    delay <- nonNegative "backoff_fixed" "delay" d
+    numbers (replicate count delay)
+  ("backoff_linear", [VNumber d, VNumber step, VNumber n]) -> do
+    count <- countOf "backoff_linear" n
+    initial <- nonNegative "backoff_linear" "initial delay" d
+    by <- nonNegative "backoff_linear" "step" step
+    numbers [initial + by * fromIntegral i | i <- [0 .. count - 1]]
+  ("backoff_exponential", [VNumber d, VNumber factor, VNumber n]) -> do
+    count <- countOf "backoff_exponential" n
+    initial <- nonNegative "backoff_exponential" "initial delay" d
+    f <- nonNegative "backoff_exponential" "factor" factor
+    let ds = [initial * f ^ i | i <- [0 .. count - 1]]
+    if any (\x -> isInfinite x || isNaN x) ds
+      then throwIO (domainError "backoff_exponential grows beyond a representable delay; cap it with a smaller count")
+      else numbers ds
   -- 15.8 serialization ------------------------------------------------------------
   ("to_json", [v]) -> either throwIO (pure . VString) (encodeFormat "json" v)
   ("from_json", [VString s]) -> either throwIO pure (decodeFormat "json" s)
@@ -321,23 +387,26 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("glob", [VString p, VEnv env]) -> file env (FileGlob p)
   -- 15.9 environment access / secret marking ---------------------------------
   -- Reading the environment does not by itself make a value secret:
-  -- masking is opt-in through `!!` / `mark_secret` (spec 6.10, 12.8).
-  -- get_ presupposes presence, so an unset variable is a failure and
-  -- not a value (spec 15.1, 15.9). find_env is the form that looks.
+  -- masking is opt-in through `!!` / `mark_secret` (spec 6.10, 12.8),
+  -- except for a value resolved from a secret reference (9.8),
+  -- which the reader registers. get_ presupposes presence, so an unset
+  -- variable is a failure and not a value (spec 15.1, 15.9). find_env
+  -- is the form that looks.
   ("get_env", [VString key]) -> do
-    envs <- getEnvironment
-    case lookup (T.unpack key) envs of
-      Just value -> pure (VString (T.pack value))
+    found <- hookReadEnv hooks key
+    case found of
+      Just value -> pure (VString value)
       Nothing ->
         throwIO . runtimeFailure ERuntimeAccess $
           "environment variable is not set: '" <> key <> "'"
-  ("find_env", [VString key]) ->
-    maybe VNull (VString . T.pack) <$> lookupEnv (T.unpack key)
-  -- The desugaring target of `!!` secret bindings (spec 6.10): register
-  -- the value for log masking (12.8) and hand it back untouched.
+  ("find_env", [VString key]) -> maybe VNull VString <$> hookReadEnv hooks key
+  -- Whether a variable is set is answered without resolving it: a
+  -- reference is set, whatever it names.
   ("has_env", [VString key]) -> VBool . maybe False (const True) <$> lookupEnv (T.unpack key)
   ("get_env_or", [VString key, VString fallback]) ->
-    VString . maybe fallback T.pack <$> lookupEnv (T.unpack key)
+    VString . fromMaybe fallback <$> hookReadEnv hooks key
+  -- The desugaring target of `!!` secret bindings (spec 6.10): register
+  -- the value for log masking (12.8) and hand it back untouched.
   ("mark_secret", [VString value]) -> do
     registerSecret value
     pure (VString value)
@@ -361,6 +430,12 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     pure VVoid
   -- 15.13 nondeterministic -----------------------------------------------
   ("uuid", []) -> VString <$> uuidV4
+  ("backoff_jitter", [VArray ds]) -> do
+    delays <- mapM (\v -> case v of
+      VNumber d -> nonNegative "backoff_jitter" "delay" d
+      _ -> throwIO (domainError "backoff_jitter takes an array of numbers")) (V.toList ds)
+    jittered <- mapM (\d -> randomRIO (0, d)) delays
+    numbers jittered
   ("random_string", [VNumber n])
     | not (isInteger n) || n < 0 ->
         throwIO (domainError "random_string takes a non-negative integer length")
@@ -481,12 +556,96 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     try' :: IO a -> IO (Either LaskFailure a)
     try' = try
 
-    awaitHandle a = do
-      r <- waitCatch a
-      either rethrowAsync pure r
+    finiteNumber :: Scientific -> Bool
+    finiteNumber x = let d = toRealTo x in not (isInfinite d || isNaN d)
 
-    rethrowAsync :: SomeException -> IO a
-    rethrowAsync ex = case fromException ex of
-      Just failure -> throwIO (failure :: LaskFailure)
-      Nothing ->
-        throwIO (runtimeFailure ERuntimeAwaitFailed ("async computation failed: " <> T.pack (show ex)))
+    -- Microseconds for a wait, at least one so that a tiny positive
+    -- duration is still a wait, and at most what threadDelay takes.
+    micros :: Scientific -> Int
+    micros x = max 1 (fromInteger (min (toInteger (maxBound :: Int)) (ceiling (toRealTo x * 1e6))))
+
+    nonNegative :: Text -> Text -> Scientific -> IO Double
+    nonNegative fn what x
+      | finiteNumber x && x >= 0 = pure (toRealTo x)
+      | otherwise = throwIO (domainError (fn <> " takes a finite, non-negative " <> what <> ", not " <> formatNumber x))
+
+    countOf :: Text -> Scientific -> IO Int
+    countOf fn x
+      | isInteger x && x >= 0 && x <= 1000000 = pure (floor (toRealTo x))
+      | otherwise = throwIO (domainError (fn <> " takes a count that is a non-negative integer, not " <> formatNumber x))
+
+    numbers :: [Double] -> IO Value
+    numbers = pure . VArray . V.fromList . map (VNumber . fromFloatDigits)
+
+    -- Every delay is checked before the first attempt, so whether a
+    -- strategy is rejected does not depend on how the attempts go.
+    delaysOf :: Text -> V.Vector Value -> IO [Scientific]
+    delaysOf fn ds = mapM check (V.toList ds)
+      where
+        check (VNumber d)
+          | finiteNumber d && d >= 0 = pure d
+        check (VNumber d) = throwIO (domainError (fn <> " takes delays that are finite and non-negative, not " <> formatNumber d))
+        check _ = throwIO (domainError (fn <> " takes an array of numbers"))
+
+    sleepFor :: Scientific -> IO ()
+    sleepFor d
+      | d <= 0 = pure ()
+      | otherwise = threadDelay (micros d)
+
+    waitFailure :: ErrorCode -> Text -> LaskFailure
+    waitFailure code msg = LaskFailure (Just code) (errorValue 124 msg) []
+
+    retryLoop :: [Scientific] -> Maybe Value -> Value -> IO Value
+    retryLoop delays when body = go (1 :: Int) delays
+      where
+        total = length delays + 1
+        go n ds = do
+          r <- try' (apply body [] [])
+          case (r, ds) of
+            (Right v, _) -> pure v
+            -- The last failure is re-raised unchanged, as await does
+            -- (6.3): its code, and so the exit code, survive.
+            (Left failure, []) -> throwIO failure
+            (Left failure, d : rest) -> do
+              again <- maybe (pure True) (\w -> truthy <$> apply w [lfError failure] []) when
+              if not again
+                then throwIO failure
+                else do
+                  hookLog hooks $
+                    "retry: attempt " <> tshow n <> " of " <> tshow total <> " failed with code "
+                      <> codeOf (lfError failure) <> "; retrying in " <> formatNumber d <> "s"
+                  sleepFor d
+                  go (n + 1) rest
+
+    untilLoop :: [Scientific] -> Value -> Value -> IO Value
+    untilLoop delays done body = go (1 :: Int) delays
+      where
+        total = length delays + 1
+        go n ds = do
+          v <- apply body [] []
+          ok <- truthy <$> apply done [v] []
+          case (ok, ds) of
+            (True, _) -> pure v
+            (False, []) -> do
+              lastValue <- maskSecrets (TE.decodeUtf8 (BL.toStrict (A.encode (summarizeValue v))))
+              throwIO . waitFailure ERuntimeUntilExhausted $
+                "condition not met after " <> tshow total <> " checks; last value: " <> lastValue
+            (False, d : rest) -> do
+              hookLog hooks $
+                "until: check " <> tshow n <> " of " <> tshow total <> " not met; checking again in "
+                  <> formatNumber d <> "s"
+              sleepFor d
+              go (n + 1) rest
+
+    codeOf err = case err of
+      VRecord m | Just (VNumber c) <- Map.lookup "code" m -> formatNumber c
+      _ -> "?"
+
+    tshow :: Int -> Text
+    tshow = T.pack . show
+
+    -- A failed computation's failure is re-raised as it was (spec 6.3).
+    awaitHandle a = do
+      trackAwaited (hookAsync hooks) a
+      r <- waitCatch a
+      either throwIO pure r

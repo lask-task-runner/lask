@@ -2,8 +2,9 @@
 
 -- | The dependency cache (spec chapter 5, 11.5): a per-project,
 -- content-addressed store keyed by the declared content hash. Only
--- @deps sync@\/@deps add@ write to it (after verification), so presence
--- in the cache implies a verified source; module resolution never
+-- @deps sync@\/@deps add@ write to it (after verification), and an
+-- entry is verified again wherever it is used ('holdsPinned'): being in
+-- the cache is not taken as proof of content. Module resolution never
 -- touches the network.
 --
 -- The store lives under @.lask\/deps@ in the project's base directory
@@ -12,11 +13,15 @@
 module Language.Lask.Deps.Cache
   ( cacheDirFor,
     cachePathFor,
+    holdsPinned,
   )
 where
 
+import Control.Exception (IOException, try)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Language.Lask.Deps.Hash (hashFile, hashTree)
+import System.Directory (doesDirectoryExist, doesFileExist, pathIsSymbolicLink)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 
@@ -41,3 +46,18 @@ cachePathFor cacheDir hash singleFile
     hashKey = T.unpack (sanitize hash)
     sanitize :: Text -> Text
     sanitize = T.map (\c -> if c == '/' || c == '\\' then '_' else c)
+
+-- | Whether a cache entry holds the content its hash names. The cache
+-- may be shared (@LASK_CACHE_DIR@) or written by something other than
+-- @deps sync@, so an entry is checked where it is used rather than
+-- trusted for being there. The entry itself must not be a symbolic
+-- link: the hash would then describe wherever it points.
+holdsPinned :: FilePath -> Text -> Bool -> IO Bool
+holdsPinned path hash singleFile = do
+  r <- try $ do
+    isLink <- pathIsSymbolicLink path
+    present <- if singleFile then doesFileExist path else doesDirectoryExist path
+    if isLink || not present
+      then pure False
+      else (== hash) <$> (if singleFile then hashFile path else hashTree path)
+  pure (either (\e -> const False (e :: IOException)) id r)

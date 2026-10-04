@@ -48,17 +48,26 @@ $ lask run release --help
 | `lask run <fn> [args...]` | Execute a task. Writes **nothing** to stdout. |
 | `lask eval <fn> [args...]` | Same, and writes the return value to stdout (JSON by default). |
 | `lask cmd <prog> [args...]` | Run a declared command in its declared image, stdio passed through. |
-| `lask repl` | Evaluate expressions interactively. |
+| `lask repl` | Evaluate expressions interactively. `:r` reloads the module, keeping what was typed. |
 | `lask envs [fn] [--check]` | List the environments a module uses; `--check` tests access. |
 | `lask env build \| list` | Materialize / inspect container images. |
 | `lask deps sync \| add \| why \| diff` | Fetch, verify and report on external dependencies. |
+| `lask secrets list \| check [fn]` | List the secret references in the environment; check that their stores can be reached and read. |
 | `lask serve` | Language server (LSP). |
 | `lask completion <shell>` | Emit a completion script (bash, zsh, fish). |
 | `lask version` | Print the version. |
 
-Options come **before** the function name — everything after it belongs to the function. `--module <path>` (default `main.lask`), `--format text\|json`, `--stdout-encode text\|json\|pretty-json` (default `json`), `--arg-decode text\|json\|auto` (default `auto`), `--trace-id`, `--no-color`. → [11.2](spec.md#112-function-invocation)
+Options come **before** the function name — everything after it belongs to the function. `--module <path>` (default `main.lask`), `--format text\|json`, `--stdout-encode text\|json\|pretty-json` (default `json`), `--arg-decode text\|json\|auto` (default `auto`), `--trace-id`, `--no-color`, `--confirm`. → [11.2](spec.md#112-function-invocation)
 
 A task's signature is its command line. `-` maps to `_`, so `release(--dry_run = false)` is reachable as `lask run release --dry-run true`, and `show_version` as `lask run show-version`.
+
+A task can ask for a typed confirmation before it runs, declared in `lask.json` rather than in code. It is a guard against mistakes, not a security boundary. `lask check` rejects an entry that names no function, parameter or fitting value. → [ch. 5](spec.md#5-declarations-and-modules), [11.2](spec.md#112-function-invocation)
+
+```json
+{"confirm": {"deploy": {"when": {"env": ["prod"]}}, "destroy": {}, "reset_db": {"phrase": "reset #{db}"}}}
+```
+
+At a terminal the phrase is typed; elsewhere `--confirm` approves, unless `LASK_CONFIRM=tty`. Refused is exit `4` (`E-CLI-NOT-CONFIRMED`). Only the function the CLI calls is asked about.
 
 Exit codes: `0` success · `1` syntax or static error · `4` CLI usage error · otherwise the `code` of the uncaught `Error` — a failed command passes its own exit code through. → [11.3](spec.md#113-inputoutput-contract), [14.8](spec.md#148-correspondence-to-cli-exit-codes)
 
@@ -111,11 +120,14 @@ xs: Array<String | Null> = ["a", null]
 first_or<T>(xs: Array<T>, fallback: T): T =      // a type parameter, never
   if (is_empty(xs)) { fallback } else { xs[0] }  // written at a call site
 n = first_or([1, 2], 0)                          // instantiated at Number here
+
+largest<T: orderable>(xs: Array<T>): T = last(sort(xs))   // a named bound
+label<T: Number | String>(x: T): String = "#{x}"          // a type bound
 ```
 
 Annotations are optional and inference fills the rest: a parameter with neither an annotation nor a default is `Any`, and a mixed array literal is `Array<Any>`. Neither a union nor an optional field is **ever** inferred — each is only ever something someone wrote.
 
-`?` qualifies the key and the field's type qualifies the value: `a: String | Null` must be present and may be null, `a?: String` may be absent. A type parameter is opaque inside its own declaration — it conforms only to itself and `Any` — so a body may pass such a value around but not compare, order or interpolate one. → [4.2](spec.md#42-type-syntax)
+`?` qualifies the key and the field's type qualifies the value: `a: String | Null` must be present and may be null, `a?: String` may be absent. A type parameter is opaque inside its own declaration — it conforms only to itself and `Any` — so a body may pass such a value around but not compare, order or interpolate one, unless a bound says so. `comparable` gives `==`, `stringifiable` gives `#{...}`, and `orderable` gives `sort` and both of the others. A type bound `<T: B>` admits what conforms to `B` and gives what `B` has, though `Any` gives nothing. Built-ins are bounded the same way (`sort<T: orderable>`), and a use outside a bound is `E-TYPE-BOUND`. → [4.2](spec.md#42-type-syntax)
 
 Conformance is small on purpose. Everything conforms to `Any`; a member conforms to its union; nothing else does. There is no variance: `Array<Number>` does not conform to `Array<Any>`, and `Record` conforms only when the required set, the optional set and every field type are identical. Getting *out* of `Any` or a union takes a runtime check — `cast(v)` (fails on anything else) or `case` type dispatch (tests instead of failing). → [4.4](spec.md#44-type-semantics)
 
@@ -277,6 +289,24 @@ build(): String = try {
 
 `fail(error(4, "unknown shell"))` raises. Body and `catch` must have the same type; `finally`'s value is discarded. Static errors are found before evaluation and are never catchable. A failure inside `catch` or `finally` propagates outward.
 
+## Retrying and waiting
+
+→ [spec 15.7](spec.md#157-error-handling-functions)
+
+```lask
+command { "make", "curl" } on #local
+
+build(): String = $ make build
+probe(): CommandResult = $* curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/
+
+a(): String = retry(backoff_exponential(1, 2, 3), \() -> build())          // waits 1, 2, 4; then re-raises the last failure
+b(): String = retry_if([5, 5], \(e: Error) -> e.code == 75, \() -> build()) // retries only code 75
+c(): String = timeout(60, \() -> build())                                  // fails with code 124 after 60s
+d(): CommandResult = until(backoff_fixed(2, 30), \(r: CommandResult) -> r.stdout == "200", \() -> probe())
+```
+
+A strategy is the array of delays, so its length bounds the attempts: `backoff_fixed(2, 3)` is `[2, 2, 2]`, `backoff_linear(1, 2, 3)` is `[1, 3, 5]`, `backoff_jitter(ds)` randomizes each into `[0, d]`, and a cap is `map(ds, \(d) -> min(d, 30))`. `timeout` stops the body's commands and raises at the call, so a `try` inside the body never sees it. `until` gives up with code 124 too. A command runs to the end of its line, so wrap one in a function before passing it.
+
 ## Input, output, secrets
 
 → [spec ch. 9](spec.md#9-standard-io-and-data-flow), [6.10](spec.md#610-secret-bindings)
@@ -292,6 +322,13 @@ deploy(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")) = do {
 ```
 
 `!!` marks a binding secret: the value is masked in the command execution log wherever it later appears. It is allowed on `String` and `String | Null` — a `null` registers nothing, so a secret can default to `null` like any optional parameter — carries no meaning in the type system, and never masks a `CommandResult` or `eval`'s own output. → [12.8](spec.md#128-protection-of-sensitive-information-and-retention-policy)
+
+A variable whose whole value is a secret reference is resolved when `get_env`, `find_env` or `get_env_or` reads it, and the value is masked like a `!!` one. The program stays the same; only the environment changes. `LASK_SECRETS` lists the stores a run may use. `lask secrets check [fn]` tells you whether they can be reached and read before a task runs. → [9.8](spec.md#98-secret-references), [11.10](spec.md#1110-secret-references-secrets)
+
+```bash
+export LASK_SECRETS=vault VAULT_ADDR=https://vault.example.com VAULT_TOKEN=...
+export AWS_SECRET_ACCESS_KEY="{vault://secret/aws#secret_key}"   # {vault://<path>[?version=n]#<field>}
+```
 
 ## Documentation comments
 
@@ -326,12 +363,12 @@ publish(--tag: String = "latest"): String =
 | Maps | `get` `get_or` `has_key` `keys` `values` `set` `remove` `merge` `entries` `from_entries` `map_values` |
 | Commands | `run` `shell_quote` |
 | Async | `spawn` `await` `all` `race` |
-| Errors | `recover` `fail` `error` |
+| Errors | `recover` `fail` `error` `retry` `retry_if` `until` `timeout` `backoff_fixed` `backoff_linear` `backoff_exponential` |
 | Data | `to_json` `from_json` `encode` `decode` `cast` `base64_encode` `base64_decode` `sha256` `md5` |
 | Environment | `get_env` `find_env` `has_env` `get_env_or` `mark_secret` |
 | Paths | `path_join` `dirname` `basename` `extname` `normalize_path` `is_absolute_path` |
 | Filesystem | `read_file` `write_file` `file_exists` `remove_file` `make_dir` `list_dir` `glob` — each takes the `Environment` as its last argument |
-| Other | `log` `uuid` `random_string` |
+| Other | `log` `uuid` `random_string` `backoff_jitter` |
 
 Absence is reported two ways, deliberately: a function that returns a *position* reports it as `-1` (`index_of`, `find_index`), and one that returns a *value* reports it as `Null` (`find`, `find_env`).
 
@@ -349,7 +386,7 @@ Absence is reported two ways, deliberately: a function that returns a *position*
 - `for` takes an array, not a number and not a map.
 - Interpolating a `String | Null` is a type error — resolve it with `case` first.
 - `a?: T` and `a: T | Null` are different questions: the first is about the key, the second about the value.
-- A type parameter is opaque inside its own body: take the operation you need on a `T` as an argument.
+- A type parameter is opaque inside its own body: bound it (`<T: comparable>`), or take the operation you need on a `T` as an argument.
 
 ## Where to look next
 

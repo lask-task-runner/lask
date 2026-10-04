@@ -16,7 +16,13 @@ import Language.Lask.Runtime.Environment
 import Language.Lask.Runtime.Image (ImagePins, recipeTag, unlockedPins)
 import Language.Lask.Runtime.Secrets (registerSecret, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, cancel)
+import Language.Lask.Runtime.ProcessStop (stopProcessTree)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Exit (ExitCode (..))
+import System.FilePath ((</>))
+import System.Process (createProcess, getPid, proc, readProcessWithExitCode)
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
@@ -39,6 +45,24 @@ failsWithFs :: Either LaskFailure Value -> Expectation
 failsWithFs r = case r of
   Left lf -> lfCode lf `shouldBe` Just EIoFs
   Right v -> expectationFailure ("expected E-IO-FS, got " <> show v)
+
+-- | Whether a process exists, as @kill -0@ answers.
+isAlive :: Int -> IO Bool
+isAlive pid = do
+  (code, _, _) <- readProcessWithExitCode "kill" ["-0", show pid] ""
+  pure (code == ExitSuccess)
+
+-- | Wait until a file lists the given number of pids, and read them.
+waitForPids :: FilePath -> Int -> IO [Int]
+waitForPids path n = go (100 :: Int)
+  where
+    go 0 = fail ("no pids in " <> path)
+    go k = do
+      present <- doesFileExist path
+      pids <- if present then map read . lines <$> readFile path else pure []
+      if length pids >= n
+        then pure pids
+        else threadDelay 50000 >> go (k - 1)
 
 spec :: Spec
 spec = do
@@ -63,8 +87,8 @@ spec = do
 
   describe "launch argument construction (spec 10.5)" $ do
     it "builds docker run arguments with mounted workdir" $
-      dockerArgs "/proj" "alpine:3.20" (Map.fromList [("memory", VString "4g")]) "uname -a"
-        `shouldBe` [ "run", "--rm",
+      dockerArgs "/proj" "lask-0" "alpine:3.20" (Map.fromList [("memory", VString "4g")]) "uname -a"
+        `shouldBe` [ "run", "--rm", "--name", "lask-0",
                      "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -74,8 +98,8 @@ spec = do
                    ]
 
     it "attaches stdin for a container write, so no content rides on the command line" $
-      dockerShellArgs "/proj" "alpine:3.20" Map.empty True "cat > 'out.txt'"
-        `shouldBe` [ "run", "--rm",
+      dockerShellArgs "/proj" "lask-0" "alpine:3.20" Map.empty True "cat > 'out.txt'"
+        `shouldBe` [ "run", "--rm", "--name", "lask-0",
                      "-i",
                      "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
@@ -88,8 +112,8 @@ spec = do
     -- colon-separated `-v` form read `C` as the source and `/work` as
     -- the mode, and the daemon answered `invalid mode: /work`.
     it "keeps a Windows drive letter in the source, not in the mount separator" $
-      dockerArgs "C:\\proj" "alpine:3.20" Map.empty "uname -a"
-        `shouldBe` [ "run", "--rm",
+      dockerArgs "C:\\proj" "lask-0" "alpine:3.20" Map.empty "uname -a"
+        `shouldBe` [ "run", "--rm", "--name", "lask-0",
                      "--mount", "type=bind,source=C:\\proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -100,8 +124,8 @@ spec = do
     -- The same defect on a POSIX host: a colon is legal in a directory
     -- name there, so this is reachable without Windows at all.
     it "keeps a colon inside a POSIX base directory out of the mount separator" $
-      dockerArgs "/tmp/a:b" "alpine:3.20" Map.empty "uname -a"
-        `shouldBe` [ "run", "--rm",
+      dockerArgs "/tmp/a:b" "lask-0" "alpine:3.20" Map.empty "uname -a"
+        `shouldBe` [ "run", "--rm", "--name", "lask-0",
                      "--mount", "type=bind,source=/tmp/a:b,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -110,10 +134,10 @@ spec = do
                    ]
 
   describe "container options (spec 10.2)" $ do
-    let opts ps = dockerArgs "/proj" "alpine:3.20" (Map.fromList ps) "uname -a"
-        -- Just the part between the fixed prologue (run, the mount,
-        -- the default -w and the entrypoint) and the image.
-        optionArgs ps = takeWhile (/= "alpine:3.20") (drop 8 (opts ps))
+    let opts ps = dockerArgs "/proj" "lask-0" "alpine:3.20" (Map.fromList ps) "uname -a"
+        -- Just the part between the fixed prologue (run, the name, the
+        -- mount, the default -w and the entrypoint) and the image.
+        optionArgs ps = takeWhile (/= "alpine:3.20") (drop 10 (opts ps))
 
     it "passes scalar options as one flag each" $
       optionArgs
@@ -143,10 +167,21 @@ spec = do
         `shouldBe` ["--tmpfs", "/tmp", "--tmpfs", "/run"]
 
     it "joins a table option into the form its flag expects" $ do
-      optionArgs [("env", VMap (Map.fromList [("CI", VString "1"), ("LANG", VString "C")]))]
-        `shouldBe` ["--env", "CI=1", "--env", "LANG=C"]
       optionArgs [("add_hosts", VMap (Map.fromList [("api", VString "10.0.0.2")]))]
         `shouldBe` ["--add-host", "api:10.0.0.2"]
+
+    -- A command line is visible to every user of the host, so a value
+    -- passed to the container never appears on it (spec 10.2).
+    it "names an env variable on the command line and gives its value to the docker client" $ do
+      let env = [("env", VMap (Map.fromList [("CI", VNumber 1), ("TOKEN", VString "s3cr3t")]))]
+      optionArgs env `shouldBe` ["--env", "CI", "--env", "TOKEN"]
+      dockerClientEnv (Map.fromList env) `shouldBe` [("CI", "1"), ("TOKEN", "s3cr3t")]
+
+    it "keeps a variable the docker client reads itself on the command line" $ do
+      let env = [("env", VMap (Map.fromList [(k, VString "v") | k <- ["DOCKER_HOST", "HTTPS_PROXY", "no_proxy", "PATH", "HOME"]]))]
+      optionArgs env
+        `shouldBe` ["--env", "DOCKER_HOST=v", "--env", "HOME=v", "--env", "HTTPS_PROXY=v", "--env", "PATH=v", "--env", "no_proxy=v"]
+      dockerClientEnv (Map.fromList env) `shouldBe` []
 
     -- Null is how an argument says "not given" (spec 10.2); "" is a
     -- value the caller means, and is passed on.
@@ -156,7 +191,7 @@ spec = do
         [ ("env", VMap (Map.fromList [("A", VNull), ("B", VString "")])),
           ("tmpfs", VArray (V.fromList [VNull, VString "/t"]))
         ]
-        `shouldBe` ["--env", "B=", "--tmpfs", "/t"]
+        `shouldBe` ["--env", "B", "--tmpfs", "/t"]
 
     it "says nothing for a switch left false, which is the daemon's own default" $ do
       optionArgs [("init", VBool True), ("read_only", VBool True)]
@@ -168,7 +203,7 @@ spec = do
     -- default, and the daemon takes the last -w it is given.
     it "puts an explicit workdir after the mounted default so it wins" $
       opts [("workdir", VString "/work/web")]
-        `shouldBe` [ "run", "--rm",
+        `shouldBe` [ "run", "--rm", "--name", "lask-0",
                      "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -289,6 +324,28 @@ spec = do
       [l | ClLine 2 l <- kinds entries] `shouldBe` ["***"]
       -- ...and the command string on the start line.
       map clCommand entries `shouldSatisfy` (not . any (T.isInfixOf "sup3rsecret"))
+
+  describe "stopping an abandoned command (spec 8.7, real process)" $ do
+    it "stops the command and what it started when its thread is cancelled, and logs it as killed" $
+      withSystemTempDirectory "lask-stop" $ \dir -> do
+        logRef <- newIORef []
+        runner <- mkCommandRunner noPins dir (\cl -> atomicModifyIORef' logRef (\ls -> (ls <> [clKind cl], ())))
+        -- The shell and the child it leaves in the background both
+        -- record themselves, so both can be looked for afterwards.
+        a <- async (runner (env "local" []) "echo $$ > pids; sleep 30 & echo $! >> pids; wait")
+        pids <- waitForPids (dir </> "pids") 2
+        cancel a
+        mapM isAlive pids `shouldReturn` [False, False]
+        entries <- readIORef logRef
+        entries `shouldSatisfy` (\ks -> take 1 ks == [ClStart] && last ks == ClKilled)
+        entries `shouldSatisfy` notElem (ClExit 143)
+
+    it "kills what ignores the termination request once the grace period is over" $ do
+      (_, _, _, ph) <- createProcess (proc "sh" ["-c", "trap '' TERM; sleep 30"])
+      threadDelay 200000
+      Just pid <- getPid ph
+      stopProcessTree 1 ph
+      isAlive (fromIntegral pid) `shouldReturn` False
 
   describe "environment log info (spec 12.3)" $ do
     it "summarizes environments in environment-expression notation" $ do

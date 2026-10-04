@@ -9,6 +9,7 @@ module Command.Lask.Envs
     collectEnvRefsFrom,
     collectRecipes,
     collectRegistryRefs,
+    collectEnvReadsFrom,
   )
 where
 
@@ -49,20 +50,46 @@ commandEnvs core = concatMap Map.elems (Map.elems (cpCommands core))
 -- every referenced declaration counts, whether or not it is actually
 -- called.
 collectEnvRefsFrom :: CoreProgram -> Key -> [EnvRef]
-collectEnvRefsFrom core start = go Set.empty [start]
+collectEnvRefsFrom core start = concatMap declEnvRefs (reachableDecls core start)
+
+-- | The declarations reachable from one: itself and every top-level
+-- declaration it refers to, transitively.
+reachableDecls :: CoreProgram -> Key -> [CoreDecl]
+reachableDecls core start = go Set.empty [start]
   where
-    go :: Set Key -> [Key] -> [EnvRef]
+    go :: Set Key -> [Key] -> [CoreDecl]
     go _ [] = []
     go seen (k : rest)
       | k `Set.member` seen = go seen rest
       | otherwise = case Map.lookup k (cpDecls core) of
           Nothing -> go (Set.insert k seen) rest
-          Just cd ->
-            declEnvRefs cd
-              <> go (Set.insert k seen) (topRefs (cdCore cd) <> rest)
+          Just cd -> cd : go (Set.insert k seen) (topRefs (cdCore cd) <> rest)
 
     topRefs c =
       [(p, n) | CVar (TopRef p n) <- map coreF (c : descendants c)]
+
+-- | The environment variables a declaration can read by name (spec
+-- 11.10): the literal names given to @get_env@, @find_env@ and
+-- @get_env_or@ in everything it reaches, and in the environments of
+-- the program's command declarations, which its commands may run in.
+-- 'Nothing' when a name is computed, or one of these built-ins is
+-- passed as a value: then any variable may be read.
+collectEnvReadsFrom :: CoreProgram -> Key -> Maybe (Set Text)
+collectEnvReadsFrom core start =
+  fmap Set.fromList . sequence $
+    concatMap (readsIn . cdCore) (reachableDecls core start) <> concatMap readsIn (commandEnvs core)
+  where
+    readers = ["get_env", "find_env", "get_env_or"] :: [Text]
+    readsIn c = case coreF c of
+      CApp (Core _ (CVar (BuiltinRef n))) args kws
+        | n `elem` readers ->
+            ( case args of
+                Core _ (CStrLit name) : _ -> Just name
+                _ -> Nothing
+            )
+              : concatMap readsIn (args <> map snd kws)
+      CVar (BuiltinRef n) | n `elem` readers -> [Nothing]
+      _ -> concatMap readsIn (children c)
 
 declEnvRefs :: CoreDecl -> [EnvRef]
 declEnvRefs cd = envRefsIn (cdCore cd)

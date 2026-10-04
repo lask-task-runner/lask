@@ -9,16 +9,20 @@ where
 
 import Command.Lask.ArgCodec
 import Command.Lask.Complete (completionScript)
-import Command.Lask.Envs (EnvRef (..), collectEnvRefs, collectEnvRefsFrom, collectRecipes)
+import Command.Lask.Envs (EnvRef (..), collectEnvReadsFrom, collectEnvRefs, collectEnvRefsFrom, collectRecipes)
+import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
+import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
-import Control.Exception (try)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Applicative ((<|>))
+import Control.Exception (IOException, SomeException, fromException, toException, try)
+import Control.Monad (forM, forM_, unless, when, (>=>))
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Data.Either (isRight)
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.List (nub, sort)
 import Data.Maybe (catMaybes, isNothing, listToMaybe)
@@ -35,10 +39,10 @@ import Language.Lask (Compiled (..), Partial (..), compileFile, compileFileParti
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (entryPublicValues)
 import Language.Lask.Deps.Cache (cacheDirFor)
-import Language.Lask.Deps.Fetch (DepSource (..), fetchAndStore, resolveGitRev, syncAll)
+import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Diagnostic (Diagnostic (..))
+import Language.Lask.Diagnostic (Advisory (..), Diagnostic (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
 import Language.Lask.ErrorCode
@@ -50,18 +54,22 @@ import Language.Lask.Runtime.Environment
 import Command.Lask.Images (ImageRow (..), Materialized (..), imageRows, loadPins, materialize)
 import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
+import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
+import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, noAsyncTracker, renderSite)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, evalCore, mkRtCtx, topValue)
+import Language.Lask.Runtime.Secrets (maskFailure)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
-import Language.Lask.Types (Type (..), applySubst)
+import Language.Lask.Types (Type (..))
 import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
 import Paths_lask (version)
+import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.FilePath (takeDirectory, (</>))
-import System.IO (hIsTerminalDevice, hPutStrLn, stderr, stdin)
+import System.IO (hFlush, hIsTerminalDevice, hPutStrLn, stderr, stdin)
 import System.Process (proc)
 
 runRootCommand :: RootCommand -> IO ()
@@ -78,6 +86,8 @@ runRootCommand cmd = case cmd of
   CmdDepsDiff opts name -> cmdDepsDiff opts name
   CmdEnvBuild opts -> cmdEnvBuild opts
   CmdEnvList opts -> cmdEnvList opts
+  CmdSecretsList o -> cmdSecrets False o
+  CmdSecretsCheck o -> cmdSecrets True o
   CmdCmd cmdOpts -> cmdCmd cmdOpts
   CmdCompletion sh -> TIO.putStr (completionScript sh)
   CmdVersion -> cmdVersion
@@ -96,10 +106,15 @@ cmdCheck opts = do
     Left ds -> do
       TIO.putStrLn (renderDiags (optJsonFormat opts) ds)
       exitWith (ExitFailure 1)
-    Right _ -> do
+    -- Advisories are reported alongside a valid module and leave the
+    -- exit code at 0 (spec 14.2).
+    Right compiled -> do
+      let advisories = cpAdvisories (compiledCore compiled)
       if optJsonFormat opts
-        then TIO.putStrLn "[]"
-        else putStrLn "the module is valid"
+        then TIO.putStrLn (TE.decodeUtf8 (BL.toStrict (A.encode (map advisoryJson advisories))))
+        else do
+          mapM_ (putStrLn . pretty) advisories
+          putStrLn "the module is valid"
       exitSuccess
 
 -- run / eval -----------------------------------------------------------------
@@ -132,22 +147,17 @@ cmdRunEval printResult runOpts = do
     Left e -> usageError opts e
 
   let orUsageError = either (usageError opts) pure
-      instantiateAtAny vs ps
-        | null vs = ps
-        | otherwise =
-            let at = applySubst (Map.fromList [(v, TyAny) | v <- vs])
-             in StaticParams
-                  [(n, at t) | (n, t) <- spPositional ps]
-                  (fmap (fmap at) (spVariadic ps))
-                  [(n, at t) | (n, t) <- spKeywords ps]
   (posVals, kwVals) <- case cdParams cd of
-    -- A declaration with type parameters is invoked with every one of
-    -- them at Any (spec 11.2): the CLI has no type to instantiate them
-    -- from, and the body cannot misuse what it is handed, a type
-    -- parameter being opaque inside it (4.4).
-    Just params ->
-      orUsageError
-        (bindCliArgs (instantiateAtAny (cdTypeVars cd) params) (runArgDecode runOpts) cliArgs)
+    -- A declaration with type parameters is invoked with each one
+    -- decoded at the widest type it admits, and a named bound checked
+    -- against what was decoded (spec 11.2): a bounded parameter is not
+    -- opaque inside the body, which may compare or sort it (4.4).
+    Just params -> do
+      bound <-
+        orUsageError
+          (bindCliArgs (instantiateForCli (cdTypeVars cd) (cdBounds cd) params) (runArgDecode runOpts) cliArgs)
+      orUsageError (uncurry (checkCliBounds (cdBounds cd) params) bound)
+      pure bound
     Nothing -> case cdType cd of
       TyFun paramTys _ ->
         -- A function-typed value declaration: positional only
@@ -159,6 +169,9 @@ cmdRunEval printResult runOpts = do
             cliArgs
       _ -> usageError opts ("'" <> fnName <> "' is not a callable function")
 
+  -- Before anything is evaluated, and before stdin is read: a refused
+  -- confirmation leaves nothing half done (spec 11.2).
+  confirmOrExit opts (runConfirm runOpts) compiled fnName key cd posVals kwVals
   stdinText <- readStdinOrExit opts
   traceId <- maybe newTraceId pure (optTraceId opts)
   -- One serialized stderr line writer shared by command logs and
@@ -179,7 +192,9 @@ cmdRunEval printResult runOpts = do
       logSink
         | optJsonFormat opts = jsonLogSink traceId writeErr
         | otherwise = textLogSink writeErr
-  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner logSink)
+  tracker <- newAsyncTracker
+  secrets <- newSecretResolver
+  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner logSink tracker (readEnvVar secrets))
   let sink
         | optJsonFormat opts = writeErr . encodeEvent
         | otherwise = noSink
@@ -192,6 +207,11 @@ cmdRunEval printResult runOpts = do
       v
         | null posVals && null kwVals -> pure v
         | otherwise -> applyValue ctx fv posVals kwVals
+  -- A computation nothing awaited is waited for rather than cut short
+  -- by the end of the process, and reported (spec 6.3). Whatever it
+  -- did, the run keeps its own outcome and exit code.
+  unawaited <- drainUnawaited tracker
+  mapM_ (fmap (unawaitedDiagnostic opts traceId) . maskOutcome >=> writeErr) unawaited
   case result of
     Left lf -> failureExit opts traceId lf
     Right v -> do
@@ -199,6 +219,54 @@ cmdRunEval printResult runOpts = do
         VVoid -> pure ()
         _ -> TIO.putStrLn (encodeResult (runStdoutEncode runOpts) v)
       exitSuccess
+
+-- | A computation's outcome with the failure it ended in masked, for
+-- the advisory that reports it (spec 12.8).
+maskOutcome :: (AsyncSite, Either SomeException Value) -> IO (AsyncSite, Either SomeException Value)
+maskOutcome (site, Left ex)
+  | Just lf <- fromException ex = (\m -> (site, Left (toException m))) <$> maskFailure lf
+maskOutcome outcome = pure outcome
+
+-- | The advisory @W-ASYNC-UNAWAITED@ (spec 6.3, 14.2) for one
+-- computation that was never awaited, with how it ended.
+unawaitedDiagnostic :: CommonOpts -> TraceId -> (AsyncSite, Either SomeException Value) -> Text
+unawaitedDiagnostic opts traceId (site, outcome)
+  | optJsonFormat opts =
+      TE.decodeUtf8 . BL.toStrict . A.encode . A.object $
+        [ ("code", A.String code),
+          ("severity", "warning"),
+          ("stage", "runtime"),
+          ("message", A.String message),
+          ("traceId", A.String traceId)
+        ]
+          <> [ ( "location",
+                 A.object
+                   [ ("file", A.String (T.pack (siteModule site))),
+                     ("line", A.toJSON l),
+                     ("column", A.toJSON c)
+                   ]
+               )
+             | Just (l, c) <- [sitePosition site]
+             ]
+          <> [("failure", A.object [("code", A.String fc), ("message", A.String fm)]) | Left (fc, fm, _) <- [ended]]
+  | otherwise = code <> ": " <> message
+  where
+    code = "W-ASYNC-UNAWAITED"
+    ended = case outcome of
+      Right _ -> Right ()
+      Left ex -> Left $ case fromException ex of
+        Just lf -> (maybe "E-RUNTIME" codeText (lfCode lf), failureMessage lf, Just (exitCodeOf (lfError lf)))
+        Nothing -> ("E-RUNTIME", T.pack (show ex), Nothing)
+    message =
+      "the async at "
+        <> renderSite site
+        <> " was never awaited; it was waited for at the end of the run and "
+        <> either failed (const "completed") ended
+    failed (fc, fm, exit) =
+      "failed with "
+        <> fc
+        <> maybe "" (\n -> " (exit code " <> T.pack (show n) <> ")") exit
+        <> (if T.null (T.strip fm) then "" else ": " <> fm)
 
 -- help (spec 11.6) -------------------------------------------------------------
 
@@ -257,7 +325,12 @@ cmdHelp subcommand runOpts = do
       -- The name is the one the module publishes, which a renaming
       -- re-export makes different from the declaration's.
       helpOf envs (n, HelpSource hp hsrc hcomments d key) =
-        (buildFunctionHelp hp hsrc d (coreOf key) (docFor hsrc hcomments d) envs) {fhName = n}
+        (buildFunctionHelp hp hsrc d (coreOf key) (docFor hsrc hcomments d) envs)
+          { fhName = n,
+            fhConfirm = do
+              prog <- partialProgram partial
+              describeRule . snd <$> ruleFor prog (partialScopes partial) key
+          }
 
   case runFunction runOpts of
     -- The option help is always available, whatever state the module
@@ -351,7 +424,10 @@ encodeResult enc v = case enc of
 -- trace, spec 12.3) and exit with the error value's code, normalized
 -- to 1..255 (spec 8.10, 11.3).
 failureExit :: CommonOpts -> TraceId -> LaskFailure -> IO a
-failureExit opts traceId lf = do
+failureExit opts traceId uncaught = do
+  -- The message of a failed command is its stderr, so a secret it
+  -- printed is in the failure as much as in the relayed lines (12.8).
+  lf <- maskFailure uncaught
   let codeLabel = maybe "E-RUNTIME" codeText (lfCode lf)
       -- Stage discriminates error-diagnostic lines in the JSON Lines
       -- stream (spec 12.2: code + stage).
@@ -457,6 +533,27 @@ cmdEnvs envsOpts = do
   let failed = [() | (_, Just (Left _)) <- results]
   exitWith (if null failed then ExitSuccess else ExitFailure 3)
 
+-- | @lask secrets list@ \/ @check@ (spec 11.10). Without a function,
+-- every variable; with one, the variables it reads by name, and every
+-- variable when a name it reads is computed. The module is compiled
+-- only when a function is named, so the command also works outside a
+-- project.
+cmdSecrets :: Bool -> SecretsOpts -> IO ()
+cmdSecrets isCheck o = do
+  let opts = secretsCommon o
+  env <- Map.fromList <$> getEnvironment
+  scope <- case secretsFunction o of
+    Nothing -> pure AllVariables
+    Just fn -> do
+      compiled <- compileOrExit opts
+      case publicDecl compiled (kebabToSnake fn) of
+        Nothing -> usageError opts ("no such function: '" <> fn <> "'")
+        Just (key, _) ->
+          pure (maybe AllVariables (OnlyVariables fn) (collectEnvReadsFrom (compiledCore compiled) key))
+  if isCheck
+    then secretsCheck (optJsonFormat opts) (secretsRead o) env scope
+    else secretsList (optJsonFormat opts) env scope
+
 -- | Probe accessibility (spec 11.4): no command execution, no side
 -- effects; docker checks daemon connectivity, remote checks SSH
 -- session establishment. Probe processes relay through the command
@@ -469,7 +566,7 @@ checkEnvRef sink nextExec presence ref = case refKind ref of
         envJson = A.object [("$type", A.String "Environment"), ("kind", A.String "docker")]
     execNo <- nextExec
     r <-
-      try . runLoggedProcess sink ("#" <> refTarget ref) envJson execNo probeCmd $
+      try . runLoggedProcess sink ("#" <> refTarget ref) envJson execNo probeCmd Nothing $
         proc "docker" ["version", "--format", "{{.Server.Version}}"]
     case r of
       Right (0, _, _) -> presence ref
@@ -518,47 +615,19 @@ cmdDepsSync opts frozen = do
       prior <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
       syncImages opts frozen (baseDir </> defaultLockFileName) (maybe emptyLock id prior)
     Right (Just df) -> do
-      prior <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
-      -- A declared reference that no longer matches the locked one must
-      -- be fetched again, so that changing `rev` without changing
-      -- `hash` is caught as E-MODULE-HASH-MISMATCH (spec 11.5).
-      let declaredRef e = case e of
-            DepGit _ ref -> Just ref
-            DepUrl {} -> Nothing
-          needsRecheck path e =
-            case Map.lookup path (maybe Map.empty lockModules prior) of
-              Nothing -> False
-              Just locked -> lkRequested locked /= declaredRef e
-          lockedHash path = lkHash <$> Map.lookup path (maybe Map.empty lockModules prior)
-      results <- syncAll cacheDir lockedHash needsRecheck df
-      mapM_
-        ( \(path, _, status) -> case status of
-            Right _ -> TIO.putStrLn (path <> " ok")
-            Left d -> do
-              TIO.putStrLn (path <> " NG")
-              TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-        )
-        results
-      let failed = [() | (_, _, Left _) <- results]
-          lockPath = baseDir </> defaultLockFileName
-      existing0 <- either (const Nothing) id <$> loadLockFile lockPath
-      -- Resolve each reference to the commit it currently names, so a
-      -- tag that has been repointed is detected (spec 11.5).
-      entries <- mapM (resolveEntry existing0) [(p, e, h) | (p, e, Right h) <- results]
-      let moved = [m | Left m <- entries]
-          newLock = LockFile (Map.fromList [ok | Right ok <- entries]) Map.empty
-      unless (null moved) $ do
-        mapM_ (TIO.hPutStrLn stderr) moved
-        exitWith (ExitFailure 3)
-      if null failed
+      let lockPath = baseDir </> defaultLockFileName
+      prior <- either (const Nothing) id <$> loadLockFile lockPath
+      results <- syncAll cacheDir (lockedEntry prior) df
+      reportSync opts results
+      if all (isRight . thd) results
         then do
-          -- --frozen (spec 11.5): CI asserts that the committed lock is
-          -- what resolution produces, rather than updating it.
-          let existing = existing0
+          let newLock = LockFile (lockedModules results) Map.empty
               -- The modules are written before the images are
               -- resolved: reading the program needs them locked.
-              withImages = newLock {lockImages = maybe Map.empty lockImages existing}
-          if frozen && Just (lockModules newLock) /= fmap lockModules existing
+              withImages = newLock {lockImages = maybe Map.empty lockImages prior}
+          -- --frozen (spec 11.5): CI asserts that the committed lock is
+          -- what resolution produces, rather than updating it.
+          if frozen && Just (lockModules newLock) /= fmap lockModules prior
             then do
               TIO.hPutStrLn stderr
                 (codeText EModuleLockStale <> ": the lock file is out of date (--frozen)")
@@ -589,39 +658,37 @@ syncImages opts frozen lockPath lock = do
     else when (updated /= lock) $ BL.writeFile lockPath (renderLockFile updated)
   if null (matFailures m) then exitSuccess else exitWith (ExitFailure 3)
 
--- | Resolve a git reference to the commit it names and compare it with
--- what the lock already pins (spec 11.5). A reference that resolves to
--- a different commit than before is @E-MODULE-REV-MOVED@.
-resolveEntry ::
-  Maybe LockFile ->
-  (Text, DepEntry, Text) ->
-  IO (Either Text (Text, LockEntry))
-resolveEntry existing (path, entry, hash) = case entry of
-  DepUrl {} -> pure (Right (path, lockEntryOf entry hash))
-  DepGit url rev -> do
-    resolved <- resolveGitRev url rev
-    let base = lockEntryOf entry hash
-        wasRev = Map.lookup path (maybe Map.empty lockModules existing) >>= lkRev
-    pure $ case (resolved, wasRev) of
-      (Just sha, Just old)
-        | sha /= old ->
-            Left $
-              codeText EModuleRevMoved
-                <> ": '"
-                <> path
-                <> "': "
-                <> rev
-                <> " now resolves to "
-                <> sha
-                <> " (locked: "
-                <> old
-                <> ")"
-      (Just sha, _) -> Right (path, base {lkRev = Just sha})
-      (Nothing, _) -> Right (path, base)
+-- | What the lock records for a dependency path.
+lockedEntry :: Maybe LockFile -> Text -> Maybe LockEntry
+lockedEntry lock path = Map.lookup path (maybe Map.empty lockModules lock)
+
+-- | The module section of the lock, from a sync in which every entry
+-- resolved.
+lockedModules :: [(Text, DepEntry, Either Diagnostic Pinned)] -> Map.Map Text LockEntry
+lockedModules results =
+  Map.fromList
+    [ (p, base {lkRev = pinRev pinned <|> lkRev base})
+    | (p, e, Right pinned) <- results,
+      let base = lockEntryOf e (pinHash pinned)
+    ]
+
+-- | One line per dependency path on stdout, and the diagnostic of each
+-- failure on stderr.
+reportSync :: CommonOpts -> [(Text, DepEntry, Either Diagnostic Pinned)] -> IO ()
+reportSync opts =
+  mapM_ $ \(path, _, status) -> case status of
+    Right _ -> TIO.putStrLn (path <> " ok")
+    Left d -> do
+      TIO.putStrLn (path <> " NG")
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+
+thd :: (a, b, c) -> c
+thd (_, _, c) = c
 
 -- | The lock record of a declared entry (spec chapter 5). @requested@
--- keeps the reference that was written; @rev@ is filled in only when
--- that reference is already a full commit SHA.
+-- keeps the reference that was written; @rev@ is filled in here only
+-- when that reference is already a full commit SHA, and otherwise from
+-- the commit the fetch checked out.
 lockEntryOf :: DepEntry -> Text -> LockEntry
 lockEntryOf (DepGit u r) h =
   LockEntry (Just u) Nothing (Just r) (if isFullSha r then Just r else Nothing) h
@@ -630,18 +697,28 @@ lockEntryOf (DepUrl u) h = LockEntry Nothing (Just u) Nothing Nothing h
 isFullSha :: Text -> Bool
 isFullSha r = T.length r == 40 && T.all (\c -> c `elem` ("0123456789abcdef" :: String)) r
 
--- | @lask deps add@: fetch the source, pin its content hash (trust on
--- first use), record the entry and place the verified source in the
--- cache.
+-- | @lask deps add@: declare the entry, then resolve the whole project
+-- file the way @deps sync@ does. The new entry is pinned on first use:
+-- its content hash and, for git, the commit it came from. Every other
+-- entry is verified against what the lock already pins, and the lock's
+-- images are kept. Nothing is written unless every entry resolves.
 cmdDepsAdd :: CommonOpts -> Text -> DepsAddSource -> IO ()
 cmdDepsAdd opts name source = do
   unless (isLowerIdent name) $
     usageError opts ("dependency name must be a lower-case identifier: '" <> name <> "'")
   let baseDir = takeDirectory (optModule opts)
       depsPath = baseDir </> defaultDepsFileName
-      depSource = case source of
-        AddGit url rev -> SrcGit url rev
-        AddUrl url -> SrcUrl url
+      lockPath = baseDir </> defaultLockFileName
+      entry = case source of
+        AddGit url rev -> DepGit url rev
+        AddUrl url -> DepUrl url
+  -- The entry reaches git and curl without passing through the project
+  -- file's parser, so it is checked the same way here.
+  case validateSource name entry of
+    Left d -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+      exitWith (ExitFailure 1)
+    Right () -> pure ()
   cacheDir <- cacheDirFor baseDir
   existingE <- loadDepsFile depsPath
   existing <- case existingE of
@@ -649,26 +726,23 @@ cmdDepsAdd opts name source = do
       TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
       exitWith (ExitFailure 1)
     Right mDf -> pure (maybe emptyDepsFile id mDf)
-  fetched <- fetchAndStore cacheDir depSource
-  case fetched of
-    Left d -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-      exitWith (ExitFailure 3)
-    Right hash -> do
-      let entry = case depSource of
-            SrcGit url rev -> DepGit url rev
-            SrcUrl url -> DepUrl url
-          updated = existing {depsEntries = Map.insert name entry (depsEntries existing)}
-      BL.writeFile depsPath (renderDepsFile updated)
-      -- The resolution is recorded in the lock as well (spec 11.5), so
-      -- the project is immediately resolvable without a second step.
-      results <- syncAll cacheDir (const Nothing) (\_ _ -> False) updated
-      BL.writeFile (baseDir </> defaultLockFileName)
-        . renderLockFile
-        . (\ms -> LockFile ms Map.empty)
-        $ Map.fromList [(p, lockEntryOf e h) | (p, e, Right h) <- results]
-      TIO.putStrLn (name <> " " <> hash)
-      exitSuccess
+  prior <- either (const Nothing) id <$> loadLockFile lockPath
+  let updated = existing {depsEntries = Map.insert name entry (depsEntries existing)}
+      -- The entry being added, and whatever it pulled in before, is
+      -- resolved afresh; the rest keeps its pins.
+      replaced path = path == name || (name <> ">") `T.isPrefixOf` path
+      locked path = if replaced path then Nothing else lockedEntry prior path
+  results <- syncAll cacheDir locked updated
+  unless (all (isRight . thd) results) $ do
+    reportSync opts [r | r@(_, _, Left _) <- results]
+    exitWith (ExitFailure 3)
+  BL.writeFile depsPath (renderDepsFile updated)
+  BL.writeFile lockPath . renderLockFile $
+    LockFile (lockedModules results) (maybe Map.empty lockImages prior)
+  case [pinHash p | (path, _, Right p) <- results, path == name] of
+    hash : _ -> TIO.putStrLn (name <> " " <> hash)
+    [] -> pure ()
+  exitSuccess
   where
     isLowerIdent t = case T.uncons t of
       Just (c, rest) ->
@@ -697,6 +771,54 @@ usageError opts msg = do
         A.object [("code", A.String (codeText ECliUsage)), ("message", A.String msg)]
     else TIO.hPutStrLn stderr (codeText ECliUsage <> ": " <> msg)
   exitWith (ExitFailure 4)
+
+-- | The confirmation the project file asks for before this call
+-- (spec 5, 11.2). Asked at the terminal when stdin and stderr are
+-- terminals; @--confirm@ approves it instead, unless @LASK_CONFIRM=tty@
+-- says that only a typed confirmation counts. Exits 4 when refused.
+confirmOrExit :: CommonOpts -> Bool -> Compiled -> Text -> (FilePath, Text) -> CoreDecl -> [Value] -> [(Text, Value)] -> IO ()
+confirmOrExit opts approved compiled fnName key cd posVals kwVals = do
+  mode <- lookupEnv "LASK_CONFIRM"
+  ttyOnly <- case mode of
+    Nothing -> pure False
+    Just "" -> pure False
+    Just "tty" -> pure True
+    Just other -> usageError opts ("LASK_CONFIRM must be 'tty', not '" <> T.pack other <> "'")
+  when (approved && ttyOnly) $
+    usageError opts "--confirm is not accepted while LASK_CONFIRM=tty; confirm at the terminal"
+  let prompt = do
+        (_, rule) <- ruleFor (compiledProgram compiled) (compiledScopes compiled) key
+        confirmationFor fnName rule cd posVals kwVals
+  case prompt of
+    Nothing -> pure ()
+    Just _ | approved -> pure ()
+    Just p -> do
+      terminal <- (&&) <$> hIsTerminalDevice stdin <*> hIsTerminalDevice stderr
+      unless terminal . notConfirmed p $
+        "there is no terminal to confirm at; pass --confirm to approve"
+          <> (if ttyOnly then " (not accepted while LASK_CONFIRM=tty)" else "")
+      TIO.hPutStr stderr $
+        promptFunction p
+          <> " will run"
+          <> (if null (promptMatched p) then "" else " with " <> T.intercalate ", " (promptMatched p))
+          <> ".\nType '"
+          <> promptPhrase p
+          <> "' to continue: "
+      hFlush stderr
+      typed <- try TIO.getLine :: IO (Either IOException Text)
+      case typed of
+        Right t | T.strip t == promptPhrase p -> pure ()
+        Right _ -> notConfirmed p "what was typed does not match"
+        Left _ -> notConfirmed p "the input ended"
+  where
+    notConfirmed p why = do
+      let msg = "'" <> promptFunction p <> "' was not confirmed (expected '" <> promptPhrase p <> "'): " <> why
+      if optJsonFormat opts
+        then
+          TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
+            A.object [("code", A.String (codeText ECliNotConfirmed)), ("message", A.String msg)]
+        else TIO.hPutStrLn stderr (codeText ECliNotConfirmed <> ": " <> msg)
+      exitWith (ExitFailure 4)
 
 readStdinOrExit :: CommonOpts -> IO Text
 readStdinOrExit opts = do
@@ -753,6 +875,27 @@ diagJson d =
         )
       ]
     location NoSpan = []
+
+-- | An advisory in the JSON form of 14.3, marked by @severity@ (14.2).
+advisoryJson :: Advisory -> A.Value
+advisoryJson a =
+  A.object $
+    [ ("code", A.String (advisoryText (advCode a))),
+      ("severity", "warning"),
+      ("stage", "static"),
+      ("message", A.String (advMessage a))
+    ]
+      <> case advSpan a of
+        Span (Position file l c) _ ->
+          [ ( "location",
+              A.object
+                [ ("file", A.String (T.pack file)),
+                  ("line", A.Number (fromIntegral l)),
+                  ("column", A.Number (fromIntegral c))
+                ]
+            )
+          ]
+        NoSpan -> []
 
 -- | @lask env build@ (spec 11.7): materialize every image the program
 -- requires — registry references pulled and pinned, recipes built — and
@@ -819,7 +962,8 @@ cmdCmd cmdOpts = do
             "'" <> name <> "' is not a command of this module; try 'lask cmd --list'"
         Just envCore -> do
           traceId <- maybe newTraceId pure (optTraceId opts)
-          envValue <- evalCommandEnv core envCore >>= either (failureExit opts traceId) pure
+          secrets <- newSecretResolver
+          envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
           writeErr <- newLineWriter stderr
           let sink
                 | optJsonFormat opts = jsonCommandLog traceId writeErr
@@ -866,7 +1010,7 @@ listCommands opts core table = do
           )
   where
     row pins (name, envCore) = do
-      r <- evalCommandEnv core envCore
+      r <- evalCommandEnv readEnvVarUnresolved core envCore
       case r >>= resolveEnv of
         Left lf -> pure (name, "?", "<" <> failureMessage lf <> ">", False)
         Right resolved -> do
@@ -893,10 +1037,11 @@ imagePresent pins baseDir resolved = case resolved of
 -- command declaration can reach no effect (ch. 5), so nothing here can
 -- run a command, touch a file or read the standard input, which
 -- belongs to the program. The hooks refuse rather than run anything if
--- that guarantee is ever broken.
-evalCommandEnv :: CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
-evalCommandEnv core c = do
-  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())))
+-- that guarantee is ever broken. It may read the environment, through
+-- the reader given (spec 9.8).
+evalCommandEnv :: (Text -> IO (Maybe Text)) -> CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
+evalCommandEnv readEnv core c = do
+  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())) noAsyncTracker readEnv)
   r <- try (evalCore ctx Map.empty c)
   pure $ case r of
     Left lf -> Left lf

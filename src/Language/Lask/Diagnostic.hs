@@ -4,6 +4,7 @@
 -- resolution candidates etc.
 module Language.Lask.Diagnostic
   ( Diagnostic (..),
+    Advisory (..),
     mkDiagnostic,
     withExpectedActual,
     withNote,
@@ -12,7 +13,7 @@ where
 
 import Data.Text (Text)
 import qualified Data.Text as T
-import Language.Lask.ErrorCode (ErrorCode, Stage, codeText, stageText)
+import Language.Lask.ErrorCode (AdvisoryCode, ErrorCode, Stage, advisoryText, codeText, stageText)
 import Language.Lask.Span (Span)
 import Language.Lask.Utils (Pretty (pretty))
 
@@ -38,6 +39,24 @@ mkDiagnostic code stage sp msg =
       diagActual = Nothing,
       diagNotes = []
     }
+
+-- | An advisory diagnostic found by static analysis (spec 14.2): it
+-- carries @severity: "warning"@, and neither stops analysis nor changes
+-- an exit code.
+data Advisory = Advisory
+  { advCode :: AdvisoryCode,
+    advSpan :: Span,
+    advMessage :: Text
+  }
+  deriving (Show, Eq)
+
+instance Pretty Advisory where
+  pretty a =
+    pretty (advSpan a)
+      <> ": "
+      <> T.unpack (advisoryText (advCode a))
+      <> " [static]: "
+      <> T.unpack (advMessage a)
 
 withExpectedActual :: Text -> Text -> Diagnostic -> Diagnostic
 withExpectedActual e a d = d {diagExpected = Just e, diagActual = Just a}

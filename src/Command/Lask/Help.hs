@@ -34,7 +34,6 @@ import qualified Data.Text as T
 import Language.Lask.Doc (DocComment (..))
 import Language.Lask.Elaborate (CoreDecl (..), StaticParams (..))
 import Language.Lask.Span (Position (..), Span (..), spanText)
-import qualified Language.Lask.Lexer.Token as Tok
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..), renderType)
 
@@ -72,7 +71,10 @@ data FunctionHelp = FunctionHelp
     -- | Whether the declaration is a function. Plain value bindings
     -- are callable with no arguments (spec 11.2) and have help of
     -- their own, but they are not tasks and are left out of listings.
-    fhFunction :: Bool
+    fhFunction :: Bool,
+    -- | Whether the project file asks for confirmation before this
+    -- function runs, described (spec 5, 11.6).
+    fhConfirm :: Maybe Text
   }
   deriving (Show, Eq)
 
@@ -103,7 +105,8 @@ buildFunctionHelp path src decl mCore doc envs =
       fhEnvs = envs,
       fhExamples = docExamples doc,
       fhHidden = docHidden doc,
-      fhFunction = isFunctionDecl decl || isFunctionType
+      fhFunction = isFunctionDecl decl || isFunctionType,
+      fhConfirm = Nothing
     }
   where
     params = cdParams =<< mCore
@@ -149,10 +152,11 @@ buildFunctionHelp path src decl mCore doc envs =
 
     docOf n = lookup n (docParams doc)
 
--- | The type parameters a declaration binds (spec 4.2).
+-- | The type parameters a declaration binds (spec 4.2), each with its
+-- bound as written: @T@, @T: orderable@.
 declTypeParams :: AST.Decl -> [Text]
 declTypeParams d = case AST.declF d of
-  AST.DFunction _ tps _ _ _ -> [v | Tok.Spanned _ v <- tps]
+  AST.DFunction _ tps _ _ _ -> [T.drop 1 (T.dropEnd 1 (AST.renderTypeParams [tp])) | tp <- tps]
   _ -> []
 
 -- | The declaration's name with its type parameters, for the places
@@ -202,6 +206,7 @@ renderHelpText subcommand fh =
         fromMaybe "" (fhDescription fh),
         paramsSection,
         returnsSection,
+        confirmSection,
         envsSection,
         examplesSection,
         definedAt
@@ -239,6 +244,10 @@ renderHelpText subcommand fh =
     returnsSection = case fhReturn fh of
       Nothing -> ""
       Just t -> section "Returns:" (t : maybe [] (map indentDoc . T.lines) (fhReturnDoc fh))
+
+    confirmSection = case fhConfirm fh of
+      Nothing -> ""
+      Just c -> section "Confirmation:" [c <> " (lask.json); pass --confirm to approve without a terminal"]
 
     -- A task that runs only in the default environment says nothing
     -- worth a section (spec 11.6).
@@ -302,7 +311,8 @@ renderHelpJson fh =
       ("params", A.toJSON (map paramJson (fhParams fh))),
       ("returns", returnsJson),
       ("environments", A.toJSON (map envJson (fhEnvs fh))),
-      ("examples", A.toJSON (fhExamples fh))
+      ("examples", A.toJSON (fhExamples fh)),
+      ("confirm", maybeText (fhConfirm fh))
     ]
   where
     locationJson l = A.object [("line", A.Number (fromIntegral l)), ("column", A.Number 1)]

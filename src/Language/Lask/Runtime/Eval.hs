@@ -15,7 +15,7 @@ module Language.Lask.Runtime.Eval
 where
 
 import Control.Concurrent.Async (waitCatch)
-import Control.Exception (catch, fromException, throwIO)
+import Control.Exception (catch, throwIO)
 import Control.Monad (foldM, when)
 import Data.Time.Clock (getCurrentTime)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
@@ -25,11 +25,13 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
-import Language.Lask.Builtins.Impl (RtHooks, callBuiltin)
+import Language.Lask.Builtins.Impl (RtHooks (..), callBuiltin)
+import Language.Lask.Runtime.AsyncTrack (AsyncTracker (..))
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.Events
+import Language.Lask.Runtime.Secrets (maskSecretsJson)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (functionRefJson)
 import Language.Lask.Types (Field (..), Type (..), renderType, requiredNames)
@@ -156,13 +158,13 @@ evalCore ctx scope (Core _ f) = case f of
     v <- evalCore ctx scope c
     case v of
       VAsync (AsyncHandle a) -> do
+        trackAwaited (hookAsync (rtHooks ctx)) a
         r <- waitCatch a
         case r of
           Right x -> pure x
-          Left ex -> case fromException ex of
-            Just failure -> throwIO (failure :: LaskFailure)
-            Nothing ->
-              throwIO (runtimeFailure ERuntimeAwaitFailed ("async computation failed: " <> T.pack (show ex)))
+          -- The failure is re-raised as it was, as if the computation
+          -- had run in place (spec 6.3, 8.6).
+          Left ex -> throwIO ex
       _ -> internal "await on a non-handle"
   CEnv kind args -> do
     params <- mapM evalKv args
@@ -232,9 +234,12 @@ instrument ctx lam args action
     isAnonymous = T.isPrefixOf "<" (lamName lam)
     frameLabel = lamName lam <> " (" <> T.pack (lamModule lam) <> ")"
     summarizeArgs = summarizeValue (VArray (V.fromList args))
+    -- Arguments, results and errors are masked as the event is made
+    -- (spec 12.8): a secret passed to a function is in its CallEvent.
     emit kind payload = do
       now <- getCurrentTime
-      rtEmit ctx (Event kind (rtTraceId ctx) now (functionRefJson lam) payload)
+      masked <- traverse (traverse maskSecretsJson) payload
+      rtEmit ctx (Event kind (rtTraceId ctx) now (functionRefJson lam) masked)
 
 binOp :: RtCtx -> PrimOp -> Value -> Value -> IO Value
 binOp _ op a b = case op of

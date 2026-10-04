@@ -64,6 +64,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [9.5 Role of Standard Output](#95-role-of-standard-output)
     - [9.6 Role of Standard Error](#96-role-of-standard-error)
     - [9.7 Inter-Function Data Flow and Pipes](#97-inter-function-data-flow-and-pipes)
+    - [9.8 Secret References](#98-secret-references)
   - [10. Execution Environments](#10-execution-environments)
     - [10.1 The `Environment` Type and Environment Expressions](#101-the-environment-type-and-environment-expressions)
     - [10.2 Target Environment Profiles and Environment Constructor Signatures](#102-target-environment-profiles-and-environment-constructor-signatures)
@@ -83,6 +84,8 @@ This document is the language specification of Lask that satisfies the requireme
     - [11.6 Help Display (`--help`)](#116-help-display---help)
     - [11.7 Environment Materialization (`env`)](#117-environment-materialization-env)
     - [11.8 Command Invocation (`cmd`)](#118-command-invocation-cmd)
+    - [11.9 Interactive Session (`repl`)](#119-interactive-session-repl)
+    - [11.10 Secret References (`secrets`)](#1110-secret-references-secrets)
   - [12. Observability](#12-observability)
     - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
     - [12.2 Execution Log](#122-execution-log)
@@ -197,7 +200,7 @@ This section defines the principal terms used in this specification.
 
 ## 2. Notation
 
-This chapter defines only how to read the EBNF notation used throughout the specification document.
+This chapter defines how to read the EBNF notation used throughout the specification document, and how its Lask examples are marked.
 
 ```ebnf
 Production  = production_name "=" [ Expression ] "." .
@@ -218,6 +221,11 @@ How to read the EBNF:
 - `( X )` denotes grouping.
 - `"..."` denotes a terminal symbol (a literal string).
 - `production_name` denotes a nonterminal symbol (a reference to another production rule).
+
+Lask examples:
+
+- A code block marked `lask` is a complete module: on its own, as `main.lask`, it passes `lask check`.
+- A code block marked `lask fragment` is not: it is an excerpt, an equivalence written with `(* ... *)` between its two sides, or a module that relies on files or dependencies the example does not show.
 
 ## 3. Lexical Specification
 
@@ -376,7 +384,10 @@ FunctionType      = "Function" "<" Type { "," Type } ">" .
 NamedType         = ( upper_id | QualifiedNamedType ) [ TypeArgs ] .
 QualifiedNamedType = lower_id "." upper_id .
 TypeArgs          = "<" Type { "," Type } ">" .
-TypeParams        = "<" upper_id { "," upper_id } ">" .
+TypeParams        = "<" TypeParam { "," TypeParam } ">" .
+TypeParam         = upper_id [ ":" Bound ] .
+Bound             = NamedBound | Type .
+NamedBound        = "comparable" | "orderable" | "stringifiable" .
 TypeAliasDecl     = "type" upper_id [ TypeParams ] "=" Type .
 ```
 
@@ -402,6 +413,33 @@ Type parameters:
 - Declaring a type parameter whose name is that of a type alias visible at the declaration is a duplicate definition error (`E-NAME-DUPLICATE`). Shadowing is not permitted, so a type name means one thing throughout a declaration.
 - A type parameter that appears in no position is permitted. Nothing determines it and nothing needs to.
 - Type parameters are not written at a use site: a call instantiates them from the argument types and the expected type (4.4), and there is no syntax for giving them explicitly.
+
+Bounds:
+
+- A type parameter may carry a **bound**, written after a `:`, which limits the types it may be instantiated to (4.4). One parameter has at most one bound.
+- A **named bound** is one of three predicates, written in lower case:
+  - `comparable`: the comparable types of 6.2.
+  - `orderable`: `Number` and `String`, the types `sort` orders (15.4).
+  - `stringifiable`: the stringifiable types of 6.6.
+- The set of named bounds is closed: a program cannot declare one. A named bound is recognized only in bound position. There it cannot be mistaken for a type, since no type is written in lower case, and elsewhere the words are ordinary identifiers. Any other lower-case word there is an undefined reference error (`E-NAME-UNDEFINED`).
+- A **type bound** is any other type. It admits the types that conform to it (4.4), so `<T: Number | String>` admits `Number`, `String` and `Number | String`. It may be written through a type alias, which is how a program defines a bound of its own:
+
+  ```lask
+  type Key = Number | String
+
+  label<T: Key>(x: T): String = "key #{x}"
+  ```
+
+- A type bound must not mention a type parameter, and must not be `Void`. Either is a static error (`E-TYPE-ILLFORMED`).
+- A bound is a restriction on use sites, not a type class. There are no instances to declare, and a type satisfies a named bound by what it is, by the rules of the section that defines the predicate.
+
+```lask
+largest<T: orderable>(xs: Array<T>): T = last(sort(xs))
+
+dedupe<T: comparable>(xs: Array<T>): Array<T> = unique(xs)
+
+type Index<K: comparable> = Array<Record<key: K, at: Number>>
+```
 
 Parameterised type aliases:
 
@@ -520,7 +558,7 @@ Type annotations are optional, and the following type inference rules apply wher
 - In the form `Function<T1, T2, ..., R>`, the last type argument is the return type, and the preceding ones are the positional parameter types.
 - A `NamedType` is expanded into its `TypeAliasDecl` before type checking, and inference is performed on the expanded type.
 - Overloading is not supported. One symbol has one function type.
-- Abstract types (type classes, etc.) are not supported, and a type parameter carries no constraint: there is no way to require that it be comparable, ordered or stringifiable. A function needing such an operation takes it as an argument instead (15.1).
+- Abstract types (type classes, etc.) are not supported. A type parameter may carry a bound from a closed set of predicates, or a type bound (4.2), and nothing more: an operation beyond what the bounds give is taken as an argument instead (`Function<T, T, Bool>` as an equality).
 - A declaration may declare type parameters (4.2), and its annotations — including those on bindings inside its body — may mention them. They are instantiated per call by the rules of 4.4.
 
 Diagnostic rules on inference failure:
@@ -603,11 +641,25 @@ Polymorphic types:
 - A reference whose expected type is not fully determined is written as a lambda instead, which requires only its parameter types: the body is then a call, and a call instantiates from its arguments. So where `map(xss, reverse)` has no type to instantiate `reverse` at — `map`'s result variable being fixed by nothing — `map(xss, \(xs) -> reverse(xs))` is well-typed, and the result type flows out of the lambda rather than being demanded by it. The two forms are not interchangeable in general: a value reference also loses the declaration parameter information a call keeps (7.5), so keyword arguments and default completion are available in the second and not in the first. An implementation must not silently rewrite one into the other.
 - Implementations may realize polymorphism by any internal mechanism, but must satisfy the observable type-checking results above.
 
+Bounds (4.2):
+
+- A type **satisfies** a named bound when it has the property the bound names (6.2, 15.4, 6.6), and a type bound `B` when it conforms to `B`. A type parameter in scope satisfies what its bound entails (below).
+- Wherever a signature is instantiated — at a call, and at a reference as a function value alike — the type each bounded variable is instantiated to must satisfy its bound. A violation is a static error (`E-TYPE-BOUND`), whose diagnostic names the function, the variable, the bound and the type. A type alias with bounded parameters is held to them where it is applied to type arguments.
+- The same predicates govern the operations that have no signature: `==` / `!=` (6.2) and a `case` value head (6.4) need `comparable`, and interpolation (6.6) needs `stringifiable`. A violation of these is `E-TYPE-BOUND` as well.
+- Built-in functions state their conditions as bounds in their signatures, written `sort<T: orderable>: Function<Array<T>, Array<T>>` (15.1). `cast` (15.8) is not among them, since its target has to be a concrete data type at run time. A type parameter never is, bounded or not, so that condition is well-formedness (`E-TYPE-ILLFORMED`) rather than a bound.
+
+Entailment:
+
+- A bound **entails** a named bound when every type it admits satisfies that named bound.
+- `orderable` entails `comparable` and `stringifiable`, as well as itself. `comparable` and `stringifiable` entail only themselves.
+- A type bound `B` entails a named bound that `B` itself satisfies, except that `Any` entails nothing: every type conforms to `Any`. So `<T: Number | String>` entails `comparable` and `stringifiable`, but not `orderable`, since the union admits itself and a union is not orderable.
+
 Type parameters within the body of their declaration (rigidity):
 
-- Within the body of a declaration that declares type parameters, each type parameter is an opaque type, distinct from every other type including every other type parameter. It conforms only to itself and to `Any`.
-- It is therefore not a comparable type (6.2), not ordered (15.4), not stringifiable (6.6), not a legal target of `cast` (15.8), and not a legal `case` type head (6.4), being neither a union nor `Any`.
-- A value of a type parameter's type can be bound, passed, returned, placed in an `Array` / `Map` / `Record`, and serialized through `Any` — and nothing else. A body that needs an operation on such a value takes the operation as an argument (`Function<T, Number>` as a sort key, `Function<T, T, Bool>` as an equality), which is also how the built-in library states the conditions its own signatures cannot (15.1).
+- Within the body of a declaration that declares type parameters, each type parameter is an opaque type, distinct from every other type including every other type parameter. It conforms to itself, to `Any`, and, when it has a type bound `B`, to whatever `B` conforms to.
+- It satisfies a named bound exactly when its own bound entails it (4.4, bounds). An unbounded type parameter is therefore not a comparable type (6.2), not ordered (15.4), and not stringifiable (6.6); `<T: comparable>` can be compared with `==`, `<T: stringifiable>` interpolated, and `<T: orderable>` sorted, compared and interpolated. No bound makes it a legal target of `cast` (15.8) or a legal `case` type head (6.4), being neither a union nor `Any`.
+- A value of an unbounded type parameter's type can be bound, passed, returned, placed in an `Array` / `Map` / `Record`, and serialized through `Any` — and nothing else. A body that needs an operation beyond what a bound gives takes the operation as an argument (`Function<T, Number>` as a sort key, `Function<T, T, Bool>` as an equality).
+- A bounded type parameter is still distinct from its bound: `<T: Number>` may be passed where `Number` is required, but `x + 1` is a `Number` and not a `T`.
 - A type parameter is opaque only inside the body. At a call site it is instantiated to a concrete type, and the result is that concrete type.
 - This rule has no counterpart for built-in symbols, which have no body in this specification.
 
@@ -671,7 +723,7 @@ Command declarations:
 - A name is a `string_lit` containing no interpolation. The set of command words a module has must be determinable without evaluating it, for the same reason 10.2 requires literal `dockerfile` and `context` arguments.
 - A name is valid exactly when submitting it alone, as a whole command string, to the dispatch procedure of 10.9 yields exactly one candidate whose text is the name itself. Otherwise it is a static error (`E-TYPE-COMMAND-NAME`). The rule is stated against the procedure so that a name that could never be recognized in a command string is rejected where it is written; `docker-compose`, `7z` and `g++` are valid, while `my prog`, `a=b`, `/usr/bin/x` and `foo*` are not.
 - The environment is any expression of type `Environment`; any other type is a static error (`E-TYPE-COMMAND-ENV`). It is elaborated in the module that declares it, and evaluated when a command it selects runs, not when the module is loaded.
-- The environment must not have an effect. It must not reach, directly or through the top-level declarations it references, command execution (15.5, and so no command execution expression), the filesystem (15.11), diagnostic output (15.12), nondeterministic generation (15.13), or the standard input (9.3). Reachability over-approximates as enumeration does (11.4): a reference counts whether or not it is ever called. A violation is a static error (`E-TYPE-COMMAND-EFFECT`). Reading the variables of the process (15.9) is permitted.
+- The environment must not have an effect. It must not reach, directly or through the top-level declarations it references, command execution (15.5, and so no command execution expression), the filesystem (15.11), diagnostic output (15.12), nondeterministic generation (15.13), the functions that wait (15.7), or the standard input (9.3). Reachability over-approximates as enumeration does (11.4): a reference counts whether or not it is ever called. A violation is a static error (`E-TYPE-COMMAND-EFFECT`). Reading the variables of the process (15.9) is permitted.
 - The restriction is what an environment has to satisfy for everything that reads it without running a task. Every image a declaration can name stays enumerable (11.4), since enumeration walks its expression; an image reference built at run time is reported as dynamic, as it is anywhere else (10.3); `cmd` can evaluate the environment without running anything and without consuming the standard input, which belongs to the program (11.8); and the environment means the same wherever the word is used, including in a module that imports it.
 - `#local` is permitted, and is how a module states which programs it runs on the host.
 - A command declaration takes a visibility marker like any other declaration. Omitting it is equivalent to `export`, and makes the words **exported command words** of the module; `internal` keeps them to it. Exporting a word changes nothing in another module until that module imports the word by name.
@@ -696,7 +748,7 @@ Command imports and exports:
 - One declaration reached along two import paths — directly, and through a module that re-exports it — gives one command word, not two. A word imported from two different declarations is `E-TYPE-COMMAND-DUPLICATE`.
 - `ImportPath` follows the resolution rules below, including the restriction of an external import to the entry module of a dependency. A dependency that publishes command words from several files re-exports them from its entry module.
 
-```lask
+```lask fragment
 // tools/main.lask
 go(--proxy: String = ""): Environment = #docker("golang:1.25", env = {"GOPROXY": proxy})
 aws(--profile: String = ""): Environment = #docker("amazon/aws-cli:2.36.41", env = {"AWS_PROFILE": profile})
@@ -787,14 +839,31 @@ Project file:
       "rev": "v1.2.0"
     },
     "notify": {"url": "https://example.com/tasks/notify.lask"}
+  },
+  "confirm": {
+    "deploy": {"when": {"env": ["prod", "production"]}},
+    "destroy": {},
+    "reset_db": {"phrase": "reset #{db}"}
   }
 }
 ```
 
+- The top level has two keys, both optional: `dependencies` and `confirm` (below). Any other key is an error, so that a misspelt key is never silently ignored.
 - The top-level `dependencies` map associates a dependency name (a string conforming to `lower_id`; 3.2) with an entry.
 - An entry has exactly one source: `git` (a repository URL; `rev` — a tag or a full commit SHA — is required) or `url` (an archive or a single `.lask` file). A branch must not be given as `rev`.
+- `git`, `rev` and `url` must not start with `-` and must not contain whitespace or control characters, so that no value can be taken for an option of the tool that fetches it. A `url` must be an `https://`, `http://` or `file://` URL, and a redirect followed while fetching it must not move from `https` to `http`. A violation is a static error (`E-MODULE-UNRESOLVED`), in the project file and in `lask deps add` (11.5) alike.
 - Secrets (credentials, tokens) must not be written in this file.
-- Entries are typically recorded with `lask deps add` (11.5).
+- Entries are typically recorded with `lask deps add` (11.5). Rewriting the file keeps its `confirm` map.
+
+Confirmation:
+
+A project states which of its functions ask for a typed confirmation before they run (11.2). This is a guard against operational mistakes, not a security boundary. What must not happen at all is for the target's own permissions to prevent. Confirmation is declared here rather than in code, as dependencies are: code states what a task does, and whether running it needs a deliberate act is a property of the project.
+
+- `confirm` maps a function name to an entry. The name is a public symbol of the entry module (a re-exported function included), as the CLI names it (11.2). An entry belongs to the declaration the name resolves to.
+- `when` (optional) maps a parameter name to a non-empty array of values. Confirmation is required when any one of the named parameters equals one of its values. Without `when`, confirmation is always required.
+- `phrase` (optional) is what has to be typed. `#{name}` interpolates the value of the parameter `name`. By default it is the value of the first parameter that matched `when`, and the function's name when there is no `when`.
+- An entry takes no other key. Only the root project's file is read. A dependency's own `confirm` does not apply to whoever imports it.
+- `check`, `run`, `eval` and `envs` check every entry against the program, whether or not anything calls the function. The function must be a public function of the entry module, every parameter `when` names and every parameter `phrase` interpolates must be a parameter of it, and every value in `when` must conform to its parameter's type, as a CLI argument would (11.2). A violation is a static error (`E-MODULE-CONFIRM-TARGET`) located at the entry's key in `lask.json`. A protection that silently stopped applying would be worse than none.
 
 Lock file:
 
@@ -822,7 +891,8 @@ Lock file:
 
 - Keys of `modules` are dependency paths: a direct dependency is its name; a transitive dependency is `parent>child`. Duplicate fetches of the same content are permitted and each occurrence is recorded (no version unification is performed).
 - `rev` in the lock must be a full 40-hexadecimal-digit commit SHA. `requested` preserves the reference that was resolved.
-- `hash` (a content hash of the fetched source) is required for every entry. The same entry must always yield identical source code.
+- `hash` (a content hash of the fetched source) is required for every entry, in the form `sha256-` followed by 64 lower-case hexadecimal digits. The same entry must always yield identical source code.
+- A lock entry whose `hash` or `rev` is not of its form is a static error (`E-MODULE-LOCK-STALE`).
 - `images` records the container images the resolved graph requires (10.3). Keys are `<dependency path>#<image key>`, where the dependency path is empty for the root project.
 - A registry reference is recorded once for the whole graph, under the empty path, whichever module writes it: one reference names one image wherever it appears, and resolving it when a command runs (10.4) needs nothing but the reference. Its entry holds the reference as written (`ref`) and the digest it is pinned to (`digest`).
 - An entry that no image of the program references any more is dropped when the images are next materialized.
@@ -835,10 +905,14 @@ Consistency:
 Fetching and verification:
 
 - Dependencies are fetched into a per-project, content-addressed cache and verified against `hash` by the CLI (`lask deps sync`; 11.5). A verification failure is `E-MODULE-HASH-MISMATCH`.
-- The cache is located at `.lask/deps` under the base directory for module resolution. Because the store is keyed by content hash and is written only after verification, the presence of an entry implies a verified source; a full re-hash is performed by `deps sync` and is not required of other subcommands. A project may therefore be copied, cache included, to a machine without network access.
+- The cache is located at `.lask/deps` under the base directory for module resolution, unless `LASK_CACHE_DIR` names another directory. A project may therefore be copied, cache included, to a machine without network access.
+- The presence of an entry is not taken as proof of its content: a cache may be shared between projects or written by something other than `deps sync`. Every subcommand that resolves a dependency verifies its entry against `hash` when it uses it, at most once per resolution. An entry that is itself a symbolic link does not verify. `deps sync` replaces an entry that does not verify with a fresh fetch.
+- A dependency must not contain symbolic links: their content would depend on the machine that reads them, outside what `hash` covers. A source that contains one is refused when it is fetched. The content hash of a tree never follows a link; it covers the link's own path and target text.
+- A local import (`./`, `../`) in a module of a dependency must resolve inside that dependency's tree; a single-file dependency has no local imports. Otherwise it is `E-MODULE-UNRESOLVED`. What a dependency loads is thereby what its `hash` covers.
 - If a tag recorded as `requested` later resolves to a different commit, `deps sync` reports `E-MODULE-REV-MOVED`. This is distinguished from `E-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
 - `check`, `run`, `eval`, and `envs` must not access the network for module resolution. If a declared dependency is not present in the cache, or fails verification, it is a static error (`E-MODULE-UNRESOLVED`).
-- An external module may itself have a `lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted) and are recorded in the root project's lock file.
+- An external module may itself have a `lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted) and are recorded in the root project's lock file, each under its dependency path (`parent>child`).
+- A `lask.json` that a fetched dependency carries but that is not a valid project file is a failure of that dependency in `deps sync` and `deps add`, reported with the dependency it belongs to; its dependencies are not taken to be none.
 
 Examples:
 
@@ -853,7 +927,7 @@ type Strings = Array<String>
 joinWithComma(xs: Strings): String = join(xs, ",")
 ```
 
-```lask
+```lask fragment
 // module: app/main.lask
 import { add } from "./lib/math.lask"
 import * as types from "./lib/types.lask"
@@ -877,7 +951,7 @@ Here `notify` is an external dependency declared in `lask.json` as a single-file
 export rollout(--target: String = "staging"): String = $[#alpine:3.20] echo "#{target}"
 ```
 
-```lask
+```lask fragment
 // module: main.lask
 export { rollout } from "./lib/deploy.lask"
 ```
@@ -977,7 +1051,7 @@ Desugaring rules for function declarations:
 
 Equivalence example:
 
-```lask
+```lask fragment
 f(x) = x + 1
 g = \(x) -> x + 1
 ```
@@ -1024,8 +1098,8 @@ The types of the operators are as follows.
 - `*`, `/`, `+`, `-` are typed as `Function<Number, Number, Number>`.
 - `<`, `<=`, `>`, `>=` are typed as `Function<Number, Number, Bool>`.
 - `&&`, `||` are typed as `Function<Bool, Bool, Bool>`.
-- `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. When neither side is a union this is the same rule as "the two types match", because conformance between non-union types is identity or promotion to `Any`, and `Any` is not comparable.
-- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, and a union all of whose members are comparable types.
+- `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. In the terms of 4.4 they are `<T: comparable> Function<T, T, Bool>`, instantiated at the wider type, and a type that is not comparable is `E-TYPE-BOUND`. When neither side is a union this is the same rule as "the two types match", because conformance between non-union types is identity or promotion to `Any`, and `Any` is not comparable.
+- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, a union all of whose members are comparable types, and a type parameter whose bound entails `comparable` (4.4). This is the named bound `comparable` (4.2).
 - Therefore `x == null` is well-typed when `x: String | Null`, since `Null` conforms to `String | Null` and that union is comparable. It compares values and does not by itself narrow the type of `x`; narrowing is a property of `case` (6.4).
 - Applying `==` / `!=` to types containing `Function`, `AsyncHandle`, `Void`, or `Any` is a static error. To compare values of `Any`, first move to a concrete type with `cast` (15.8), or narrow with `case` (6.4), and then compare.
 - Equality of structured values (`Array` / `Map` / `Record`) is determined by recursive structural comparison of elements, keys, and fields. Equality of `Environment` follows 8.8.
@@ -1074,6 +1148,8 @@ Evaluation rules:
 - `await h` suspends the current evaluation until `h` completes, and returns the result value after completion.
 - Applying `await h` multiple times to the same handle returns the same completion result.
 - If a failure occurs inside `async e`, that failure is re-raised at the time of `await h`.
+- A handle is **consumed** when it is passed to `await`, `all`, or `race`, or when its computation is cancelled because a `timeout` body that started it was abandoned (15.7). A computation whose handle is never consumed is not cut short by the end of the top-level execution (`run` / `eval`, Chapter 11): the execution waits for it, including any computation it starts in turn, and then reports it as the advisory `W-ASYNC-UNAWAITED` (14.2). The report names where it was started and, if it failed, its failure. It changes neither the result nor the exit code of the execution: a failure nobody awaited is reported, not raised.
+- A handle that can be seen from the text alone never to be consumed is reported statically as the advisory `W-ASYNC-UNUSED` (14.2): an expression of type `AsyncHandle<T>` or `Array<AsyncHandle<T>>` that is a statement of a block other than its last, so that its value is discarded (6.5); or a binding in a block of either type whose name no later statement of the block refers to. A handle that is referred to — awaited, passed to a function, stored, returned — is not reported, whether or not it is eventually consumed; `W-ASYNC-UNAWAITED` covers those at run time.
 
 The execution environment may choose the concurrency mechanism for `async` (threads, an event loop, a remote execution queue, etc.) as implementation-defined, but must satisfy the typing rules and evaluation rules above.
 
@@ -1374,7 +1450,7 @@ labels(xs: Array<String>) = do {
 
 publish(tag: String): String = do {
   if (tag == "") { return "skip: no tag" }
-  r = $* ./release.sh #{tag}
+  r = $*[#local] ./release.sh #{tag}
   if (r.code != 0) { return r.stderr }
   "released"
 }
@@ -1409,7 +1485,7 @@ Desugaring rules:
 - `$*[env] cmd` is syntactic sugar for `run(env, "cmd")`.
 - `$[env] cmd` and `$1[env] cmd` are syntactic sugar for the following expression (`r` is a fresh identifier that does not collide with others).
 
-  ```lask
+  ```lask fragment
   do {
     r = run(env, "cmd")
     if (r.code == 0) { r.stdout } else { fail({code: r.code, message: r.stderr}) }
@@ -1448,8 +1524,8 @@ Typing rules:
 - `run` is typed as `Function<Environment, String, CommandResult>` (7.5).
 - As a result of the desugaring, the expression type of `$ ...`, `$1 ...`, and `$2 ...` is `String`, and the expression type of `$* ...` is `CommandResult`.
 - If `env` does not conform to `Environment`, it is a type error.
-- The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a type error.
-- The stringifiable types are `String`, `Number`, `Bool`, `Any`, and a union all of whose members are stringifiable. Every other type, `Null` included, is not stringifiable, and `to_string` (15.3) accepts exactly the same set. `String | Null` is therefore **not** stringifiable: a value that may be absent cannot be interpolated into a command, and must be resolved by `case` (6.4) or `cast` (15.8) first. `Any` is stringifiable statically and may still fail at runtime (15.3), because its content is unknown until then.
+- The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a static error (`E-TYPE-BOUND`).
+- The stringifiable types are `String`, `Number`, `Bool`, `Any`, a union all of whose members are stringifiable, and a type parameter whose bound entails `stringifiable` (4.4). This is the named bound `stringifiable` (4.2). Every other type, `Null` included, is not stringifiable, and `to_string` (15.3) accepts exactly the same set. `String | Null` is therefore **not** stringifiable: a value that may be absent cannot be interpolated into a command, and must be resolved by `case` (6.4) or `cast` (15.8) first. `Any` is stringifiable statically and may still fail at runtime (15.3), because its content is unknown until then.
 
 Evaluation rules:
 
@@ -1661,7 +1737,7 @@ build(): String = do {
    KeywordParameter (6.1). It is not a standalone production. *)
 ```
 
-A secret binding is a `ValueDecl` (5), `BindStmt` (6.5), positional parameter, or keyword parameter (6.1) whose name is marked `!!`. It declares that whatever value ends up bound to that name must be masked out of the command execution log (12.3) wherever it later appears, per the sensitive-information protection contract of 12.8.
+A secret binding is a `ValueDecl` (5), `BindStmt` (6.5), positional parameter, or keyword parameter (6.1) whose name is marked `!!`. It declares that whatever value ends up bound to that name must be masked out of what is written to stderr — logs, execution events and error diagnostics — wherever it later appears, per the sensitive-information protection contract of 12.8.
 
 Semantics:
 
@@ -1674,13 +1750,13 @@ Semantics:
 Desugaring rules:
 
 - `!!` is syntactic sugar for wrapping the bound expression with the core function `mark_secret` (15.9):
-  ```lask
+  ```lask fragment
   a!!: String = e
   (* is equivalent to *)
   a: String = mark_secret(e)
   ```
 - A `!!`-marked parameter is equivalent to an unmarked parameter of the same kind, with an assignment prepended to the function body that rebinds the parameter through `mark_secret`:
-  ```lask
+  ```lask fragment
   f(x!!: String) = body
   (* is equivalent to *)
   f(x: String) = do { x = mark_secret(x); body }
@@ -1695,8 +1771,8 @@ Typing rules:
 
 Scope of the masking effect:
 
-- Masking (12.8) applies only to observation data: the command execution log (12.3), in both the logged command text and relayed output lines.
-- Masking never applies to a `CommandResult`'s `stdout` / `stderr` (8.7) or to a function's return value as observed by the running program (a `!!`-marked value flows through ordinary evaluation unchanged). In particular, `eval`'s primary result on stdout (9.5, 11.3) is never masked: if a program's return value is derived from a secret binding, outputting it faithfully is the whole point of that program, and the primary-result contract of 11.3 takes precedence.
+- Masking (12.8) applies only to what the implementation writes to stderr: the execution and command execution logs (12.2, 12.3), execution events (12.6), and error diagnostics (14.3).
+- Masking never applies to a `CommandResult`'s `stdout` / `stderr` (8.7) or to a function's return value or a caught error value as observed by the running program (a `!!`-marked value flows through ordinary evaluation unchanged). In particular, `eval`'s primary result on stdout (9.5, 11.3) is never masked: if a program's return value is derived from a secret binding, outputting it faithfully is the whole point of that program, and the primary-result contract of 11.3 takes precedence.
 - The matching rule is exact-value substring matching (12.8), not static or dynamic taint tracking through the type system. A transformation that changes the value's character sequence (e.g. `to_upper`, `replace`, slicing, encoding) breaks the match for the transformed result; a transformation that only embeds the value unchanged inside a larger string (e.g. `concat`, string interpolation) does not.
 - A variadic parameter cannot be marked `!!` (6.1).
 
@@ -1864,7 +1940,6 @@ Two expansions are type-directed, and every other expansion is purely syntactic.
 The error kinds reported by static verification include at least the following.
 
 - `E-NAME-UNDEFINED`: undefined reference
-- `E-NAME-AMBIGUOUS`: ambiguous reference
 - `E-NAME-DUPLICATE`: duplicate definition
 - `E-TYPE-MISMATCH`: type mismatch
 - `E-TYPE-ARITY`: function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2)
@@ -1882,10 +1957,12 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-CASE-DUPLICATE`: two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4)
 - `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`; 4.2, 6.4, 15.8)
 - `E-TYPE-SECRET-NON-STRING`: `!!` applied to a binding whose type is not `String` (6.10)
+- `E-TYPE-BOUND`: a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 6.2, 6.4, 6.6)
 - `E-MODULE-CYCLE`: module circular dependency
 - `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
 - `E-MODULE-DEEP-IMPORT`: an external import naming a path inside a dependency tree rather than its entry module (Chapter 5)
 - `E-MODULE-LOCK-STALE`: the lock file is missing, incomplete, or inconsistent with the project file (Chapter 5)
+- `E-MODULE-CONFIRM-TARGET`: a `confirm` entry of the project file names a function, a parameter or a value that does not fit the program (Chapter 5)
 
 Error diagnostics include at least the following.
 
@@ -2020,6 +2097,11 @@ Evaluation of `await(h)`:
 
 Multiple `await`s on the same `h` return the same completion result.
 
+At the end of a top-level execution, before its result is output or its failure reported:
+
+1. While some `h` created during the execution has never been passed to `await`, `all`, or `race`, nor cancelled by `timeout` (15.7), wait until `A[h]` is no longer `running`.
+2. Report each such `h` as `W-ASYNC-UNAWAITED` (6.3), in the order the handles were created, with its failure if `A[h] = failure(err)`.
+
 ### 8.7 Command Execution (Core Function)
 
 Evaluation of `run(env, cmd)`:
@@ -2037,6 +2119,13 @@ Construction rules for `CommandResult`:
 - `run` fails only in the case of execution infrastructure failures (environment unresolvable, connection failure, command unable to start, etc.) (external I/O error; Chapter 14).
 
 Error value conversion of failures caused by non-zero exit (carrying over the exit code and standard error output) follows 8.10.
+
+Stopping an abandoned command:
+
+- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
+- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed.
+- The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
+- An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
 
 ### 8.8 Evaluation of Environment Expressions (Core Expression)
 
@@ -2086,6 +2175,7 @@ When a failure is caught, and when it reaches the top level, the failure is mapp
 
 - Runtime error: `code` is `2` (the same value as the exit code classification of 11.3).
 - External I/O error: `code` is `3` (same as above).
+- Giving up on waiting: `code` is `124`, the exit status of GNU `timeout`, for both a `timeout` whose limit passed and an `until` whose delays ran out (15.7). Neither is a failure of the program being waited for, so neither takes the runtime error code `2`, and a handler can tell the two cases apart from other failures by the code alone.
 - Failure via `fail(err)`: the given `err` is used as is. Failures arising from non-zero exits of the command execution expressions `$`, `$1`, and `$2` fall under this case; by the sugar expansion (6.6), `code` = the command's exit code and `message` = the contents of standard error output (signal mapping and capture limits follow the `CommandResult` construction rules of 8.7).
 - Secret information contained in `message` is masked or removed according to the rules of 12.8.
 
@@ -2228,6 +2318,84 @@ fanout(xs: Array<String>) =
   map(xs, \(x) -> concat("item:", x))
 ```
 
+### 9.8 Secret References
+
+A secret reference is a process environment variable whose value names a secret held in an external store rather than holding it. It is resolved when a program reads the variable (15.9), so that a program reads a credential the same way whether the environment holds the credential itself or says where to fetch it. What changes between one environment and another is the environment, never the program:
+
+```bash
+# production
+export LASK_SECRETS="vault"
+export VAULT_ADDR="https://vault.example.com"
+export VAULT_ROLE_ID="..." VAULT_SECRET_ID="..."
+export AWS_ACCESS_KEY_ID="{vault://aws/creds/deploy#access_key}"
+export AWS_SECRET_ACCESS_KEY="{vault://aws/creds/deploy#secret_key}"
+
+# development
+export AWS_ACCESS_KEY_ID="AKIA..."
+export AWS_SECRET_ACCESS_KEY="..."
+```
+
+```lask
+aws(key_id: String, secret: String) =
+  #docker("amazon/aws-cli:2.31.9", env = {"AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret})
+
+deploy(
+  --key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
+  --secret!!: String = get_env("AWS_SECRET_ACCESS_KEY")
+): String = $[aws(key_id, secret)] aws sts get-caller-identity
+```
+
+Form:
+
+```ebnf
+SecretReference = "{" , Scheme , "://" , Body , "}" ;
+Scheme          = lower , { lower | digit | "+" | "." | "-" } ;
+Body            = char , { char } ;   (* scheme-specific *)
+```
+
+- A variable is a reference only when its **whole** value has this form. A reference embedded in a longer value (`"x-{vault://...}"`) is not recognized, and the value is read as it is.
+- A value that starts with `{`, a scheme and `://` but does not end the reference with its closing `}` is a malformed reference (`E-IO-SECRET-REF`), never an ordinary value: a mistyped reference must not be handed on as a password.
+- The scheme selects the store. The schemes an implementation provides are listed below; any other is `E-IO-SECRET-PROVIDER`.
+
+Enabling stores:
+
+- The process environment variable `LASK_SECRETS` lists the schemes a run may resolve, separated by commas or white space (`LASK_SECRETS=vault`). A reference whose scheme is not listed is `E-IO-SECRET-PROVIDER`, whatever else is configured.
+- The list is read from the environment, not from the program, so that which stores a program may reach is decided by whoever runs it.
+
+Reading:
+
+- `get_env`, `find_env` and `get_env_or` (15.9) resolve a reference and return the value it names. A reference that cannot be resolved is an external I/O error (14.6) whose message names the variable and the reference and never a value or a credential. In particular `find_env` does not return `Null` for it: the variable is set, and what it names must exist.
+- `has_env` does not resolve a reference, and makes no request: a variable holding one is set.
+- A value resolved from a reference is registered for masking (12.8). This is the one case in which a value is registered because of where it came from: writing a reference is how the environment declares the value secret. Binding it to a `!!`-marked name (6.10) remains good practice and changes nothing.
+- A run reads each secret at most once. Two references that name the same secret (the same path and version, differing in their field at most) are answered by the same read, also when they are read concurrently (6.3). For a store that issues a new credential on every read, this is what makes the fields of one credential agree.
+- A resolved value is kept in memory for the rest of the run only. Nothing is written to disk.
+- Resolution never changes the process environment. A command reads the variables of its execution environment (10.6), and a `local` command that reads the variable itself sees the reference, not the secret; a value reaches a command only as the program passes it on, for instance as `#docker(..., env = {"TOKEN": get_env("TOKEN")})`.
+- Nothing that does not evaluate a program resolves a reference: `check`, `serve`, completion and help never reach a store. `cmd --list` (11.8) reports a command whose environment reads a reference without resolving it.
+
+The `vault` scheme (HashiCorp Vault, and stores serving the same HTTP API, such as OpenBao):
+
+```ebnf
+VaultBody = Path , [ "?version=" , digit , { digit } ] , "#" , Field ;
+Path      = Name , { "/" , Name } ;
+```
+
+- The path is written as `vault kv get` takes it, and the field names one key of the secret: `{vault://secret/app#password}`. The field is required.
+- Whether the path is on a key/value version 2 mount is asked of the server. There the path is read at its `data/` location and `version` selects a version, the latest when omitted. On any other mount the path is read as written, and a `version` is `E-IO-SECRET-REF`. When the server will not say, the path is read as written.
+- Configuration comes from Vault's own variables, so that an environment prepared for the Vault CLI serves unchanged: `VAULT_ADDR` (required), `VAULT_NAMESPACE`, and `VAULT_CACERT`, which trusts the certificate authority in that file instead of the system's.
+- Credentials are, in order of precedence: `VAULT_TOKEN`; AppRole login with `VAULT_ROLE_ID` and `VAULT_SECRET_ID`; the token `vault login` leaves in `~/.vault-token`. None of them is `E-IO-SECRET-PROVIDER`. A run logs in at most once.
+- A response is awaited for at most ten seconds.
+- A request carries the token, so it follows at most one redirect: the `307` or `308` with which a standby node names the active one, as the Vault CLI follows it. Any other redirect, a second one, or one from `https` to `http` is not followed and is `E-IO-SECRET-UNREACHABLE`.
+
+Errors (14.6), all catchable and exiting with code `3` when uncaught (14.8):
+
+| Code | Condition |
+| --- | --- |
+| `E-IO-SECRET-PROVIDER` | The scheme is unknown or not enabled in `LASK_SECRETS`, or the store is not configured. |
+| `E-IO-SECRET-REF` | The reference is malformed. |
+| `E-IO-SECRET-UNREACHABLE` | The store cannot be reached or does not answer, or cannot serve reads (for Vault: sealed or uninitialized). |
+| `E-IO-SECRET-AUTH` | Login fails, or the credentials do not allow reading the path. |
+| `E-IO-SECRET-NOT-FOUND` | The path, the version or the field does not exist. |
+
 ## 10. Execution Environments
 
 This chapter defines the execution environments that can be specified when invoking commands, and their responsibilities.
@@ -2290,6 +2458,7 @@ The parameters this implementation provides, beyond `image` / `dockerfile` / `co
 - An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing. This is how an argument says "not given" — a function that builds an environment passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
 - `workdir` is the explicit working directory 10.5 gives precedence over the default.
 - `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
+- A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the `docker` client's command line and sets its value in the client's environment, from which docker takes it. A variable the client reads itself — a name beginning with `DOCKER_`, ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, in any case — is passed with its value on the command line instead, since setting it for the client would change which daemon it reaches or how.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written.
 - A `Bool` parameter left `false` is the daemon's own default and is not passed; nothing is inferred from its absence.
   - The sugar `#image-name` expands to `#docker("image-name")` (7.6) and is therefore the registry-reference form, under the same rules. There is no sugar for the recipe form.
@@ -2516,11 +2685,12 @@ The CLI must provide the following subcommands.
 - `check`: returns static validation results.
 - `run`: executes the specified function. The evaluation result is not output to stdout (11.3).
 - `eval`: executes the specified function and outputs the evaluation result to stdout. The syntax is identical to `run` (11.2).
-- `repl`: provides an execution environment for interactively evaluating expressions and functions.
+- `repl`: provides an execution environment for interactively evaluating expressions and functions (11.9).
 - `envs`: enumerates the execution environments used by tasks and checks their accessibility (11.4).
 - `deps`: manages external dependencies — fetches and verifies them, records new entries, and reports on the dependency graph (11.5).
 - `env`: materializes and inspects the container images the resolved graph requires (11.7).
 - `cmd`: invokes a declared command (Chapter 5) in its declared environment (11.8).
+- `secrets`: lists the secret references in the environment and checks that the stores they name can be read from (11.10).
 
 Basic invocation syntax:
 
@@ -2555,6 +2725,8 @@ lask env build [--module <path>]
 lask env list [--module <path>]
 lask cmd [--module <path>] <command> [args ...]
 lask cmd --list [--module <path>]
+lask secrets list [--module <path>] [<function>]
+lask secrets check [--module <path>] [<function>] [--read]
 ```
 
 Policy on environment specification:
@@ -2620,8 +2792,22 @@ Type conformance rules:
 - In `auto` mode, when ambiguous, `String` takes precedence.
 - A parameter whose type is a union is bound when the decoded value conforms to one of its members (4.4); no member is preferred over another, and the decoding mode alone decides what the token becomes. So for a parameter of type `Number | Null`, `--n 8080` binds a `Number` and `--n null` binds `Null` under `auto` or `json`, while under `text` both are `String` and neither conforms.
 - Decoding failure or type mismatch must be reported as an error before function evaluation begins.
-- A function that declares type parameters (4.2) is invoked with every type parameter instantiated at `Any`, and its arguments are decoded and checked against the resulting types. This is sound because a type parameter is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
+- A function that declares type parameters (4.2) is invoked with each type parameter instantiated as follows, and its arguments are decoded and checked against the resulting types.
+  - An unbounded one is instantiated at `Any`. This is sound because it is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
+  - One with a type bound `B` is instantiated at `B`, the widest type it admits.
+  - One with a named bound is decoded at `Any`, then instantiated from the types of the decoded values, as a call instantiates it from the types of its arguments (4.4). Each value in a position of the parameter's type contributes the type a literal of it would have (4.3). The values must agree on one type, and that type must satisfy the bound; otherwise it is a usage error (`E-CLI-USAGE`) before evaluation begins. A body may compare, sort or interpolate such a value, so it cannot be handed one outside its bound.
 - Functions with positional parameters of type `Environment` are excluded from direct CLI invocation (since no decoding mode can construct an `Environment` value, this is a pre-execution error). Keyword parameters of type `Environment` are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive it as `String` etc. and construct the environment expression inside the function.
+
+Confirmation:
+
+- When the project file asks for confirmation before the function the CLI calls (Chapter 5), the CLI obtains it after the arguments are bound and before anything is evaluated or stdin is read. A refused confirmation therefore leaves nothing done.
+- Only the called function's entry is consulted. Functions it calls are not asked about: a prompt in the middle of a run would come after earlier steps had taken effect.
+- A `when` condition is judged on the bound arguments. A keyword parameter the command line leaves out has its default when that default is a literal. Any other default is known only once the run has started, so a condition on it is taken to hold.
+- When stdin and stderr are both terminals, the CLI writes to stderr the function, the arguments that matched `when`, and the phrase, and reads one line from stdin. The run proceeds only if the line, with surrounding white space removed, equals the phrase.
+- `--confirm`, a `lask` option placed before the function name, approves the confirmation without asking. It takes no value.
+- Without a terminal and without `--confirm`, the run is refused.
+- The environment variable `LASK_CONFIRM` may be set to `tty`, where runs without a terminal (an agent's, for instance) must not confirm: `--confirm` is then a usage error (`E-CLI-USAGE`), and only a typed confirmation counts. Any other non-empty value is a usage error.
+- A refused confirmation is `E-CLI-NOT-CONFIRMED`, with exit code `4`. Its message names the function and the expected phrase.
 
 Difference between `run` and `eval`:
 
@@ -2666,7 +2852,7 @@ Exit code contract:
 - `0`: success
 - Uncaught failure: the `code` of the `Error` value (8.10). Command failure passes through that command's exit code; other runtime errors default to `2`; external I/O errors (including image materialization failure and environment resolution failure) default to `3`; `fail` passes through the specified value. If `code` is not an integer in 1–255, it is normalized to `1`.
 - `1`: syntax or static validation error (detected before evaluation; no `Error` value is generated)
-- `4`: CLI usage error (invalid option, missing argument, etc.)
+- `4`: CLI usage error (invalid option, missing argument, etc.), including a refused confirmation (`E-CLI-NOT-CONFIRMED`, 11.2)
 
 Overlap of exit codes:
 
@@ -2799,7 +2985,7 @@ lask eval [--module <path>] [lask options ...] --help
 - Only `run` and `eval` provide function help. As in 11.2, the two are identical in this respect.
 - When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module.
 - Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
-- A function that declares type parameters (4.2) is displayed with them, as `first<T>`, where its declaration is being described: the heading of its help, the list of a module's functions, and an editor hover. Where the name is instead something to type — the usage line, a completion candidate, the function argument of `lask run` — it appears plain, since the type parameters are not written at a use site (4.2). A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
+- A function that declares type parameters (4.2) is displayed with them and their bounds, as `first<T>` or `largest<T: orderable>`, where its declaration is being described: the heading of its help, the list of a module's functions, and an editor hover. Where the name is instead something to type — the usage line, a completion candidate, the function argument of `lask run` — it appears plain, since the type parameters are not written at a use site (4.2). A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
 - The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
 - If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. An implementation may report the advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2).
 - Help display takes precedence over argument binding. Binding errors (11.2) are not reported when `--help` is present: `lask run build --out_dir 1 --help` displays the help and exits `0`.
@@ -2811,6 +2997,7 @@ Sources of help information:
 - Default values are displayed as their source text and **must not be evaluated**, since evaluating them may have side effects.
 - The default value of a parameter marked `!!` (6.10) is displayed as `<secret>` and must never be displayed in plaintext (12.8).
 - The environments used are enumerated by the reachability analysis of 11.4. A recipe-form environment is shown by its Dockerfile path. When the enumeration yields only `#local`, the section is omitted.
+- When the project file asks for confirmation before the function (Chapter 5), a `Confirmation:` section states the condition (`requires confirmation when env is prod or production`), and JSON output carries it as `confirm` (`null` otherwise). An editor hover shows the same.
 
 Rendering rules:
 
@@ -3015,6 +3202,93 @@ $ lask cmd go test ./... > report.txt
 2026-09-12T12:56:41.002Z [#golang:1.25:1] exit 0
 ```
 
+### 11.9 Interactive Session (`repl`)
+
+`repl` reads the target module once at start and then accepts one input per line. Each input is a session command, a top-level declaration, or an expression.
+
+Input rules:
+
+- An input starting with `:` is a session command. No declaration or expression starts with `:`, so an unknown command is reported as such (`unknown command ':foo'`) and is never parsed as code.
+- A declaration is added to the session if the session still compiles with it; otherwise its diagnostics are reported and the session is unchanged.
+- An expression is evaluated against the session and its result printed. It is not kept in the session.
+- The target module's text is the one read at start or by the last successful `:reload`. Imported modules and the lock file are read from disk on every input, so a change to them takes effect without a reload.
+
+Session commands:
+
+| Command | Meaning |
+| --- | --- |
+| `:reload`, `:r` | Read the target module again (below). |
+| `:quit`, `:q`, `:exit` | End the session. End of input does the same. |
+
+A session command takes no arguments; one given arguments is an error and changes nothing.
+
+Reload rules (`:reload`):
+
+- The target module is read again and compiled on its own, without the session's declarations.
+- If it compiles, the declarations typed at the prompt are re-applied to it in the order they were typed, and the result replaces the session.
+- Re-applying a declaration compiles it and does not evaluate it, and expressions are not replayed. A reload therefore runs no function and no command.
+- A reload is all or nothing. If the target module does not exist, does not compile, or no longer compiles with one of the declarations typed at the prompt (because the module now defines the same name, or no longer defines a name the declaration uses), the diagnostics are reported, naming that declaration in the last case, and the session is kept as it was before the reload, module text and declarations alike. A reload never discards what was typed at the prompt.
+
+Execution example:
+
+```text
+$ lask repl
+lask> double(n: Number): Number = n * 2
+lask> double(size())
+6
+            (main.lask is edited: size() now returns 5)
+lask> :r
+Ok, reloaded main.lask. (1 REPL declaration re-applied)
+lask> double(size())
+10
+```
+
+### 11.10 Secret References (`secrets`)
+
+`secrets` reports on the secret references (9.8) in the process environment: which variables hold one, and whether the stores they name can be reached, logged in to and read from. It is meant to be run before a task, on the machine and with the environment the task will run with.
+
+```text
+lask secrets list  [--module <path>] [<function>]
+lask secrets check [--module <path>] [<function>] [--read]
+```
+
+Scope:
+
+- Without a function, every variable of the process environment is considered, and no module is read: `secrets` also works outside a project.
+- With a function, only the variables it can read are considered: the names given as string literals to `get_env`, `find_env` and `get_env_or` in the declarations it reaches, and in the environments of the module's command declarations. Reachability over-approximates as in 11.4. When a name is computed, or one of these functions is passed as a value, any variable may be read, and every variable is considered.
+- Neither subcommand prints a secret value or a credential.
+
+`list`:
+
+- Reports each variable in scope that holds a reference: its name, the scheme, the reference, and whether the reference is well formed and its store enabled and configured. It makes no request to any store.
+- It exits `0`: it reports, and a problem it finds is reported as a status, not as a failure.
+
+`check` goes through each store in stages and stops a store at its first failed stage; the references to a store that stopped are reported as skipped:
+
+| Stage | What is established | Vault |
+| --- | --- | --- |
+| `config` | The scheme is enabled in `LASK_SECRETS` and the store is configured (9.8). | `VAULT_ADDR`, credentials |
+| `reachable` | The store answers and can serve reads. Reported as skipped for a store that has no such notion. | `sys/health` |
+| `auth` | The credentials log in. The report names the method, the lifetime and the policies of the session. | token lookup, AppRole login |
+| each reference | The credentials may read the path and, where the store keeps versions, the version exists. The value is not read. | `sys/capabilities-self`, the key/value metadata |
+
+- The stores checked are those enabled in `LASK_SECRETS` and those the references in scope name, so that a store can be checked before any variable refers to it.
+- A reference is not read by default, because reading can have effects: a store that issues a credential on every read issues one. `--read` also reads each reference and checks that its field exists; a credential issued by that read under a lease is revoked at once.
+- It exits `0` when every stage and every reference passed, and `3` otherwise (14.8).
+- With `--format json`, the report is one JSON document on stdout: `{"stores": [...], "malformed": [...]}`, where each store has its `scheme`, `target`, `stages` and `references`, and each stage or reference has a `status` of `ok`, `NG` or `skipped`, a `message`, and the error `code` when it failed.
+
+Example:
+
+```text
+$ lask secrets check deploy
+vault  https://vault.example.com
+  config     ok  enabled in LASK_SECRETS, https://vault.example.com
+  reachable  ok  active, v1.20.4
+  auth       ok  approle, ttl 1h, policies [default, deploy]
+  AWS_ACCESS_KEY_ID  vault://aws/creds/deploy#access_key  ok  readable (value not read)
+  SSL_KEY            vault://secret/cert?version=3#key    NG  E-IO-SECRET-NOT-FOUND: vault: 'secret/cert?version=3': version 3 does not exist or was deleted (latest 2)
+```
+
 ## 12. Observability
 
 This chapter defines the means of observing execution.
@@ -3052,7 +3326,7 @@ Output rules:
 - `info` and below are classified as operational logs, and `warn` / `error` as diagnostic logs.
 - `error`-level logs must be cross-referenceable with the corresponding failure event (12.6).
 - The line format of the default text display is implementation-defined. However, each line contains `level` and `message`, and the command execution log (12.3) follows the text-format provisions.
-- When `--format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = error diagnostics (14.3), `stream` / `event` = command execution log (12.3)).
+- When `--format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3)).
 
 ### 12.3 Command Execution Log
 
@@ -3078,8 +3352,8 @@ Each line is output with the following structure.
 - `timestamp`: UTC ISO 8601 format.
 - Environment summary: follows the notation of environment expressions (6.7). `#local`, `#<image>` (registry reference), `#docker(dockerfile = <path>)` (recipe).
 - Execution number: the sequence number assigned by the relay rules.
-- Kind: `$` (start line; records the executed command string as the content), `1|` (child process's standard output), `2|` (child process's standard error), `exit <code>` (exit, with exit code). `1` and `2` are file descriptor numbers (the same scheme as the stream specifiers in 6.6).
-- The start line (`$`) and the `exit` line must be emitted for every command execution. The command string on the start line may be truncated to an implementation-defined length.
+- Kind: `$` (start line; records the executed command string as the content), `1|` (child process's standard output), `2|` (child process's standard error), `exit <code>` (exit, with exit code), `killed` (the command was abandoned and stopped before it exited; 8.7). `1` and `2` are file descriptor numbers (the same scheme as the stream specifiers in 6.6).
+- The start line (`$`) must be emitted for every command execution, and so must exactly one of the `exit` line and the `killed` line. The command string on the start line may be truncated to an implementation-defined length.
 
 Output example:
 
@@ -3097,11 +3371,13 @@ JSON format (with `--format json`):
 - Start line: in addition to `event: "start"`, `command` (the executed command string) and `env` (the metadata representation of 13.1; named environments include `name`) are required.
 - Relay lines: `stream` (`1` or `2`) and `message` (the line's content) are required. `command` and `env` may be omitted (correlated with the start line via `exec`).
 - Exit line: `event: "exit"` and `code` (exit code) are required.
+- Killed line: `event: "killed"` is required. It has no `code`: the command did not exit on its own.
 
 Level rules:
 
 - Relay lines (`1|`, `2|`) and the start line (`$`) are `info`.
 - `exit` is `info` when the exit code is `0`, and `warn` when non-zero.
+- `killed` is `warn`.
 
 ### 12.4 Stack Traces
 
@@ -3175,8 +3451,11 @@ Masking mechanism:
 
 - A value is in scope for masking once it is registered as sensitive. Registration happens for every value bound to a `!!`-marked name, and for every explicit `mark_secret` call (6.10).
 - Registration is opt-in and is never inferred from a value's origin. In particular, reading a value with `get_env` (15.9) does not register it: most environment variables (a region, a log level) are not sensitive, and masking them would degrade the usefulness of logs without improving safety. A credential read from the environment is marked at its binding, as in `--secret_key!!: String = get_env("...")`.
+- The one exception is a value resolved from a secret reference (9.8), which is registered when it is resolved. It is not inferred: the environment declared the value secret by holding a reference to it rather than the value.
 - Registration is by value, not by name, type, or source: masking is applied by finding registered values as exact substrings of observation data and replacing each match with a fixed mask, regardless of which command, binding, or interpolation the value passed through to get there.
-- Masking is applied only to observation data (the command execution log of 12.3: the logged command text and relayed output lines) at the point that data is produced. It is never applied to a `CommandResult`'s `stdout` / `stderr` (8.7) or to any other value as observed by the running program (including `eval`'s primary result on stdout, 9.5/11.3): those must remain faithful to the real value.
+- Masking is applied to everything the implementation writes to stderr, at the point it is produced: the execution log (12.2), the command execution log (12.3: the logged command text, the environment metadata, and relayed output lines), execution events (12.6: arguments, results and error values), and error diagnostics (14.3: the message, the error value and the stack trace), including a failure reported in an advisory. The message of a failed command execution is its stderr (6.6), so a secret a command prints reaches the final diagnostic as well as the relayed lines.
+- Masking is never applied to a `CommandResult`'s `stdout` / `stderr` (8.7) or to any other value as observed by the running program — an error value caught by `try` / `catch` (6.9) included — nor to `eval`'s primary result on stdout (9.5/11.3): those must remain faithful to the real value.
+- A registered value that contains a line break is also registered line by line, since output is relayed one line at a time (12.3) and the whole value never appears within one line. A line shorter than 8 characters is not registered on its own: it is a fragment rather than a credential, and masking it would hide unrelated output.
 - Because matching is by exact substring, a value that has been transformed (case conversion, replacement, slicing, encoding, hashing, ...) since registration is no longer found and is not masked. This is a known limitation, not a defect: full protection would require tracking sensitive values through transformations (taint tracking), which this specification does not require of implementations.
 
 Retention policy:
@@ -3384,7 +3663,6 @@ Representative codes:
 - `E-SYNTAX-RETURN-POSITION`
 - `E-SYNTAX-CASE-ELSE`
 - `E-NAME-UNDEFINED`
-- `E-NAME-AMBIGUOUS`
 - `E-NAME-DUPLICATE`
 - `E-TYPE-MISMATCH`
 - `E-TYPE-ARITY`
@@ -3402,21 +3680,30 @@ Representative codes:
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
 - `E-TYPE-SECRET-NON-STRING`
+- `E-TYPE-BOUND`
 - `E-MODULE-CYCLE`
 - `E-MODULE-UNRESOLVED`
 - `E-MODULE-HASH-MISMATCH`
+- `E-MODULE-CONFIRM-TARGET`
 - `E-RUNTIME-DIV-BY-ZERO`
 - `E-RUNTIME-COMMAND-NONZERO`
-- `E-RUNTIME-AWAIT-FAILED`
 - `E-RUNTIME-ACCESS`
 - `E-RUNTIME-CAST`
 - `E-RUNTIME-VALUE`
 - `E-RUNTIME-REGEX`
+- `E-RUNTIME-TIMEOUT`
+- `E-RUNTIME-UNTIL-EXHAUSTED`
 - `E-IO-STDIN-READ`
 - `E-IO-ENV-RESOLVE`
 - `E-IO-FS`
 - `E-IO-DATA-DECODE`
+- `E-IO-SECRET-PROVIDER`
+- `E-IO-SECRET-REF`
+- `E-IO-SECRET-UNREACHABLE`
+- `E-IO-SECRET-AUTH`
+- `E-IO-SECRET-NOT-FOUND`
 - `E-CLI-USAGE`
+- `E-CLI-NOT-CONFIRMED`
 
 Advisory codes:
 
@@ -3426,7 +3713,9 @@ Advisory codes:
   - `W-DOC-PARAM-UNKNOWN`: an `@param` in a documentation comment (3.1) names a parameter the declaration does not have.
   - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
   - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
-- Reporting advisory diagnostics is optional. `check` and `serve` are the expected places to report them.
+  - `W-ASYNC-UNUSED`: a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`.
+  - `W-ASYNC-UNAWAITED`: an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6). Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`.
+- Reporting advisory diagnostics is optional, with one exception: `W-ASYNC-UNAWAITED` is always reported, because a failure it carries is otherwise invisible. `check` and `serve` are the expected places for the static ones; `run` and `eval` report the run-time ones on stderr.
 
 ### 14.3 Minimum Requirements for Diagnostic Information
 
@@ -3464,7 +3753,6 @@ Static errors are reported by pre-execution verification (Chapter 7).
 Minimum targets:
 
 - `E-NAME-UNDEFINED`
-- `E-NAME-AMBIGUOUS`
 - `E-NAME-DUPLICATE`
 - `E-TYPE-MISMATCH`
 - `E-TYPE-ARITY`
@@ -3482,10 +3770,12 @@ Minimum targets:
 - `E-TYPE-KEYWORD`
 - `E-TYPE-ILLFORMED`
 - `E-TYPE-SECRET-NON-STRING`
+- `E-TYPE-BOUND`
 - `E-MODULE-CYCLE`
 - `E-MODULE-UNRESOLVED`
 - `E-MODULE-DEEP-IMPORT`
 - `E-MODULE-LOCK-STALE`
+- `E-MODULE-CONFIRM-TARGET`
 
 Rules:
 
@@ -3500,11 +3790,12 @@ Representative examples:
 
 - `E-RUNTIME-DIV-BY-ZERO`: invalid arithmetic
 - `E-RUNTIME-COMMAND-NONZERO`: failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6)
-- `E-RUNTIME-AWAIT-FAILED`: `await` re-raises a failed state
 - `E-RUNTIME-ACCESS`: index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9)
 - `E-RUNTIME-CAST`: failure of the runtime type check of `cast` (15.8)
 - `E-RUNTIME-VALUE`: a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13)
 - `E-RUNTIME-REGEX`: a malformed regular expression pattern (15.3)
+- `E-RUNTIME-TIMEOUT`: the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10).
+- `E-RUNTIME-UNTIL-EXHAUSTED`: the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10).
 
 Rules:
 
@@ -3524,6 +3815,7 @@ Representative examples:
 - `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
 - `E-IO-FS`: filesystem access failure (the filesystem functions of 15.11)
 - `E-IO-DATA-DECODE`: failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8)
+- `E-IO-SECRET-PROVIDER`, `E-IO-SECRET-REF`, `E-IO-SECRET-UNREACHABLE`, `E-IO-SECRET-AUTH`, `E-IO-SECRET-NOT-FOUND`: failure resolving a secret reference (9.8)
 
 Rules:
 
@@ -3575,7 +3867,7 @@ The built-in library is the set of built-in symbols usable without explicit impo
 Policy:
 
 - Referentially transparent pure functions are preferred.
-- Functions with external side effects are clearly distinguished by name and contract, and are grouped into sections of their own: command execution (15.5), filesystem access (15.11), diagnostic output (15.12), and nondeterministic generation (15.13). Every other section of this chapter is pure.
+- Functions with external side effects are clearly distinguished by name and contract, and are grouped into sections of their own: command execution (15.5), filesystem access (15.11), diagnostic output (15.12), and nondeterministic generation (15.13). Every other section of this chapter is pure, except for the functions of 15.7 that wait (`retry`, `retry_if`, `until`, `timeout`), which pass time and write to the execution log.
 - Access to the filesystem is never implicit. Every function that reads or writes it takes the target `Environment` as a required positional argument (the last one; 15.11), just as `run` does, so the filesystem a program touches is always the one it names.
 - There is no overloading: one built-in name has exactly one signature, because a name resolves to a single type scheme (4.4). Where the same operation is wanted for both `String` and `Array<T>`, the array form carries the `_array` suffix (`concat_array`, `contains_array`, `index_of_array`), and where the same operation is wanted for both `Array<T>` and `Map<T>`, the map case is written by composing with `keys` / `values` / `entries` rather than by a second function.
 
@@ -3600,7 +3892,7 @@ Publication rules:
 
 Typing rules:
 
-- Type variables appearing in the signatures of this chapter (`T`, `U`, etc.) follow the polymorphism rules of 4.4, which a declaration with type parameters (4.2) follows equally. What remains particular to this chapter is the naming of the absent case above, and the conditions a signature cannot state: a built-in may carry one, checked at the call site (`sort`, 15.4), where user code has no way to write one and takes the operation as an argument instead.
+- Type variables appearing in the signatures of this chapter (`T`, `U`, etc.) follow the polymorphism rules of 4.4, which a declaration with type parameters (4.2) follows equally. What remains particular to this chapter is the naming of the absent case above. A condition on a type variable is a bound (4.2), written in the signature as a declaration writes it (`sort<T: orderable>: Function<Array<T>, Array<T>>`) and checked by the same rules; a built-in has no condition its signature cannot state.
 
 ### 15.2 Numeric Operations
 
@@ -3654,7 +3946,7 @@ The built-in library provides at least the following functions.
 - `pad_end`: `Function<String, Number, String, String>`
 - `repeat`: `Function<String, Number, String>`
 - `lines`: `Function<String, Array<String>>`
-- `to_string`: `Function<Any, String>`
+- `to_string<T: stringifiable>`: `Function<T, String>`
 - `to_number`: `Function<String, Number>`
 - `regex_test`: `Function<String, String, Bool>`
 - `regex_match`: `Function<String, String, Array<String>>`
@@ -3675,7 +3967,7 @@ Semantics:
 - `repeat(s, n)` concatenates `n` copies of `s`. `n` is truncated toward zero, and `n <= 0` yields the empty string.
 - `lines(s)` splits `s` on `\n` and removes one trailing `\r` from each line, so both LF and CRLF text split identically. A trailing newline does not produce a final empty element, and the empty string yields the empty array. This is the form to use on the `stdout` of a `CommandResult` (6.6).
 - `to_string(v)` produces the same text that interpolating `v` into a string would (6.6): a `String` unchanged, a `Number` in the canonical form of 13.1, and a `Bool` as `true` or `false`. A runtime value of any other kind, `Null` included, is `E-RUNTIME-VALUE`; use `to_json` (15.8) for structured values.
-- The argument type of `to_string` is `Any`, so the condition that makes the call meaningful is checked at the call site instead: the type of `v` must be stringifiable (6.6). `to_string` of a `String | Null` is therefore a static error (`E-TYPE-MISMATCH`), and the union is narrowed with `case` (6.4) first. As with `==` (6.2) and `sort` (15.4), this is a condition on the instantiated argument type that the signature cannot state. `Any` is stringifiable and remains accepted, with the runtime check above as its guard.
+- The type of `v` must be stringifiable (6.6), which is the bound of `T`. `to_string` of a `String | Null` is therefore a static error (`E-TYPE-BOUND`), and the union is narrowed with `case` (6.4) first. `Any` is stringifiable and remains accepted, with the runtime check above as its guard.
 - `to_number(s)` decodes `s`, ignoring surrounding whitespace, as a number in the JSON number grammar (13.1). Any other text is `E-IO-DATA-DECODE`. This is the form to use on a number read out of command output, and it replaces going through `from_json` and `cast`.
 
 Regular expressions:
@@ -3711,10 +4003,10 @@ The built-in library provides at least the following functions.
 - `take`: `Function<Array<T>, Number, Array<T>>`
 - `drop`: `Function<Array<T>, Number, Array<T>>`
 - `reverse`: `Function<Array<T>, Array<T>>`
-- `sort`: `Function<Array<T>, Array<T>>`
-- `sort_by`: `Function<Array<T>, Function<T, U>, Array<T>>`
-- `contains_array`: `Function<Array<T>, T, Bool>`
-- `index_of_array`: `Function<Array<T>, T, Number>`
+- `sort<T: orderable>`: `Function<Array<T>, Array<T>>`
+- `sort_by<T, U: orderable>`: `Function<Array<T>, Function<T, U>, Array<T>>`
+- `contains_array<T: comparable>`: `Function<Array<T>, T, Bool>`
+- `index_of_array<T: comparable>`: `Function<Array<T>, T, Number>`
 - `find`: `Function<Array<T>, Function<T, Bool>, T | Null>`
 - `find_index`: `Function<Array<T>, Function<T, Bool>, Number>`
 - `every`: `Function<Array<T>, Function<T, Bool>, Bool>`
@@ -3722,7 +4014,7 @@ The built-in library provides at least the following functions.
 - `flatten`: `Function<Array<Array<T>>, Array<T>>`
 - `flat_map`: `Function<Array<T>, Function<T, Array<U>>, Array<U>>`
 - `zip`: `Function<Array<T>, Array<U>, Array<Record<first: T, second: U>>>`
-- `unique`: `Function<Array<T>, Array<T>>`
+- `unique<T: comparable>`: `Function<Array<T>, Array<T>>`
 - `range`: `Function<Number, Number, Array<Number>>`
 - `enumerate`: `Function<Array<T>, Array<Record<index: Number, value: T>>>`
 - `set`: `Function<Map<T>, String, T, Map<T>>`
@@ -3754,13 +4046,13 @@ Element access:
 
 Ordering:
 
-- `sort(xs)` returns the elements in ascending order. The element type must be `Number` or `String`; any other element type is a static error (`E-TYPE-MISMATCH`). As with `==` (6.2), this condition is checked at the call site against the instantiated element type, not expressed in the signature.
-- `sort_by(xs, key)` sorts by the value of `key` applied once to each element, under the same restriction on the key type `U`, and is stable: elements with equal keys keep their input order.
+- `sort(xs)` returns the elements in ascending order. The element type is bounded by `orderable`, so it is `Number` or `String`; any other element type is a static error (`E-TYPE-BOUND`).
+- `sort_by(xs, key)` sorts by the value of `key` applied once to each element, under the same bound on the key type `U`, and is stable: elements with equal keys keep their input order.
 - `String` ordering is lexicographic by Unicode code point. This definition is local to `sort` / `sort_by`, and does not extend the ordering operators `<` `<=` `>` `>=` of 6.2, which remain `Number`-only.
 
 Searching:
 
-- `contains_array(xs, v)` and `index_of_array(xs, v)` compare with the structural equality of `==` (6.2), so the element type must be a comparable type; any other element type is a static error (`E-TYPE-MISMATCH`). `index_of_array` returns `-1` when the value does not occur.
+- `contains_array(xs, v)` and `index_of_array(xs, v)` compare with the structural equality of `==` (6.2), so the element type is bounded by `comparable`; any other element type is a static error (`E-TYPE-BOUND`). `index_of_array` returns `-1` when the value does not occur.
 - `find(xs, p)` returns the first element for which `p` is true, or `Null` when there is none. `p` is applied from left to right and no further element is tested once one is true. The result type `T | Null` is a union (4.2), so the caller resolves it with `case` (6.4) before using the element:
 
   ```lask
@@ -3783,7 +4075,7 @@ Reshaping:
 - `flatten(xss)` concatenates the inner arrays in order, removing exactly one level of nesting.
 - `flat_map(xs, f)` is `flatten(map(xs, f))`, with `f` applied left to right.
 - `zip(xs, ys)` pairs elements at equal positions into records `{first: ..., second: ...}`, and truncates to the shorter of the two inputs.
-- `unique(xs)` removes later elements equal to an earlier one, keeping the first occurrence and the original order. It compares with `==`, so the element type must be comparable, under the same rule as `contains_array`.
+- `unique(xs)` removes later elements equal to an earlier one, keeping the first occurrence and the original order. It compares with `==`, so the element type is bounded by `comparable`, as for `contains_array`.
 - `range(start, end)` returns the ascending integers from `start` up to but not including `end`, and the empty array when `end <= start`. Both arguments must be integers; a non-integer is `E-RUNTIME-VALUE`. It is how a `for` expression (6.4) iterates a number of times, since `for` traverses an array and has no numeric form.
 - `enumerate(xs)` pairs each element with its zero-based index as records `{index: ..., value: ...}`. It is how a `for` expression iterates with an index available, since the body of `for` receives only the element.
 
@@ -3815,7 +4107,7 @@ Quoting:
 
 ```lask
 upload(src: String, dst: String) =
-  $ aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}
+  $[#local] aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}
 ```
 
 - The result is already one word, and must not be quoted again by the caller: writing `"'#{shell_quote(v)}'"` produces a literal quotation character in the argument.
@@ -3836,12 +4128,13 @@ Semantics:
 - `spawn`/`await` follow the rules of 6.3 and 8.6.
 - Because `await` is a reserved word, it can only be applied in the `AwaitExpr` form (`await h`); when passing it as a function value, write `\(h) -> await h` (6.3).
 - `all` waits for all handles to complete and returns the result array in input order.
-- `race` returns the first result to succeed or fail.
+- `race` returns the first result to succeed or fail. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7).
 
 Failure rules:
 
+- `await` on a handle whose computation failed re-raises that failure unchanged (6.3, 8.6): the same `Error` value, with its code and message, and therefore the same exit code if it goes uncaught (11.3). `all` and `race` do the same with the failure they receive.
 - `all` may fail as soon as any single one fails.
-- Receiving a failed result via `await` is `E-RUNTIME-AWAIT-FAILED`.
+- `race` on an empty array is `E-RUNTIME-VALUE`: there is no result to return.
 
 ### 15.7 Error Handling Functions
 
@@ -3864,6 +4157,82 @@ Semantics:
 Failure rules:
 
 - `fail` raises a failure carrying the given `Error` value. If uncaught, the process exits with `code` as the exit code (8.10, 11.3).
+
+Retrying and waiting:
+
+The built-in library also provides at least the following functions.
+
+- `retry`: `Function<Array<Number>, Function<T>, T>`
+- `retry_if`: `Function<Array<Number>, Function<Error, Bool>, Function<T>, T>`
+- `until`: `Function<Array<Number>, Function<T, Bool>, Function<T>, T>`
+- `timeout`: `Function<Number, Function<T>, T>`
+- `backoff_fixed`: `Function<Number, Number, Array<Number>>`
+- `backoff_linear`: `Function<Number, Number, Number, Array<Number>>`
+- `backoff_exponential`: `Function<Number, Number, Number, Array<Number>>`
+
+They are functions rather than syntax, for the same reason `recover` is: the body is passed as a zero-argument function, so they compose as calls do.
+
+```lask
+alpine = #alpine:3.22.2
+
+build(): String = $[alpine] echo built
+
+// At most 60 seconds per attempt, and three more attempts after 1, 2 and 4 seconds.
+per_attempt(): String = retry(backoff_exponential(1, 2, 3), \() -> timeout(60, \() -> build()))
+
+// At most 300 seconds in all, the waits between attempts included.
+in_all(): String = timeout(300, \() -> retry(backoff_fixed(5, 10), \() -> build()))
+```
+
+Interval strategies:
+
+- A strategy is an `Array<Number>`: the delay, in seconds, before each further attempt or check. Its length is therefore the bound: `[]` means one attempt and no retry, and a strategy of `n` delays allows `n + 1` attempts. Being ordinary data, a strategy can be written as a literal, built by the functions below, logged, and transformed with the functions of 15.4.
+- `backoff_fixed(delay, count)` is `count` delays of `delay`: `backoff_fixed(2, 3)` is `[2, 2, 2]`.
+- `backoff_linear(initial, step, count)` is `[initial, initial + step, ...]`, `count` long: `backoff_linear(1, 2, 3)` is `[1, 3, 5]`.
+- `backoff_exponential(initial, factor, count)` is `[initial, initial * factor, ...]`, `count` long: `backoff_exponential(1, 2, 4)` is `[1, 2, 4, 8]`.
+- A cap is a composition rather than a function: `map(backoff_exponential(1, 2, 8), \(d) -> min(d, 30))`. Jitter, being nondeterministic, is `backoff_jitter` (15.13).
+- `delay`, `initial`, `step` and `factor` must be finite and non-negative, and `count` a non-negative integer. Anything else, or a strategy growing past a representable delay, is `E-RUNTIME-VALUE`.
+
+Evaluation of `retry(delays, body)` and `retry_if(delays, when, body)`:
+
+1. Every element of `delays` must be finite and non-negative, or the call fails with `E-RUNTIME-VALUE` before the first attempt, so that whether a strategy is rejected does not depend on how the attempts go.
+2. Evaluate `body()`. If it succeeds, return its value.
+3. If it fails, map the failure to an `Error` value `err` (8.10). If no delay remains, or, for `retry_if`, `when(err)` is `false`, re-raise the failure unchanged: the same `Error` value, and therefore the same exit code if it goes uncaught, as `await` does (6.3). `retry` retries any failure.
+4. Otherwise wait for the next delay and continue at step 2. Each retry writes one line to the execution log (12.2) naming the attempt, the `code` of the failure, and the delay.
+5. A failure of `when` is not caught and propagates, as that of a `recover` handler does.
+
+Nothing distinguishes a command that is safe to repeat from one that is not. Retrying one that is not, such as a deployment that half-succeeded, is the author's decision, and a retry keeps no record of what an earlier attempt changed.
+
+Evaluation of `until(delays, done, body)`:
+
+`retry_if` reacts to a failure, `until` to a value. A resource still being created answers 404, which is an answer rather than an error.
+
+```lask
+// The HTTP status of url, without failing on an error status.
+status(url: String): CommandResult =
+  $*[#local] curl -s -o /dev/null -w '%{http_code}' #{shell_quote(url)}
+
+// Poll every 5 seconds, 100 times at most, and give up after 10 minutes in any case.
+wait_ready(url: String): CommandResult =
+  timeout(600, \() ->
+    until(backoff_fixed(5, 100), \(r: CommandResult) -> r.code == 0 && r.stdout == "200", \() -> status(url)))
+```
+
+1. Validate `delays` as `retry` does.
+2. Evaluate `v = body()`, then `done(v)`. If it is `true`, return `v`. The first check is made at once, without a delay.
+3. If it is `false` and a delay remains, wait for it and continue at step 2. Each miss writes one line to the execution log.
+4. If it is `false` and no delay remains, fail with the `Error` `{code: 124, message: ...}` and the diagnostic code `E-RUNTIME-UNTIL-EXHAUSTED` (8.10, 14.5). The message states the number of checks and a summary of the last value, masked according to 12.8.
+5. A failure of `body` or of `done` is not caught and propagates. Waiting through failures is written explicitly, with `$*` (6.6) or `retry_if`.
+
+Evaluation of `timeout(seconds, body)`:
+
+1. `seconds` must be finite and positive; fractions are allowed. Anything else is `E-RUNTIME-VALUE`.
+2. Evaluate `body()`, measuring the time from the call. If it finishes, successfully or not, before `seconds` have passed, its result is the result of the call.
+3. Once `seconds` have passed without it finishing, the body is abandoned: the command it is running is stopped (8.7), and every computation it started with `async`, directly or through the computations those started, is cancelled, and its commands stopped. The call then fails with the `Error` `{code: 124, message: "timed out after <seconds>s"}` and the diagnostic code `E-RUNTIME-TIMEOUT` (8.10, 14.5). There is no grace setting and no per-environment default.
+4. The failure is raised at the `timeout` call, not inside the body. A `try` inside the body does not see it, and its `finally` does not run, because abandoning the body is not a failure of the body; a `try` around the call sees it. Clean-up that must run belongs outside the `timeout`.
+5. A computation the body started is cancelled only when the body is abandoned. When the body finishes in time, what it started runs on as usual (6.3).
+
+`timeout` bounds what it is given, so where it is written decides what it bounds. `timeout(30, \() -> await h)` bounds the wait for `h`, and `h` runs on after the limit; `async timeout(30, \() -> work())` bounds `work` itself.
 
 ### 15.8 Serialization and Type-Migration Helper Functions
 
@@ -3939,7 +4308,7 @@ The built-in library provides at least the following functions.
 - `find_env`: `Function<String, String | Null>`
 - `has_env`: `Function<String, Bool>`
 - `get_env_or`: `Function<String, String, String>`
-- `mark_secret`: `Function<T, T>`, where `T` is `String` or `String | Null`. The condition is checked at the call site (15.1); any other type is `E-TYPE-MISMATCH`.
+- `mark_secret<T: String | Null>`: `Function<T, T>`. `T` is `String`, `String | Null`, or `Null`, which registers nothing; any other type is `E-TYPE-BOUND`.
 
 Semantics:
 
@@ -3950,7 +4319,8 @@ Semantics:
 - The four differ only in what an unset variable means — a failure, a `Null`, a `Bool`, or a fallback — and follow the naming rules of 15.1. `find_env` is the only one of them whose result can be absent, and `get_env_or(name, fallback)` is exactly the `case` over `find_env(name)` that returns `fallback` for `Null`.
 - All four read the process environment of the Lask process itself. They do not read the variables of an execution `Environment` (10.6); a command reads those through the shell it runs in.
 - `find_env`, `has_env` and `get_env_or` are ordinary built-in symbols and may be shadowed by a user definition (15.1). Only `get_env` and `mark_secret` are core functions.
-- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. `!!` accepts `String | Null` (6.10), so a credential that may be unset can be read with `find_env` and still be masked when present.
+- A variable holding a secret reference (9.8) is resolved by `get_env`, `find_env` and `get_env_or`, which return the value it names; `has_env` does not resolve it.
+- `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. The exception is a value resolved from a secret reference, which is registered (9.8). Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. `!!` accepts `String | Null` (6.10), so a credential that may be unset can be read with `find_env` and still be masked when present.
 - `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged. When `v` is `null`, nothing is registered (6.10).
 - `mark_secret` is a core function and must not be directly declared or overridden by user code (7.2). It is the desugaring target of `!!` secret bindings (6.10); user code may also call it directly to register a value that isn't declared with `!!`.
 - Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out; `String | Null` in, `String | Null` out) and no effect on control flow: it is not a source of failure.
@@ -4040,14 +4410,16 @@ The built-in library provides at least the following functions.
 
 - `uuid`: `Function<String>`
 - `random_string`: `Function<Number, String>`
+- `backoff_jitter`: `Function<Array<Number>, Array<Number>>`
 
 Semantics:
 
 - `uuid()` returns a newly generated version 4 UUID in the canonical lowercase hyphenated form of 36 characters.
 - `random_string(n)` returns `n` characters drawn uniformly from `0-9` and `a-z`. `n` must be a non-negative integer; anything else is `E-RUNTIME-VALUE`.
-- Both must draw from a cryptographically secure source of randomness. A generated name is frequently used where a collision would be a failure of the run, and a weak generator makes those collisions correlated across machines.
-- Both are nondeterministic: they are the only built-in functions whose result differs between calls with the same arguments without any external input. They are separated into this section for that reason (15.1).
-- They exist for names that must not collide — a generated file written into a directory that a concurrent run also writes to, a temporary resource suffix, an invalidation token. Without them, such a name has to be a constant, and two runs of the same task race for it.
+- `backoff_jitter(delays)` replaces each delay `d` with a draw from the uniform distribution over `[0, d]` (full jitter), so that clients retrying the same failure do not retry in step (15.7). Every element must be finite and non-negative, or it is `E-RUNTIME-VALUE`. Its draws need not be cryptographically secure.
+- `uuid` and `random_string` must draw from a cryptographically secure source of randomness. A generated name is frequently used where a collision would be a failure of the run, and a weak generator makes those collisions correlated across machines.
+- All three are nondeterministic: they are the only built-in functions whose result differs between calls with the same arguments without any external input. They are separated into this section for that reason (15.1).
+- `uuid` and `random_string` exist for names that must not collide — a generated file written into a directory that a concurrent run also writes to, a temporary resource suffix, an invalidation token. Without them, such a name has to be a constant, and two runs of the same task race for it.
 - A generated value must not be treated as a secret merely because it is unpredictable. Use `mark_secret` (15.9) when a value is to be masked.
 
 ### 15.14 Error Contract
@@ -4404,7 +4776,7 @@ An example of `try` / `catch` / `finally` and the pass-through of exit codes and
 ```lask
 release(): String = do {
   out = try {
-    $ ./release.sh
+    $[#local] ./release.sh
   } catch (e) {
     if (e.code == 75) {
       "retry-later"

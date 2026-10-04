@@ -20,6 +20,7 @@ module Language.LSP.Lask
     semanticTokens,
     hoverMarkdown,
     completionAt,
+    documentDiagnostics,
   )
 where
 
@@ -46,27 +47,29 @@ import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Control.Exception (IOException)
 import qualified Control.Exception as E
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
-import Data.List (minimumBy, sortOn)
+import Data.List (minimumBy, partition, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, listToMaybe, mapMaybe, maybeToList)
 import Data.Ord (comparing)
 import qualified Data.Set as Set
 import qualified Data.Text.IO as TIO
-import Language.Lask (Compiled (..), Partial (..), checkText, compileText, compileTextPartial)
+import Language.Lask (Compiled (..), Partial (..), compileText, compileTextPartial)
 import Language.Lask.Builtins.Doc (builtinDocs, renderBuiltinDoc)
 import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
 import Language.Lask.Doc (docBlockAbove)
 import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..), readFieldType)
-import Language.Lask.ErrorCode (codeText)
+import Language.Lask.ErrorCode (advisoryText, codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
 import qualified Language.Lask.Lexer.Token as Tok
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics, namespaceMember)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
-import Language.Lask.Types (Type (..), renderType)
-import System.FilePath (normalise)
+import Language.Lask.Types (Type (..), renderBound, renderType)
+import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
+import Language.Lask.Deps.File (defaultDepsFileName)
+import Language.Lask.Confirm (describeRule, ruleFor)
 import qualified Language.Lask.Span as S
 import Language.Lask.Utils (Pretty (pretty))
 
@@ -213,9 +216,38 @@ sendDocumentDiagnostics logger msg = do
   mdoc <- getVirtualFile doc
   case mdoc of
     Just file -> do
-      ds <- liftIO $ checkText path (virtualFileText file)
+      (ds, projectDs) <- liftIO $ documentDiagnostics path (virtualFileText file)
       sendDiagnostics doc (Just $ virtualFileVersion file) ds
+      -- What is wrong in the project file is shown there, and cleared
+      -- there once it is fixed (spec 5).
+      let project = takeDirectory path </> defaultDepsFileName
+      sendDiagnostics (LSP.toNormalizedUri (LSP.filePathToUri project)) Nothing projectDs
     Nothing -> sendDiagnostics doc Nothing []
+
+-- | What the editor shows for a document: its errors, or, when it is
+-- valid, the advisories found in it (spec 14.2) as warnings.
+--
+-- The second list is for the project file: a @confirm@ entry that no
+-- longer refers to the program is reported where it is written.
+documentDiagnostics :: FilePath -> Text -> IO ([LSP.Diagnostic], [LSP.Diagnostic])
+documentDiagnostics path src = do
+  r <- compileText path src
+  pure $ case r of
+    Left ds ->
+      let (inProject, inModule) = partition inProjectFile ds
+       in (map errorDiagnostic inModule, map errorDiagnostic inProject)
+    Right c ->
+      ( [ advisoryDiagnostic a
+        | a <- cpAdvisories (compiledCore c),
+          S.Span (S.Position inFile _ _) _ <- [D.advSpan a],
+          inFile == path
+        ],
+        []
+      )
+  where
+    inProjectFile d = case D.diagSpan d of
+      S.Span (S.Position inFile _ _) _ -> takeFileName inFile == defaultDepsFileName
+      S.NoSpan -> False
 
 -- | The filesystem path of a document URI. Imports and the
 -- environment definition file resolve relative to this path, so the
@@ -224,24 +256,35 @@ sendDocumentDiagnostics logger msg = do
 uriPath :: Uri -> FilePath
 uriPath uri = maybe (T.unpack (getUri uri)) id (uriToFilePath uri)
 
-sendDiagnostics :: LSP.NormalizedUri -> Maybe Int32 -> [D.Diagnostic] -> LspM Config ()
-sendDiagnostics fileUri version ds = do
-  let diags =
-        map
-          ( \d ->
-              LSP.Diagnostic
-                (toRange (D.diagSpan d))
-                (Just LSP.DiagnosticSeverity_Error)
-                (Just (LSP.InR (codeText (D.diagCode d))))
-                Nothing
-                (Just "lask")
-                (T.pack $ pretty d)
-                Nothing
-                (Just [])
-                Nothing
-          )
-          ds
+sendDiagnostics :: LSP.NormalizedUri -> Maybe Int32 -> [LSP.Diagnostic] -> LspM Config ()
+sendDiagnostics fileUri version diags =
   publishDiagnostics 100 fileUri version (partitionBySource diags)
+
+errorDiagnostic :: D.Diagnostic -> LSP.Diagnostic
+errorDiagnostic d =
+  LSP.Diagnostic
+    (toRange (D.diagSpan d))
+    (Just LSP.DiagnosticSeverity_Error)
+    (Just (LSP.InR (codeText (D.diagCode d))))
+    Nothing
+    (Just "lask")
+    (T.pack $ pretty d)
+    Nothing
+    (Just [])
+    Nothing
+
+advisoryDiagnostic :: D.Advisory -> LSP.Diagnostic
+advisoryDiagnostic a =
+  LSP.Diagnostic
+    (toRange (D.advSpan a))
+    (Just LSP.DiagnosticSeverity_Warning)
+    (Just (LSP.InR (advisoryText (D.advCode a))))
+    Nothing
+    (Just "lask")
+    (D.advMessage a)
+    Nothing
+    (Just [])
+    Nothing
 
 -- | Semantic token atoms from the lexer: comments (collected on the
 -- side), interpolation contents (nested token streams inside string
@@ -480,7 +523,7 @@ hoverAt path src (Position pl pc) = do
                   shown = hiName hi <> builtinTypeParams bn (hiType hi)
               pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
             Nothing -> do
-              docs <- declDocs compiled path src (hiDecl hi)
+              docs <- withConfirmNote compiled (hiDecl hi) <$> declDocs compiled path src (hiDecl hi)
               let shown = hiName hi <> typeParamsOf compiled (hiDecl hi)
               pure (Just (mkHover shown (renderType (hiType hi)) docs (hiSpan hi)))
   where
@@ -509,10 +552,19 @@ hoverAt path src (Position pl pc) = do
           case named of
             ((sp, n) : _) -> case Map.lookup (entry, n) (cpDecls core) of
               Just cd -> do
-                docs <- declDocs compiled docPath docSrc (Just (entry, n))
+                docs <- withConfirmNote compiled (Just (entry, n)) <$> declDocs compiled docPath docSrc (Just (entry, n))
                 pure (Just (mkHover n (renderType (cdType cd)) docs sp))
               Nothing -> pure Nothing
             [] -> pure Nothing
+
+-- | A declaration's hover documentation, with the confirmation the
+-- project file asks for before it runs, when it does (spec 5).
+withConfirmNote :: Compiled -> Maybe (FilePath, Text) -> Maybe Text -> Maybe Text
+withConfirmNote compiled key docs = case key >>= ruleFor (compiledProgram compiled) (compiledScopes compiled) of
+  Nothing -> docs
+  Just (_, rule) ->
+    let note = "**Confirmation:** " <> describeRule rule <> " (`lask.json`)"
+     in Just (maybe note (<> "\n\n" <> note) docs)
 
 mkHover :: Text -> Text -> Maybe Text -> S.Span -> Hover
 mkHover name typeText docs sp =
@@ -532,7 +584,8 @@ hoverMarkdown name typeText docs =
     <> maybe "" ("\n\n---\n\n" <>) docs
 
 -- | The type parameters of a builtin, as they would be written on a
--- declaration: @\<T, U\>@ for @map@. Only while the recorded type is
+-- declaration, with their bounds: @\<T, U\>@ for @map@,
+-- @\<T: orderable\>@ for @sort@. Only while the recorded type is
 -- still the scheme itself; a reference instantiated by its expected
 -- type (spec 4.4) has none left.
 builtinTypeParams :: Text -> Type -> Text
@@ -540,7 +593,11 @@ builtinTypeParams bn t = case Map.lookup bn builtinSchemes of
   Just sch
     | not (null (schemeVars sch)),
       schemeType sch == t ->
-        "<" <> T.intercalate ", " (schemeVars sch) <> ">"
+        "<"
+          <> T.intercalate
+            ", "
+            [v <> maybe "" ((": " <>) . renderBound) (Map.lookup v (schemeBounds sch)) | v <- schemeVars sch]
+          <> ">"
   _ -> ""
 
 -- | The documentation of a declaration: the contiguous block of
@@ -556,7 +613,7 @@ typeParamsOf compiled (Just (declPath, name)) =
          n == name,
          not (null tps)
        ] of
-    (tps : _) -> "<" <> T.intercalate ", " [v | Tok.Spanned _ v <- tps] <> ">"
+    (tps : _) -> AST.renderTypeParams tps
     [] -> ""
   where
     modules = progModules (compiledProgram compiled)

@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Renders Lask sources and captured terminal sessions to SVG cards for the README.",
   "scripts": {
-    "render": "node render.mjs ../../doc/assets/main.lask ../../doc/assets main.lask"
+    "render": "node render.mjs ../../doc/assets/example.lask ../../doc/assets 02-webapp-on-aws/main.lask"
   },
   "dependencies": {
     "shiki": "^4.4.3"

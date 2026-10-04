@@ -57,6 +57,9 @@ spec = do
     it "renders exit lines with the code" $
       renderCommandLogText (mkLog (ClExit 0))
         `shouldBe` "2026-07-23T10:15:04.123Z [#golang:1.22:1] exit 0"
+    it "renders a stopped command as killed (spec 8.7)" $
+      renderCommandLogText (mkLog ClKilled)
+        `shouldBe` "2026-07-23T10:15:04.123Z [#golang:1.22:1] killed"
     it "carries the execution number in the environment summary" $
       renderCommandLogText ((mkLog (ClExit 0)) {clExec = 42})
         `shouldBe` "2026-07-23T10:15:04.123Z [#golang:1.22:42] exit 0"
@@ -98,6 +101,11 @@ spec = do
       let line = renderCommandLogJson "t-1" (mkLog (ClExit 7))
       fieldOf line "code" `shouldBe` Just (A.Number 7)
       fieldOf line "level" `shouldBe` Just (A.String "warn")
+    it "marks a stopped command with event=killed at warn (spec 8.7)" $ do
+      let line = renderCommandLogJson "t-1" (mkLog ClKilled)
+      fieldOf line "event" `shouldBe` Just (A.String "killed")
+      fieldOf line "level" `shouldBe` Just (A.String "warn")
+      hasField line "code" `shouldBe` False
     it "is one JSON object per line" $ do
       let line = renderCommandLogJson "t-1" (mkLog (ClLine 2 "e"))
       T.count "\n" line `shouldBe` 0

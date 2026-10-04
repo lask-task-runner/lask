@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- | Surface AST (spec chapters 4-6). All sugar is preserved as
 -- dedicated nodes; normalization to the core language happens in a
 -- later elaboration pass (spec 7.6).
@@ -8,6 +10,11 @@ module Language.Lask.Syntax.AST
   ( Module (..),
     Decl (..),
     DeclF (..),
+    TypeParam (..),
+    SBound (..),
+    typeParamNames,
+    renderTypeParams,
+    renderSType,
     ImportSpec (..),
     Secrecy (..),
     Param (..),
@@ -34,6 +41,7 @@ where
 import Data.Scientific (Scientific)
 import Data.Set (Set)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Language.Lask.Lexer.Token (CmdStream, Op, Spanned (..))
 import Language.Lask.Span (Span (NoSpan))
 
@@ -59,12 +67,12 @@ data DeclF
     DImportNamespace Text Text
   | -- | @type Name = Type@, or @type Name\<A, B\> = Type@ with type
     -- parameters (spec 4.2).
-    DTypeAlias Text [Spanned Text] SType
+    DTypeAlias Text [TypeParam] SType
   | -- | @name[!!] [: Type] = expr@
     DValue Text Secrecy (Maybe SType) Expr
   | -- | @name(params) [: Type] = expr@ (sugar for a lambda binding),
     -- with the type parameters it declares (spec 4.2).
-    DFunction Text [Spanned Text] [Param] (Maybe SType) Expr
+    DFunction Text [TypeParam] [Param] (Maybe SType) Expr
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
@@ -104,6 +112,51 @@ data ParamF
   | -- | @--name[!!] : T = default@
     PKeyword Text Secrecy (Maybe SType) Expr
   deriving (Show, Eq)
+
+-- | A type parameter as declared, with its bound if it has one
+-- (spec 4.2): @T@, @T: orderable@, @T: Number | String@.
+data TypeParam = TypeParam {tpName :: Spanned Text, tpBound :: Maybe SBound}
+  deriving (Show, Eq)
+
+-- | A bound as written: a lower-case named bound, or a type.
+data SBound = SBoundNamed (Spanned Text) | SBoundType SType
+  deriving (Show, Eq)
+
+typeParamNames :: [TypeParam] -> [Text]
+typeParamNames tps = [v | TypeParam (Spanned _ v) _ <- tps]
+
+-- | The binder as it is written on a declaration, @\<T: orderable\>@,
+-- or empty when there are no type parameters (spec 11.6).
+renderTypeParams :: [TypeParam] -> Text
+renderTypeParams [] = ""
+renderTypeParams tps = "<" <> T.intercalate ", " (map one tps) <> ">"
+  where
+    one (TypeParam (Spanned _ v) b) = v <> maybe "" ((": " <>) . bound) b
+    bound (SBoundNamed (Spanned _ n)) = n
+    bound (SBoundType t) = renderSType t
+
+-- | A type as written, in the notation of 4.2.
+renderSType :: SType -> Text
+renderSType (SType _ f) = case f of
+  SAny -> "Any"
+  SNumber -> "Number"
+  SString -> "String"
+  SBool -> "Bool"
+  SNull -> "Null"
+  SVoid -> "Void"
+  SEnvironment -> "Environment"
+  SArray t -> "Array<" <> renderSType t <> ">"
+  SMap t -> "Map<" <> renderSType t <> ">"
+  SRecord fs ->
+    "Record<"
+      <> T.intercalate ", " [k <> (if opt then "?" else "") <> ": " <> renderSType t | (Spanned _ k, opt, t) <- fs]
+      <> ">"
+  SAsyncHandle t -> "AsyncHandle<" <> renderSType t <> ">"
+  SFunction ps r -> "Function<" <> T.intercalate ", " (map renderSType (ps <> [r])) <> ">"
+  SNamed q n as ->
+    maybe n (\ns -> ns <> "." <> n) q
+      <> (if null as then "" else "<" <> T.intercalate ", " (map renderSType as) <> ">")
+  SUnion ts -> T.intercalate " | " (map renderSType ts)
 
 data SType = SType {stypeSpan :: Span, stypeF :: STypeF}
   deriving (Show, Eq)
@@ -222,17 +275,23 @@ data StmtF
 stripSpansModule :: Module -> Module
 stripSpansModule (Module ds ints cmds) = Module (map stripSpansDecl ds) ints cmds
 
+stripTypeParam :: TypeParam -> TypeParam
+stripTypeParam (TypeParam (Spanned _ v) b) = TypeParam (Spanned NoSpan v) (fmap stripBound b)
+  where
+    stripBound (SBoundNamed (Spanned _ n)) = SBoundNamed (Spanned NoSpan n)
+    stripBound (SBoundType t) = SBoundType (stripSpansType t)
+
 stripSpansDecl :: Decl -> Decl
 stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DImportNamed specs path -> DImportNamed (map stripSpec specs) path
   DImportNamespace a p -> DImportNamespace a p
   DExportFrom specs path -> DExportFrom (map stripSpec specs) path
-  DTypeAlias n ps t -> DTypeAlias n [Spanned NoSpan v | Spanned _ v <- ps] (stripSpansType t)
+  DTypeAlias n ps t -> DTypeAlias n (map stripTypeParam ps) (stripSpansType t)
   DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
   DFunction n tps ps t e ->
     DFunction
       n
-      [Spanned NoSpan v | Spanned _ v <- tps]
+      (map stripTypeParam tps)
       (map stripParam ps)
       (fmap stripSpansType t)
       (stripSpansExpr e)
