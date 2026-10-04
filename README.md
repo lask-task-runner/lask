@@ -5,10 +5,12 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <div align="center">
-  <img alt="Lask in 15 seconds: lambda + task becomes Lask, where it fits between make or Taskfile and Dagger, then quick cuts of the example/01-projects/02-webapp-on-aws project showing its seven strengths" src="doc/assets/lask-pv-short.gif" width="960">
+  <img alt="Lask in 30 seconds: a command tried in the REPL runs in a Docker container; saved as a task in main.lask, with a typo flagged in the editor and fixed; lask run release runs each step in its own container; the same run on a laptop and in any CI, on the same pinned images" src="doc/assets/lask-pv-short.gif" width="960">
   <br>
-  <a href="doc/assets/lask-pv.mp4">▶ Watch the full 90-second tour (MP4)</a>
+  <a href="doc/assets/lask-pv.mp4">▶ Watch the full 1-minute tour (MP4)</a>
 </div>
+
+<sub>Docker is a trademark of Docker, Inc. Other names belong to their owners; their use does not imply endorsement.</sub>
 
 Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
 
