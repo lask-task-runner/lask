@@ -911,7 +911,8 @@ Fetching and verification:
 - A local import (`./`, `../`) in a module of a dependency must resolve inside that dependency's tree; a single-file dependency has no local imports. Otherwise it is `E-MODULE-UNRESOLVED`. What a dependency loads is thereby what its `hash` covers.
 - If a tag recorded as `requested` later resolves to a different commit, `deps sync` reports `E-MODULE-REV-MOVED`. This is distinguished from `E-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
 - `check`, `run`, `eval`, and `envs` must not access the network for module resolution. If a declared dependency is not present in the cache, or fails verification, it is a static error (`E-MODULE-UNRESOLVED`).
-- An external module may itself have a `lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted) and are recorded in the root project's lock file.
+- An external module may itself have a `lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted) and are recorded in the root project's lock file, each under its dependency path (`parent>child`).
+- A `lask.json` that a fetched dependency carries but that is not a valid project file is a failure of that dependency in `deps sync` and `deps add`, reported with the dependency it belongs to; its dependencies are not taken to be none.
 
 Examples:
 
