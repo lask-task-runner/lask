@@ -2075,7 +2075,7 @@ elabEnv ctx path locals sp h mArgs = case classifyHead h of
 
     -- A recipe path is written relative to the directory of the module
     -- that declares it (10.2), and is read — by the runtime, by
-    -- `lask env build`, in the lock — relative to the program's base
+    -- `lask sync`, in the lock — relative to the program's base
     -- directory, since the value it ends up in no longer knows its
     -- module. It is rewritten here, where the module is known. A recipe
     -- beside the entry module keeps the path it was written with.

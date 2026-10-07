@@ -77,18 +77,18 @@ trigger c = case c of
   EModuleRevMoved -> Scripted 3 $ \lask ->
     withGitDep lask $ \repo _ run -> do
       -- The first sync pins the commit the tag names.
-      void (run ["deps", "sync"])
+      void (run ["sync"])
       writeFile (repo </> "main.lask") "hello(): String = \"moved\"\n"
       git repo ["commit", "--quiet", "-am", "move"]
       git repo ["tag", "--force", "v1"]
-      run ["deps", "sync"]
+      run ["sync"]
   -- A confirm entry of the project file that names no function.
   EModuleConfirmTarget ->
     Check [("main.lask", "a(): String = \"a\"\n"), ("lask.json", "{\"confirm\": {\"b\": {}}}")]
   EModuleHashMismatch -> Scripted 3 $ \lask ->
     withUrlDep lask $ \published _ run -> do
       writeFile published "send(x: String): String = concat(\"evil:\", x)\n"
-      run ["deps", "sync"]
+      run ["sync"]
   -- Runtime errors (spec 14.5) default to exit 2; a failed command
   -- passes its own exit code through.
   ERuntimeDivByZero -> Invoke "f() = 1 / 0\n" ["eval", "f"] 2
@@ -113,15 +113,15 @@ trigger c = case c of
   EIoEnvResolve -> Scripted 3 $ \lask ->
     withFakeDocker $ \state extra -> withProject pinned $ \dir -> do
       writeFile (state </> "daemon-down") ""
-      runLaskEnv lask dir extra ["envs", "--check"] ""
+      runLaskEnv lask dir extra ["envs", "check"] ""
   EIoImageMissing -> Scripted 3 $ \lask ->
     withFakeDocker $ \_ extra -> withProject pinned $ \dir ->
       runLaskEnv lask dir extra ["eval", "hi"] ""
   EIoImageDigest -> Scripted 3 $ \lask ->
     withFakeDocker $ \state extra -> withProject pinned $ \dir -> do
-      void (runLaskEnv lask dir extra ["env", "build"] "")
+      void (runLaskEnv lask dir extra ["sync"] "")
       writeFile (state </> "present" </> "alpine_sha256_aaa") "[\"alpine@sha256:ccc\"]"
-      runLaskEnv lask dir extra ["env", "build"] ""
+      runLaskEnv lask dir extra ["sync"] ""
   EIoFs -> Invoke "f() = read_file(\"nope.txt\", #local)\n" ["eval", "f"] 3
   EIoDataDecode -> Invoke "f() = from_json(\"{oops\")\n" ["eval", "f"] 3
   -- Secret references (spec 9.8), read by `f` from PW.

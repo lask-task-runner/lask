@@ -7,8 +7,7 @@
 -- recipe hash, so a changed recipe is a different image and cannot
 -- reuse a cached one. Building is never implicit: @check@ \/ @run@ \/
 -- @eval@ \/ @envs@ resolve the tag and report @E-IO-IMAGE-MISSING@
--- when it is absent, and only @deps sync@ \/ @env build@ materialize
--- it (spec 10.3).
+-- when it is absent, and only @sync@ materializes it (spec 10.3).
 module Language.Lask.Runtime.Image
   ( Recipe (..),
     recipeSource,
@@ -151,7 +150,7 @@ pinnedRef :: Text -> Text -> Text
 pinnedRef ref digest = repositoryOf ref <> "@" <> digest
 
 -- | Pull a reference. The one network access a registry image needs,
--- made only by @deps sync@ and @env build@ (spec 10.3, 11.5, 11.7).
+-- made only by @sync@ (spec 10.3, 11.7).
 --
 -- With a platform, that platform's variant of the image is pulled.
 pullImage :: Maybe Text -> Text -> IO (Either Text ())
@@ -223,7 +222,7 @@ unlockedPins = Unlocked
 -- | The image a registry reference runs as (spec 10.4).
 --
 -- A reference the lock pins runs as the pinned image, and one written
--- with a digest pins itself. Any other means that @lask env build@ has
+-- with a digest pins itself. Any other means that @lask sync@ has
 -- not run since the reference was written.
 resolveRegistry :: ImagePins -> Text -> IO (Either LaskFailure Text)
 resolveRegistry pins ref = case pins of
@@ -238,7 +237,7 @@ resolveRegistry pins ref = case pins of
           pure (Right image)
         else
           pure . Left . ioFailure EIoImageMissing $
-            "image '" <> ref <> "' (pinned as " <> image <> ") is not on the Docker daemon; run 'lask env build'"
+            "image '" <> ref <> "' (pinned as " <> image <> ") is not on the Docker daemon; run 'lask sync'"
     Nothing ->
       pure . Left . ioFailure EIoImageMissing $
-        "image '" <> ref <> "' is not pinned in lask.lock.json; run 'lask env build'"
+        "image '" <> ref <> "' is not pinned in lask.lock.json; run 'lask sync'"

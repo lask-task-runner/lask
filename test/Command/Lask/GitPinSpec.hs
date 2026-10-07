@@ -2,7 +2,7 @@
 
 -- | How a git dependency is pinned in the lock (spec chapter 5, 11.5):
 -- @rev@ is the commit the requested reference named when it was
--- fetched, recorded by whichever of @deps add@ and @deps sync@ fetched
+-- fetched, recorded by whichever of @deps add@ and @sync@ fetched
 -- it, and a reference that later names another commit is
 -- @E-MODULE-REV-MOVED@ whether or not the cache still holds the old
 -- content.
@@ -105,7 +105,7 @@ spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ d
     git repo ["commit", "--quiet", "-am", "v2"]
     git repo ["tag", "v2"]
     writeFile (wProj w </> "lask.json") ("{\"dependencies\": {\"kit\": {\"git\": \"" <> url <> "\", \"rev\": \"v2\"}}}")
-    r <- wRun w ["deps", "sync"]
+    r <- wRun w ["sync"]
     resErr r `shouldNotSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
     resOut r `shouldSatisfy` isInfixOf "kit ok"
     lockField w "kit" "requested" `shouldReturn` Just "v2"
@@ -126,7 +126,7 @@ spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ d
     sha <- headOf w "kit"
     lockField w "kit" "rev" `shouldReturn` Just sha
     -- An unmoved annotated tag is not reported as moved.
-    r <- wRun w ["deps", "sync"]
+    r <- wRun w ["sync"]
     resExit r `shouldBe` 0
 
   -- #56
@@ -135,7 +135,7 @@ spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ d
     addKit w url
     pinned <- headOf w "kit"
     moveTag w "kit"
-    r <- wRun w ["deps", "sync"]
+    r <- wRun w ["sync"]
     shouldReportMoved r
     lockField w "kit" "rev" `shouldReturn` Just pinned
 
@@ -145,14 +145,14 @@ spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ d
     addKit w url
     moveTag w "kit"
     removeDirectoryRecursive (wRoot w </> "cache")
-    r <- wRun w ["deps", "sync"]
+    r <- wRun w ["sync"]
     shouldReportMoved r
 
   it "restores the pinned commit into an empty cache while the tag stays" $ \lask -> withWorld lask $ \w -> do
     url <- repoAt w "kit" "hi" False
     addKit w url
     removeDirectoryRecursive (wRoot w </> "cache")
-    r <- wRun w ["deps", "sync"]
+    r <- wRun w ["sync"]
     resExit r `shouldBe` 0
     e <- wRun w ["eval", "f"]
     resOut e `shouldBe` "\"hi\"\n"
@@ -165,7 +165,7 @@ spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ d
     lock <- readFile (wProj w </> "lask.lock.json")
     sha <- headOf w "kit"
     length lock `seq` writeFile (wProj w </> "lask.lock.json") (replace sha tagObject lock)
-    r <- wRun w ["deps", "sync"]
+    r <- wRun w ["sync"]
     resExit r `shouldBe` 0
     lockField w "kit" "rev" `shouldReturn` Just sha
 
@@ -173,7 +173,7 @@ spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ d
     url <- repoAt w "kit" "hi" False
     addKit w url
     pinned <- headOf w "kit"
-    -- An image pinned by an earlier env build.
+    -- An image pinned by an earlier sync.
     lock <- readFile (wProj w </> "lask.lock.json")
     length lock `seq`
       writeFile

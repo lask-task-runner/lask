@@ -507,7 +507,7 @@ materializedImage pins baseDir resolved = case resolved of
         if not ok
           then
             pure . Left . ioFailure EIoImageMissing $
-              "image for recipe '" <> df <> "' is not materialized; run 'lask env build'"
+              "image for recipe '" <> df <> "' is not materialized; run 'lask sync'"
           else pure (Right (Just (tag, opts)))
 
 -- | Run a process, relaying its output line by line to the command

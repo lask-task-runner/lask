@@ -20,9 +20,9 @@ import Test.Hspec
 
 spec :: Spec
 spec = beforeAll findLask $ do
-  -- Images are pinned by `lask env build` and `lask deps sync`, and
+  -- Images are pinned by `lask sync`, and
   -- resolved through the lock when a command runs (spec 10.3, 10.4).
-  describe "image pinning (spec 10.3, 10.4, 11.5, 11.7)" $ do
+  describe "image pinning (spec 10.3, 10.4, 11.7)" $ do
     let proj =
           [ ( "main.lask",
               "command { \"cat\" } on #alpine:3.22.2\n\
@@ -31,16 +31,16 @@ spec = beforeAll findLask $ do
           ]
         lockText dir = readFile (dir </> "lask.lock.json")
 
-    it "refuses to run an image the lock does not pin, naming env build" $ \lask ->
+    it "refuses to run an image the lock does not pin, naming sync" $ \lask ->
       withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
         r <- runLaskEnv lask dir extra ["eval", "hi"] ""
         resExit r `shouldBe` 3
         resErr r `shouldContain` "E-IO-IMAGE-MISSING"
-        resErr r `shouldContain` "lask env build"
+        resErr r `shouldContain` "lask sync"
 
-    it "pins the digest on env build, and runs the pinned image" $ \lask ->
+    it "pins the digest on sync, and runs the pinned image" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        b <- runLaskEnv lask dir extra ["env", "build"] ""
+        b <- runLaskEnv lask dir extra ["sync"] ""
         resExit b `shouldBe` 0
         resOut b `shouldContain` "alpine:3.22.2 -> alpine@sha256:aaa"
         lockText dir >>= (`shouldContain` "\"digest\": \"sha256:aaa\"")
@@ -59,7 +59,7 @@ spec = beforeAll findLask $ do
             )
           ]
           $ \dir -> do
-            _ <- runLaskEnv lask dir extra ["env", "build"] ""
+            _ <- runLaskEnv lask dir extra ["sync"] ""
             r <- runLaskEnv lask dir extra ["eval", "hi"] ""
             resExit r `shouldBe` 0
             runs <- filter ("run " `isPrefixOf`) <$> calls state
@@ -73,11 +73,11 @@ spec = beforeAll findLask $ do
 
     it "keeps the pinned image when the tag moves upstream" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        _ <- runLaskEnv lask dir extra ["sync"] ""
         writeFile (state </> "registry" </> "alpine_3.22.2") "sha256:bbb"
         removeDirectoryRecursive (state </> "present")
         writeFile (state </> "calls") ""
-        b <- runLaskEnv lask dir extra ["env", "build"] ""
+        b <- runLaskEnv lask dir extra ["sync"] ""
         resExit b `shouldBe` 0
         cs <- calls state
         [c | c <- cs, "pull " `isPrefixOf` c] `shouldBe` ["pull --quiet alpine@sha256:aaa"]
@@ -85,9 +85,9 @@ spec = beforeAll findLask $ do
 
     it "reports E-IO-IMAGE-DIGEST when the pinned image carries another digest" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        _ <- runLaskEnv lask dir extra ["sync"] ""
         writeFile (state </> "present" </> "alpine_sha256_aaa") "[\"alpine@sha256:ccc\"]"
-        b <- runLaskEnv lask dir extra ["env", "build"] ""
+        b <- runLaskEnv lask dir extra ["sync"] ""
         resExit b `shouldBe` 3
         resErr b `shouldContain` "E-IO-IMAGE-DIGEST"
         lockText dir >>= (`shouldContain` "sha256:aaa")
@@ -96,7 +96,7 @@ spec = beforeAll findLask $ do
     -- behalf (spec 10.3).
     it "runs with --pull=never" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        _ <- runLaskEnv lask dir extra ["sync"] ""
         writeFile (state </> "calls") ""
         r <- runLaskEnv lask dir extra ["eval", "hi"] ""
         resExit r `shouldBe` 0
@@ -118,7 +118,7 @@ spec = beforeAll findLask $ do
             )
           ]
           $ \dir -> do
-            b <- runLaskEnv lask dir extra ["env", "build"] ""
+            b <- runLaskEnv lask dir extra ["sync"] ""
             resExit b `shouldBe` 0
             lockText dir >>= (`shouldContain` "alpine:3.22.2")
             lockText dir >>= (`shouldNotContain` "busybox")
@@ -138,7 +138,7 @@ spec = beforeAll findLask $ do
             )
           ]
           $ \dir -> do
-            b <- runLaskEnv lask dir extra ["env", "build"] ""
+            b <- runLaskEnv lask dir extra ["sync"] ""
             resExit b `shouldBe` 0
             cs <- calls state
             [c | c <- cs, "pull " `isPrefixOf` c]
@@ -151,23 +151,60 @@ spec = beforeAll findLask $ do
             runs <- filter ("run " `isPrefixOf`) <$> calls state
             runs `shouldSatisfy` any ("--platform linux/amd64" `isInfixOf`)
 
-    it "pins images in deps sync, and --frozen refuses a lock that would change" $ \lask ->
+    it "--frozen refuses a lock that would change" $ \lask ->
       withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
-        f <- runLaskEnv lask dir extra ["deps", "sync", "--frozen"] ""
+        f <- runLaskEnv lask dir extra ["sync", "--frozen"] ""
         resExit f `shouldBe` 1
         doesFileExist (dir </> "lask.lock.json") `shouldReturn` False
-        s' <- runLaskEnv lask dir extra ["deps", "sync"] ""
+        s' <- runLaskEnv lask dir extra ["sync"] ""
         resExit s' `shouldBe` 0
         lockText dir >>= (`shouldContain` "sha256:aaa")
-        f2 <- runLaskEnv lask dir extra ["deps", "sync", "--frozen"] ""
+        f2 <- runLaskEnv lask dir extra ["sync", "--frozen"] ""
         resExit f2 `shouldBe` 0
 
     it "drops the entry of an image nothing references any more" $ \lask ->
       withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        _ <- runLaskEnv lask dir extra ["sync"] ""
         writeFile (dir </> "main.lask") "hi(): String = $[#local] echo hi\n"
-        _ <- runLaskEnv lask dir extra ["env", "build"] ""
+        _ <- runLaskEnv lask dir extra ["sync"] ""
         lockText dir >>= (`shouldNotContain` "alpine")
+
+    -- envs list reads the lock and never the daemon; envs check asks
+    -- the daemon whether the image is there (spec 11.4).
+    it "lists what the lock resolves each environment to, and checks it" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        before <- runLaskEnv lask dir extra ["envs", "list"] ""
+        resExit before `shouldBe` 0
+        resOut before `shouldContain` "docker  alpine:3.22.2  registry  not pinned (lask sync)"
+        missing <- runLaskEnv lask dir extra ["envs", "check"] ""
+        resExit missing `shouldBe` 3
+        resOut missing `shouldContain` "E-IO-IMAGE-MISSING"
+        _ <- runLaskEnv lask dir extra ["sync"] ""
+        writeFile (state </> "calls") ""
+        after <- runLaskEnv lask dir extra ["envs", "list"] ""
+        resOut after `shouldContain` "docker  alpine:3.22.2  registry  alpine@sha256:aaa"
+        calls state `shouldReturn` []
+        ok <- runLaskEnv lask dir extra ["envs", "check"] ""
+        resExit ok `shouldBe` 0
+        resOut ok `shouldContain` "alpine@sha256:aaa  ok"
+
+  describe "retired commands (spec 11.1)" $ do
+    it "names the command that replaced each" $ \lask ->
+      withProject [("main.lask", "f() = $[#local] ls\n")] $ \dir ->
+        sequence_
+          [ do
+              r <- runLask lask dir old ""
+              (old, resExit r) `shouldBe` (old, 4)
+              resErr r `shouldContain` ("was replaced by 'lask " <> new <> "'")
+          | (old, new) <-
+              [ (["env", "build"], "sync"),
+                (["env", "list"], "envs list"),
+                (["deps", "sync", "--frozen"], "sync"),
+                (["envs"], "envs list"),
+                (["envs", "f"], "envs list f"),
+                (["envs", "--module", "main.lask", "f", "--check"], "envs check")
+              ]
+          ]
 
   describe "generic functions from the CLI (spec 11.2)" $ do
     let proj =
@@ -288,13 +325,13 @@ spec = beforeAll findLask $ do
 
     it "reads it from the tree of the module that declares it" $ \lask ->
       withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
-        r <- runLaskEnv lask dir extra ["env", "list", "--module", "app/main.lask"] ""
+        r <- runLaskEnv lask dir extra ["envs", "list", "--module", "app/main.lask"] ""
         resExit r `shouldBe` 0
         resOut r `shouldContain` "../tools/images/greeter/Dockerfile  recipe  lask/"
 
     it "builds it and runs the command in it from the importing project" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        b <- runLaskEnv lask dir extra ["env", "build", "--module", "app/main.lask"] ""
+        b <- runLaskEnv lask dir extra ["sync", "--module", "app/main.lask"] ""
         resExit b `shouldBe` 0
         r <- runLaskEnv lask dir extra ["eval", "--module", "app/main.lask", "hi"] ""
         resExit r `shouldBe` 0
@@ -303,7 +340,7 @@ spec = beforeAll findLask $ do
 
     it "keeps the path of a recipe beside the entry module" $ \lask ->
       withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
-        r <- runLaskEnv lask dir extra ["env", "list"] ""
+        r <- runLaskEnv lask dir extra ["envs", "list"] ""
         resOut r `shouldContain` "./Dockerfile  recipe  lask/"
         resOut r `shouldNotContain` "../"
 
@@ -693,7 +730,7 @@ spec = beforeAll findLask $ do
             )
           ]
           $ \dir -> do
-            _ <- runLaskEnv lask dir extra ["env", "build"] ""
+            _ <- runLaskEnv lask dir extra ["sync"] ""
             r <- runLaskEnv lask dir extra ["eval", "f"] ""
             resExit r `shouldBe` 0
             cs <- calls state
@@ -810,7 +847,7 @@ spec = beforeAll findLask $ do
         [ ("main.lask", "f() = $[#./infra/Dockerfile] make\ng() = $[#alpine:3.20] ls\n")
         ]
         $ \dir -> do
-          r <- runLask lask dir ["envs"] ""
+          r <- runLask lask dir ["envs", "list"] ""
           resExit r `shouldBe` 0
           resOut r `shouldSatisfy` isInfixOf "infra/Dockerfile"
           resOut r `shouldSatisfy` isInfixOf "alpine:3.20"
@@ -823,11 +860,11 @@ spec = beforeAll findLask $ do
           )
         ]
         $ \dir -> do
-          r <- runLask lask dir ["envs", "backend"] ""
+          r <- runLask lask dir ["envs", "list", "backend"] ""
           resExit r `shouldBe` 0
           resOut r `shouldSatisfy` isInfixOf "golang:1.22"
           resOut r `shouldNotContain` "node:20"
-          whole <- runLask lask dir ["envs"] ""
+          whole <- runLask lask dir ["envs", "list"] ""
           resOut whole `shouldSatisfy` isInfixOf "node:20"
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
@@ -1013,10 +1050,10 @@ spec = beforeAll findLask $ do
         r3 <- runLaskEnv lask proj extraEnv ["check"] ""
         resExit r3 `shouldBe` 1
         resOut r3 `shouldSatisfy` isInfixOf "E-MODULE-UNRESOLVED"
-        resOut r3 `shouldSatisfy` isInfixOf "deps sync"
+        resOut r3 `shouldSatisfy` isInfixOf "lask sync"
 
-        -- deps sync restores the cache and verifies the hash.
-        r4 <- runLaskEnv lask proj extraEnv ["deps", "sync"] ""
+        -- sync restores the cache and verifies the hash.
+        r4 <- runLaskEnv lask proj extraEnv ["sync"] ""
         resExit r4 `shouldBe` 0
         r5 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
         r5 `shouldBe` Result 0 "\"sent:a\"\n" ""
@@ -1025,7 +1062,7 @@ spec = beforeAll findLask $ do
         -- mismatch and place nothing in the cache (exit 3).
         removeDirectoryRecursive cache
         writeFile (srcDir </> "notify.lask") "send(x: String): String = concat(\"evil:\", x)\n"
-        r6 <- runLaskEnv lask proj extraEnv ["deps", "sync"] ""
+        r6 <- runLaskEnv lask proj extraEnv ["sync"] ""
         resExit r6 `shouldBe` 3
         resErr r6 `shouldSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
         r7 <- runLaskEnv lask proj extraEnv ["check"] ""
@@ -1088,7 +1125,7 @@ spec = beforeAll findLask $ do
         lock `shouldSatisfy` isInfixOf "\"kit>util\""
         r2 <- runLaskEnv lask proj extraEnv ["eval", "f"] ""
         r2 `shouldBe` Result 0 "\"from-util\"\n" ""
-        r3 <- runLaskEnv lask proj extraEnv ["deps", "sync", "--frozen"] ""
+        r3 <- runLaskEnv lask proj extraEnv ["sync", "--frozen"] ""
         resExit r3 `shouldBe` 0
 
     it "reports a dependency whose own project file cannot be read, and writes nothing" $ \lask ->
@@ -1129,7 +1166,7 @@ spec = beforeAll findLask $ do
           ("lask.json", "{\"dependencies\": {\"kit\": {\"git\": \"https://x\"}}}")
         ]
         $ \dir -> do
-          r <- runLask lask dir ["deps", "sync"] ""
+          r <- runLask lask dir ["sync"] ""
           resExit r `shouldBe` 1
 
   describe "spec 11.6: help display" $ do
@@ -1331,15 +1368,14 @@ spec = beforeAll findLask $ do
                 ["run"],
                 ["eval"],
                 ["repl"],
-                ["envs"],
+                ["envs", "list"],
+                ["envs", "check"],
+                ["sync"],
                 ["version"],
                 ["completion"],
-                ["deps", "sync"],
                 ["deps", "add"],
                 ["deps", "why"],
                 ["deps", "diff"],
-                ["env", "build"],
-                ["env", "list"],
                 ["cmd"]
               ]
           ]

@@ -49,9 +49,9 @@ $ lask run release --help
 | `lask eval <fn> [args...]` | Same, and writes the return value to stdout (JSON by default). |
 | `lask cmd <prog> [args...]` | Run a declared command in its declared image, stdio passed through. |
 | `lask repl` | Evaluate expressions interactively. `:r` reloads the module, keeping what was typed. |
-| `lask envs [fn] [--check]` | List the environments a module uses; `--check` tests access. |
-| `lask env build \| list` | Materialize / inspect container images. |
-| `lask deps sync \| add \| why \| diff` | Fetch, verify and report on external dependencies. |
+| `lask envs list \| check [fn]` | List the environments a module uses and what the lock pins them to; `check` tests access. |
+| `lask sync [--frozen]` | Fetch dependencies, materialize images and write the lock; `--frozen` fails instead of changing it (CI). |
+| `lask deps add \| why \| diff` | Add and report on external dependencies. |
 | `lask secrets list \| check [fn]` | List the secret references in the environment; check that their stores can be reached and read. |
 | `lask serve` | Language server (LSP). |
 | `lask completion <shell>` | Emit a completion script (bash, zsh, fish). |
@@ -94,7 +94,7 @@ import { send } from "notify"                   // external dependency, by name
 export { rollout } from "./lib/deploy.lask"     // re-export, parameter list intact
 ```
 
-External dependencies are declared in `lask.json` (`git` + `rev`, or `url`) and pinned by content hash in the committed `lask.lock.json`. `check`, `run`, `eval` and `envs` never touch the network; `lask deps sync` is what fetches and verifies. The import graph must be acyclic, and an import reaches only a dependency's root `main.lask`. → [11.5](spec.md#115-dependency-management-deps)
+External dependencies are declared in `lask.json` (`git` + `rev`, or `url`) and pinned by content hash in the committed `lask.lock.json`. `check`, `run`, `eval` and `envs` never touch the network; `lask sync` is what fetches and verifies. The import graph must be acyclic, and an import reaches only a dependency's root `main.lask`. → [11.5](spec.md#115-dependency-management-deps), [11.7](spec.md#117-synchronization-sync)
 
 ## Types
 
@@ -234,7 +234,7 @@ A command string runs **to the end of the line** — nothing of the enclosing ex
 runnable(e, memory = "8g")      // the same for an Environment value e
 ```
 
-The head is the only place an image is named — no string or variable can name one — so every image a program uses is found by reading its source, and `lask env build` pins each. A registry reference may leave out its tag — a bare name means `latest` — since the lock pins the digest it resolved to, and runs use that. A recipe path starts with `.` and is relative to the module's directory, inside its own tree.
+The head is the only place an image is named — no string or variable can name one — so every image a program uses is found by reading its source, and `lask sync` pins each. A registry reference may leave out its tag — a bare name means `latest` — since the lock pins the digest it resolved to, and runs use that. A recipe path starts with `.` and is relative to the module's directory, inside its own tree.
 
 **Image options** in parentheses decide which image is used: `platform`, and `context` and `build_args` on a recipe. They are literals. **Run options** in braces decide how it runs, and take any expression: `memory`, `memory_swap`, `memory_reservation`, `cpus`, `cpu_shares`, `cpuset_cpus`, `cpuset_mems`, `pids_limit`, `shm_size`, `blkio_weight`, `ulimits`; `workdir`, `user`, `env`, `hostname`, `init`; `read_only`, `tmpfs`, `cap_drop`; `network`, `dns`, `dns_search`, `add_hosts`, `publish`; `volumes`. Environment variable names are not `lower_id`, so quote them: `env: {"CI": "1"}`. An option given `null` is left out, as are the `null` elements of a list or table — `""` is a value and is passed on. → [10.2](spec.md#102-target-environment-profiles-and-their-options)
 
@@ -256,7 +256,7 @@ Matching is lexical and exact: `cd web && npm ci` selects the Node image, `FOO=1
 
 A declaration's environment is evaluated when a command runs, and may not have effects — no command, file, `stdin`, `log` or random value, directly or through what it calls (`E-TYPE-COMMAND-EFFECT`); `get_env` is fine. → [5](spec.md#5-declarations-and-modules)
 
-Images are materialized only by `lask deps sync` and `lask env build`; `run` and `eval` never pull or build, and a missing image is `E-IO-IMAGE-MISSING` naming the command that would fix it. → [10.3](spec.md#103-container-image-resolution-and-materialization)
+Images are materialized only by `lask sync`; `run` and `eval` never pull or build, and a missing image is `E-IO-IMAGE-MISSING` naming the command that would fix it. → [10.3](spec.md#103-container-image-resolution-and-materialization)
 
 ## Concurrency
 

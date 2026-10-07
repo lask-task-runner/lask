@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Static enumeration of the execution environments a program
--- constructs (spec 11.4), shared by @lask envs@ and by the
+-- constructs (spec 11.4), shared by @lask envs@, @lask sync@ and the
 -- environment section of function help (spec 11.6).
 module Command.Lask.Envs
   ( EnvRef (..),

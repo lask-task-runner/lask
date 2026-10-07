@@ -6,11 +6,11 @@ You need **Lask** and **Docker**. Nothing else — no Python, no Node.js, no Ter
 
 ```bash
 cd example/01-projects/02-webapp-on-aws
-lask deps sync   # one-time, needs network: fetches the tools module main.lask imports, and pulls the images it uses
+lask sync        # one-time, needs network: fetches the tools module main.lask imports, and pulls the images it uses
 lask run test
 ```
 
-`deps sync` is the only step here that touches the network — `check`, `run`, and `eval` never do (that's true even for `test`, which never calls Terraform or aws-cli itself: the whole file is checked before anything runs, and the tools module is imported at the top of [main.lask](main.lask)).
+`lask sync` is the only step here that touches the network — `check`, `run`, and `eval` never do (that's true even for `test`, which never calls Terraform or aws-cli itself: the whole file is checked before anything runs, and the tools module is imported at the top of [main.lask](main.lask)).
 
 That runs the API's Python tests and the frontend's JavaScript tests, each inside its own container. The toolchains come down as Docker images, and each test runs in a container that is thrown away afterwards; nothing lands on your machine.
 

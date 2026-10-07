@@ -4,7 +4,7 @@
 // name, not copied. What a dependency is, is declared in lask.json;
 // which bytes it is, is pinned in the committed lask.lock.json.
 //
-//   lask deps sync        # the only step that touches the network
+//   lask sync             # the only step that touches the network
 //   lask deps why tools   # why is this here?
 //   lask deps diff tools  # what would a bump change?
 //   lask eval tool-version
@@ -31,7 +31,7 @@ import command { "jq" } from "tools"
 
 // The dependency's function returns where terraform runs. Its image is
 // the dependency's default unless one is written here, as it is:
-// either way it is a head written in some file, so `lask env build`
+// either way it is a head written in some file, so `lask sync`
 // pulls it and pins it in this project's lock.
 command { "terraform" } on tf(image = #hashicorp/terraform:1.16.4)
 
@@ -70,4 +70,4 @@ status(): Record<version: String, formatted: Bool> = {
 // Nothing here reaches the network. `check`, `run`, `eval` and `envs`
 // resolve everything from the fetched tree in .lask/, and a dependency
 // that is missing or whose hash does not match the lock is an error
-// naming `lask deps sync` — never a silent fetch in the middle of a run.
+// naming `lask sync` — never a silent fetch in the middle of a run.

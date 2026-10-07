@@ -2,7 +2,7 @@
 
 -- | The dependency cache (spec chapter 5, 11.5): a per-project,
 -- content-addressed store keyed by the declared content hash. Only
--- @deps sync@\/@deps add@ write to it (after verification), and an
+-- @sync@\/@deps add@ write to it (after verification), and an
 -- entry is verified again wherever it is used ('holdsPinned'): being in
 -- the cache is not taken as proof of content. Module resolution never
 -- touches the network.
@@ -49,7 +49,7 @@ cachePathFor cacheDir hash singleFile
 
 -- | Whether a cache entry holds the content its hash names. The cache
 -- may be shared (@LASK_CACHE_DIR@) or written by something other than
--- @deps sync@, so an entry is checked where it is used rather than
+-- @sync@, so an entry is checked where it is used rather than
 -- trusted for being there. The entry itself must not be a symbolic
 -- link: the hash would then describe wherever it points.
 holdsPinned :: FilePath -> Text -> Bool -> IO Bool
