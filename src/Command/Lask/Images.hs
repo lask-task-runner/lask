@@ -8,17 +8,16 @@ module Command.Lask.Images
     lockedImages,
     Materialized (..),
     materialize,
-    ImageRow (..),
-    imageRows,
+    resolvedImages,
   )
 where
 
-import Command.Lask.Envs (collectRecipes, collectRegistryRefs)
+import Command.Lask.Envs (collectRecipes, collectRegistryImages, collectRegistryRefs)
 import Control.Applicative ((<|>))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as T
 import Language.Lask.Deps.Lock
 import Language.Lask.Elaborate (CoreProgram (..))
 import Language.Lask.ErrorCode (ErrorCode (..), codeText)
@@ -33,12 +32,9 @@ lockedImages core =
     <$> loadLockFile (cpBaseDir core </> defaultLockFileName)
 
 -- | The pins the commands of a program resolve through (spec 10.4):
--- each registry reference the lock pins, and the references the
--- program writes as literals, which only the lock may resolve.
+-- each registry reference the lock pins.
 loadPins :: CoreProgram -> IO ImagePins
-loadPins core = do
-  images <- lockedImages core
-  lockedPins (lockPins images) (Set.fromList (collectRegistryRefs core))
+loadPins core = lockedPins . lockPins =<< lockedImages core
 
 -- | A registry reference is recorded once for the whole graph, under
 -- the root project's empty path: one reference names one image
@@ -76,8 +72,8 @@ data Materialized = Materialized
 -- both are content-addressed (11.7).
 materialize :: CoreProgram -> Map Text LockImage -> IO Materialized
 materialize core prior = do
-  registries <- mapM registry (collectRegistryRefs core)
-  recipes <- mapM recipe (uniqueRecipes core)
+  registries <- mapM registry (Map.toList platformsByRef)
+  recipes <- mapM recipe (collectRecipes core)
   let results = registries <> recipes
   pure
     Materialized
@@ -92,96 +88,109 @@ materialize core prior = do
   where
     baseDir = cpBaseDir core
 
-    registry ref = do
+    -- One reference used for several platforms is one lock entry,
+    -- pinned once and pulled for each (spec 10.3). The daemon's own
+    -- platform, 'Nothing', sorts first and pins when it is among them.
+    platformsByRef :: Map Text [Maybe Text]
+    platformsByRef = Map.fromListWith (flip (<>)) [(ref, [p]) | (ref, p) <- collectRegistryImages core]
+
+    registry (ref, platforms) = do
       let key = registryKey ref
           before = Map.lookup key prior
           failed code msg = Left (key, before, codeText code <> ": " <> ref <> ": " <> msg)
-          pinned digest = LockImage "registry" (Just ref) Nothing (Just digest)
-      case writtenDigest ref <|> (before >>= liDigest) of
-        Just digest -> do
-          let image = pinnedRef ref digest
-          present <- imageExists image
-          fetched <- if present then pure (Right ()) else pullImage image
-          case fetched of
-            Left e -> pure (failed EIoImageMissing e)
-            Right () -> do
-              actual <- registryDigest image
-              pure $ case actual of
-                Right got
-                  | got == digest -> Right (key, pinned digest, ref <> " -> " <> image)
-                  | otherwise -> failed EIoImageDigest ("pinned to " <> digest <> ", but the image carries " <> got)
-                Left e -> failed EIoImageDigest e
-        Nothing -> do
-          fetched <- pullImage ref
-          case fetched of
-            Left e -> pure (failed EIoImageMissing e)
-            Right () -> do
-              actual <- registryDigest ref
-              case actual of
-                Left e -> pure (failed EIoImageDigest e)
-                Right digest -> do
-                  -- Pulled once more by its digest: the content is
-                  -- already here, but the daemon now holds a name for
-                  -- the pinned image of its own. An image store that
-                  -- reaches images only through names (containerd's)
-                  -- would otherwise lose it the moment the tag is
-                  -- pulled again and moves.
-                  let image = pinnedRef ref digest
-                  named <- pullImage image
-                  pure $ case named of
-                    Left e -> failed EIoImageMissing e
-                    Right () -> Right (key, pinned digest, ref <> " -> " <> image)
+          (primary, others) = case platforms of
+            p : ps -> (p, ps)
+            [] -> (Nothing, [])
+          suffix p = maybe "" (\x -> " (" <> x <> ")") p
+      pinnedE <- pin ref primary (writtenDigest ref <|> (before >>= liDigest))
+      case pinnedE of
+        Left (code, msg) -> pure (failed code msg)
+        Right (digest, image) -> do
+          -- Every other platform the reference is used with: pulled by
+          -- the pinned digest, so each runs the very image the lock
+          -- names.
+          rest <- mapM (\p -> (,) p <$> pullImage (Just p) image) [p | Just p <- others]
+          pure $ case [(p, e) | (p, Left e) <- rest] of
+            (p, e) : _ -> failed EIoImageMissing (p <> ": " <> e)
+            [] ->
+              Right
+                ( key,
+                  LockImage "registry" (Just ref) Nothing (Just digest),
+                  ref <> suffix primary <> " -> " <> image <> T.concat [", " <> p | Just p <- others]
+                )
 
-    recipe (dockerfile, context, buildArgs) = do
-      let key = recipeKey dockerfile
+    -- Materialize one reference for one platform, and the digest it is
+    -- pinned to. A platform's variant cannot be told present by its
+    -- name, so with a platform the image is always pulled; the daemon
+    -- fetches nothing it already holds.
+    pin ref platform known = case known of
+      Just digest -> do
+        let image = pinnedRef ref digest
+        present <- if platform == Nothing then imageExists image else pure False
+        fetched <- if present then pure (Right ()) else pullImage platform image
+        case fetched of
+          Left e -> pure (Left (EIoImageMissing, e))
+          Right () -> do
+            actual <- registryDigest image
+            pure $ case actual of
+              Right got
+                | got == digest -> Right (digest, image)
+                | otherwise -> Left (EIoImageDigest, "pinned to " <> digest <> ", but the image carries " <> got)
+              Left e -> Left (EIoImageDigest, e)
+      Nothing -> do
+        fetched <- pullImage platform ref
+        case fetched of
+          Left e -> pure (Left (EIoImageMissing, e))
+          Right () -> do
+            actual <- registryDigest ref
+            case actual of
+              Left e -> pure (Left (EIoImageDigest, e))
+              Right digest -> do
+                -- Pulled once more by its digest: the content is
+                -- already here, but the daemon now holds a name for
+                -- the pinned image of its own. An image store that
+                -- reaches images only through names (containerd's)
+                -- would otherwise lose it the moment the tag is
+                -- pulled again and moves.
+                let image = pinnedRef ref digest
+                named <- pullImage platform image
+                pure $ case named of
+                  Left e -> Left (EIoImageMissing, e)
+                  Right () -> Right (digest, image)
+
+    recipe r = do
+      let dockerfile = rcDockerfile r
+          key = recipeKey dockerfile
           failed msg = Left (key, Map.lookup key prior, codeText EIoImageMissing <> ": " <> dockerfile <> ": " <> msg)
-      tagE <- recipeTag baseDir dockerfile context buildArgs
+      tagE <- recipeTag baseDir r
       case tagE of
         Left e -> pure (failed e)
         Right tag -> do
           present <- imageExists tag
-          built <- if present then pure (Right ()) else buildRecipe baseDir dockerfile context buildArgs tag
+          built <- if present then pure (Right ()) else buildRecipe baseDir r tag
           pure $ case built of
             Left e -> failed e
             Right () ->
               Right (key, LockImage "recipe" Nothing (Just tag) Nothing, dockerfile <> " -> " <> tag)
 
--- | One image of @lask env list@ (spec 11.7).
-data ImageRow = ImageRow
-  { irSource :: Text,
-    irKind :: Text,
-    -- | The pinned reference or the content-addressed tag; 'Nothing'
-    -- for a registry reference the lock does not pin yet.
-    irResolved :: Maybe Text,
-    irPresent :: Bool
-  }
-
--- | Every image the program references, as the lock resolves it. No
--- network access and no build.
-imageRows :: CoreProgram -> IO [ImageRow]
-imageRows core = do
+-- | What the lock resolves each image of the program to, by the
+-- source its head names it by (spec 11.4): the pinned reference of a
+-- registry reference, the content-addressed tag of a recipe. A
+-- registry reference the lock does not pin yet has no entry, nor a
+-- recipe whose tag cannot be computed. One recipe built with several
+-- sets of options resolves to several tags. No network access, no
+-- build, and no Docker daemon.
+resolvedImages :: CoreProgram -> IO (Map Text [Text])
+resolvedImages core = do
   images <- lockedImages core
   let pins = lockPins images
-  registries <-
-    mapM
-      ( \ref -> case writtenDigest ref of
-          Just _ -> ImageRow ref "registry" (Just ref) <$> imageExists ref
-          Nothing -> case Map.lookup ref pins of
-            Just image -> ImageRow ref "registry" (Just image) <$> imageExists image
-            Nothing -> pure (ImageRow ref "registry" Nothing False)
-      )
-      (collectRegistryRefs core)
+      registries =
+        [ (ref, [image])
+        | ref <- collectRegistryRefs core,
+          Just image <- [maybe (Map.lookup ref pins) (const (Just ref)) (writtenDigest ref)]
+        ]
   recipes <-
     mapM
-      ( \(dockerfile, context, buildArgs) -> do
-          tagE <- recipeTag (cpBaseDir core) dockerfile context buildArgs
-          case tagE of
-            Left _ -> pure (ImageRow dockerfile "recipe" Nothing False)
-            Right tag -> ImageRow dockerfile "recipe" (Just tag) <$> imageExists tag
-      )
-      (uniqueRecipes core)
-  pure (registries <> recipes)
-
--- | A recipe the program writes more than once is one image.
-uniqueRecipes :: CoreProgram -> [(Text, Text, [(Text, Text)])]
-uniqueRecipes = Set.toList . Set.fromList . collectRecipes
+      (\r -> fmap (\tag -> (recipeSource (rcDockerfile r), [tag])) <$> recipeTag (cpBaseDir core) r)
+      (collectRecipes core)
+  pure (Map.fromListWith (flip (<>)) (registries <> [x | Right x <- recipes]))

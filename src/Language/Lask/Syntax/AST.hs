@@ -145,6 +145,7 @@ renderSType (SType _ f) = case f of
   SNull -> "Null"
   SVoid -> "Void"
   SEnvironment -> "Environment"
+  SRunnable -> "Runnable"
   SArray t -> "Array<" <> renderSType t <> ">"
   SMap t -> "Map<" <> renderSType t <> ">"
   SRecord fs ->
@@ -169,6 +170,7 @@ data STypeF
   | SNull
   | SVoid
   | SEnvironment
+  | SRunnable
   | SArray SType
   | SMap SType
   | -- | Fields as written: name, whether it carries the optional
@@ -221,9 +223,12 @@ data ExprF
   | EAwait Expr
   | -- | Stream selector, optional environment expression, command parts.
     ECommand CmdStream (Maybe Expr) [TextPart]
-  | -- | Environment head text and constructor arguments;
-    -- 'Nothing' = no argument list written (e.g. @#local@, @#alpine:3.12@).
-    EEnv Text (Maybe [Arg])
+  | -- | Environment head text, its image options in parentheses, and
+    -- the run options in braces that make it a runnable (spec 6.7);
+    -- 'Nothing' = not written (e.g. @#local@, @#alpine:3.12@). A brace
+    -- entry @k: v@ is carried as the keyword argument @k = v@ of the
+    -- @runnable@ call it stands for.
+    EEnv Text (Maybe [Arg]) (Maybe [Arg])
   deriving (Show, Eq)
 
 -- | A piece of a string or command string. 'TPChunk' carries the
@@ -342,7 +347,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EAsync e -> EAsync (stripSpansExpr e)
   EAwait e -> EAwait (stripSpansExpr e)
   ECommand s env ps -> ECommand s (fmap stripSpansExpr env) (map stripPart ps)
-  EEnv h as -> EEnv h (fmap (map stripArg) as)
+  EEnv h as os -> EEnv h (fmap (map stripArg) as) (fmap (map stripArg) os)
   other -> other
   where
     stripArm (CaseArm _ hs b) = CaseArm NoSpan (fmap stripHeads hs) (stripSpansExpr b)

@@ -49,6 +49,9 @@ data Type
   | TyNull
   | TyVoid
   | TyEnvironment
+  | -- | An environment with its run options (spec 6.7, 15.5).
+    -- 'TyEnvironment' conforms to it.
+    TyRunnable
   | TyArray Type
   | TyMap Type
   | -- | Fields by name, each carrying whether its key may be absent
@@ -92,6 +95,7 @@ mkUnion t ts
       TyString -> 2
       TyBool -> 3
       TyEnvironment -> 4
+      TyRunnable -> 4
       TyArray _ -> 5
       TyMap _ -> 6
       TyRecord _ -> 7
@@ -163,6 +167,7 @@ renderType t = case t of
   TyNull -> "Null"
   TyVoid -> "Void"
   TyEnvironment -> "Environment"
+  TyRunnable -> "Runnable"
   TyArray e -> "Array<" <> renderType e <> ">"
   TyMap e -> "Map<" <> renderType e <> ">"
   TyRecord fs ->
@@ -225,6 +230,8 @@ conformsUnder upper = go
       | t == u = True
       -- Union introduction: fitting one member is enough.
       | TyUnion us <- u, any (go t) us = True
+      -- An environment is a runnable with no run options (spec 4.4).
+      | t == TyEnvironment, u == TyRunnable = True
       | TyVar v <- t, Just b <- upper v = go b u
       | otherwise = False
 
@@ -302,6 +309,7 @@ comparableWith var = go
       TyBool -> True
       TyNull -> True
       TyEnvironment -> True
+      TyRunnable -> True
       TyArray e -> go e
       TyMap e -> go e
       TyRecord fs -> all (go . fieldType) (Map.elems fs)

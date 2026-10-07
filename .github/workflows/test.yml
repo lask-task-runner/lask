@@ -75,9 +75,9 @@ jobs:
           mkdir -p "${WORKDIR}"
           cp -R example/01-projects/01-hello-world/. "${WORKDIR}/"
           cd "${WORKDIR}"
-          # A task never pulls its image (spec 10.3): `env build` pulls
+          # A task never pulls its image (spec 10.3): `lask sync` pulls
           # it and pins its digest in lask.lock.json first.
-          "${LASK}" env build
+          "${LASK}" sync
           # Capturing both streams hides them from the log, so the
           # status is carried past the capture and the output echoed
           # before anything is asserted on it.

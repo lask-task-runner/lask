@@ -2,7 +2,7 @@
     "dependencies": {
         "tools": {
             "git": "https://github.com/lask-task-runner/lask-module-tools.git",
-            "rev": "v0.1.0"
+            "rev": "v0.3.0"
         }
     }
 }

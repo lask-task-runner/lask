@@ -168,7 +168,16 @@ evalCore ctx scope (Core _ f) = case f of
       _ -> internal "await on a non-handle"
   CEnv kind args -> do
     params <- mapM evalKv args
-    pure (VEnv (EnvValue kind (Map.fromList params)))
+    -- An option given null is not set (spec 8.8), so it is left out
+    -- of the value: an environment equals the same one written
+    -- without it.
+    pure (VEnv (EnvValue kind (Map.fromList [(k, v) | (k, v) <- params, case v of VNull -> False; _ -> True])))
+  CRunnable base args -> do
+    b <- evalCore ctx scope base
+    params <- mapM evalKv args
+    case b of
+      VEnv ev -> either throwIO (pure . VEnv) (withRunOptions ev params)
+      _ -> internal "runnable of a non-environment"
   CCast c ty -> do
     v <- evalCore ctx scope c
     castValue ty v
@@ -303,6 +312,7 @@ castValueEither = go []
       (TyBool, VBool _) -> pure v
       (TyNull, VNull) -> pure v
       (TyEnvironment, VEnv _) -> pure v
+      (TyRunnable, VEnv _) -> pure v
       (TyArray t, VArray xs) ->
         VArray <$> V.imapM (\i x -> go (path <> [T.pack ("[" <> show i <> "]")]) t x) xs
       (TyMap t, VMap m) -> VMap <$> Map.traverseWithKey (\k x -> go (path <> [k]) t x) m
@@ -343,6 +353,7 @@ matchesType ty v = case (ty, v) of
   (TyBool, VBool _) -> True
   (TyNull, VNull) -> True
   (TyEnvironment, VEnv _) -> True
+  (TyRunnable, VEnv _) -> True
   (TyArray t, VArray xs) -> V.all (matchesType t) xs
   (TyMap t, VMap m) -> all (matchesType t) (Map.elems m)
   (TyMap t, VRecord m) -> all (matchesType t) (Map.elems m)

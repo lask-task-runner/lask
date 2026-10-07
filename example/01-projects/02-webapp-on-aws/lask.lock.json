@@ -1,17 +1,57 @@
 {
     "images": {
-        "#.lask/deps/sha256-d6f7537f50f035a4009f6b07afb4b8c5e42e59af6e87563438eae85b950bbb52/lib/images/unix/Dockerfile": {
+        "#.lask/deps/sha256-df8d3acd40bdaa5d228cb6e7f6d5f2e910929e00d39b212499cbdd01ce008fee/lib/images/unix/Dockerfile": {
             "kind": "recipe",
-            "tag": "lask/f26e57ebaf63a6672ff6dccc104af201697a1ab8fa65a8547736f86d5b15f13e"
+            "tag": "lask/b61fd44bd7ebe653a7a455618634ab22eb7d678de02d988779136093f7c72b05"
+        },
+        "#amazon/aws-cli:2.36.41": {
+            "digest": "sha256:be7c8de0160a2e2269159bc2634c002c85b1a21d6322e2ad513b3f7f48325c99",
+            "kind": "registry",
+            "ref": "amazon/aws-cli:2.36.41"
+        },
+        "#hashicorp/terraform:1.16.2": {
+            "digest": "sha256:c3308fcbb530627c102c4c4b993e226b202429084328c3cc505cc2a69342e883",
+            "kind": "registry",
+            "ref": "hashicorp/terraform:1.16.2"
+        },
+        "#hashicorp/terraform:1.16.4": {
+            "digest": "sha256:985cdc6c1d9b0a65b83377f666efd2f740b47f02ac55be1ced3d18f7d3b0e829",
+            "kind": "registry",
+            "ref": "hashicorp/terraform:1.16.4"
+        },
+        "#mcr.microsoft.com/playwright:v1.62.1-jammy": {
+            "digest": "sha256:b3251f7ff1a9fa559a28d1c67eaa15fc1a9800f7845e82756caea7842967f615",
+            "kind": "registry",
+            "ref": "mcr.microsoft.com/playwright:v1.62.1-jammy"
+        },
+        "#mcr.microsoft.com/playwright:v1.63.0-noble": {
+            "digest": "sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27",
+            "kind": "registry",
+            "ref": "mcr.microsoft.com/playwright:v1.63.0-noble"
+        },
+        "#node:20.20.2-alpine3.23": {
+            "digest": "sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293",
+            "kind": "registry",
+            "ref": "node:20.20.2-alpine3.23"
+        },
+        "#node:24.21.0-alpine3.24": {
+            "digest": "sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1",
+            "kind": "registry",
+            "ref": "node:24.21.0-alpine3.24"
+        },
+        "#python:3.12.14-alpine3.24": {
+            "digest": "sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111",
+            "kind": "registry",
+            "ref": "python:3.12.14-alpine3.24"
         }
     },
     "lock_version": 1,
     "modules": {
         "tools": {
             "git": "https://github.com/lask-task-runner/lask-module-tools.git",
-            "hash": "sha256-d6f7537f50f035a4009f6b07afb4b8c5e42e59af6e87563438eae85b950bbb52",
-            "requested": "v0.1.0",
-            "rev": "9608855c8aac248d742de70457675f79c2f879bd"
+            "hash": "sha256-df8d3acd40bdaa5d228cb6e7f6d5f2e910929e00d39b212499cbdd01ce008fee",
+            "requested": "v0.3.0",
+            "rev": "26be4a5852ca54f9b03c36e9360827976a7a482f"
         }
     }
 }

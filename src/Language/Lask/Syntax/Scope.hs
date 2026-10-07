@@ -126,7 +126,7 @@ childExprs (Expr _ f) = case f of
   EAsync e -> [e]
   EAwait e -> [e]
   ECommand _ env ps -> maybeToList env <> partExprs ps
-  EEnv _ as -> maybe [] (map argExpr) as
+  EEnv _ as os -> map argExpr (maybe [] id as <> maybe [] id os)
   _ -> []
 
 armExprs :: CaseArm -> [Expr]

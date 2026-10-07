@@ -52,10 +52,17 @@ valueToJson v = case v of
   VAsync _ -> A.object [("$type", A.String "AsyncHandle")]
   VEnv (EnvValue kind params) ->
     A.object
-      [ ("$type", A.String "Environment"),
+      -- A value with a run option is a runnable (spec 13.1); one with
+      -- none is its environment, which is a runnable with no options.
+      [ ("$type", A.String (if any (`notElem` imageParams) (Map.keys params) then "Runnable" else "Environment")),
         ("kind", A.String kind),
         ("params", A.Object (KM.fromList [(AK.fromText k, valueToJson x) | (k, x) <- Map.toList params]))
       ]
+
+-- | The parameters of an environment that name its image (spec 10.2);
+-- any other is a run option.
+imageParams :: [Text]
+imageParams = ["image", "dockerfile", "context", "build_args", "platform"]
 
 -- | 'FunctionRef' metadata (spec 13.2).
 functionRefJson :: Lam -> A.Value

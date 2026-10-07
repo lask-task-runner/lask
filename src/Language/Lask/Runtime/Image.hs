@@ -7,10 +7,11 @@
 -- recipe hash, so a changed recipe is a different image and cannot
 -- reuse a cached one. Building is never implicit: @check@ \/ @run@ \/
 -- @eval@ \/ @envs@ resolve the tag and report @E-IO-IMAGE-MISSING@
--- when it is absent, and only @deps sync@ \/ @env build@ materialize
--- it (spec 10.3).
+-- when it is absent, and only @sync@ materializes it (spec 10.3).
 module Language.Lask.Runtime.Image
-  ( recipeTag,
+  ( Recipe (..),
+    recipeSource,
+    recipeTag,
     imageExists,
     buildRecipe,
     repositoryOf,
@@ -48,18 +49,42 @@ import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Process (proc, readCreateProcessWithExitCode)
 
+-- | A recipe environment (spec 10.2): the Dockerfile and the image
+-- options that decide what it builds, every one of them a literal of
+-- the head it was written with (6.7). Paths are relative to the
+-- program's base directory.
+data Recipe = Recipe
+  { rcDockerfile :: Text,
+    rcContext :: Text,
+    -- | In name order.
+    rcBuildArgs :: [(Text, Text)],
+    rcPlatform :: Maybe Text
+  }
+  deriving (Show, Eq, Ord)
+
+-- | A recipe path as a head writes it (spec 6.7): relative paths with a
+-- leading @./@. A recipe of a dependency cached outside the project is
+-- shown by its absolute path, which no head could name.
+recipeSource :: Text -> Text
+recipeSource df
+  | "/" `T.isPrefixOf` df = df
+  | otherwise = "./" <> df
+
 -- | The content-addressed tag of a recipe: @lask\/\<recipe hash\>@.
--- The hash covers the Dockerfile's contents, the context path and the
--- declared build arguments (spec 10.3), so changing any of the three
--- yields a different tag and cannot reuse a cached image.
-recipeTag :: FilePath -> Text -> Text -> [(Text, Text)] -> IO (Either Text Text)
-recipeTag baseDir dockerfile context buildArgs = do
+-- The hash covers the Dockerfile's contents, the context path, the
+-- declared build arguments and the platform (spec 10.3), so changing
+-- any of them yields a different tag and cannot reuse a cached image.
+-- A recipe with no platform hashes as it did before platforms were
+-- covered, so its tag does not move.
+recipeTag :: FilePath -> Recipe -> IO (Either Text Text)
+recipeTag baseDir (Recipe dockerfile context buildArgs platform) = do
   r <- try (BS.readFile (baseDir </> T.unpack dockerfile))
   pure $ case r of
     Left e ->
       Left ("cannot read Dockerfile '" <> dockerfile <> "': " <> T.pack (show (e :: IOException)))
     Right bytes ->
-      let key = hashBytes (bytes <> TE.encodeUtf8 ("\0" <> context <> buildArgKey buildArgs))
+      let platformKey = maybe "" ("\0platform=" <>) platform
+          key = hashBytes (bytes <> TE.encodeUtf8 ("\0" <> context <> buildArgKey buildArgs <> platformKey))
        in Right ("lask/" <> T.replace "sha256-" "" key)
 
 -- | Build arguments in name order, so the hash does not depend on the
@@ -79,8 +104,8 @@ imageExists tag = do
 -- | Build a recipe into its content-addressed tag. No host mount other
 -- than the declared context, no privileged mode, no host networking
 -- (spec 10.3).
-buildRecipe :: FilePath -> Text -> Text -> [(Text, Text)] -> Text -> IO (Either Text ())
-buildRecipe baseDir dockerfile context buildArgs tag = do
+buildRecipe :: FilePath -> Recipe -> Text -> IO (Either Text ())
+buildRecipe baseDir (Recipe dockerfile context buildArgs platform) tag = do
   let args =
         [ "build",
           "-f",
@@ -88,6 +113,7 @@ buildRecipe baseDir dockerfile context buildArgs tag = do
           "-t",
           T.unpack tag
         ]
+          <> maybe [] (\p -> ["--platform", T.unpack p]) platform
           <> concat [["--build-arg", T.unpack (k <> "=" <> v)] | (k, v) <- sortOn fst buildArgs]
           <> [baseDir </> T.unpack context]
   r <- try (readCreateProcessWithExitCode (proc "docker" args) "")
@@ -124,10 +150,13 @@ pinnedRef :: Text -> Text -> Text
 pinnedRef ref digest = repositoryOf ref <> "@" <> digest
 
 -- | Pull a reference. The one network access a registry image needs,
--- made only by @deps sync@ and @env build@ (spec 10.3, 11.5, 11.7).
-pullImage :: Text -> IO (Either Text ())
-pullImage ref = do
-  r <- try (readCreateProcessWithExitCode (proc "docker" ["pull", "--quiet", T.unpack ref]) "")
+-- made only by @sync@ (spec 10.3, 11.7).
+--
+-- With a platform, that platform's variant of the image is pulled.
+pullImage :: Maybe Text -> Text -> IO (Either Text ())
+pullImage platform ref = do
+  let args = ["pull", "--quiet"] <> maybe [] (\p -> ["--platform", T.unpack p]) platform <> [T.unpack ref]
+  r <- try (readCreateProcessWithExitCode (proc "docker" args) "")
   pure $ case r of
     Left e -> Left ("cannot run docker pull: " <> T.pack (show (e :: IOException)))
     Right (ExitSuccess, _, _) -> Right ()
@@ -163,11 +192,12 @@ registryDigest ref = do
 -- | How the registry references of a running program resolve (spec
 -- 10.4).
 data ImagePins
-  = -- | Through the lock, and only the lock may resolve a reference the
-    -- program writes as a literal. Nothing is pulled: an image that is
+  = -- | Through the lock only. Every reference a program can carry was
+    -- written as a head (6.7), so one the lock does not pin means the
+    -- lock is behind the program. Nothing is pulled: an image that is
     -- not on the daemon is @E-IO-IMAGE-MISSING@. The images found
     -- present are remembered, so a loop does not ask the daemon again.
-    Locked (Map Text Text) (Set Text) (IORef (Set Text))
+    Locked (Map Text Text) (IORef (Set Text))
   | -- | Through the lock where it pins the reference, and otherwise as
     -- written, leaving the daemon to pull. The REPL resolves this way:
     -- it is not one of the subcommands 10.3 forbids to pull.
@@ -182,44 +212,32 @@ lockPins images =
     ]
 
 -- | Pins for @run@, @eval@, @cmd@ and @envs@: each pinned reference to
--- the image it names, and the references the program writes as
--- literals.
-lockedPins :: Map Text Text -> Set Text -> IO ImagePins
-lockedPins pinned literals = Locked pinned literals <$> newIORef Set.empty
+-- the image it names.
+lockedPins :: Map Text Text -> IO ImagePins
+lockedPins pinned = Locked pinned <$> newIORef Set.empty
 
 unlockedPins :: Map Text Text -> ImagePins
 unlockedPins = Unlocked
 
 -- | The image a registry reference runs as (spec 10.4).
 --
--- A reference the lock pins runs as the pinned image. A literal the
--- lock does not pin means the lock is behind the program, and that
--- @lask env build@ has not run since the reference was written. A
--- reference computed at run time cannot be enumerated or pinned (10.3),
--- so it runs as written — but is never pulled for it either.
+-- A reference the lock pins runs as the pinned image, and one written
+-- with a digest pins itself. Any other means that @lask sync@ has
+-- not run since the reference was written.
 resolveRegistry :: ImagePins -> Text -> IO (Either LaskFailure Text)
 resolveRegistry pins ref = case pins of
   Unlocked pinned -> pure (Right (Map.findWithDefault ref ref pinned))
-  -- A reference written with a digest pins itself.
-  Locked pinned literals seen -> case Map.lookup ref pinned <|> (ref <$ writtenDigest ref) of
-    Just image -> present seen image $ \() ->
-      "image '" <> ref <> "' (pinned as " <> image <> ") is not on the Docker daemon; run 'lask env build'"
-    Nothing
-      | ref `Set.member` literals ->
-          pure . Left . ioFailure EIoImageMissing $
-            "image '" <> ref <> "' is not pinned in lask.lock.json; run 'lask env build'"
-      | otherwise -> present seen ref $ \() ->
-          "image '"
-            <> ref
-            <> "' is computed at run time, so lask cannot materialize it; pull it with 'docker pull "
-            <> ref
-            <> "'"
-  where
-    present seen image message = do
+  Locked pinned seen -> case Map.lookup ref pinned <|> (ref <$ writtenDigest ref) of
+    Just image -> do
       known <- Set.member image <$> readIORef seen
       ok <- if known then pure True else imageExists image
       if ok
         then do
           atomicModifyIORef' seen (\s -> (Set.insert image s, ()))
           pure (Right image)
-        else pure (Left (ioFailure EIoImageMissing (message ())))
+        else
+          pure . Left . ioFailure EIoImageMissing $
+            "image '" <> ref <> "' (pinned as " <> image <> ") is not on the Docker daemon; run 'lask sync'"
+    Nothing ->
+      pure . Left . ioFailure EIoImageMissing $
+        "image '" <> ref <> "' is not pinned in lask.lock.json; run 'lask sync'"

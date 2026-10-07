@@ -43,7 +43,7 @@ Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, 
 
 **Runnable**. Every piece runs on its own: a task with `lask run`, an expression in the REPL, a one-off command in its container with `lask cmd go test ./...`. A task's signature is its command line — `release(dry_run = true)` is `lask run release --dry-run true` — and its doc comment (`@param`, `@return`, `@example`) is the single source for both `--help` and the editor's hover, alongside the inferred return type and every image the task will need.
 
-**Secure**. Secrets stay out of the code and out of the log: a `!!` binding is masked wherever its value appears, and an environment variable like `{vault://secret/aws#secret_key}` is resolved from Vault when read, so the same program runs with or without a vault. Imports are pinned by content hash in a committed lock file, and only `lask deps sync` touches the network. Every command runs in a container you can lock down with `network = "none"`, `read_only = true` or `cap_drop`, and a task like `deploy` can ask for a typed confirmation before it runs.
+**Secure**. Secrets stay out of the code and out of the log: a `!!` binding is masked wherever its value appears, and an environment variable like `{vault://secret/aws#secret_key}` is resolved from Vault when read, so the same program runs with or without a vault. Imports are pinned by content hash in a committed lock file, and only `lask sync` touches the network. Every command runs in a container you can lock down with `network = "none"`, `read_only = true` or `cap_drop`, and a task like `deploy` can ask for a typed confirmation before it runs.
 
 ## Comparison
 
@@ -197,7 +197,7 @@ The script only ever asks the binary, so it keeps working across upgrades. Compl
 
 ## Example
 
-Before a task first runs in a container, `lask env build` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
+Before a task first runs in a container, `lask sync` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
 
 Run a command in any image straight from the REPL, with nothing installed locally:
 
@@ -217,9 +217,8 @@ $ lask check                       # static validation
 $ lask run <function> [args...]    # execute (result not printed)
 $ lask eval <function> [args...]   # execute and print the result as JSON
 $ lask cmd <command> [args...]     # run a declared command in its declared image
-$ lask envs [--check]              # list/check referenced environments
-$ lask env build | list            # materialize / inspect container images
-$ lask deps sync                   # fetch + verify external dependencies
+$ lask envs list | check [fn]      # list referenced environments / check they are reachable
+$ lask sync [--frozen]             # fetch dependencies, pull/build images, write the lock
 $ lask deps add <name> <source>    # add a dependency: --git <url> --rev <rev>, or --url <url>
 $ lask deps why <name>             # show why a dependency is in the graph
 $ lask repl                        # interactive session

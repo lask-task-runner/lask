@@ -151,7 +151,10 @@ builtinSchemes =
       -- 15.5 command execution. The environment is positional and
       -- requiredField: there is no default execution environment (spec 10.1),
       -- and a keyword parameter must have a default (spec 6.1).
-      ("run", mono [TyEnvironment, TyString] commandResultType),
+      ("run", mono [TyRunnable, TyString] commandResultType),
+      -- Its run options are keyword parameters, bound by the
+      -- elaborator against the options of 10.2 (spec 15.5).
+      ("runnable", mono [TyEnvironment] TyRunnable),
       ("shell_quote", mono [TyString] TyString),
       -- 15.6 parallel/async
       ("spawn", poly ["T"] [TyFun [] (tv "T")] (TyAsync (tv "T"))),
@@ -196,13 +199,13 @@ builtinSchemes =
       -- 15.11 filesystem. As with run the environment is
       -- positional and requiredField (spec 10.1, 15.11): there is no
       -- filesystem access that does not name an environment.
-      ("read_file", mono [TyString, TyEnvironment] TyString),
-      ("write_file", mono [TyString, TyString, TyEnvironment] TyVoid),
-      ("file_exists", mono [TyString, TyEnvironment] TyBool),
-      ("remove_file", mono [TyString, TyEnvironment] TyVoid),
-      ("make_dir", mono [TyString, TyEnvironment] TyVoid),
-      ("list_dir", mono [TyString, TyEnvironment] (TyArray TyString)),
-      ("glob", mono [TyString, TyEnvironment] (TyArray TyString)),
+      ("read_file", mono [TyString, TyRunnable] TyString),
+      ("write_file", mono [TyString, TyString, TyRunnable] TyVoid),
+      ("file_exists", mono [TyString, TyRunnable] TyBool),
+      ("remove_file", mono [TyString, TyRunnable] TyVoid),
+      ("make_dir", mono [TyString, TyRunnable] TyVoid),
+      ("list_dir", mono [TyString, TyRunnable] (TyArray TyString)),
+      ("glob", mono [TyString, TyRunnable] (TyArray TyString)),
       -- 15.12 diagnostic output
       ("log", mono [TyString] TyVoid),
       -- 15.13 nondeterministic

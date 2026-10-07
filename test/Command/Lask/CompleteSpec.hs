@@ -105,7 +105,7 @@ spec = do
   describe "subcommands and options" $ do
     it "offers the subcommands of spec 11.1" $ do
       vs <- valuesFor [""]
-      vs `shouldOffer` ["run", "eval", "check", "envs", "deps", "completion"]
+      vs `shouldOffer` ["run", "eval", "check", "envs", "sync", "deps", "completion"]
 
     it "offers a subcommand's options once a dash is typed" $ do
       vs <- valuesFor ["check", "--"]

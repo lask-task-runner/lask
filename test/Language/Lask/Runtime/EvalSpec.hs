@@ -126,8 +126,38 @@ spec = do
     it "compares structurally" $
       evalsTo "f() = {a: [1, 2]} == {a: [1, 2]}" "f" "true"
     it "compares environments structurally (spec 8.8)" $ do
-      evalsTo "f() = #alpine:3.12 == #docker(\"alpine:3.12\")" "f" "true"
+      evalsTo "f() = #alpine:3.12 == #alpine:3.12" "f" "true"
       evalsTo "f() = #local == #alpine:3.12" "f" "false"
+      -- An option given null is not set, and how a value was reached
+      -- does not matter.
+      evalsTo "f() = #alpine:3.12{memory: null} == #alpine:3.12" "f" "true"
+      evalsTo "f() = #alpine:3.12{memory: \"1g\"} == runnable(#alpine:3.12, memory = \"1g\")" "f" "true"
+
+  describe "runnables (spec 6.7, 8.8, 15.5)" $ do
+    it "is the sugar #head{...} for runnable(...)" $
+      evalsTo
+        "f() = #alpine:3.12{memory: \"1g\", user: \"app\"} == runnable(#alpine:3.12, user = \"app\", memory = \"1g\")"
+        "f"
+        "true"
+    it "leaves out an option given null" $
+      evalsTo
+        "f() = do {\n  u: String | Null = null\n  runnable(#alpine:3.12, user = u) == #alpine:3.12\n}"
+        "f"
+        "true"
+    it "keeps the image of a function's default, or the one its caller passes" $ do
+      evalsTo
+        "py(--image: Environment = #python:3.12): Runnable = runnable(image, env = {\"X\": \"1\"})\nf() = py() == #python:3.12{env: {\"X\": \"1\"}}"
+        "f"
+        "true"
+      evalsTo
+        "py(--image: Environment = #python:3.12): Runnable = runnable(image, env = {\"X\": \"1\"})\nf() = py(image = #python:3.13(platform = \"linux/amd64\")) == #python:3.13(platform = \"linux/amd64\"){env: {\"X\": \"1\"}}"
+        "f"
+        "true"
+    it "takes no run option on a local environment reached as a value" $ do
+      failsWith "id(e: Environment): Environment = e\nf() = runnable(id(#local), memory = \"1g\")" "f" ERuntimeValue
+      evalsTo "id(e: Environment): Environment = e\nf() = runnable(id(#local)) == #local" "f" "true"
+    it "is a function value taking an environment alone" $
+      evalsTo "f(): Array<Runnable> = map([#alpine:3.12], runnable)" "f" "[{\"$type\":\"Environment\",\"kind\":\"docker\",\"params\":{\"image\":\"alpine:3.12\"}}]"
 
   describe "strings" $ do
     it "interpolates expressions" $

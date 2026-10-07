@@ -1,4 +1,4 @@
-# `lask env build` writes a lock file next to each module. Most of these
+# `lask sync` writes a lock file next to each module. Most of these
 # modules have no external dependency, so their locks record only
 # locally built images and are not worth committing.
 lask.lock.json

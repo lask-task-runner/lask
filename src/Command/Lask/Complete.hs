@@ -496,7 +496,7 @@ data PosSpec = PosFunction | PosCommandWord | PosDepName | PosShell | PosFree
 
 -- | What a subcommand does with the tokens after its positional.
 data Boundary
-  = -- | Ordinary parsing continues (@envs@).
+  = -- | Ordinary parsing continues (@envs list@).
     NoBoundary
   | -- | They are the function's arguments (spec 11.2): lask's options
     -- give way to the function's keyword parameters.
@@ -548,11 +548,12 @@ rootCommands =
     runLike "run" "Run a function (result is not printed)",
     runLike "eval" "Run a function and print its result",
     plain "repl" "Interactive session" commonOpts,
-    (plain "envs" "List and check environments" (commonOpts <> [switchOpt "check" "Check accessibility of each environment"]))
-      { cmdPos = [PosFunction]
-      },
+    Cmd "envs" "List and check environments" envsSubs [helpOpt] [] NoBoundary,
+    plain
+      "sync"
+      "Fetch dependencies, materialize images, and write the lock file"
+      (commonOpts <> [switchOpt "frozen" "Fail instead of updating the lock file"]),
     Cmd "deps" "Manage external dependencies" depsSubs [helpOpt] [] NoBoundary,
-    Cmd "env" "Materialize and inspect container images" envSubs [helpOpt] [] NoBoundary,
     Cmd "secrets" "List and check secret references" secretsSubs [helpOpt] [] NoBoundary,
     (plain "cmd" "Run a declared command in its declared environment" (commonOpts <> [switchOpt "list" "List the commands the module declares"]))
       { cmdPos = [PosCommandWord],
@@ -598,11 +599,7 @@ rootCommands =
       ]
 
     depsSubs =
-      [ plain
-          "sync"
-          "Fetch and verify all declared dependencies"
-          (commonOpts <> [switchOpt "frozen" "Fail instead of updating the lock file"]),
-        (plain "add" "Fetch a source, record it with its content hash, and cache it" (commonOpts <> addSource))
+      [ (plain "add" "Fetch a source, record it with its content hash, and cache it" (commonOpts <> addSource))
           { cmdPos = [PosFree]
           },
         (plain "why" "Report the graph paths through which a dependency is reached" commonOpts)
@@ -632,9 +629,13 @@ rootCommands =
           }
       ]
 
-    envSubs =
-      [ plain "build" "Materialize every image the program requires" commonOpts,
-        plain "list" "Report every image reference and whether it is present" commonOpts
+    envsSubs =
+      [ (plain "list" "List the environments and what the lock resolves them to, without reaching Docker" commonOpts)
+          { cmdPos = [PosFunction]
+          },
+        (plain "check" "Check that each environment can be reached and its image is present" commonOpts)
+          { cmdPos = [PosFunction]
+          }
       ]
 
 -- | The walk state: what the words consumed so far have established.
@@ -1026,6 +1027,7 @@ declaredName d = case AST.declF d of
 
 isEnvType :: Maybe AST.SType -> Bool
 isEnvType (Just (AST.SType _ AST.SEnvironment)) = True
+isEnvType (Just (AST.SType _ AST.SRunnable)) = True
 isEnvType _ = False
 
 isBoolType :: Maybe AST.SType -> Bool
@@ -1041,6 +1043,7 @@ typeText (AST.SType _ f) = case f of
   AST.SNull -> "Null"
   AST.SVoid -> "Void"
   AST.SEnvironment -> "Environment"
+  AST.SRunnable -> "Runnable"
   AST.SArray t -> "Array<" <> typeText t <> ">"
   AST.SMap t -> "Map<" <> typeText t <> ">"
   AST.SRecord _ -> "Record"

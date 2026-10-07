@@ -51,8 +51,8 @@ import Language.Lask.Obs.CommandLog
 import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
-import Command.Lask.Images (ImageRow (..), Materialized (..), imageRows, loadPins, materialize)
-import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
+import Command.Lask.Images (Materialized (..), loadPins, materialize, resolvedImages)
+import Language.Lask.Runtime.Image (ImagePins, Recipe (..), imageExists, recipeSource, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
@@ -79,13 +79,12 @@ runRootCommand cmd = case cmd of
   CmdRun runOpts -> cmdRunEval False runOpts
   CmdEval runOpts -> cmdRunEval True runOpts
   CmdRepl opts -> cmdRepl opts
-  CmdEnvs envsOpts -> cmdEnvs envsOpts
-  CmdDepsSync opts frozen -> cmdDepsSync opts frozen
+  CmdEnvsList envsOpts -> cmdEnvs False envsOpts
+  CmdEnvsCheck envsOpts -> cmdEnvs True envsOpts
+  CmdSync opts frozen -> cmdSync opts frozen
   CmdDepsAdd opts name source -> cmdDepsAdd opts name source
   CmdDepsWhy opts name -> cmdDepsWhy opts name
   CmdDepsDiff opts name -> cmdDepsDiff opts name
-  CmdEnvBuild opts -> cmdEnvBuild opts
-  CmdEnvList opts -> cmdEnvList opts
   CmdSecretsList o -> cmdSecrets False o
   CmdSecretsCheck o -> cmdSecrets True o
   CmdCmd cmdOpts -> cmdCmd cmdOpts
@@ -471,8 +470,8 @@ cmdRepl opts = runRepl (optModule opts)
 
 -- envs -----------------------------------------------------------------------
 
-cmdEnvs :: EnvsOpts -> IO ()
-cmdEnvs envsOpts = do
+cmdEnvs :: Bool -> EnvsOpts -> IO ()
+cmdEnvs isCheck envsOpts = do
   let opts = envsCommon envsOpts
   compiled <- compileOrExit opts
   let core = compiledCore compiled
@@ -483,6 +482,7 @@ cmdEnvs envsOpts = do
     Just fn -> case publicDecl compiled (kebabToSnake fn) of
       Just (key, _) -> pure (Just key)
       Nothing -> usageError opts ("no such function: '" <> fn <> "'")
+  resolved <- resolvedImages core
   pins <- loadPins core
   traceId <- maybe newTraceId pure (optTraceId opts)
   writeErr <- newLineWriter stderr
@@ -496,11 +496,19 @@ cmdEnvs envsOpts = do
         nub . sort $ case scope of
           Nothing -> collectEnvRefs core
           Just key -> collectEnvRefsFrom core key
+      -- What the lock resolves a docker environment to; a local one
+      -- has nothing to resolve.
+      resolution ref
+        | refKind ref == "docker" = Just (Map.findWithDefault [] (refLabel ref) resolved)
+        | otherwise = Nothing
+      form ref
+        | "recipe " `T.isPrefixOf` refTarget ref = "recipe"
+        | otherwise = "registry"
   results <-
     mapM
       ( \ref -> do
           status <-
-            if envsCheck envsOpts
+            if isCheck
               then Just <$> checkEnvRef cmdLogSink nextExec (imageCheck pins core) ref
               else pure Nothing
           pure (ref, status)
@@ -514,20 +522,24 @@ cmdEnvs envsOpts = do
               (AK.fromText "kind", A.String (refKind ref)),
               (AK.fromText "target", A.String (refTarget ref))
             ]
-              <> maybe [] (\s -> [(AK.fromText "status", A.String (either id (const "ok") s))]) status
+              <> maybe [] (\rs -> [(AK.fromText "resolved", A.toJSON rs)]) (resolution ref)
+              <> maybe [] (\st -> [(AK.fromText "status", A.String (either id (const "ok") st))]) status
         | (ref, status) <- results
         ]
     else
       mapM_
         ( \(ref, status) ->
-            TIO.putStrLn $
-              refLabel ref
-                <> " ("
-                <> refKind ref
-                <> ": "
-                <> refTarget ref
-                <> ")"
-                <> maybe "" (either (" NG: " <>) (const " ok")) status
+            TIO.putStrLn . T.intercalate "  " $
+              [refKind ref, refLabel ref]
+                <> maybe
+                  []
+                  ( \rs ->
+                      [ form ref,
+                        if null rs then "not pinned (lask sync)" else T.intercalate ", " rs
+                      ]
+                  )
+                  (resolution ref)
+                <> maybe [] (\st -> [either ("NG: " <>) (const "ok") st]) status
         )
         results
   let failed = [() | (_, Just (Left _)) <- results]
@@ -557,7 +569,7 @@ cmdSecrets isCheck o = do
 -- | Probe accessibility (spec 11.4): no command execution, no side
 -- effects; docker checks daemon connectivity, remote checks SSH
 -- session establishment. Probe processes relay through the command
--- execution log (spec 12.3: @envs --check@ is a relay target).
+-- execution log (spec 12.3: @envs check@ is a relay target).
 checkEnvRef :: CommandLogSink -> IO Int -> (EnvRef -> IO (Either Text ())) -> EnvRef -> IO (Either Text ())
 checkEnvRef sink nextExec presence ref = case refKind ref of
   "local" -> pure (Right ())
@@ -575,33 +587,31 @@ checkEnvRef sink nextExec presence ref = case refKind ref of
   _ -> pure (Right ())
 
 -- | Whether the image an enumerated environment needs is on the daemon,
--- as the lock resolves it (spec 11.4). A reference computed at run time
--- has nothing to check before it is computed.
+-- as the lock resolves it (spec 11.4).
 imageCheck :: ImagePins -> CoreProgram -> EnvRef -> IO (Either Text ())
 imageCheck pins core ref = case T.stripPrefix "recipe " (refTarget ref) of
   Just dockerfile -> do
     tags <-
       mapM
-        (\(df, ctx, buildArgs) -> recipeTag (cpBaseDir core) df ctx buildArgs)
-        [r | r@(df, _, _) <- collectRecipes core, df == dockerfile]
+        (recipeTag (cpBaseDir core))
+        [r | r <- collectRecipes core, recipeSource (rcDockerfile r) == dockerfile]
     present <- mapM (either (const (pure False)) imageExists) tags
     pure $
       if and present
         then Right ()
-        else Left (codeText EIoImageMissing <> ": image for recipe '" <> dockerfile <> "' is not materialized; run 'lask env build'")
-  Nothing
-    | refLabel ref == "<dynamic>" -> pure (Right ())
-    | otherwise -> either (Left . renderFailure) (const (Right ())) <$> resolveRegistry pins (refTarget ref)
+        else Left (codeText EIoImageMissing <> ": image for recipe '" <> dockerfile <> "' is not materialized; run 'lask sync'")
+  Nothing -> either (Left . renderFailure) (const (Right ())) <$> resolveRegistry pins (refTarget ref)
   where
     renderFailure lf = maybe "" (\c -> codeText c <> ": ") (lfCode lf) <> failureMessage lf
 
 -- deps (spec 11.5) ------------------------------------------------------------
 
--- | @lask deps sync@: fetch and verify every declared dependency
--- (including transitive ones) into the cache. This is the only
--- subcommand allowed to access the network for module resolution.
-cmdDepsSync :: CommonOpts -> Bool -> IO ()
-cmdDepsSync opts frozen = do
+-- | @lask sync@ (spec 11.7): fetch and verify every declared dependency
+-- (including transitive ones) into the cache, then materialize every
+-- image the program requires, and record both in the lock. The only
+-- subcommand allowed to access the network or to start a build.
+cmdSync :: CommonOpts -> Bool -> IO ()
+cmdSync opts frozen = do
   let baseDir = takeDirectory (optModule opts)
       depsPath = baseDir </> defaultDepsFileName
   cacheDir <- cacheDirFor baseDir
@@ -625,7 +635,7 @@ cmdDepsSync opts frozen = do
               -- The modules are written before the images are
               -- resolved: reading the program needs them locked.
               withImages = newLock {lockImages = maybe Map.empty lockImages prior}
-          -- --frozen (spec 11.5): CI asserts that the committed lock is
+          -- --frozen (spec 11.7): CI asserts that the committed lock is
           -- what resolution produces, rather than updating it.
           if frozen && Just (lockModules newLock) /= fmap lockModules prior
             then do
@@ -637,7 +647,7 @@ cmdDepsSync opts frozen = do
               syncImages opts frozen lockPath withImages
         else exitWith (ExitFailure 3)
 
--- | The images half of @deps sync@ (spec 11.5): with the modules in the
+-- | The images half of @sync@ (spec 11.7): with the modules in the
 -- cache, the program can be read, and every image it requires is
 -- materialized and pinned the way its modules are. A program that does
 -- not compile keeps its modules synced and stops here, since its images
@@ -698,7 +708,7 @@ isFullSha :: Text -> Bool
 isFullSha r = T.length r == 40 && T.all (\c -> c `elem` ("0123456789abcdef" :: String)) r
 
 -- | @lask deps add@: declare the entry, then resolve the whole project
--- file the way @deps sync@ does. The new entry is pinned on first use:
+-- file the way @sync@ does. The new entry is pinned on first use:
 -- its content hash and, for git, the commit it came from. Every other
 -- entry is verified against what the lock already pins, and the lock's
 -- images are kept. Nothing is written unless every entry resolves.
@@ -897,53 +907,6 @@ advisoryJson a =
           ]
         NoSpan -> []
 
--- | @lask env build@ (spec 11.7): materialize every image the program
--- requires — registry references pulled and pinned, recipes built — and
--- record in the lock what each resolved to. With @deps sync@, the only
--- subcommand permitted to pull or to start a build.
-cmdEnvBuild :: CommonOpts -> IO ()
-cmdEnvBuild opts = do
-  compiled <- compileOrExit opts
-  let core = compiledCore compiled
-      lockPath = cpBaseDir core </> defaultLockFileName
-  existing <- either (const Nothing) id <$> loadLockFile lockPath
-  m <- materialize core (maybe Map.empty lockImages existing)
-  mapM_ TIO.putStrLn (matReport m)
-  -- A project with no image and no lock gets no lock file for nothing.
-  unless (isNothing existing && Map.null (matImages m)) $
-    BL.writeFile lockPath . renderLockFile $
-      (maybe emptyLock id existing) {lockImages = matImages m}
-  unless (null (matFailures m)) $ do
-    mapM_ (TIO.hPutStrLn stderr) (matFailures m)
-    exitWith (ExitFailure 3)
-
--- | @lask env list@ (spec 11.7): every image the program references,
--- what the lock resolves it to, and whether it is on the daemon. No
--- network access and no build.
-cmdEnvList :: CommonOpts -> IO ()
-cmdEnvList opts = do
-  compiled <- compileOrExit opts
-  rows <- imageRows (compiledCore compiled)
-  if optJsonFormat opts
-    then
-      TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode $
-        [ A.object
-            [ (AK.fromText "source", A.String (irSource r)),
-              (AK.fromText "kind", A.String (irKind r)),
-              (AK.fromText "resolved", maybe A.Null A.String (irResolved r)),
-              (AK.fromText "present", A.Bool (irPresent r))
-            ]
-        | r <- rows
-        ]
-    else forM_ rows $ \r ->
-      TIO.putStrLn $
-        irSource r
-          <> "  "
-          <> irKind r
-          <> "  "
-          <> maybe "not pinned (lask env build)" id (irResolved r)
-          <> (if irPresent r then "  present" else "  MISSING")
-
 -- | @lask cmd@ (spec 11.8): run a declared command in its declared
 -- environment, as an argument vector rather than through a shell.
 cmdCmd :: CmdOpts -> IO ()
@@ -1006,7 +969,7 @@ listCommands opts core table = do
               <> T.justifyLeft 6 ' ' kind
               <> "  "
               <> target
-              <> (if present then "" else "  MISSING (lask env build)")
+              <> (if present then "" else "  MISSING (lask sync)")
           )
   where
     row pins (name, envCore) = do
@@ -1021,7 +984,7 @@ listCommands opts core table = do
     describeResolved resolved = case resolved of
       ResolvedLocal -> ("local", "local")
       ResolvedDocker image _ -> ("docker", image)
-      ResolvedRecipe df _ _ -> ("docker", "recipe " <> df)
+      ResolvedRecipe r _ -> ("docker", "recipe " <> recipeSource (rcDockerfile r))
 
 -- | Whether the image a command needs is on the target daemon. No
 -- network access and no build (spec 11.8, 10.3).
@@ -1029,8 +992,8 @@ imagePresent :: ImagePins -> FilePath -> ResolvedEnv -> IO Bool
 imagePresent pins baseDir resolved = case resolved of
   ResolvedLocal -> pure True
   ResolvedDocker ref _ -> either (const False) (const True) <$> resolveRegistry pins ref
-  ResolvedRecipe df ctx opts -> do
-    tagE <- recipeTag baseDir df ctx (recipeBuildArgs opts)
+  ResolvedRecipe r _ -> do
+    tagE <- recipeTag baseDir r
     either (const (pure False)) imageExists tagE
 
 -- | Evaluate a command's environment (spec 11.8). The environment of a
@@ -1095,7 +1058,7 @@ cmdDepsDiff opts name = do
   TIO.putStrLn "content hash:"
   TIO.putStrLn ("  = " <> lkHash locked)
   when (lkRequested locked /= requested) $
-    TIO.putStrLn "run 'lask deps sync' to resolve and review the new revision"
+    TIO.putStrLn "run 'lask sync' to resolve and review the new revision"
 
 
 loadLockOrExit :: CommonOpts -> IO LockFile
@@ -1107,7 +1070,7 @@ loadLockOrExit opts = do
       TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
       exitWith (ExitFailure 1)
     Right Nothing -> do
-      TIO.hPutStrLn stderr (codeText EModuleLockStale <> ": no lock file; run 'lask deps sync'")
+      TIO.hPutStrLn stderr (codeText EModuleLockStale <> ": no lock file; run 'lask sync'")
       exitWith (ExitFailure 1)
     Right (Just lf) -> pure lf
 

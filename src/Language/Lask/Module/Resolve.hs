@@ -445,7 +445,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       EAsync e -> checkExpr sc e
       EAwait e -> checkExpr sc e
       ECommand _ env ps -> maybe [] (checkExpr sc) env <> concatMap (checkPart sc) ps
-      EEnv _ as -> maybe [] (concatMap (checkArg sc)) as
+      EEnv _ as os -> concatMap (checkArg sc) (maybe [] id as <> maybe [] id os)
       _ -> []
       where
         undefDiag s n =
