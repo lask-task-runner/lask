@@ -3,8 +3,8 @@
 // Every way of running a program, and the rules that decide where it
 // runs. Needs Docker for the container parts:
 //
-//   lask envs            # every image this module can reach for
-//   lask env build       # materialize them; run and eval never pull
+//   lask envs list       # every image this module can reach for
+//   lask sync            # materialize them; run and eval never pull
 //   lask eval greeting
 //   lask run  probe --path /etc/os-release
 

@@ -8,8 +8,7 @@ module Command.Lask.Images
     lockedImages,
     Materialized (..),
     materialize,
-    ImageRow (..),
-    imageRows,
+    resolvedImages,
   )
 where
 
@@ -17,7 +16,6 @@ import Command.Lask.Envs (collectRecipes, collectRegistryImages, collectRegistry
 import Control.Applicative ((<|>))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Deps.Lock
@@ -175,39 +173,24 @@ materialize core prior = do
             Right () ->
               Right (key, LockImage "recipe" Nothing (Just tag) Nothing, dockerfile <> " -> " <> tag)
 
--- | One image of @lask env list@ (spec 11.7).
-data ImageRow = ImageRow
-  { irSource :: Text,
-    irKind :: Text,
-    -- | The pinned reference or the content-addressed tag; 'Nothing'
-    -- for a registry reference the lock does not pin yet.
-    irResolved :: Maybe Text,
-    irPresent :: Bool
-  }
-
--- | Every image the program references, as the lock resolves it. No
--- network access and no build.
-imageRows :: CoreProgram -> IO [ImageRow]
-imageRows core = do
+-- | What the lock resolves each image of the program to, by the
+-- source its head names it by (spec 11.4): the pinned reference of a
+-- registry reference, the content-addressed tag of a recipe. A
+-- registry reference the lock does not pin yet has no entry, nor a
+-- recipe whose tag cannot be computed. One recipe built with several
+-- sets of options resolves to several tags. No network access, no
+-- build, and no Docker daemon.
+resolvedImages :: CoreProgram -> IO (Map Text [Text])
+resolvedImages core = do
   images <- lockedImages core
   let pins = lockPins images
-  registries <-
-    mapM
-      ( \ref -> case writtenDigest ref of
-          Just _ -> ImageRow ref "registry" (Just ref) <$> imageExists ref
-          Nothing -> case Map.lookup ref pins of
-            Just image -> ImageRow ref "registry" (Just image) <$> imageExists image
-            Nothing -> pure (ImageRow ref "registry" Nothing False)
-      )
-      (collectRegistryRefs core)
+      registries =
+        [ (ref, [image])
+        | ref <- collectRegistryRefs core,
+          Just image <- [maybe (Map.lookup ref pins) (const (Just ref)) (writtenDigest ref)]
+        ]
   recipes <-
     mapM
-      ( \r -> do
-          let source = recipeSource (rcDockerfile r)
-          tagE <- recipeTag (cpBaseDir core) r
-          case tagE of
-            Left _ -> pure (ImageRow source "recipe" Nothing False)
-            Right tag -> ImageRow source "recipe" (Just tag) <$> imageExists tag
-      )
+      (\r -> fmap (\tag -> (recipeSource (rcDockerfile r), [tag])) <$> recipeTag (cpBaseDir core) r)
       (collectRecipes core)
-  pure (registries <> recipes)
+  pure (Map.fromListWith (flip (<>)) (registries <> [x | Right x <- recipes]))

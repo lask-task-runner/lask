@@ -13,6 +13,7 @@ module Command.Lask.Options
     runOptionsHelp,
     argSeparator,
     protectArgSeparator,
+    retiredCommand,
   )
 where
 
@@ -46,10 +47,10 @@ data RunOpts = RunOpts
     runArgs :: [Text]
   }
 
+-- | @lask envs list@ \/ @check@ (spec 11.4).
 data EnvsOpts = EnvsOpts
   { envsCommon :: CommonOpts,
-    envsFunction :: Maybe Text,
-    envsCheck :: Bool
+    envsFunction :: Maybe Text
   }
 
 -- | @lask secrets list@ \/ @check@ (spec 11.10).
@@ -74,13 +75,12 @@ data RootCommand
   | CmdRun RunOpts
   | CmdEval RunOpts
   | CmdRepl CommonOpts
-  | CmdEnvs EnvsOpts
-  | CmdDepsSync CommonOpts Bool
+  | CmdEnvsList EnvsOpts
+  | CmdEnvsCheck EnvsOpts
+  | CmdSync CommonOpts Bool
   | CmdDepsAdd CommonOpts Text DepsAddSource
   | CmdDepsWhy CommonOpts Text
   | CmdDepsDiff CommonOpts Text
-  | CmdEnvBuild CommonOpts
-  | CmdEnvList CommonOpts
   | CmdSecretsList SecretsOpts
   | CmdSecretsCheck SecretsOpts
   | CmdCmd CmdOpts
@@ -168,7 +168,6 @@ pEnvsOpts =
   EnvsOpts
     <$> pCommon
     <*> optional (T.pack <$> argument str (metavar "FUNCTION"))
-    <*> switch (long "check" <> help "Check accessibility of each environment")
 
 -- | Two deviations from the obvious parser for @run@ \/ @eval@.
 --
@@ -201,9 +200,17 @@ pRootCommand =
               (progDesc "Run a function and print its result" <> noIntersperse)
           )
         <> command "repl" (withHelp (CmdRepl <$> pCommon) (progDesc "Interactive session"))
-        <> command "envs" (withHelp (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))
+        <> command "envs" (withHelp pEnvsCommand (progDesc "List and check environments"))
+        <> command
+          "sync"
+          ( withHelp
+              ( CmdSync
+                  <$> pCommon
+                  <*> switch (long "frozen" <> help "Fail instead of updating the lock file")
+              )
+              (progDesc "Fetch dependencies, materialize images, and write the lock file")
+          )
         <> command "deps" (withHelp pDepsCommand (progDesc "Manage external dependencies"))
-        <> command "env" (withHelp pEnvCommand (progDesc "Materialize and inspect container images"))
         <> command "secrets" (withHelp pSecretsCommand (progDesc "List and check secret references"))
         <> command
           "cmd"
@@ -238,16 +245,45 @@ runOptionsHelp subcommand =
       | subcommand == "eval" = "Run a function and print its result"
       | otherwise = "Run a function (result is not printed)"
 
-pEnvCommand :: Parser RootCommand
-pEnvCommand =
+pEnvsCommand :: Parser RootCommand
+pEnvsCommand =
   hsubparser
     ( command
-        "build"
-        (info (CmdEnvBuild <$> pCommon) (progDesc "Materialize every image the program requires"))
+        "list"
+        ( info
+            (CmdEnvsList <$> pEnvsOpts)
+            (progDesc "List the environments and what the lock resolves them to, without reaching Docker")
+        )
         <> command
-          "list"
-          (info (CmdEnvList <$> pCommon) (progDesc "Report every image reference and whether it is present"))
+          "check"
+          ( info
+              (CmdEnvsCheck <$> pEnvsOpts)
+              (progDesc "Check that each environment can be reached and its image is present")
+          )
     )
+
+-- | The spelling that replaced a retired command (spec 11.1), for the
+-- arguments that invoke one. Answered before parsing, so the old
+-- spelling is told where to go rather than only that it is not a
+-- command.
+retiredCommand :: [String] -> Maybe (String, String)
+retiredCommand args = case args of
+  "env" : "build" : _ -> Just ("env build", "sync")
+  "env" : "list" : _ -> Just ("env list", "envs list")
+  "deps" : "sync" : _ -> Just ("deps sync", "sync")
+  "envs" : rest
+    | "--check" `elem` rest -> Just ("envs --check", "envs check")
+    | otherwise -> case dropOptions rest of
+        [] | all (`notElem` ["--help", "-h"]) rest -> Just ("envs", "envs list")
+        w : _ | w `notElem` ["list", "check"] -> Just ("envs " <> w, "envs list " <> w)
+        _ -> Nothing
+  _ -> Nothing
+  where
+    -- The old @envs@ took the common options before its function.
+    dropOptions ws = case ws of
+      o : _ : more | o `elem` ["--module", "--format", "--trace-id"] -> dropOptions more
+      o : more | take 1 o == "-" -> dropOptions more
+      _ -> ws
 
 pSecretsCommand :: Parser RootCommand
 pSecretsCommand =
@@ -278,24 +314,15 @@ pDepsCommand :: Parser RootCommand
 pDepsCommand =
   hsubparser
     ( command
-        "sync"
+        "add"
         ( info
-            ( CmdDepsSync
+            ( CmdDepsAdd
                 <$> pCommon
-                <*> switch (long "frozen" <> help "Fail instead of updating the lock file")
+                <*> (T.pack <$> argument str (metavar "NAME"))
+                <*> pAddSource
             )
-            (progDesc "Fetch and verify all declared dependencies")
+            (progDesc "Fetch a source, record it with its content hash, and cache it")
         )
-        <> command
-          "add"
-          ( info
-              ( CmdDepsAdd
-                  <$> pCommon
-                  <*> (T.pack <$> argument str (metavar "NAME"))
-                  <*> pAddSource
-              )
-              (progDesc "Fetch a source, record it with its content hash, and cache it")
-          )
         <> command
           "why"
           ( info

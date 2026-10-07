@@ -46,7 +46,7 @@ spec = do
         -- failed to fetch is E-MODULE-UNRESOLVED there.
         synced <-
           if hasDeps
-            then withFakeDocker $ \_ extra -> Just <$> runLaskEnv lask dir (cache : extra) ["deps", "sync"] ""
+            then withFakeDocker $ \_ extra -> Just <$> runLaskEnv lask dir (cache : extra) ["sync"] ""
             else pure Nothing
         checked <- runLaskEnv lask dir [cache] ["check"] ""
         (checked, synced) `shouldBe` (Result 0 "the module is valid\n" "", synced)

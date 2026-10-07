@@ -9,7 +9,7 @@
 -- other path is an external import: its first segment must be a
 -- dependency name declared in @lask.json@ and present in
 -- the cache (@E-MODULE-UNRESOLVED@ otherwise). Module resolution
--- never accesses the network; fetching is done by @lask deps sync@.
+-- never accesses the network; fetching is done by @lask sync@.
 module Language.Lask.Module.Loader
   ( Program (..),
     LoadedModule (..),
@@ -190,14 +190,14 @@ loadProgramEnv env entryPath = do
               ]
          in case (lock, missing, disagreeing) of
               (Nothing, (_ : _), _) ->
-                Just . stale $ "no lock file; run 'lask deps sync'"
+                Just . stale $ "no lock file; run 'lask sync'"
               (_, (n : _), _) ->
                 Just . stale $
-                  "the lock file does not cover dependency '" <> n <> "'; run 'lask deps sync'"
+                  "the lock file does not cover dependency '" <> n <> "'; run 'lask sync'"
               (_, _, ((n, why) : _)) ->
                 Just . stale $
                   "the lock file disagrees with " <> T.pack defaultDepsFileName
-                    <> " for dependency '" <> n <> "' (" <> why <> "); run 'lask deps sync'"
+                    <> " for dependency '" <> n <> "' (" <> why <> "); run 'lask sync'"
               _ -> Nothing
 
     entryDisagreement e locked = case e of
@@ -303,7 +303,7 @@ resolveImport env ctx pathText
             pure . Left . stale $
               "the lock file does not pin dependency '"
                 <> childPath (mcPath ctx) depName
-                <> "'; run 'lask deps sync'"
+                <> "'; run 'lask sync'"
           Just hash -> do
             let single = entryIsSingleFile entry
                 base = cachePathFor (leCacheDir env) hash single
@@ -312,14 +312,14 @@ resolveImport env ctx pathText
             if not present
               then
                 pure . Left . unresolved $
-                  "dependency '" <> depName <> "' is not in the cache; run 'lask deps sync'"
+                  "dependency '" <> depName <> "' is not in the cache; run 'lask sync'"
               else
                 if not intact
                   then
                     pure . Left . unresolved $
                       "dependency '" <> depName <> "': the cache does not hold the content the lock pins ("
                         <> hash
-                        <> "); run 'lask deps sync'"
+                        <> "); run 'lask sync'"
                   else
                     if single
                       then

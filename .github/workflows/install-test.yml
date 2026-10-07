@@ -143,7 +143,7 @@ jobs:
         run: |
           set -euo pipefail
           lask check
-          lask envs
+          lask envs list
 
       # `hello` is pure, so it is the part of the example that still runs
       # on the two platforms where no Linux container can be started.
@@ -165,10 +165,10 @@ jobs:
         working-directory: example/01-projects/01-hello-world
         run: |
           set -euo pipefail
-          # A task never pulls its image (spec 10.3): `env build` pulls
+          # A task never pulls its image (spec 10.3): `lask sync` pulls
           # it and pins its digest in lask.lock.json first.
-          lask env build
-          lask envs --check
+          lask sync
+          lask envs check
           # Both streams are captured, so neither reaches the log on its
           # own: the status has to be carried past the capture and the
           # output echoed before it is asserted on, or a failure here

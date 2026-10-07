@@ -2,7 +2,7 @@
 
 -- | Fetching and verifying external dependencies (spec chapter 5,
 -- 11.5). This module is the only place that accesses the network for
--- module resolution; it is used exclusively by @lask deps sync@ and
+-- module resolution; it is used exclusively by @lask sync@ and
 -- @lask deps add@.
 --
 -- Sources are fetched with the @git@ and @curl@ CLIs (the same

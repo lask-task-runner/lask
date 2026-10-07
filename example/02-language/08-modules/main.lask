@@ -6,7 +6,7 @@
 //
 //   lask check
 //   lask eval page_title "  Release Notes  "
-//   lask env build && lask eval ship
+//   lask sync && lask eval ship
 
 // Named import. `as` renames, and a type comes across the same way a
 // function does.
