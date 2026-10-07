@@ -111,8 +111,8 @@ bindCliArgs params mode cliArgs =
       kwRaw = [(n, v) | CliKw n v <- cliArgs]
       positional = spPositional params
       nPos = length positional
-   in if any (\(_, t) -> t == TyEnvironment) positional
-        then Left "functions with Environment positional parameters cannot be called from the CLI"
+   in if any (\(_, t) -> t `elem` [TyEnvironment, TyRunnable]) positional
+        then Left "functions with Environment or Runnable positional parameters cannot be called from the CLI"
         else
           if length posRaw < nPos
             then
@@ -150,8 +150,8 @@ bindCliArgs params mode cliArgs =
       | otherwise = case lookup n kwTypes of
           Nothing -> Left ("unknown keyword argument: '--" <> n <> "'")
           Just t
-            | t == TyEnvironment ->
-                Left ("keyword parameter '--" <> n <> "' has type Environment and cannot be set from the CLI")
+            | t `elem` [TyEnvironment, TyRunnable] ->
+                Left ("keyword parameter '--" <> n <> "' has type " <> renderType t <> " and cannot be set from the CLI")
             | otherwise -> do
                 v <- decodeAndCheck ("keyword argument '--" <> n <> "'") (raw, t)
                 bindKw ((n, v) : acc) rest

@@ -20,7 +20,6 @@ module Language.Lask.Runtime.Environment
     runLoggedProcess,
     runDeclaredCommand,
     envLogInfo,
-    recipeBuildArgs,
     dockerArgs,
     dockerShellArgs,
     dockerClientEnv,
@@ -37,7 +36,7 @@ import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Vector as V
 import Language.Lask.Runtime.Glob (globPrefix, matchGlob)
-import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
+import Language.Lask.Runtime.Image (ImagePins, Recipe (..), imageExists, recipeSource, recipeTag, resolveRegistry)
 import System.Directory
   ( createDirectoryIfMissing,
     doesDirectoryExist,
@@ -95,8 +94,8 @@ data ResolvedEnv
   = ResolvedLocal
   | -- | Image and remaining options.
     ResolvedDocker Text (Map Text Value)
-  | -- | Dockerfile, context, and remaining options (spec 10.2 recipe form).
-    ResolvedRecipe Text Text (Map Text Value)
+  | -- | The recipe and the remaining options (spec 10.2 recipe form).
+    ResolvedRecipe Recipe (Map Text Value)
   deriving (Show, Eq)
 
 -- | Resolve an environment value to a concrete configuration
@@ -113,7 +112,8 @@ resolveEnv (EnvValue kind params) = case kind of
           let ctx = case Map.lookup "context" params of
                 Just (VString c) | not (T.null c) -> c
                 _ -> T.pack (takeDirectory (T.unpack df))
-           in Right (ResolvedRecipe df ctx (Map.delete "dockerfile" (Map.delete "context" params)))
+              recipe = Recipe df ctx (recipeBuildArgs params) (platformOf params)
+           in Right (ResolvedRecipe recipe (Map.delete "dockerfile" (Map.delete "context" params)))
     _ -> Left (ioFailure EIoEnvResolve "docker environment requires an image reference or a recipe")
   other -> Left (ioFailure EIoEnvResolve ("unknown environment kind: '" <> other <> "'"))
 
@@ -125,21 +125,29 @@ recipeBuildArgs opts = case Map.lookup "build_args" opts of
   Just (VMap m) -> [(k, t) | (k, VString t) <- Map.toAscList m]
   _ -> []
 
+-- | The platform an environment names (spec 10.2). It is an image
+-- option, which the recipe hash covers, and is also passed to @docker
+-- run@, so the variant materialized is the one that runs.
+platformOf :: Map Text Value -> Maybe Text
+platformOf opts = case Map.lookup "platform" opts of
+  Just (VString p) | not (T.null p) -> Just p
+  _ -> Nothing
+
 -- | The environment summary and 13.1 metadata JSON used by command
 -- execution logs (spec 12.3). The summary follows environment
 -- expression notation: @#local@, @#\<image\>@ for a registry
--- reference, and @#docker(dockerfile = ...)@ for a recipe.
+-- reference, and @#.\/\<path\>@ for a recipe.
 envLogInfo :: EnvValue -> ResolvedEnv -> (Text, A.Value)
 envLogInfo _ resolved = (summary, json)
   where
     summary = case resolved of
       ResolvedLocal -> "#local"
       ResolvedDocker img _ -> "#" <> img
-      ResolvedRecipe df _ _ -> "#docker(dockerfile = \"" <> df <> "\")"
+      ResolvedRecipe r _ -> "#" <> recipeSource (rcDockerfile r)
     resolvedEnvValue = case resolved of
       ResolvedLocal -> EnvValue "local" Map.empty
       ResolvedDocker img opts -> EnvValue "docker" (Map.insert "image" (VString img) opts)
-      ResolvedRecipe df _ opts -> EnvValue "docker" (Map.insert "dockerfile" (VString df) opts)
+      ResolvedRecipe r opts -> EnvValue "docker" (Map.insert "dockerfile" (VString (rcDockerfile r)) opts)
     json = valueToJson (VEnv resolvedEnvValue)
 
 -- | The path the base directory is mounted at inside the container.
@@ -182,7 +190,7 @@ dockerArgs baseDir name image opts = dockerShellArgs baseDir name image opts Fal
 -- has to fit on a command line).
 dockerShellArgs :: FilePath -> Text -> Text -> Map Text Value -> Bool -> Text -> [String]
 dockerShellArgs baseDir name image opts wantStdin cmd =
-  ["run", "--rm", "--name", T.unpack name]
+  ["run", "--rm", "--pull=never", "--name", T.unpack name]
     <> (if wantStdin then ["-i"] else [])
     <> workdirMountArgs baseDir
     <> ["--entrypoint", "/bin/sh"]
@@ -320,7 +328,7 @@ dockerProcess opts args = case dockerClientEnv opts of
 -- the entrypoint and the remaining words are passed as they stand.
 dockerExecArgs :: FilePath -> Text -> Map Text Value -> Bool -> Text -> [Text] -> [String]
 dockerExecArgs baseDir image opts interactive prog argv =
-  ["run", "--rm"]
+  ["run", "--rm", "--pull=never"]
     <> (if interactive then ["-i", "-t"] else [])
     <> workdirMountArgs baseDir
     <> ["--entrypoint", T.unpack prog]
@@ -489,8 +497,9 @@ materializedImage ::
 materializedImage pins baseDir resolved = case resolved of
   ResolvedLocal -> pure (Right Nothing)
   ResolvedDocker ref opts -> fmap (\image -> Just (image, opts)) <$> resolveRegistry pins ref
-  ResolvedRecipe df ctx opts -> do
-    tagE <- recipeTag baseDir df ctx (recipeBuildArgs opts)
+  ResolvedRecipe r opts -> do
+    let df = rcDockerfile r
+    tagE <- recipeTag baseDir r
     case tagE of
       Left e -> pure (Left (ioFailure EIoImageMissing e))
       Right tag -> do

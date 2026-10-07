@@ -578,55 +578,94 @@ spec = do
     it "rejects non-Environment command environments" $
       rejects "b(e: Number) = $[e] ls" ETypeCommandEnv
     it "accepts environment constructors" $
-      accepts "e1 = #local\ne2 = #docker(\"alpine:3.12\", memory = \"4g\")\ne3 = #docker(dockerfile = \"infra/Dockerfile\", context = \".\")\ne4 = #alpine:3.12"
-    it "rejects docker without an image or a recipe" $
-      rejects "e = #docker()" ETypeEnvConstruct
+      accepts "e1 = #local\ne2 = #alpine:3.12{memory: \"4g\"}\ne3 = #./infra/Dockerfile(context = \".\")\ne4 = #alpine:3.12"
+    -- The removed constructor is refused with a hint, rather than
+    -- read as the image `docker` given a positional argument.
+    it "rejects the removed #docker(...) form" $ do
+      rejects "e = #docker(\"alpine:3.20\")" ETypeEnvConstruct
+      rejects "e = #docker(dockerfile = \"D\")" ETypeEnvConstruct
+    it "reads #docker as the image docker" $
+      accepts "e = #docker\nf = #docker:27-cli{memory: \"1g\"}"
     it "rejects unknown docker options" $
-      rejects "e = #docker(\"a\", nope = 1)" ETypeEnvConstruct
-    it "rejects interpolated env names" $
-      rejects "n = \"x\"\ne = #env(\"a#{n}\")" ETypeEnvConstruct
-    it "rejects unknown environment kinds" $
+      rejects "e = #a{nope: 1}" ETypeEnvConstruct
+    it "rejects positional arguments to a head" $
       rejects "e = #remote(\"h\")" ETypeEnvConstruct
+    it "rejects an argument list on #local" $ do
+      rejects "e = #local()" ETypeEnvConstruct
+      rejects "e = #local(memory = \"1g\")" ETypeEnvConstruct
+    it "accepts a recipe head with its image options" $
+      accepts "e = #./infra/Dockerfile(context = \".\", build_args = {\"V\": \"1\"}, platform = \"linux/amd64\"){memory: \"1g\"}"
+    it "rejects recipe options on a registry reference" $ do
+      rejects "e = #alpine:3.20(context = \".\")" ETypeEnvConstruct
+      rejects "e = #alpine:3.20(build_args = {\"V\": \"1\"})" ETypeEnvConstruct
+    it "types #head{...} and runnable(...) as Runnable" $ do
+      hasType "v = #alpine:3.12{memory: \"1g\"}" "v" "Runnable"
+      hasType "v = runnable(#alpine:3.12, memory = \"1g\")" "v" "Runnable"
+    it "lets an Environment stand where a Runnable is expected" $
+      accepts "f(e: Runnable): String = $[e] ls\ng(): String = f(#alpine:3.12)\nh(): String = f(#alpine:3.12{memory: \"1g\"})"
+    it "takes an Environment only, so options are given once" $ do
+      rejects "r = #alpine:3.12{memory: \"1g\"}\nx = runnable(r, user = \"app\")" ETypeMismatch
+      rejects "f(e: Environment): Environment = e\nx = f(#alpine:3.12{memory: \"1g\"})" ETypeMismatch
+    it "rejects run options in a head's parentheses" $
+      rejects "e = #alpine:3.20(memory = \"1g\")" ETypeEnvConstruct
+    it "rejects image options given to runnable" $ do
+      rejects "e = runnable(#alpine:3.20, platform = \"linux/amd64\")" ETypeEnvConstruct
+      rejects "e = runnable(#alpine:3.20, image = \"node:24\")" ETypeEnvConstruct
+      rejects "e = #./D{context: \".\"}" ETypeEnvConstruct
+    it "rejects a positional run option" $
+      rejects "e = runnable(#alpine:3.20, \"x\")" ETypeEnvConstruct
+    it "rejects run options on #local" $ do
+      rejects "e = #local{memory: \"1g\"}" ETypeEnvConstruct
+      rejects "e = runnable(#local, memory = \"1g\")" ETypeEnvConstruct
+    it "no longer calls an environment value" $
+      rejects "e = #alpine:3.20\nf = e(memory = \"1g\")" ETypeCall
+    it "accepts a literal platform on a head" $
+      accepts "e = #alpine:3.20(platform = \"linux/arm64\")"
+    it "rejects a platform that is not a literal" $ do
+      rejects "p = \"linux/arm64\"\ne = #alpine:3.20(platform = p)" ETypeEnvConstruct
+      rejects "p = \"arm64\"\ne = #alpine:3.20(platform = \"linux/#{p}\")" ETypeEnvConstruct
+    it "rejects a build argument that is not a literal" $
+      rejects "v = \"1\"\ne = #./D(build_args = {\"V\": v})" ETypeEnvConstruct
     -- The lock pins what a bare name resolves to (spec 10.3), in the
     -- sugar and the constructor alike.
     it "accepts a registry reference without a tag" $ do
-      accepts "e = #docker(\"alpine\")"
+      accepts "e = #alpine"
       accepts "e = #rancher/cowsay"
     it "rejects giving both an image reference and a recipe" $
-      rejects "e = #docker(\"alpine:3.20\", dockerfile = \"D\")" ETypeEnvConstruct
+      rejects "e = #alpine:3.20{dockerfile: \"D\"}" ETypeEnvConstruct
     it "rejects a recipe path escaping the module tree" $
-      rejects "e = #docker(dockerfile = \"../D\")" ETypeEnvConstruct
-    it "rejects a non-literal recipe path" $
-      rejects "p = \"D\"\ne = #docker(dockerfile = \"#{p}\")" ETypeEnvConstruct
+      rejects "e = #./../D" ETypeEnvConstruct
+    it "rejects a non-literal context" $
+      rejects "p = \".\"\ne = #./D(context = p)" ETypeEnvConstruct
     it "accepts the container options of 10.2" $
       accepts
-        "e = #docker(\"alpine:3.20\", cpus = 2, ulimits = [\"nofile=1024:1024\"], env = {\"CI\": \"1\"}, init = true, tmpfs = [\"/tmp\"], publish = [\"8080:80\"], volumes = [\"c:/cache\"])"
+        "e = #alpine:3.20{cpus: 2, ulimits: [\"nofile=1024:1024\"], env: {\"CI\": \"1\"}, init: true, tmpfs: [\"/tmp\"], publish: [\"8080:80\"], volumes: [\"c:/cache\"]}"
     it "accepts null for a container option, and in the elements of a list or table" $
       accepts
-        "f(--u: String | Null = null): Environment = #docker(\"a:1\", user = u, env = {\"A\": u, \"B\": \"\"}, tmpfs = [u], init = null, cpus = null)"
+        "f(--u: String | Null = null): Runnable = #a:1{user: u, env: {\"A\": u, \"B\": \"\"}, tmpfs: [u], init: null, cpus: null}"
     -- Containers are invariant (4.4): a list or table already typed
     -- without null has to be accepted as it is.
     it "accepts a list or table of strings that is not a literal" $
       accepts
-        "xs: Array<String> = [\"/tmp\"]\nm: Map<String> = {\"A\": \"1\"}\nmk(): Map<String> = m\ne = #docker(\"a:1\", tmpfs = xs, env = mk(), volumes = xs, add_hosts = m)"
+        "xs: Array<String> = [\"/tmp\"]\nm: Map<String> = {\"A\": \"1\"}\nmk(): Map<String> = m\ne = #a:1{tmpfs: xs, env: mk(), volumes: xs, add_hosts: m}"
     it "still rejects a list of anything but strings" $
-      rejects "xs: Array<Number> = [1]\ne = #docker(\"a:1\", tmpfs = xs)" ETypeMismatch
+      rejects "xs: Array<Number> = [1]\ne = #a:1{tmpfs: xs}" ETypeMismatch
     it "accepts build arguments on a recipe" $
-      accepts "e = #docker(dockerfile = \"D\", build_args = {\"VERSION\": \"1.2.3\"})"
+      accepts "e = #./D(build_args = {\"VERSION\": \"1.2.3\"})"
     it "rejects build arguments that are not literals, since they decide the image" $ do
-      rejects "v = \"1.2.3\"\ne = #docker(dockerfile = \"D\", build_args = {\"VERSION\": v})" ETypeEnvConstruct
-      rejects "v = \"1.2.3\"\ne = #docker(dockerfile = \"D\", build_args = {\"VERSION\": \"#{v}\"})" ETypeEnvConstruct
+      rejects "v = \"1.2.3\"\ne = #./D(build_args = {\"VERSION\": v})" ETypeEnvConstruct
+      rejects "v = \"1.2.3\"\ne = #./D(build_args = {\"VERSION\": \"#{v}\"})" ETypeEnvConstruct
     it "rejects build arguments on a registry reference" $
-      rejects "e = #docker(\"alpine:3.20\", build_args = {\"V\": \"1\"})" ETypeEnvConstruct
+      rejects "e = #alpine:3.20(build_args = {\"V\": \"1\"})" ETypeEnvConstruct
     it "rejects a container option of the wrong type" $
-      rejects "e = #docker(\"alpine:3.20\", tmpfs = \"/tmp\")" ETypeMismatch
+      rejects "e = #alpine:3.20{tmpfs: \"/tmp\"}" ETypeMismatch
     it "rejects interpolating non-stringifiable values" $
       rejects "u = {a: 1}\ns = \"v=#{u}\"" ETypeBound
 
   describe "command imports and exports (spec ch. 5)" $ do
     let tools =
           ( "tools.lask",
-            "mk(--proxy: String = \"\"): Environment = #docker(\"golang:1.25\", env = {\"GOPROXY\": proxy})\n\
+            "mk(--proxy: String = \"\"): Runnable = #golang:1.25{env: {\"GOPROXY\": proxy}}\n\
             \node = #node:24-alpine\n\
             \command { \"go\", \"gofmt\" } on mk()\n\
             \export command { \"node\", \"npm\" } on node\n\
@@ -714,7 +753,7 @@ spec = do
   describe "namespace members that a module re-exports (spec 5, 7.2)" $ do
     let lib =
           ( "lib/go.lask",
-            "go(--proxy: String = \"\"): Environment = #docker(\"golang:1.25\", env = {\"GOPROXY\": proxy})\n\
+            "go(--proxy: String = \"\"): Runnable = #golang:1.25{env: {\"GOPROXY\": proxy}}\n\
             \image = \"golang:1.25\"\n\
             \type Pin = Record<image: String>\n\
             \internal hidden = 1"
@@ -723,12 +762,12 @@ spec = do
 
     it "calls a re-exported function, keyword arguments included" $
       hasTypeFiles
-        [ ("main.lask", "import * as t from \"./tools.lask\"\nb(): Environment = t.go(proxy = \"direct\")"),
+        [ ("main.lask", "import * as t from \"./tools.lask\"\nb(): Runnable = t.go(proxy = \"direct\")"),
           tools,
           lib
         ]
         "b"
-        "Function<Environment>"
+        "Function<Runnable>"
 
     it "reads a re-exported value" $
       hasTypeFiles
@@ -738,22 +777,22 @@ spec = do
 
     it "follows a chain of re-exports" $
       hasTypeFiles
-        [ ("main.lask", "import * as t from \"./outer.lask\"\nb(): Environment = t.go(proxy = \"direct\")"),
+        [ ("main.lask", "import * as t from \"./outer.lask\"\nb(): Runnable = t.go(proxy = \"direct\")"),
           ("outer.lask", "export { go } from \"./tools.lask\""),
           tools,
           lib
         ]
         "b"
-        "Function<Environment>"
+        "Function<Runnable>"
 
     it "follows a re-export that renames" $
       hasTypeFiles
-        [ ("main.lask", "import * as t from \"./tools.lask\"\nb(): Environment = t.golang(proxy = \"direct\")"),
+        [ ("main.lask", "import * as t from \"./tools.lask\"\nb(): Runnable = t.golang(proxy = \"direct\")"),
           ("tools.lask", "export { go as golang } from \"./lib/go.lask\""),
           lib
         ]
         "b"
-        "Function<Environment>"
+        "Function<Runnable>"
 
     it "names a re-exported type through the namespace" $
       acceptsFiles
@@ -838,7 +877,7 @@ spec = do
     -- options were written in is not part of what is compared.
     it "does not conflict when the same options are written in a different order" $
       hasType
-        "command { \"go\" } on #docker(\"golang:1.25\", cpus = 2, memory = \"4g\")\ncommand { \"gofmt\" } on #docker(\"golang:1.25\", memory = \"4g\", cpus = 2)\nv() = $ gofmt -l . && go vet"
+        "command { \"go\" } on #golang:1.25{cpus: 2, memory: \"4g\"}\ncommand { \"gofmt\" } on #golang:1.25{memory: \"4g\", cpus: 2}\nv() = $ gofmt -l . && go vet"
         "v"
         "Function<String>"
 
@@ -846,7 +885,7 @@ spec = do
     -- environment carrying one stays declarable (ch. 5).
     it "accepts an environment whose options are literal lists and tables" $
       hasType
-        "command { \"go\" } on #docker(\"golang:1.25\", env = {\"CI\": \"1\"}, tmpfs = [\"/tmp\"])\nv() = $ go vet"
+        "command { \"go\" } on #golang:1.25{env: {\"CI\": \"1\"}, tmpfs: [\"/tmp\"]}\nv() = $ go vet"
         "v"
         "Function<String>"
 
@@ -854,38 +893,38 @@ spec = do
     -- (ch. 5): what it may not do is have an effect.
     it "accepts an environment computed from other values" $
       hasType
-        "d = \"/tmp\"\ncommand { \"go\" } on #docker(\"golang:1.25\", tmpfs = [d])\nv() = $ go vet"
+        "d = \"/tmp\"\ncommand { \"go\" } on #golang:1.25{tmpfs: [d]}\nv() = $ go vet"
         "v"
         "Function<String>"
 
     it "accepts an environment produced by a call" $
       hasType
-        "mk(--proxy: String = \"\"): Environment = #docker(\"golang:1.25\", env = {\"GOPROXY\": proxy})\ncommand { \"go\" } on mk(proxy = \"direct\")\nv() = $ go vet"
+        "mk(--proxy: String = \"\"): Runnable = #golang:1.25{env: {\"GOPROXY\": proxy}}\ncommand { \"go\" } on mk(proxy = \"direct\")\nv() = $ go vet"
         "v"
         "Function<String>"
 
     it "accepts an environment that reads a variable of the process" $
       hasType
-        "command { \"go\" } on #docker(\"golang:#{get_env(\"GO_TAG\")}\")\nv() = $ go vet"
+        "command { \"go\" } on #golang:1.25{env: {\"GOPROXY\": get_env(\"GOPROXY\")}}\nv() = $ go vet"
         "v"
         "Function<String>"
 
     it "rejects an environment that can run a command" $
       rejects
-        "mk(): Environment = do {\n  tag = $[#local] cat tag\n  return #docker(\"golang:#{tag}\")\n}\ncommand { \"go\" } on mk()\nv() = $ go vet"
+        "mk(): Runnable = do {\n  proxy = $[#local] cat proxy\n  return #golang:1.25{env: {\"GOPROXY\": proxy}}\n}\ncommand { \"go\" } on mk()\nv() = $ go vet"
         ETypeCommandEffect
 
     it "rejects an environment that reads the standard input" $
-      rejects "command { \"go\" } on #docker(\"golang:#{stdin}\")\nv() = $ go vet" ETypeCommandEffect
+      rejects "command { \"go\" } on #golang:1.25{env: {\"IN\": stdin}}\nv() = $ go vet" ETypeCommandEffect
 
     it "rejects an environment that waits (spec 15.7)" $
       rejects
-        "command { \"go\" } on #docker(\"golang:#{timeout(5, \\() -> \"1.25\")}\")\nv() = $ go vet"
+        "command { \"go\" } on #golang:1.25{user: \"#{timeout(5, \\() -> \"1000\")}\"}\nv() = $ go vet"
         ETypeCommandEffect
 
     it "rejects an environment that touches the filesystem" $
       rejects
-        "command { \"go\" } on #docker(\"golang:#{read_file(\"tag\", #local)}\")\nv() = $ go vet"
+        "command { \"go\" } on #golang:1.25{user: read_file(\"user\", #local)}\nv() = $ go vet"
         ETypeCommandEffect
 
     -- The command string inside mk() is dispatched against the table
@@ -908,7 +947,7 @@ spec = do
     -- calls are two values, known equal only at run time.
     it "agrees on two declarations naming one binding" $
       hasType
-        "box = #docker(\"golang:1.25\", env = {\"HOME\": get_env(\"HOME\")})\ncommand { \"go\" } on box\ncommand { \"gofmt\" } on box\nv() = $ gofmt -l . && go vet"
+        "box = #golang:1.25{env: {\"HOME\": get_env(\"HOME\")}}\ncommand { \"go\" } on box\ncommand { \"gofmt\" } on box\nv() = $ gofmt -l . && go vet"
         "v"
         "Function<String>"
 

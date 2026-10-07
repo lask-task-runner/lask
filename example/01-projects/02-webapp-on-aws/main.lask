@@ -10,23 +10,23 @@ aws_access_key_id = mark_secret(get_env("AWS_ACCESS_KEY_ID"))
 aws_secret_access_key = mark_secret(get_env("AWS_SECRET_ACCESS_KEY"))
 aws_region = get_env("AWS_DEFAULT_REGION")
 
-python = tools.python(tag = "3.12.14-alpine3.24")
-node = tools.node(tag = "20.20.2-alpine3.23")
+python = tools.python(image = #python:3.12.14-alpine3.24)
+node = tools.node(image = #node:20.20.2-alpine3.23)
 aws = tools.aws(
-  tag = "2.36.41",
+  image = #amazon/aws-cli:2.36.41,
   access_key_id = aws_access_key_id,
   secret_access_key = aws_secret_access_key,
   region = aws_region
 )
 terraform = tools.terraform(
-  tag = "1.16.2",
+  image = #hashicorp/terraform:1.16.2,
   extra_env = {
     "TF_VAR_aws_access_key_id": aws_access_key_id,
     "TF_VAR_aws_secret_access_key": aws_secret_access_key,
     "TF_VAR_aws_region": aws_region
   }
 )
-playwright = tools.playwright(tag = "v1.62.1-jammy")
+playwright = tools.playwright(image = #mcr.microsoft.com/playwright:v1.62.1-jammy)
 
 internal as_string(v: Any): String = cast(v)
 

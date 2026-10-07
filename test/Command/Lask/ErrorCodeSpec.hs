@@ -48,10 +48,10 @@ trigger c = case c of
   ETypeCommandNoEnv -> check "v(): String = $ ls\n"
   ETypeCommandConflict ->
     check "command { \"go\" } on #golang:1.25\ncommand { \"npm\" } on #node:20\nv() = $ go build && npm ci\n"
-  ETypeCommandEffect -> check "command { \"go\" } on #docker(\"golang:#{stdin}\")\nv() = $ go vet\n"
+  ETypeCommandEffect -> check "command { \"go\" } on #golang:1.25{env: {\"IN\": stdin}}\nv() = $ go vet\n"
   ETypeCommandName -> check "command { \"my prog\" } on #local\nv() = $ ls\n"
   ETypeCommandDuplicate -> check "command { \"go\" } on #local\ncommand { \"go\" } on #golang:1.25\n"
-  ETypeEnvConstruct -> check "e = #docker()\n"
+  ETypeEnvConstruct -> check "e = #local(memory = \"1g\")\n"
   ETypeAccess -> check "u = {name: \"a\"}\nn = u.nope\n"
   ETypeFieldDuplicate -> check "r = {a: 1, a: 2}\n"
   ETypeCaseDuplicate -> check "f(x: String) = case (x) {\n  \"a\" -> 1\n  \"b\", \"a\" -> 2\n  else -> 3\n}\n"
@@ -110,7 +110,10 @@ trigger c = case c of
           ((proc "sh" ["-c", "printf '\\377\\376' | \"$0\" eval f", lask]) {cwd = Just dir})
           ""
       pure (Result (exitOf code) out err)
-  EIoEnvResolve -> Invoke "f(--img: String = \"\") = $[#docker(img)] ls\n" ["eval", "f"] 3
+  EIoEnvResolve -> Scripted 3 $ \lask ->
+    withFakeDocker $ \state extra -> withProject pinned $ \dir -> do
+      writeFile (state </> "daemon-down") ""
+      runLaskEnv lask dir extra ["envs", "--check"] ""
   EIoImageMissing -> Scripted 3 $ \lask ->
     withFakeDocker $ \_ extra -> withProject pinned $ \dir ->
       runLaskEnv lask dir extra ["eval", "hi"] ""

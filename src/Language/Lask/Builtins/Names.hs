@@ -160,6 +160,7 @@ builtinValueNames =
       "map_values",
       -- 15.5 command execution
       "run",
+      "runnable",
       "shell_quote",
       -- 15.6 parallel/async
       "spawn",

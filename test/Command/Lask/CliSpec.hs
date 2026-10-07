@@ -26,8 +26,7 @@ spec = beforeAll findLask $ do
     let proj =
           [ ( "main.lask",
               "command { \"cat\" } on #alpine:3.22.2\n\
-              \hi(): String = $ cat x\n\
-              \dyn(--tag: String = \"3.21\"): String = $[#docker(\"alpine:#{tag}\")] cat x\n"
+              \hi(): String = $ cat x\n"
             )
           ]
         lockText dir = readFile (dir </> "lask.lock.json")
@@ -55,7 +54,7 @@ spec = beforeAll findLask $ do
       withFakeDocker $ \state extra ->
         withProject
           [ ( "main.lask",
-              "command { \"cat\" } on #docker(\"alpine:3.22.2\", env = {\"TOKEN\": \"s3cr3t\", \"EMPTY\": \"\", \"DOCKER_HOST\": \"tcp://x\"})\n\
+              "command { \"cat\" } on #alpine:3.22.2{env: {\"TOKEN\": \"s3cr3t\", \"EMPTY\": \"\", \"DOCKER_HOST\": \"tcp://x\"}}\n\
               \hi(): String = $ cat x\n"
             )
           ]
@@ -93,15 +92,64 @@ spec = beforeAll findLask $ do
         resErr b `shouldContain` "E-IO-IMAGE-DIGEST"
         lockText dir >>= (`shouldContain` "sha256:aaa")
 
-    it "never pulls a reference computed at run time" $ \lask ->
+    -- A run never pulls, and keeps the daemon from pulling on its
+    -- behalf (spec 10.3).
+    it "runs with --pull=never" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
         _ <- runLaskEnv lask dir extra ["env", "build"] ""
         writeFile (state </> "calls") ""
-        r <- runLaskEnv lask dir extra ["eval", "dyn"] ""
-        resExit r `shouldBe` 3
-        resErr r `shouldContain` "docker pull alpine:3.21"
+        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit r `shouldBe` 0
         cs <- calls state
         [c | c <- cs, "pull " `isPrefixOf` c] `shouldBe` []
+        [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` all ("--pull=never" `isInfixOf`)
+
+    -- The images a program requires are the heads reachable from its
+    -- entry module (spec 10.3): a function's default image counts, and
+    -- one in a declaration nothing references does not. The registry
+    -- of the fake docker has no busybox, so pulling it would fail.
+    it "materializes only the images reachable from the entry module" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ("main.lask", "import { tool } from \"./lib.lask\"\nhi(): String = $[tool()] cat x\n"),
+            ( "lib.lask",
+              "tool(--image: Environment = #alpine:3.22.2): Runnable = runnable(image, memory = \"1g\")\n\
+              \unused(): Environment = #busybox:1.37\n"
+            )
+          ]
+          $ \dir -> do
+            b <- runLaskEnv lask dir extra ["env", "build"] ""
+            resExit b `shouldBe` 0
+            lockText dir >>= (`shouldContain` "alpine:3.22.2")
+            lockText dir >>= (`shouldNotContain` "busybox")
+            cs <- calls state
+            cs `shouldSatisfy` all (not . isInfixOf "busybox")
+            r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+            resExit r `shouldBe` 0
+
+    -- One reference used for two platforms is one lock entry, pulled
+    -- for each by the pinned digest (spec 10.3).
+    it "pulls a reference for each platform it is used with" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ( "main.lask",
+              "a(): String = $[#alpine:3.22.2] cat x\n\
+              \b(): String = $[#alpine:3.22.2(platform = \"linux/amd64\")] cat x\n"
+            )
+          ]
+          $ \dir -> do
+            b <- runLaskEnv lask dir extra ["env", "build"] ""
+            resExit b `shouldBe` 0
+            cs <- calls state
+            [c | c <- cs, "pull " `isPrefixOf` c]
+              `shouldBe` [ "pull --quiet alpine:3.22.2",
+                           "pull --quiet alpine@sha256:aaa",
+                           "pull --quiet --platform linux/amd64 alpine@sha256:aaa"
+                         ]
+            r <- runLaskEnv lask dir extra ["eval", "b"] ""
+            resExit r `shouldBe` 0
+            runs <- filter ("run " `isPrefixOf`) <$> calls state
+            runs `shouldSatisfy` any ("--platform linux/amd64" `isInfixOf`)
 
     it "pins images in deps sync, and --frozen refuses a lock that would change" $ \lask ->
       withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
@@ -231,11 +279,11 @@ spec = beforeAll findLask $ do
     let proj =
           [ ("app/main.lask", "import command { \"cat\" } from \"../tools/main.lask\"\nhi(): String = $ cat /greeting\n"),
             ( "tools/main.lask",
-              "greeter(): Environment = #docker(dockerfile = \"images/greeter/Dockerfile\")\nexport command { \"cat\" } on greeter()\n"
+              "greeter(): Environment = #./images/greeter/Dockerfile\nexport command { \"cat\" } on greeter()\n"
             ),
             ("tools/images/greeter/Dockerfile", "FROM scratch\n"),
             ("Dockerfile", "FROM scratch\n"),
-            ("main.lask", "beside = #docker(dockerfile = \"Dockerfile\")\n")
+            ("main.lask", "beside = #./Dockerfile\n")
           ]
 
     it "reads it from the tree of the module that declares it" $ \lask ->
@@ -256,8 +304,8 @@ spec = beforeAll findLask $ do
     it "keeps the path of a recipe beside the entry module" $ \lask ->
       withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
         r <- runLaskEnv lask dir extra ["env", "list"] ""
-        resOut r `shouldContain` "Dockerfile  recipe  lask/"
-        resOut r `shouldNotContain` "./Dockerfile"
+        resOut r `shouldContain` "./Dockerfile  recipe  lask/"
+        resOut r `shouldNotContain` "../"
 
   describe "cmd (spec 11.8)" $ do
     let proj =
@@ -759,7 +807,7 @@ spec = beforeAll findLask $ do
         resOut r `shouldBe` "\"hello world\\n\"\n"
     it "envs lists referenced environments" $ \lask ->
       withProject
-        [ ("main.lask", "f() = $[#docker(dockerfile = \"infra/Dockerfile\")] make\ng() = $[#alpine:3.20] ls\n")
+        [ ("main.lask", "f() = $[#./infra/Dockerfile] make\ng() = $[#alpine:3.20] ls\n")
         ]
         $ \dir -> do
           r <- runLask lask dir ["envs"] ""

@@ -265,6 +265,8 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
       [(k, v) | VRecord r <- V.toList es, Just (VString k) <- [Map.lookup "key" r], Just v <- [Map.lookup "value" r]]
   ("map_values", [VMap m, f]) -> VMap <$> traverse (\v -> apply f [v] []) m
   -- 15.5 command execution --------------------------------------------------
+  -- Called as a value, positionally: no run options to give (spec 7.5).
+  ("runnable", [VEnv env]) -> pure (VEnv env)
   ("run", [VEnv env, VString cmd]) -> do
     r <- hookRunCommand hooks env cmd
     case r of

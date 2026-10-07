@@ -52,7 +52,7 @@ import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
 import Command.Lask.Images (ImageRow (..), Materialized (..), imageRows, loadPins, materialize)
-import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
+import Language.Lask.Runtime.Image (ImagePins, Recipe (..), imageExists, recipeSource, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
@@ -575,23 +575,20 @@ checkEnvRef sink nextExec presence ref = case refKind ref of
   _ -> pure (Right ())
 
 -- | Whether the image an enumerated environment needs is on the daemon,
--- as the lock resolves it (spec 11.4). A reference computed at run time
--- has nothing to check before it is computed.
+-- as the lock resolves it (spec 11.4).
 imageCheck :: ImagePins -> CoreProgram -> EnvRef -> IO (Either Text ())
 imageCheck pins core ref = case T.stripPrefix "recipe " (refTarget ref) of
   Just dockerfile -> do
     tags <-
       mapM
-        (\(df, ctx, buildArgs) -> recipeTag (cpBaseDir core) df ctx buildArgs)
-        [r | r@(df, _, _) <- collectRecipes core, df == dockerfile]
+        (recipeTag (cpBaseDir core))
+        [r | r <- collectRecipes core, recipeSource (rcDockerfile r) == dockerfile]
     present <- mapM (either (const (pure False)) imageExists) tags
     pure $
       if and present
         then Right ()
         else Left (codeText EIoImageMissing <> ": image for recipe '" <> dockerfile <> "' is not materialized; run 'lask env build'")
-  Nothing
-    | refLabel ref == "<dynamic>" -> pure (Right ())
-    | otherwise -> either (Left . renderFailure) (const (Right ())) <$> resolveRegistry pins (refTarget ref)
+  Nothing -> either (Left . renderFailure) (const (Right ())) <$> resolveRegistry pins (refTarget ref)
   where
     renderFailure lf = maybe "" (\c -> codeText c <> ": ") (lfCode lf) <> failureMessage lf
 
@@ -1021,7 +1018,7 @@ listCommands opts core table = do
     describeResolved resolved = case resolved of
       ResolvedLocal -> ("local", "local")
       ResolvedDocker image _ -> ("docker", image)
-      ResolvedRecipe df _ _ -> ("docker", "recipe " <> df)
+      ResolvedRecipe r _ -> ("docker", "recipe " <> recipeSource (rcDockerfile r))
 
 -- | Whether the image a command needs is on the target daemon. No
 -- network access and no build (spec 11.8, 10.3).
@@ -1029,8 +1026,8 @@ imagePresent :: ImagePins -> FilePath -> ResolvedEnv -> IO Bool
 imagePresent pins baseDir resolved = case resolved of
   ResolvedLocal -> pure True
   ResolvedDocker ref _ -> either (const False) (const True) <$> resolveRegistry pins ref
-  ResolvedRecipe df ctx opts -> do
-    tagE <- recipeTag baseDir df ctx (recipeBuildArgs opts)
+  ResolvedRecipe r _ -> do
+    tagE <- recipeTag baseDir r
     either (const (pure False)) imageExists tagE
 
 -- | Evaluate a command's environment (spec 11.8). The environment of a

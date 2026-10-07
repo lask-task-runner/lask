@@ -64,9 +64,16 @@ data CoreF
   | CDo [CoreStmt]
   | -- | Core @await@ application (spec 6.3).
     CAwait Core
-  | -- | Environment construction (core expression, spec 8.8):
-    -- kind (@local@\/@docker@\/@env@) and normalized named arguments.
+  | -- | Environment construction (core expression, spec 8.8): kind
+    -- (@local@\/@docker@) and named arguments. The image a @docker@
+    -- environment runs is a literal @image@ (a registry reference) or
+    -- @dockerfile@ (a recipe), taken from the head it was written with
+    -- (spec 6.7).
     CEnv Text [(Text, Core)]
+  | -- | A runnable (spec 6.7, 15.5): an environment and the run options
+    -- given to it, from @runnable(...)@ or @#head{...}@. It never
+    -- changes the image.
+    CRunnable Core [(Text, Core)]
   | -- | @cast@ with its statically determined target type (15.8).
     CCast Core Type
   | -- | The condition of a @case@ type head (spec 6.4): true when the
@@ -134,6 +141,7 @@ coreChildren c = case coreF c of
   CDo stmts -> concatMap stmtExpr stmts
   CAwait a -> [a]
   CEnv _ args -> map snd args
+  CRunnable e args -> e : map snd args
   CCast a _ -> [a]
   CIsType a _ -> [a]
   CNull -> []

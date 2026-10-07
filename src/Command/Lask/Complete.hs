@@ -1026,6 +1026,7 @@ declaredName d = case AST.declF d of
 
 isEnvType :: Maybe AST.SType -> Bool
 isEnvType (Just (AST.SType _ AST.SEnvironment)) = True
+isEnvType (Just (AST.SType _ AST.SRunnable)) = True
 isEnvType _ = False
 
 isBoolType :: Maybe AST.SType -> Bool
@@ -1041,6 +1042,7 @@ typeText (AST.SType _ f) = case f of
   AST.SNull -> "Null"
   AST.SVoid -> "Void"
   AST.SEnvironment -> "Environment"
+  AST.SRunnable -> "Runnable"
   AST.SArray t -> "Array<" <> typeText t <> ">"
   AST.SMap t -> "Map<" <> typeText t <> ">"
   AST.SRecord _ -> "Record"

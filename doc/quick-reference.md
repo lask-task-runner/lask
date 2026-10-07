@@ -225,16 +225,20 @@ A command string runs **to the end of the line** — nothing of the enclosing ex
 
 ```lask
 #local                          // the host
-#alpine:3.20                    // sugar for #docker("alpine:3.20")
+#alpine:3.20                    // an image in a registry
 #ubuntu@sha256:9cee...          // a digest works too
-#docker("alpine:3.20", memory = "4g")
-#docker(dockerfile = "infra/Dockerfile", context = ".")   // built from a recipe
-#docker("node:20-alpine", env = {"CI": "1"}, network = "none", read_only = true)
+#./infra/Dockerfile(context = ".", build_args = {"V": "1"})   // built from a recipe
+#node:20-alpine(platform = "linux/amd64")                     // one platform's variant
+#alpine:3.20{memory: "4g"}      // run options in braces: a Runnable
+#node:20-alpine{env: {"CI": "1"}, network: "none", read_only: true}
+runnable(e, memory = "8g")      // the same for an Environment value e
 ```
 
-A registry reference may leave out its tag — a bare name means `latest` — since `lask env build` pins the digest it resolves to in `lask.lock.json`, and runs use that. `dockerfile` and `context` must be literals inside the module's own tree, which is what makes every image enumerable and pinnable.
+The head is the only place an image is named — no string or variable can name one — so every image a program uses is found by reading its source, and `lask env build` pins each. A registry reference may leave out its tag — a bare name means `latest` — since the lock pins the digest it resolved to, and runs use that. A recipe path starts with `.` and is relative to the module's directory, inside its own tree.
 
-The container is configured by further keyword arguments: `memory`, `memory_swap`, `memory_reservation`, `cpus`, `cpu_shares`, `cpuset_cpus`, `cpuset_mems`, `pids_limit`, `shm_size`, `blkio_weight`, `ulimits`; `workdir`, `user`, `env`, `platform`, `hostname`, `init`; `read_only`, `tmpfs`, `cap_drop`; `network`, `dns`, `dns_search`, `add_hosts`, `publish`; `volumes`; and `build_args` on a recipe, which is a literal like `dockerfile`. Environment variable names are not `lower_id`, so quote them: `env = {"CI": "1"}`. An option given `null` is left out, as are the `null` elements of a list or table — `""` is a value and is passed on. → [10.2](spec.md#102-target-environment-profiles-and-environment-constructor-signatures)
+**Image options** in parentheses decide which image is used: `platform`, and `context` and `build_args` on a recipe. They are literals. **Run options** in braces decide how it runs, and take any expression: `memory`, `memory_swap`, `memory_reservation`, `cpus`, `cpu_shares`, `cpuset_cpus`, `cpuset_mems`, `pids_limit`, `shm_size`, `blkio_weight`, `ulimits`; `workdir`, `user`, `env`, `hostname`, `init`; `read_only`, `tmpfs`, `cap_drop`; `network`, `dns`, `dns_search`, `add_hosts`, `publish`; `volumes`. Environment variable names are not `lower_id`, so quote them: `env: {"CI": "1"}`. An option given `null` is left out, as are the `null` elements of a list or table — `""` is a value and is passed on. → [10.2](spec.md#102-target-environment-profiles-and-their-options)
+
+`#head{...}` is sugar for `runnable(#head, ...)`, which turns an `Environment` into a `Runnable`. An `Environment` is a `Runnable` with no options, so `$[...]`, `run` and `command ... on` take either. `runnable` takes an `Environment` only: options are given once. A function can take the image as `--image: Environment = #python:3.12` and return `runnable(image, env = {...})`, so a caller picks the version with `python(image = #python:3.13)`. → [6.7](spec.md#67-environment-expressions), [15.5](spec.md#155-command-execution-functions)
 
 **Dispatch.** A `$` with no `[env]` gets its environment from the command words in the string, matched against the command words the module declares or imports. → [10.9](spec.md#109-command-dispatch)
 

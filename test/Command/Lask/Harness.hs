@@ -110,7 +110,8 @@ withProject files action =
 -- @registry/<ref>@ holds the digest a tag resolves to upstream,
 -- @present/<name>@ an image on the daemon with its repository digests,
 -- @calls@ every invocation, and @env@ each variable a @run@ named by
--- @--env NAME@ with the value the client's environment gave it.
+-- @--env NAME@ with the value the client's environment gave it. A file
+-- @daemon-down@ makes it answer as a client that reaches no daemon.
 fakeDocker :: String
 fakeDocker =
   unlines
@@ -121,9 +122,9 @@ fakeDocker =
       "key() { printf '%s' \"$1\" | tr '/:@' '___'; }",
       "repo() { r=\"${1%@*}\"; last=\"${r##*/}\"; case \"$last\" in *:*) r=\"${r%:*}\";; esac; printf '%s' \"$r\"; }",
       "case \"$1\" in",
-      "  version) echo 27.0.0 ;;",
+      "  version) [ -f \"$S/daemon-down\" ] && { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }; echo 27.0.0 ;;",
       "  pull)",
-      "    ref=\"$3\"",
+      "    for a in \"$@\"; do ref=\"$a\"; done",
       "    case \"$ref\" in",
       "      *@*) digest=\"${ref#*@}\" ;;",
       "      *) [ -f \"$S/registry/$(key \"$ref\")\" ] || { echo \"manifest unknown: $ref\" >&2; exit 1; }",

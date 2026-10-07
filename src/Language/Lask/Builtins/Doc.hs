@@ -229,6 +229,13 @@ builtinDocs =
             "Environment resolution failure is `E-IO-ENV-RESOLVE`."
           ]
       ),
+      ( "runnable",
+        doc
+          "15.5"
+          [ "`runnable(env, memory = \"4g\", ...)` returns `env` with the run options given (10.2): what to run it with, never which image. `#image{memory: \"4g\"}` is its sugar.",
+            "It takes an `Environment`, so options are given once; an option given `null` is not set. A `local` environment takes none (`E-RUNTIME-VALUE`)."
+          ]
+      ),
       ( "shell_quote",
         doc
           "15.5"

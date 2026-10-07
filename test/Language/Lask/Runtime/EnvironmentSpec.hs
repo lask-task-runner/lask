@@ -13,7 +13,7 @@ import Language.Lask.Builtins.Impl (FileOp (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Runtime.Environment
-import Language.Lask.Runtime.Image (ImagePins, recipeTag, unlockedPins)
+import Language.Lask.Runtime.Image (ImagePins, Recipe (..), recipeTag, unlockedPins)
 import Language.Lask.Runtime.Secrets (registerSecret, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
 import Control.Concurrent (threadDelay)
@@ -74,10 +74,28 @@ spec = do
         `shouldBe` Right (ResolvedDocker "alpine:3.20" Map.empty)
     it "resolves a recipe, defaulting the context to the Dockerfile's directory" $
       resolveEnv (env "docker" [("dockerfile", VString "infra/Dockerfile")])
-        `shouldBe` Right (ResolvedRecipe "infra/Dockerfile" "infra" Map.empty)
+        `shouldBe` Right (ResolvedRecipe (Recipe "infra/Dockerfile" "infra" [] Nothing) Map.empty)
     it "keeps an explicit context" $
       resolveEnv (env "docker" [("dockerfile", VString "infra/Dockerfile"), ("context", VString ".")])
-        `shouldBe` Right (ResolvedRecipe "infra/Dockerfile" "." Map.empty)
+        `shouldBe` Right (ResolvedRecipe (Recipe "infra/Dockerfile" "." [] Nothing) Map.empty)
+    it "carries the build arguments and the platform into the recipe, and runs on that platform" $
+      resolveEnv
+        ( env
+            "docker"
+            [ ("dockerfile", VString "infra/Dockerfile"),
+              ("build_args", VMap (Map.fromList [("V", VString "1")])),
+              ("platform", VString "linux/amd64")
+            ]
+        )
+        `shouldBe` Right
+          ( ResolvedRecipe
+              (Recipe "infra/Dockerfile" "infra" [("V", "1")] (Just "linux/amd64"))
+              ( Map.fromList
+                  [ ("build_args", VMap (Map.fromList [("V", VString "1")])),
+                    ("platform", VString "linux/amd64")
+                  ]
+              )
+          )
     it "fails on docker without an image or a recipe" $
       case resolveEnv (env "docker" []) of
         Left lf -> lfCode lf `shouldBe` Just EIoEnvResolve
@@ -88,7 +106,7 @@ spec = do
   describe "launch argument construction (spec 10.5)" $ do
     it "builds docker run arguments with mounted workdir" $
       dockerArgs "/proj" "lask-0" "alpine:3.20" (Map.fromList [("memory", VString "4g")]) "uname -a"
-        `shouldBe` [ "run", "--rm", "--name", "lask-0",
+        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
                      "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -99,7 +117,7 @@ spec = do
 
     it "attaches stdin for a container write, so no content rides on the command line" $
       dockerShellArgs "/proj" "lask-0" "alpine:3.20" Map.empty True "cat > 'out.txt'"
-        `shouldBe` [ "run", "--rm", "--name", "lask-0",
+        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
                      "-i",
                      "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
@@ -113,7 +131,7 @@ spec = do
     -- the mode, and the daemon answered `invalid mode: /work`.
     it "keeps a Windows drive letter in the source, not in the mount separator" $
       dockerArgs "C:\\proj" "lask-0" "alpine:3.20" Map.empty "uname -a"
-        `shouldBe` [ "run", "--rm", "--name", "lask-0",
+        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
                      "--mount", "type=bind,source=C:\\proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -125,7 +143,7 @@ spec = do
     -- name there, so this is reachable without Windows at all.
     it "keeps a colon inside a POSIX base directory out of the mount separator" $
       dockerArgs "/tmp/a:b" "lask-0" "alpine:3.20" Map.empty "uname -a"
-        `shouldBe` [ "run", "--rm", "--name", "lask-0",
+        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
                      "--mount", "type=bind,source=/tmp/a:b,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -137,7 +155,7 @@ spec = do
     let opts ps = dockerArgs "/proj" "lask-0" "alpine:3.20" (Map.fromList ps) "uname -a"
         -- Just the part between the fixed prologue (run, the name, the
         -- mount, the default -w and the entrypoint) and the image.
-        optionArgs ps = takeWhile (/= "alpine:3.20") (drop 10 (opts ps))
+        optionArgs ps = takeWhile (/= "alpine:3.20") (drop 11 (opts ps))
 
     it "passes scalar options as one flag each" $
       optionArgs
@@ -203,7 +221,7 @@ spec = do
     -- default, and the daemon takes the last -w it is given.
     it "puts an explicit workdir after the mounted default so it wins" $
       opts [("workdir", VString "/work/web")]
-        `shouldBe` [ "run", "--rm", "--name", "lask-0",
+        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
                      "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -222,9 +240,10 @@ spec = do
         `shouldBe` []
 
   describe "recipe hashing (spec 10.3)" $ do
-    let tagFor buildArgs = withSystemTempDirectory "lask-recipe" $ \dir -> do
+    let tagWith buildArgs platform = withSystemTempDirectory "lask-recipe" $ \dir -> do
           writeFile (dir <> "/Dockerfile") "FROM alpine:3.20\n"
-          recipeTag dir "Dockerfile" "." buildArgs
+          recipeTag dir (Recipe "Dockerfile" "." buildArgs platform)
+        tagFor buildArgs = tagWith buildArgs Nothing
 
     it "covers the declared build arguments" $ do
       a <- tagFor []
@@ -236,6 +255,14 @@ spec = do
       a <- tagFor [("VERSION", "1.2.3"), ("FLAVOUR", "slim")]
       b <- tagFor [("FLAVOUR", "slim"), ("VERSION", "1.2.3")]
       b `shouldBe` a
+
+    it "covers the platform" $ do
+      a <- tagFor []
+      b <- tagWith [] (Just "linux/amd64")
+      c <- tagWith [] (Just "linux/arm64")
+      b `shouldSatisfy` isRight
+      b `shouldNotBe` a
+      c `shouldNotBe` b
 
   describe "local execution (spec 8.7, real process)" $ do
     it "runs a local command and captures streams and exit code" $ do
@@ -356,9 +383,9 @@ spec = do
       fst
         ( envLogInfo
             (env "docker" [("dockerfile", VString "infra/Dockerfile")])
-            (ResolvedRecipe "infra/Dockerfile" "infra" Map.empty)
+            (ResolvedRecipe (Recipe "infra/Dockerfile" "infra" [] Nothing) Map.empty)
         )
-        `shouldBe` "#docker(dockerfile = \"infra/Dockerfile\")"
+        `shouldBe` "#./infra/Dockerfile"
 
   describe "filesystem functions (spec 15.11, real filesystem)" $ do
     let withProject act = withSystemTempDirectory "lask-fs" $ \dir -> do

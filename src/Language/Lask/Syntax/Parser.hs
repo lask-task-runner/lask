@@ -440,6 +440,7 @@ pSingleType = choice [pQualifiedNamed, pUnqualified]
         "Null" -> pure (SType sp SNull)
         "Void" -> pure (SType sp SVoid)
         "Environment" -> pure (SType sp SEnvironment)
+        "Runnable" -> pure (SType sp SRunnable)
         "Array" -> pGeneric1 sp SArray
         "Map" -> pGeneric1 sp SMap
         "AsyncHandle" -> pGeneric1 sp SAsyncHandle
@@ -649,18 +650,34 @@ pEnvExpr = do
   Spanned sp h <- matchTok "environment expression" $ \t -> case t of
     TEnvHead n -> Just n
     _ -> Nothing
-  nxt <- peekTok
-  case nxt of
-    Just (Spanned sp2 TLParen)
-      | adjacent sp sp2 -> do
-          _ <- sym TLParen
-          as <- sepBy pArg (sym TComma)
-          e <- sym TRParen
-          pure (Expr (sp <> e) (EEnv h (Just as)))
-    _ -> pure (Expr sp (EEnv h Nothing))
+  (as, sp1) <- adjacentList sp TLParen TRParen pArg
+  (os, sp2) <- adjacentList sp1 TLBrace TRBrace pRunOption
+  pure (Expr sp2 (EEnv h as os))
   where
     adjacent (Span _ e) (Span s _) = e == s
     adjacent _ _ = False
+
+    -- A list opened immediately after what precedes it (spec 6.7): one
+    -- opened after whitespace is not part of the environment expression.
+    adjacentList :: Span -> Token -> Token -> P a -> P (Maybe [a], Span)
+    adjacentList prev open close item = do
+      nxt <- peekTok
+      case nxt of
+        Just (Spanned sp' t)
+          | t == open && adjacent prev sp' -> do
+              _ <- sym open
+              xs <- sepBy item (sym TComma)
+              e <- sym close
+              pure (Just xs, prev <> e)
+        _ -> pure (Nothing, prev)
+
+    -- A run option @name: value@, carried as the keyword argument of
+    -- the @runnable@ call the braces stand for.
+    pRunOption = do
+      Spanned ksp k <- lowerId
+      _ <- sym TColon
+      v <- pExpr
+      pure (Arg (ksp <> exprSpan v) (AKw k v))
 
 pCommandExpr :: P Expr
 pCommandExpr = do

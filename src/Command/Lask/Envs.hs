@@ -9,6 +9,7 @@ module Command.Lask.Envs
     collectEnvRefsFrom,
     collectRecipes,
     collectRegistryRefs,
+    collectRegistryImages,
     collectEnvReadsFrom,
   )
 where
@@ -21,6 +22,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key)
+import Language.Lask.Runtime.Image (Recipe (..), recipeSource)
 
 data EnvRef = EnvRef
   { refLabel :: Text,
@@ -29,20 +31,31 @@ data EnvRef = EnvRef
   }
   deriving (Show, Eq, Ord)
 
--- | All environment constructions in the core program, including the
--- environments named by command declarations (spec ch. 5). A declared
--- command must be enumerable and materializable even when no task uses
--- it, because @lask cmd@ can invoke it (spec 11.8). A declaration's
--- environment may be any expression, so it is walked whole; the
--- declarations it calls are among those walked already.
+-- | All environment constructions reachable from the entry module
+-- (spec 11.4), including the environments of its command words,
+-- declared or imported (spec ch. 5). A command word must be enumerable
+-- and materializable even when no task uses it, because @lask cmd@ can
+-- invoke it (spec 11.8).
 collectEnvRefs :: CoreProgram -> [EnvRef]
-collectEnvRefs core =
-  concatMap declEnvRefs (Map.elems (cpDecls core))
-    <> concatMap envRefsIn (commandEnvs core)
+collectEnvRefs core = concatMap envRefsIn (reachableCores core)
 
--- | The environments of every command declaration in the program.
+-- | The environments of the entry module's command words, declared or
+-- imported.
 commandEnvs :: CoreProgram -> [Core]
-commandEnvs core = concatMap Map.elems (Map.elems (cpCommands core))
+commandEnvs core = Map.elems (Map.findWithDefault Map.empty (cpEntry core) (cpCommands core))
+
+-- | Every expression the program can evaluate (spec 10.3, 11.4): the
+-- entry module's declarations and the environments of its command
+-- words, with every top-level declaration they reach, in any module.
+-- A declaration of an imported module that nothing reachable
+-- references is left out, so the images it names are not required.
+reachableCores :: CoreProgram -> [Core]
+reachableCores core = map cdCore (reachableFrom core roots) <> envs
+  where
+    envs = commandEnvs core
+    roots =
+      [k | k@(p, _) <- Map.keys (cpDecls core), p == cpEntry core]
+        <> [(p, n) | c <- envs, CVar (TopRef p n) <- map coreF (c : descendants c)]
 
 -- | The environments reachable from one declaration: its own
 -- environment expressions plus those of every top-level declaration
@@ -55,7 +68,12 @@ collectEnvRefsFrom core start = concatMap declEnvRefs (reachableDecls core start
 -- | The declarations reachable from one: itself and every top-level
 -- declaration it refers to, transitively.
 reachableDecls :: CoreProgram -> Key -> [CoreDecl]
-reachableDecls core start = go Set.empty [start]
+reachableDecls core start = reachableFrom core [start]
+
+-- | The declarations reachable from several: themselves and every
+-- top-level declaration they refer to, transitively.
+reachableFrom :: CoreProgram -> [Key] -> [CoreDecl]
+reachableFrom core starts = go Set.empty starts
   where
     go :: Set Key -> [Key] -> [CoreDecl]
     go _ [] = []
@@ -105,8 +123,8 @@ mkRef :: Text -> [(Text, Core)] -> EnvRef
 mkRef kind args = case kind of
   "docker" -> case (lookup "image" args, lookup "dockerfile" args) of
     (Just (Core _ (CStrLit img)), _) -> EnvRef img "docker" img
-    (_, Just (Core _ (CStrLit df))) -> EnvRef df "docker" ("recipe " <> df)
-    _ -> EnvRef "<dynamic>" "docker" "<dynamic image>"
+    (_, Just (Core _ (CStrLit df))) -> EnvRef (recipeSource df) "docker" ("recipe " <> recipeSource df)
+    _ -> EnvRef "docker" "docker" "?"
   _ -> EnvRef kind kind kind
 
 -- | Every sub-expression of a core node, transitively.
@@ -116,44 +134,57 @@ descendants c = let cs = children c in cs <> concatMap descendants cs
 children :: Core -> [Core]
 children = coreChildren
 
--- | Every registry reference the program writes as a literal (spec
--- 10.3), in all its modules and command declarations: the references
--- the lock pins. One computed at run time is not among them; it cannot
--- be pinned.
+-- | Every registry reference the program requires (spec 10.3): those
+-- named by the heads reachable from its entry module. Every reference
+-- is written as a head (6.7), so none is left out.
 collectRegistryRefs :: CoreProgram -> [Text]
-collectRegistryRefs core =
-  Set.toList . Set.fromList $
-    concatMap (go . cdCore) (Map.elems (cpDecls core)) <> concatMap go (commandEnvs core)
+collectRegistryRefs = Set.toList . Set.fromList . map fst . collectRegistryImages
+
+-- | Every registry reference the program requires, with the platform
+-- each head names it for (spec 10.3). 'Nothing' is the daemon's own.
+collectRegistryImages :: CoreProgram -> [(Text, Maybe Text)]
+collectRegistryImages core = Set.toList . Set.fromList $ concatMap go (reachableCores core)
   where
     go c = case coreF c of
       CEnv "docker" args
-        | Just (Core _ (CStrLit ref)) <- lookup "image" args -> ref : concatMap (go . snd) args
+        | Just (Core _ (CStrLit ref)) <- lookup "image" args ->
+            (ref, literalArg "platform" args) : concatMap (go . snd) args
       _ -> concatMap go (children c)
 
--- | Every recipe environment the program constructs, as
--- (dockerfile, context, build arguments) triples (spec 10.2). The
--- context defaults to the Dockerfile's directory, and the build
--- arguments are carried because the recipe hash covers them (10.3).
-collectRecipes :: CoreProgram -> [(Text, Text, [(Text, Text)])]
-collectRecipes core = concatMap fromDecl (Map.elems (cpDecls core)) <> concatMap go (commandEnvs core)
+-- | Every recipe environment the program requires (spec 10.2, 10.3).
+-- The context defaults to the Dockerfile's directory, and the build
+-- arguments and the platform are carried because the recipe hash
+-- covers them (10.3).
+collectRecipes :: CoreProgram -> [Recipe]
+collectRecipes core = Set.toList . Set.fromList $ concatMap go (reachableCores core)
   where
-    fromDecl cd = go (cdCore cd)
     go c = case coreF c of
       CEnv "docker" args -> case lookup "dockerfile" args of
         Just (Core _ (CStrLit df)) ->
-          let ctx = case lookup "context" args of
-                Just (Core _ (CStrLit x)) -> x
-                _ -> defaultContext df
-           in [(df, ctx, buildArgs args)]
+          [ Recipe
+              { rcDockerfile = df,
+                rcContext = maybe (defaultContext df) id (literalArg "context" args),
+                rcBuildArgs = buildArgs args,
+                rcPlatform = literalArg "platform" args
+              }
+          ]
         _ -> []
-      CLam lam -> concatMap (go . snd) (lamKeywords lam) <> concatMap go (children c)
       _ -> concatMap go (children c)
 
     buildArgs args = case lookup "build_args" args of
       Just (Core _ (CMapLit kvs)) -> sortOn fst [(k, v) | (k, Core _ (CStrLit v)) <- kvs]
       _ -> []
 
-    defaultContext df =
-      let parts = T.splitOn "/" df
-       in if length parts <= 1 then "." else T.intercalate "/" (init parts)
+-- | An image option, which is always a literal (spec 6.7).
+literalArg :: Text -> [(Text, Core)] -> Maybe Text
+literalArg k args = case lookup k args of
+  Just (Core _ (CStrLit v)) -> Just v
+  _ -> Nothing
+
+-- | The context of a recipe that names none: the Dockerfile's
+-- directory (spec 10.2).
+defaultContext :: Text -> Text
+defaultContext df =
+  let parts = T.splitOn "/" df
+   in if length parts <= 1 then "." else T.intercalate "/" (init parts)
 
