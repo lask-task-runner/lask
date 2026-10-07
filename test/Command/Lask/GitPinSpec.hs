@@ -91,6 +91,29 @@ shouldReportMoved r = do
 
 spec :: Spec
 spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ do
+  -- A new rev in lask.json is a new pin: the hash the lock holds is
+  -- for the old one, and checking the new content against it would
+  -- report a mismatch for content no one tampered with.
+  it "re-pins a dependency whose rev lask.json bumps" $ \lask -> withWorld lask $ \w -> do
+    url <- repoAt w "kit" "hi" False
+    addKit w url
+    old <- lockField w "kit" "hash"
+    -- Forced now: the lock is read lazily, and sync rewrites it.
+    old `shouldSatisfy` (/= Nothing)
+    let repo = wRoot w </> "kit"
+    writeFile (repo </> "main.lask") "hello(): String = \"v2\"\n"
+    git repo ["commit", "--quiet", "-am", "v2"]
+    git repo ["tag", "v2"]
+    writeFile (wProj w </> "lask.json") ("{\"dependencies\": {\"kit\": {\"git\": \"" <> url <> "\", \"rev\": \"v2\"}}}")
+    r <- wRun w ["deps", "sync"]
+    resErr r `shouldNotSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
+    resOut r `shouldSatisfy` isInfixOf "kit ok"
+    lockField w "kit" "requested" `shouldReturn` Just "v2"
+    new <- lockField w "kit" "hash"
+    new `shouldNotBe` old
+    sha <- headOf w "kit"
+    lockField w "kit" "rev" `shouldReturn` Just sha
+
   it "deps add pins the commit the tag names" $ \lask -> withWorld lask $ \w -> do
     url <- repoAt w "kit" "hi" False
     addKit w url

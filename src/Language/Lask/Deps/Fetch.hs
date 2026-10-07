@@ -17,7 +17,7 @@ module Language.Lask.Deps.Fetch
 where
 
 import Control.Exception (IOException, try)
-import Control.Monad (unless, when)
+import Control.Monad (mfilter, unless, when)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -105,7 +105,14 @@ ensureEntry cacheDir locked name entry = case entry of
       sameRef = fmap lkRequested locked == Just (Just ref)
       pinnedRev = if sameRef then locked >>= lkRev else Nothing
   where
-    expected = lkHash <$> locked
+    -- The hash the lock pins holds for the source it was pinned from:
+    -- an entry that now names another repository, reference or URL is
+    -- a new pin, fetched without it (spec 5, 11.5). E-MODULE-HASH-MISMATCH
+    -- is for content that changed under an unchanged reference.
+    expected = lkHash <$> mfilter sameSource locked
+    sameSource l = case entry of
+      DepGit url ref -> lkGit l == Just url && lkRequested l == Just ref
+      DepUrl url -> lkUrl l == Just url
     single = entryIsSingleFile entry
     -- An entry is checked rather than trusted for being there: a shared
     -- or tampered cache must not stand in for what the lock pins.
