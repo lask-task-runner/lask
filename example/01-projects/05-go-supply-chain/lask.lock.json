@@ -1,0 +1,30 @@
+{
+    "images": {
+        "#.lask/deps/sha256-df8d3acd40bdaa5d228cb6e7f6d5f2e910929e00d39b212499cbdd01ce008fee/lib/images/anchore/Dockerfile": {
+            "kind": "recipe",
+            "tag": "lask/08a2fd8f15f67d405a02febac1c843f75b53f04cf4332285d5250d0aa05a88e6"
+        },
+        "#.lask/deps/sha256-df8d3acd40bdaa5d228cb6e7f6d5f2e910929e00d39b212499cbdd01ce008fee/lib/images/unix/Dockerfile": {
+            "kind": "recipe",
+            "tag": "lask/b61fd44bd7ebe653a7a455618634ab22eb7d678de02d988779136093f7c72b05"
+        },
+        "#golang:1.27.1-trixie": {
+            "digest": "sha256:8f58fd67ea075142d947a60e0caa4317746a55118d312f027793d382c7741734",
+            "kind": "registry",
+            "ref": "golang:1.27.1-trixie"
+        },
+        "#tools/cosign.Dockerfile": {
+            "kind": "recipe",
+            "tag": "lask/e8ea39fe52f1bbf85264ad215bcbf5f0fd9ab04aa58137fb3b3a56674284b701"
+        }
+    },
+    "lock_version": 1,
+    "modules": {
+        "tools": {
+            "git": "https://github.com/lask-task-runner/lask-module-tools.git",
+            "hash": "sha256-df8d3acd40bdaa5d228cb6e7f6d5f2e910929e00d39b212499cbdd01ce008fee",
+            "requested": "v0.3.0",
+            "rev": "26be4a5852ca54f9b03c36e9360827976a7a482f"
+        }
+    }
+}

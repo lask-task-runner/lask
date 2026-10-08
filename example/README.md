@@ -20,6 +20,9 @@ lask run --help     # every task in the module, from its own comments
 | --- | --- | --- |
 | [01-hello-world/](01-projects/01-hello-world) | The smallest thing that is still a project: a pure task, a containerized one, and one calling the other. | Docker |
 | [02-webapp-on-aws/](01-projects/02-webapp-on-aws) | A full AWS stack — Python Lambda API, React front end, RDS, Cognito, CloudFront, Playwright tests — from a machine with none of those tools installed. | Docker, AWS account |
+| [03-local-llm/](01-projects/03-local-llm) | A local LLM with no install: pull a model, ask it from the command line, compare several models at once, or chat in the browser with Open WebUI. | Docker |
+| [04-nextjs-e2e/](01-projects/04-nextjs-e2e) | A Next.js app whose lint, build and Playwright tests in Chromium and Firefox run the same on a laptop and in CI, with no Node or browsers installed. | Docker |
+| [05-go-supply-chain/](01-projects/05-go-supply-chain) | A signed Go release: four platforms built at once, an SBOM, a vulnerability scan and a cosign signature, in one task. | Docker |
 
 ## 02-language
 

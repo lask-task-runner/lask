@@ -1,0 +1,5 @@
+dist/
+# The key pair `lask run keygen` writes. In a real project cosign.pub is
+# committed and published; this example leaves both to each reader.
+cosign.key
+cosign.pub
