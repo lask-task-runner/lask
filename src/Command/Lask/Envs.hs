@@ -5,6 +5,10 @@
 -- environment section of function help (spec 11.6).
 module Command.Lask.Envs
   ( EnvRef (..),
+    HeadImage (..),
+    Requirer (..),
+    HeadUse (..),
+    collectHeadUses,
     collectEnvRefs,
     collectEnvRefsFrom,
     collectRecipes,
@@ -23,6 +27,7 @@ import qualified Data.Text as T
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key)
 import Language.Lask.Runtime.Image (Recipe (..), recipeSource)
+import Language.Lask.Span (Span (..))
 
 data EnvRef = EnvRef
   { refLabel :: Text,
@@ -134,6 +139,97 @@ descendants c = let cs = children c in cs <> concatMap descendants cs
 children :: Core -> [Core]
 children = coreChildren
 
+-- | The image a head names (spec 6.7, 10.2): the host, a registry
+-- reference for a platform ('Nothing' is the daemon's own), or a
+-- recipe.
+data HeadImage
+  = HeadLocal
+  | HeadRegistry Text (Maybe Text)
+  | HeadRecipe Recipe
+  deriving (Show, Eq, Ord)
+
+-- | Where a head is written, for the REQUIRED BY column of
+-- @lask envs list@ and @lask sync@: the module, the declaration (or
+-- the command words of the entry module whose environment it is), and
+-- the keyword parameter whose default it is, if any.
+data Requirer = Requirer
+  { rqModule :: FilePath,
+    rqWhat :: Text,
+    rqDefault :: Maybe Text
+  }
+  deriving (Show, Eq, Ord)
+
+-- | One head, and where it is written.
+data HeadUse = HeadUse
+  { huImage :: HeadImage,
+    huBy :: Requirer
+  }
+  deriving (Show, Eq, Ord)
+
+-- | A head and the span it is written at, before deduplication.
+data Found = Found Span HeadUse
+
+-- | Every head the program can evaluate (spec 10.3, 11.4), with where
+-- it is written. With a declaration, only what it reaches.
+--
+-- A head is counted where it is written. Dispatch (10.9) copies the
+-- environment of a command word into every command string that uses
+-- it, so the same head is found again in each declaration that runs
+-- the word; those copies carry the span of the head in the command
+-- declaration, and are attributed to it.
+collectHeadUses :: CoreProgram -> Maybe Key -> [HeadUse]
+collectHeadUses core scope = dedupe $ case scope of
+  Just key -> concatMap declUses (reachableDecls core key)
+  Nothing ->
+    concatMap declUses (reachableFrom core roots)
+      <> concat
+        [ usesIn (Requirer (cpEntry core) ("command " <> w) Nothing) c
+        | (w, c) <- Map.toList commands
+        ]
+  where
+    dedupe found =
+      Set.toList . Set.fromList $
+        [ pick group
+        | group <- Map.elems (Map.fromListWith (<>) [((sp, huImage u), [u]) | Found sp u <- found, sp /= NoSpan])
+        ]
+          <> [u | Found NoSpan u <- found]
+    -- The command declaration a copy came from, when it is among them.
+    pick group = case [u | u <- group, "command " `T.isPrefixOf` rqWhat (huBy u)] of
+      u : _ -> u
+      [] -> minimum group
+    commands = Map.findWithDefault Map.empty (cpEntry core) (cpCommands core)
+    roots =
+      [k | k@(p, _) <- Map.keys (cpDecls core), p == cpEntry core]
+        <> [(p, n) | c <- Map.elems commands, CVar (TopRef p n) <- map coreF (c : descendants c)]
+    declUses cd = usesIn (Requirer (cdModule cd) (cdName cd) Nothing) (cdCore cd)
+
+-- | The heads within a core expression. A head in the default of a
+-- keyword parameter is marked with the parameter, since it is required
+-- whether or not a caller passes another (spec 10.3).
+usesIn :: Requirer -> Core -> [Found]
+usesIn by c = case coreF c of
+  CEnv "local" _ -> [Found (coreSpan c) (HeadUse HeadLocal by)]
+  CEnv "docker" args -> maybe [] (\i -> [Found (coreSpan c) (HeadUse i by)]) (headImage args) <> concatMap (usesIn by . snd) args
+  CLam lam ->
+    concat [usesIn by {rqDefault = Just k} d | (k, d) <- lamKeywords lam]
+      <> usesIn by (lamBody lam)
+  _ -> concatMap (usesIn by) (children c)
+
+headImage :: [(Text, Core)] -> Maybe HeadImage
+headImage args = case (lookup "image" args, lookup "dockerfile" args) of
+  (Just (Core _ (CStrLit ref)), _) -> Just (HeadRegistry ref (literalArg "platform" args))
+  (_, Just (Core _ (CStrLit df))) ->
+    Just . HeadRecipe $
+      Recipe
+        { rcDockerfile = df,
+          rcContext = maybe (defaultContext df) id (literalArg "context" args),
+          rcBuildArgs = case lookup "build_args" args of
+            Just (Core _ (CMapLit kvs)) -> sortOn fst [(k, v) | (k, Core _ (CStrLit v)) <- kvs]
+            _ -> [],
+          rcPlatform = literalArg "platform" args
+        }
+  _ -> Nothing
+
 -- | Every registry reference the program requires (spec 10.3): those
 -- named by the heads reachable from its entry module. Every reference
 -- is written as a head (6.7), so none is left out.
@@ -143,37 +239,16 @@ collectRegistryRefs = Set.toList . Set.fromList . map fst . collectRegistryImage
 -- | Every registry reference the program requires, with the platform
 -- each head names it for (spec 10.3). 'Nothing' is the daemon's own.
 collectRegistryImages :: CoreProgram -> [(Text, Maybe Text)]
-collectRegistryImages core = Set.toList . Set.fromList $ concatMap go (reachableCores core)
-  where
-    go c = case coreF c of
-      CEnv "docker" args
-        | Just (Core _ (CStrLit ref)) <- lookup "image" args ->
-            (ref, literalArg "platform" args) : concatMap (go . snd) args
-      _ -> concatMap go (children c)
+collectRegistryImages core =
+  Set.toList (Set.fromList [(ref, p) | HeadUse (HeadRegistry ref p) _ <- collectHeadUses core Nothing])
 
 -- | Every recipe environment the program requires (spec 10.2, 10.3).
 -- The context defaults to the Dockerfile's directory, and the build
 -- arguments and the platform are carried because the recipe hash
 -- covers them (10.3).
 collectRecipes :: CoreProgram -> [Recipe]
-collectRecipes core = Set.toList . Set.fromList $ concatMap go (reachableCores core)
-  where
-    go c = case coreF c of
-      CEnv "docker" args -> case lookup "dockerfile" args of
-        Just (Core _ (CStrLit df)) ->
-          [ Recipe
-              { rcDockerfile = df,
-                rcContext = maybe (defaultContext df) id (literalArg "context" args),
-                rcBuildArgs = buildArgs args,
-                rcPlatform = literalArg "platform" args
-              }
-          ]
-        _ -> []
-      _ -> concatMap go (children c)
-
-    buildArgs args = case lookup "build_args" args of
-      Just (Core _ (CMapLit kvs)) -> sortOn fst [(k, v) | (k, Core _ (CStrLit v)) <- kvs]
-      _ -> []
+collectRecipes core =
+  Set.toList (Set.fromList [r | HeadUse (HeadRecipe r) _ <- collectHeadUses core Nothing])
 
 -- | An image option, which is always a literal (spec 6.7).
 literalArg :: Text -> [(Text, Core)] -> Maybe Text

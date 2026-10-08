@@ -132,8 +132,9 @@ spec = do
     it "completes the shells of `lask completion`" $
       valuesFor ["completion", ""] `shouldReturn` ["bash", "zsh", "fish"]
 
-    it "completes dependency names from the project file" $
-      valuesFor ["deps", "why", ""] `shouldReturn` ["terraform"]
+    it "completes dependency names from the project file" $ do
+      valuesFor ["deps", "graph", ""] `shouldReturn` ["terraform"]
+      valuesFor ["deps", "rm", ""] `shouldReturn` ["terraform"]
 
   describe "paths" $ do
     it "filters --module to modules and directories" $ do

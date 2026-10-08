@@ -111,7 +111,8 @@ withProject files action =
 -- @present/<name>@ an image on the daemon with its repository digests,
 -- @calls@ every invocation, and @env@ each variable a @run@ named by
 -- @--env NAME@ with the value the client's environment gave it. A file
--- @daemon-down@ makes it answer as a client that reaches no daemon.
+-- @daemon-down@ makes it answer as a client that reaches no daemon: every
+-- command fails.
 fakeDocker :: String
 fakeDocker =
   unlines
@@ -121,8 +122,9 @@ fakeDocker =
       "echo \"$*\" >> \"$S/calls\"",
       "key() { printf '%s' \"$1\" | tr '/:@' '___'; }",
       "repo() { r=\"${1%@*}\"; last=\"${r##*/}\"; case \"$last\" in *:*) r=\"${r%:*}\";; esac; printf '%s' \"$r\"; }",
+      "[ -f \"$S/daemon-down\" ] && { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }",
       "case \"$1\" in",
-      "  version) [ -f \"$S/daemon-down\" ] && { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }; echo 27.0.0 ;;",
+      "  version) echo 27.0.0 ;;",
       "  pull)",
       "    for a in \"$@\"; do ref=\"$a\"; done",
       "    case \"$ref\" in",

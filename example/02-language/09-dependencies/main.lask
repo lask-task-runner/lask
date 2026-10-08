@@ -5,8 +5,8 @@
 // which bytes it is, is pinned in the committed lask.lock.json.
 //
 //   lask sync             # the only step that touches the network
-//   lask deps why tools   # why is this here?
-//   lask deps diff tools  # what would a bump change?
+//   lask deps list        # what lask.json requests, what the lock pins
+//   lask deps graph       # the dependency graph
 //   lask eval tool-version
 
 // An import with no "./" is an external dependency, and the name is the

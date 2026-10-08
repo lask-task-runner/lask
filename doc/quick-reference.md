@@ -44,15 +44,17 @@ $ lask run release --help
 
 | Command | What it does |
 | --- | --- |
-| `lask check` | Static validation only. Nothing is evaluated, no image is pulled. |
 | `lask run <fn> [args...]` | Execute a task. Writes **nothing** to stdout. |
 | `lask eval <fn> [args...]` | Same, and writes the return value to stdout (JSON by default). |
 | `lask cmd <prog> [args...]` | Run a declared command in its declared image, stdio passed through. |
 | `lask repl` | Evaluate expressions interactively. `:r` reloads the module, keeping what was typed. |
-| `lask envs list \| check [fn]` | List the environments a module uses and what the lock pins them to; `check` tests access. |
-| `lask sync [--frozen]` | Fetch dependencies, materialize images and write the lock; `--frozen` fails instead of changing it (CI). |
-| `lask deps add \| why \| diff` | Add and report on external dependencies. |
+| `lask sync [--frozen] [--prune]` | Fetch dependencies, pull and build images and write the lock, showing progress and ending with a table of every module and image; `--frozen` fails instead of changing anything (CI); `--prune` removes dependencies no `.lask` file imports. |
+| `lask deps list` | Every dependency, what `lask.json` requests and the lock pins, and its status: `ok`, `stale`, `unused`, `not cached`, … |
+| `lask deps graph [name] [--depth n]` | The dependency graph from the entry module; with a name, only the paths that reach it. |
+| `lask deps add \| rm <name>` | Add a dependency (`--git <url> --rev <rev>` or `--url <url>`); remove one no module imports. |
+| `lask envs list [fn]` | The environments a module uses, the image the lock pins each to, what requires it, and whether it is on the Docker daemon. |
 | `lask secrets list \| check [fn]` | List the secret references in the environment; check that their stores can be reached and read. |
+| `lask check` | Static validation only. Nothing is evaluated, no image is pulled. |
 | `lask serve` | Language server (LSP). |
 | `lask completion <shell>` | Emit a completion script (bash, zsh, fish). |
 | `lask version` | Print the version. |

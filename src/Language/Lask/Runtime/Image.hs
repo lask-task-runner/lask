@@ -13,6 +13,8 @@ module Language.Lask.Runtime.Image
     recipeSource,
     recipeTag,
     imageExists,
+    daemonReachable,
+    absentImage,
     buildRecipe,
     repositoryOf,
     writtenDigest,
@@ -43,11 +45,13 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Language.Lask.Deps.Hash (hashBytes)
 import Language.Lask.Deps.Lock (LockImage (..))
-import Language.Lask.ErrorCode (ErrorCode (EIoImageMissing))
+import Language.Lask.ErrorCode (ErrorCode (EIoEnvResolve, EIoImageMissing))
 import Language.Lask.Runtime.Value (LaskFailure, ioFailure)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
-import System.Process (proc, readCreateProcessWithExitCode)
+import Control.Concurrent.Async (concurrently, concurrently_)
+import System.IO (hGetLine, hIsEOF)
+import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, readCreateProcessWithExitCode, waitForProcess)
 
 -- | A recipe environment (spec 10.2): the Dockerfile and the image
 -- options that decide what it builds, every one of them a literal of
@@ -92,6 +96,30 @@ recipeTag baseDir (Recipe dockerfile context buildArgs platform) = do
 buildArgKey :: [(Text, Text)] -> Text
 buildArgKey buildArgs = T.concat ["\0" <> k <> "=" <> v | (k, v) <- sortOn fst buildArgs]
 
+-- | Whether the Docker daemon answers, asked once and read only; the
+-- reason when it does not.
+daemonReachable :: IO (Either Text ())
+daemonReachable = do
+  r <- try (readCreateProcessWithExitCode (proc "docker" ["version", "--format", "{{.Server.Version}}"]) "")
+  pure $ case r of
+    Left e -> Left (T.pack (show (e :: IOException)))
+    Right (ExitSuccess, _, _) -> Right ()
+    Right (_, _, err) -> Left (firstLine (T.pack err))
+  where
+    firstLine t = case filter (not . T.null) (map T.strip (T.lines t)) of
+      l : _ -> l
+      [] -> "docker version failed"
+
+-- | The failure for an image the daemon was not found to hold: the
+-- image is missing, unless the daemon itself cannot be reached, which
+-- @lask sync@ would not mend (spec 10.4, 14.6).
+absentImage :: Text -> IO LaskFailure
+absentImage missing = do
+  reach <- daemonReachable
+  pure $ case reach of
+    Left e -> ioFailure EIoEnvResolve ("cannot reach the Docker daemon: " <> e)
+    Right () -> ioFailure EIoImageMissing missing
+
 -- | Whether the tag is present on the target Docker daemon.
 imageExists :: Text -> IO Bool
 imageExists tag = do
@@ -104,10 +132,13 @@ imageExists tag = do
 -- | Build a recipe into its content-addressed tag. No host mount other
 -- than the declared context, no privileged mode, no host networking
 -- (spec 10.3).
-buildRecipe :: FilePath -> Recipe -> Text -> IO (Either Text ())
-buildRecipe baseDir (Recipe dockerfile context buildArgs platform) tag = do
+--
+-- The build's steps are reported as they run: @[3/6] RUN apk add ...@.
+buildRecipe :: (Text -> IO ()) -> FilePath -> Recipe -> Text -> IO (Either Text ())
+buildRecipe report baseDir (Recipe dockerfile context buildArgs platform) tag = do
   let args =
         [ "build",
+          "--progress=plain",
           "-f",
           baseDir </> T.unpack dockerfile,
           "-t",
@@ -116,11 +147,13 @@ buildRecipe baseDir (Recipe dockerfile context buildArgs platform) tag = do
           <> maybe [] (\p -> ["--platform", T.unpack p]) platform
           <> concat [["--build-arg", T.unpack (k <> "=" <> v)] | (k, v) <- sortOn fst buildArgs]
           <> [baseDir </> T.unpack context]
-  r <- try (readCreateProcessWithExitCode (proc "docker" args) "")
-  pure $ case r of
-    Left e -> Left ("cannot run docker build: " <> T.pack (show (e :: IOException)))
-    Right (ExitSuccess, _, _) -> Right ()
-    Right (_, _, err) -> Left (T.strip (T.pack err))
+  -- BuildKit writes its plain progress to stderr: a step is a line
+  -- such as @#7 [3/6] RUN apk add ...@.
+  r <- streamProcess "docker build" (proc "docker" args) (const (pure ())) $ \line ->
+    case T.breakOn " [" line of
+      (n, step) | "#" `T.isPrefixOf` n, not (T.null step) -> report (T.strip step)
+      _ -> pure ()
+  pure (() <$ r)
 
 -- Registry references (spec 10.3) ---------------------------------------------
 
@@ -153,14 +186,56 @@ pinnedRef ref digest = repositoryOf ref <> "@" <> digest
 -- made only by @sync@ (spec 10.3, 11.7).
 --
 -- With a platform, that platform's variant of the image is pulled.
-pullImage :: Maybe Text -> Text -> IO (Either Text ())
-pullImage platform ref = do
-  let args = ["pull", "--quiet"] <> maybe [] (\p -> ["--platform", T.unpack p]) platform <> [T.unpack ref]
-  r <- try (readCreateProcessWithExitCode (proc "docker" args) "")
-  pure $ case r of
-    Left e -> Left ("cannot run docker pull: " <> T.pack (show (e :: IOException)))
-    Right (ExitSuccess, _, _) -> Right ()
-    Right (_, _, err) -> Left (T.strip (T.pack err))
+--
+-- Progress is reported as layers complete, @layers 4/9@, from the
+-- status lines docker writes for each layer when it is not on a
+-- terminal (@<id>: Pulling fs layer@, @<id>: Pull complete@).
+pullImage :: (Text -> IO ()) -> Maybe Text -> Text -> IO (Either Text ())
+pullImage report platform ref = do
+  let args = ["pull"] <> maybe [] (\p -> ["--platform", T.unpack p]) platform <> [T.unpack ref]
+  layers <- newIORef (Map.empty :: Map Text Bool)
+  r <- streamProcess "docker pull" (proc "docker" args) (onLine layers) (const (pure ()))
+  pure (() <$ r)
+  where
+    onLine layers line = case T.breakOn ": " line of
+      (layer, status)
+        | T.length layer == 12,
+          T.all (`elem` ("0123456789abcdef" :: String)) layer -> do
+            let done = T.drop 2 status `elem` ["Pull complete", "Already exists"]
+            counts <- atomicModifyIORef' layers $ \m ->
+              let m' = Map.insertWith (||) layer done m
+               in (m', (length (filter id (Map.elems m')), Map.size m'))
+            report ("layers " <> T.pack (show (fst counts)) <> "/" <> T.pack (show (snd counts)))
+      _ -> pure ()
+
+-- | Run a process, handing each line of its stdout and its stderr to
+-- the given actions as it arrives. A failure is the tail of stderr.
+streamProcess :: Text -> CreateProcess -> (Text -> IO ()) -> (Text -> IO ()) -> IO (Either Text ())
+streamProcess what cp onOut onErr = do
+  started <-
+    try $
+      createProcess cp {std_in = NoStream, std_out = CreatePipe, std_err = CreatePipe}
+  case started of
+    Left e -> pure (Left ("cannot run " <> what <> ": " <> T.pack (show (e :: IOException))))
+    Right (_, Just out, Just err, ph) -> do
+      tailRef <- newIORef []
+      let readLines h act = do
+            eof <- hIsEOF h
+            if eof
+              then pure ()
+              else do
+                line <- T.pack <$> hGetLine h
+                _ <- act line
+                readLines h act
+          keep line = do
+            atomicModifyIORef' tailRef (\ls -> (take 20 (line : ls), ()))
+            onErr line
+      (_, code) <- concurrently (concurrently_ (readLines out onOut) (readLines err keep)) (waitForProcess ph)
+      errTail <- reverse <$> readIORef tailRef
+      pure $ case code of
+        ExitSuccess -> Right ()
+        _ -> Left (T.strip (T.unlines (filter (not . T.null . T.strip) errTail)))
+    Right _ -> pure (Left ("cannot run " <> what))
 
 -- | The registry digest of a local image, read from the repository
 -- digests the daemon records for it. The one recorded for the
@@ -236,8 +311,9 @@ resolveRegistry pins ref = case pins of
           atomicModifyIORef' seen (\s -> (Set.insert image s, ()))
           pure (Right image)
         else
-          pure . Left . ioFailure EIoImageMissing $
-            "image '" <> ref <> "' (pinned as " <> image <> ") is not on the Docker daemon; run 'lask sync'"
+          Left
+            <$> absentImage
+              ("image '" <> ref <> "' (pinned as " <> image <> ") is not on the Docker daemon; run 'lask sync'")
     Nothing ->
       pure . Left . ioFailure EIoImageMissing $
         "image '" <> ref <> "' is not pinned in lask.lock.json; run 'lask sync'"

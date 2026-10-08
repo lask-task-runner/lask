@@ -42,7 +42,7 @@ spec = beforeAll findLask $ do
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
         b <- runLaskEnv lask dir extra ["sync"] ""
         resExit b `shouldBe` 0
-        resOut b `shouldContain` "alpine:3.22.2 -> alpine@sha256:aaa"
+        resOut b `shouldContain` "#alpine:3.22.2  registry  sha256:aaa  main.lask: command cat  pulled"
         lockText dir >>= (`shouldContain` "\"digest\": \"sha256:aaa\"")
         r <- runLaskEnv lask dir extra ["eval", "hi"] ""
         resExit r `shouldBe` 0
@@ -80,7 +80,7 @@ spec = beforeAll findLask $ do
         b <- runLaskEnv lask dir extra ["sync"] ""
         resExit b `shouldBe` 0
         cs <- calls state
-        [c | c <- cs, "pull " `isPrefixOf` c] `shouldBe` ["pull --quiet alpine@sha256:aaa"]
+        [c | c <- cs, "pull " `isPrefixOf` c] `shouldBe` ["pull alpine@sha256:aaa"]
         lockText dir >>= (`shouldContain` "sha256:aaa")
 
     it "reports E-IO-IMAGE-DIGEST when the pinned image carries another digest" $ \lask ->
@@ -142,9 +142,9 @@ spec = beforeAll findLask $ do
             resExit b `shouldBe` 0
             cs <- calls state
             [c | c <- cs, "pull " `isPrefixOf` c]
-              `shouldBe` [ "pull --quiet alpine:3.22.2",
-                           "pull --quiet alpine@sha256:aaa",
-                           "pull --quiet --platform linux/amd64 alpine@sha256:aaa"
+              `shouldBe` [ "pull alpine:3.22.2",
+                           "pull alpine@sha256:aaa",
+                           "pull --platform linux/amd64 alpine@sha256:aaa"
                          ]
             r <- runLaskEnv lask dir extra ["eval", "b"] ""
             resExit r `shouldBe` 0
@@ -169,24 +169,45 @@ spec = beforeAll findLask $ do
         _ <- runLaskEnv lask dir extra ["sync"] ""
         lockText dir >>= (`shouldNotContain` "alpine")
 
-    -- envs list reads the lock and never the daemon; envs check asks
-    -- the daemon whether the image is there (spec 11.4).
-    it "lists what the lock resolves each environment to, and checks it" $ \lask ->
+    -- envs list reads the lock, and asks the daemon, read only, whether
+    -- each image is there (spec 11.4). It reports; it does not fail.
+    it "lists what the lock resolves each environment to, what requires it, and whether it is present" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
         before <- runLaskEnv lask dir extra ["envs", "list"] ""
         resExit before `shouldBe` 0
-        resOut before `shouldContain` "docker  alpine:3.22.2  registry  not pinned (lask sync)"
-        missing <- runLaskEnv lask dir extra ["envs", "check"] ""
-        resExit missing `shouldBe` 3
-        resOut missing `shouldContain` "E-IO-IMAGE-MISSING"
+        resOut before `shouldContain` "#alpine:3.22.2  registry  —       main.lask: command cat  not pinned (lask sync)"
         _ <- runLaskEnv lask dir extra ["sync"] ""
         writeFile (state </> "calls") ""
         after <- runLaskEnv lask dir extra ["envs", "list"] ""
-        resOut after `shouldContain` "docker  alpine:3.22.2  registry  alpine@sha256:aaa"
-        calls state `shouldReturn` []
-        ok <- runLaskEnv lask dir extra ["envs", "check"] ""
-        resExit ok `shouldBe` 0
-        resOut ok `shouldContain` "alpine@sha256:aaa  ok"
+        resExit after `shouldBe` 0
+        resOut after `shouldContain` "#alpine:3.22.2  registry  sha256:aaa  main.lask: command cat  present"
+        -- Asked once whether the daemon answers, and once per image.
+        cs <- calls state
+        [c | c <- cs, not ("image inspect" `isPrefixOf` c)] `shouldBe` ["version --format {{.Server.Version}}"]
+        removeDirectoryRecursive (state </> "present")
+        gone <- runLaskEnv lask dir extra ["envs", "list"] ""
+        resExit gone `shouldBe` 0
+        resOut gone `shouldContain` "missing (lask sync)"
+
+    it "warns, and leaves the status unknown, when the daemon cannot be reached" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["sync"] ""
+        writeFile (state </> "daemon-down") ""
+        r <- runLaskEnv lask dir extra ["envs", "list"] ""
+        resExit r `shouldBe` 0
+        resErr r `shouldContain` "warning: cannot reach the Docker daemon"
+        resOut r `shouldContain` "sha256:aaa  main.lask: command cat  ?"
+
+    -- A run that finds no image asks whether the daemon answers before
+    -- telling to run sync, which could not help (spec 10.4).
+    it "reports a daemon it cannot reach, not a missing image" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["sync"] ""
+        writeFile (state </> "daemon-down") ""
+        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit r `shouldBe` 3
+        resErr r `shouldContain` "E-IO-ENV-RESOLVE"
+        resErr r `shouldNotContain` "E-IO-IMAGE-MISSING"
 
   describe "retired commands (spec 11.1)" $ do
     it "names the command that replaced each" $ \lask ->
@@ -202,7 +223,10 @@ spec = beforeAll findLask $ do
                 (["deps", "sync", "--frozen"], "sync"),
                 (["envs"], "envs list"),
                 (["envs", "f"], "envs list f"),
-                (["envs", "--module", "main.lask", "f", "--check"], "envs check")
+                (["envs", "--module", "main.lask", "f", "--check"], "envs list"),
+                (["envs", "check"], "envs list"),
+                (["deps", "why", "kit"], "deps graph"),
+                (["deps", "diff", "kit"], "deps list")
               ]
           ]
 
@@ -1369,13 +1393,13 @@ spec = beforeAll findLask $ do
                 ["eval"],
                 ["repl"],
                 ["envs", "list"],
-                ["envs", "check"],
                 ["sync"],
                 ["version"],
                 ["completion"],
+                ["deps", "list"],
+                ["deps", "graph"],
                 ["deps", "add"],
-                ["deps", "why"],
-                ["deps", "diff"],
+                ["deps", "rm"],
                 ["cmd"]
               ]
           ]

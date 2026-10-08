@@ -79,7 +79,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [11.1 Subcommands](#111-subcommands)
     - [11.2 Function Invocation](#112-function-invocation)
     - [11.3 Input/Output Contract](#113-inputoutput-contract)
-    - [11.4 Environment Check (`envs`)](#114-environment-check-envs)
+    - [11.4 Environment List (`envs`)](#114-environment-list-envs)
     - [11.5 Dependency Management (`deps`)](#115-dependency-management-deps)
     - [11.6 Help Display (`--help`)](#116-help-display---help)
     - [11.7 Synchronization (`sync`)](#117-synchronization-sync)
@@ -2535,7 +2535,7 @@ Resolution procedure:
 
 Resolution rules:
 
-- A `docker` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3), and runs as that image: a registry reference as its repository at the pinned digest. If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`, and the diagnostic names `lask sync`.
+- A `docker` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3), and runs as that image: a registry reference as its repository at the pinned digest. If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`, and the diagnostic names `lask sync`. An image is told absent only by a daemon that answers: when the daemon cannot be reached, it is `E-IO-ENV-RESOLVE`, which `lask sync` would not mend.
 - A reference written with a digest resolves to itself, entry or not.
 - Every image a `docker` value can carry was written as a head (6.7), so a missing entry means only that the lock is behind the program; there is no image the lock cannot record.
 
@@ -2702,18 +2702,28 @@ This chapter defines the external contract of the CLI.
 
 ### 11.1 Subcommands
 
-The CLI must provide the following subcommands.
+The CLI must provide the following subcommands. Its help lists them in three groups, in this order.
 
-- `serve`: provides editor integration (Language Server Protocol) functionality.
-- `check`: returns static validation results.
+Run tasks:
+
 - `run`: executes the specified function. The evaluation result is not output to stdout (11.3).
 - `eval`: executes the specified function and outputs the evaluation result to stdout. The syntax is identical to `run` (11.2).
-- `repl`: provides an execution environment for interactively evaluating expressions and functions (11.9).
-- `envs`: enumerates the execution environments used by tasks, reports what the lock file resolves them to, and checks their accessibility (11.4).
-- `deps`: manages external dependencies — records new entries and reports on the dependency graph (11.5).
-- `sync`: fetches and verifies the external dependencies, materializes the container images the program requires, and writes the lock file (11.7).
 - `cmd`: invokes a declared command (Chapter 5) in its declared environment (11.8).
+- `repl`: provides an execution environment for interactively evaluating expressions and functions (11.9).
+
+Set up the project:
+
+- `sync`: fetches and verifies the external dependencies, materializes the container images the program requires, and writes the lock file, reporting its progress and listing what it resolved (11.7).
+- `deps`: lists, graphs, adds and removes external dependencies (11.5).
+- `envs`: lists the execution environments used by tasks, what the lock file resolves them to, what requires them, and whether each image is present (11.4).
 - `secrets`: lists the secret references in the environment and checks that the stores they name can be read from (11.10).
+
+Develop:
+
+- `check`: returns static validation results.
+- `serve`: provides editor integration (Language Server Protocol) functionality.
+- `completion`: prints the shell completion script.
+- `version`: prints the version.
 
 Basic invocation syntax:
 
@@ -2740,16 +2750,20 @@ lask run [--module <path>] [<function>] --help
 lask eval [--module <path>] [<function>] --help
 lask repl [--module <path>]
 lask envs list [--module <path>] [<function>]
-lask envs check [--module <path>] [<function>]
-lask sync [--module <path>] [--frozen]
+lask sync [--module <path>] [--frozen] [--prune]
+lask deps list [--module <path>]
+lask deps graph [--module <path>] [<name>] [--depth <n>]
 lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--module <path>]
-lask deps diff <name> [<from>..<to>] [--module <path>]
-lask deps why <name> [--module <path>]
+lask deps rm <name> [--module <path>]
 lask cmd [--module <path>] <command> [args ...]
 lask cmd --list [--module <path>]
 lask secrets list [--module <path>] [<function>]
 lask secrets check [--module <path>] [<function>] [--read]
 ```
+
+Retired subcommands:
+
+- A subcommand that another replaced is answered with the replacement, as a usage error (`E-CLI-USAGE`, exit code `4`), rather than as an unknown command: `env build` and `deps sync` by `sync`, `env list` and `envs check` by `envs list`, `deps why` by `deps graph`, and `deps diff` by `deps list`.
 
 Policy on environment specification:
 
@@ -2902,66 +2916,98 @@ lask run --module ci.lask build
 # provision() = $[#./infra/Dockerfile] ...)
 lask run --module ops.lask provision
 
-# Enumeration of used environments and access checks
-lask envs check provision
+# The environments provision uses, and whether each image is present
+lask envs list provision
 ```
 
-### 11.4 Environment Check (`envs`)
+### 11.4 Environment List (`envs`)
 
-`envs` enumerates the execution environments used by tasks, reports what the lock file resolves each of them to, and checks their accessibility.
+`envs list` enumerates the execution environments used by tasks and reports, for each, what the lock file resolves it to, what requires it, and whether its image is on the Docker daemon.
 
 Syntax:
 
 ```text
-lask envs list  [--module <path>] [<function>]
-lask envs check [--module <path>] [<function>]
+lask envs list [--module <path>] [<function>]
 ```
 
-Enumeration rules (common to both forms):
+Enumeration rules:
 
 - If no function is specified, the environments reachable from the module are enumerated (static scan of environment heads, 6.7): those in its declarations, keyword parameter defaults included, and in the environment of every command word the module has, declared or imported, through every declaration they reference in any module (Chapter 5). A declaration of an imported module that nothing reachable references is not scanned.
 - If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. Function-name mapping follows 11.2.
 - Reachability is an over-approximation. A superset of the environments that may be used must be reported; under-reporting is not permitted. Functions passed around as function values are included conservatively.
 - What is enumerated is the heads: every image is named by one (6.7), so every environment is enumerated concretely. Run options change no image, and add no entry.
 
-Rules (`list`):
+Columns:
 
-- For each enumerated environment, `list` reports the environment kind and its head and, for a `docker` environment, the source form (registry reference or recipe) and what the lock file resolves it to (10.3): the pinned reference of a registry reference, the content-addressed tag of a recipe. A registry reference the lock does not pin yet is reported as such, naming `lask sync`.
-- `list` performs no network access and no build, and does not contact the Docker daemon.
-- It exits `0`: an image that is not pinned yet is reported, not a failure.
+- `ENVIRONMENT`: the head, in the notation of 6.7 (`#local`, `#alpine:3.20`, `#./infra/Dockerfile`). A registry reference used with a `platform` lists the platforms it is used with, `native` for the daemon's own. The content-hash directory of a cached dependency in a path is shown as `…`.
+- `KIND`: `local`, `registry` or `recipe`.
+- `PINNED`: what the lock resolves it to: the digest of a registry reference, the content-addressed tag of a recipe, shown to its first twelve hexadecimal digits (`sha256:be7c8de0160a`, `lask/b61fd44bd7eb`). `—` when there is nothing to resolve or the lock does not pin it yet.
+- `REQUIRED BY`: where each head naming it is written: the module — a file of the project by its path, a dependency by its name — and the declaration, or the command word of the entry module whose environment it is; `(default --<name>)` when the head is the default of a keyword parameter (10.3). A head that dispatch copies into a command string (10.9) is shown where it is written. Two are shown, and how many more.
+- `STATUS`: `ok` for `local`; for a `docker` environment `present`, `missing (lask sync)`, `not pinned (lask sync)`, or `?` when the daemon cannot be reached.
 
-Rules (`check`):
+Rules:
 
-- `check` reports what `list` reports and, for each enumerated environment, checks only reachability, without executing any commands. The check must not have side effects on the target environment.
-- `local`: always succeeds. The check may include an existence check of the default cwd (10.5).
-- `docker`: checks connectivity to the Docker daemon and the presence of the materialized image recorded in the lock file (10.3). Image retrieval (pull) and building are not performed; an absent image is reported as `E-IO-IMAGE-MISSING`.
-- The check does not abort on the failure of a single environment; all environments are checked and reported together.
-- For environments that failed the check, an error code (`E-IO-ENV-RESOLVE`, `E-IO-IMAGE-MISSING`, etc.; Chapter 14) and a summary are included.
+- The Docker daemon is asked once whether it can be reached, and then whether each pinned image is present. Nothing is pulled or built, and no command runs in any environment.
+- When the daemon cannot be reached, a warning on stderr says so and why, and every `docker` status is `?`.
+- `envs list` reports; it does not fail. A missing or unpinned image, or a daemon that cannot be reached, is a status, and the exit code is `0`.
+- After the table, one line counts the environments by kind and by status.
 
 Output and exit codes:
 
-- Structured output is available with `--format json`: an array with one object per environment, holding `name`, `kind` and `target`; `resolved` for a `docker` environment (the names the lock resolves it to, empty when it is not pinned); and `status` with `check` (`ok`, or the error code and summary).
-- Exit codes: `0` if enumeration and checks all succeed; `3` if one or more environments are inaccessible (`check` only); `1` for static errors (undefined environment names, invalid environment definition file, etc.); `4` for CLI usage errors (nonexistent function name, etc.) (following the classification in 11.3).
+- The table is on stdout. With `--format json` it is an array with one object per environment: `environment`, `kind`, `pinned` (in full, or `null`), `required_by` (every place, in full) and `status`.
+- Exit codes: `0` when the environments were listed; `1` for static errors (invalid module, invalid lock file); `4` for CLI usage errors (nonexistent function name, etc.) (following the classification in 11.3).
 
 Execution example:
 
 ```text
-$ lask envs check provision
-docker  golang:1.22  registry  golang@sha256:6f3c...  ok
-docker  ./infra/Dockerfile  recipe  lask/71bc...  ok
+$ lask envs list
+ENVIRONMENT                  KIND      PINNED               REQUIRED BY                         STATUS
+#local                       local     —                    main.lask: deploy                   ok
+#golang:1.22                 registry  sha256:6f3c8a1e09bd  main.lask: build                    present
+#node:24.21.0-alpine3.24     registry  sha256:ebfe2f904627  tools: node (default --image)       missing (lask sync)
+#./infra/Dockerfile          recipe    lask/71bc04d9e2aa    main.lask: provision                present
+
+4 environments (1 local, 2 registry, 1 recipe): 1 ok, 2 present, 1 missing; 3 pinned in lask.lock.json
 ```
 
 ### 11.5 Dependency Management (`deps`)
 
-`deps` edits and inspects the external dependencies declared in the project file (Chapter 5). Fetching the declared dependencies and writing the lock file is `sync` (11.7).
+`deps` lists, graphs, edits and removes the external dependencies declared in the project file (Chapter 5). Fetching the declared dependencies and writing the lock file is `sync` (11.7).
 
 Syntax:
 
 ```text
+lask deps list [--module <path>]
+lask deps graph [--module <path>] [<name>] [--depth <n>]
 lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--module <path>]
-lask deps diff <name> [<from>..<to>] [--module <path>]
-lask deps why <name> [--module <path>]
+lask deps rm <name> [--module <path>]
 ```
+
+Which dependencies are used:
+
+- A direct dependency is **used** when a `.lask` file of the project imports it: `import ... from "<name>"` (named or as a namespace, a deep import included), `import command { ... } from "<name>"`, or a re-export from it (Chapter 5).
+- Every `.lask` file under the project directory counts, not only the modules the entry module reaches, so that a module run with `--module` keeps what it imports. Hidden directories (the module cache among them), `node_modules`, and a subdirectory with a `lask.json` of its own (another project) are not searched. A file that does not parse is searched for `from "<name>"` as text.
+- A transitive dependency is used when the dependency that declares it is.
+
+Rules (`list`):
+
+- `list` reports every dependency, direct and transitive (by its lock path, `parent>child`), with what declares it, what the lock records, and one status. It reads the project file, the lock file, and the cache; it reaches no network.
+- Columns: `NAME`, `SOURCE` (`git <repository>` or `url <url>`), `REQUESTED` (what the declaring project file requests), `LOCKED` (what the lock records as requested), `REV` (the pinned commit, to seven digits), `HASH` (the content hash, to twelve), `STATUS`.
+- The status is the first of the following that holds:
+  - `not locked (lask sync)`: declared, with no lock entry.
+  - `not in lask.json (lask sync drops it)` (`not declared by its parent` for a transitive one): a lock entry nothing declares.
+  - `unknown: its parent is not cached (lask sync)`: a transitive dependency whose parent's tree, which declares it, is not in the cache.
+  - `stale: <reason> (lask sync)`: the lock entry disagrees with the declaration: another repository or URL, or another requested reference (`locked v0.3.0, declared v0.4.0`). This is exactly the disagreement for which reading the program is `E-MODULE-LOCK-STALE` (Chapter 5), and for which `sync` pins the entry afresh. Nothing else makes an entry stale: a newer revision upstream is not known without the network, and a tag moved upstream is found by `sync` (`E-MODULE-REV-MOVED`).
+  - `unused (lask sync --prune)`: a direct dependency no `.lask` file of the project imports.
+  - `not cached (lask sync)`: the cache does not hold the content the lock pins.
+  - `ok`.
+- `list` reports; it does not fail on a status. After the table, one line counts the dependencies, direct and transitive, and their statuses.
+
+Rules (`graph`):
+
+- `graph` shows the dependency graph the lock file records, as a tree from the entry module, each dependency with its source, requested reference and pinned commit.
+- With `<name>`, only the paths that reach a dependency of that name are shown, and it is marked. A name the lock does not hold is a usage error.
+- With `--depth <n>`, only `n` levels below the entry module are shown.
 
 Rules (`add`):
 
@@ -2971,21 +3017,20 @@ Rules (`add`):
 - The recorded hash follows the trust-on-first-use model: the content trusted at recording time is pinned, and any subsequent change to the published source is detected by `sync` (11.7).
 - `--git` accepts `--rev` (a tag or a full commit SHA); when omitted, the repository's default branch head is resolved once and pinned. `--url` accepts an archive or a single `.lask` file (Chapter 5).
 
-Rules (`diff`):
+Rules (`rm`):
 
-- `diff` reports what changes between two revisions of a dependency, in the following order: image digest and recipe changes, the list of changed files, and the source diff.
-- With no revision range, the locked revision is compared against the revision the project file currently requests.
+- `rm` removes a direct dependency: its entry in `lask.json`, its lock entry and those of the dependencies under it, the cache entries no remaining lock entry uses, and the lock entries of the images the program no longer requires (10.3; the program is read again to find them). It reaches no network.
+- A dependency a `.lask` file of the project still imports is not removed: the imports are listed, and it is a usage error. A transitive dependency is not removed either: the dependency that declares it is named.
+- Images on the Docker daemon are not removed, since the daemon may serve other projects; the ones no longer required are named.
+- The cache is cleaned only when it is the project's own (`.lask/deps`), not one `LASK_CACHE_DIR` names, which other projects may share.
 
-Rules (`why`):
+Output and exit codes:
 
-- `why` reports the paths in the dependency graph through which the named dependency is reached, including paths introduced by re-export from another dependency (Chapter 5).
-
-Exit codes (common to all forms):
-
+- `list` and `graph` write a table and a tree to stdout; with `--format json`, an array and a nested object.
 - `0`: the operation completed successfully.
-- `1`: the project file or the lock file is missing (while dependencies are declared), malformed, stale, or violates the schema (Chapter 5); or a policy violation was detected before fetching.
-- `3`: a fetch, verification, or image materialization failure (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`).
-- `4`: CLI usage error.
+- `1`: the project file or the lock file is malformed or violates the schema (Chapter 5); or a policy violation was detected before fetching.
+- `3`: a fetch or verification failure in `add` (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`).
+- `4`: CLI usage error, including `rm` of a dependency still imported or not declared, and `graph` of a name the lock does not hold.
 
 ### 11.6 Help Display (`--help`)
 
@@ -3131,7 +3176,7 @@ Output destination and exit codes:
 Syntax:
 
 ```text
-lask sync [--module <path>] [--frozen]
+lask sync [--module <path>] [--frozen] [--prune]
 ```
 
 Rules (modules):
@@ -3140,6 +3185,8 @@ Rules (modules):
 - A reference recorded as `rev` is resolved to a full commit SHA once and pinned thereafter. A subsequent resolution of the same reference to a different SHA is `E-MODULE-REV-MOVED`.
 - Fetched sources are stored content-addressed; re-running `sync` with an unchanged project file performs no network access for already-verified entries.
 - A hash verification failure is reported as `E-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
+- An entry whose lock record is stale (11.5) is pinned afresh: its new content is not held to the hash recorded for the old source.
+- A direct dependency no `.lask` file of the project imports (11.5) is reported with a warning. With `--prune` it is removed first, as `deps rm` removes one (11.5): from `lask.json`, from the lock with the dependencies under it, and from the project's own cache.
 
 Rules (images):
 
@@ -3153,7 +3200,14 @@ General rules:
 
 - Apart from `deps add`, which fetches the source it records (11.5), `sync` is the only subcommand permitted to access the network or to start an image build. All other subcommands resolve modules and images exclusively from the cache and the lock file, except that `repl` may pull an image (10.3).
 - `sync` takes no selector: it always brings the whole program in line.
-- `--frozen` fails instead of writing the lock file when resolution would change it — its modules or its images (`E-MODULE-LOCK-STALE`). It is the intended form for continuous integration: it asserts that the committed lock is what resolution produces.
+- `--frozen` fails instead of writing the lock file when resolution would change it — its modules or its images (`E-MODULE-LOCK-STALE`). It is the intended form for continuous integration: it asserts that the committed lock is what resolution produces. With `--prune`, a dependency it would remove is such a change, and nothing is written.
+
+Progress and the summary:
+
+- While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
+- On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--format json` each of these is a JSON Lines event.
+- When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--format json` the summary is one object, `modules` and `images`.
+- The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the Docker daemon.
 
 Exit codes:
 
@@ -3360,7 +3414,7 @@ During execution of `run` (8.7), the implementation must relay the child process
 Relay rules:
 
 - The relay is performed sequentially line by line (line buffering). Output must not be accumulated until the child process exits.
-- The targets are `run` / `eval` execution, the connection diagnostics of `envs check` (11.4), and `cmd` (11.8). The relayed content is identical regardless of which sugar (`$`, `$1`, `$2`, `$*`) was used for execution.
+- The targets are `run` / `eval` execution and `cmd` (11.8). The relayed content is identical regardless of which sugar (`$`, `$1`, `$2`, `$*`) was used for execution.
 - For `cmd` (11.8), the start line and the exit line are always emitted. Standard output is never relayed, because it is the program's own output channel and is passed through unchanged; standard error is relayed as `2|` lines unless all three streams are terminals, in which case it is attached to the terminal directly, a prefixed line-buffered relay being unable to carry a prompt, a pager, or a progress display.
 - For each command execution, a 1-based sequence number (execution number) that is unique within the top-level execution is assigned. Execution numbers are not duplicated even under concurrent execution (`async`).
 - Each log line contains a timestamp and an environment summary with the execution number. The executed command is recorded only on the start line; subsequent lines are correlated by the execution number (the command is not recorded on every line).
@@ -3834,7 +3888,7 @@ External I/O errors occur at boundaries external to the language.
 Representative examples:
 
 - `E-IO-STDIN-READ`: stdin read failure
-- `E-IO-ENV-RESOLVE`: execution environment resolution failure
+- `E-IO-ENV-RESOLVE`: execution environment resolution failure, including a Docker daemon that cannot be reached (10.4)
 - `E-IO-IMAGE-MISSING`: a required container image has not been materialized (10.3)
 - `E-IO-IMAGE-DIGEST`: a pulled image's digest does not match the pinned digest (10.3)
 - `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
@@ -4763,8 +4817,8 @@ lask run --module ci/main.lask build
 # #./infra/Dockerfile; images come from the lock file)
 lask run --module ops.lask provision
 
-# Enumerating available environments and checking access
-lask envs check provision
+# The environments provision uses, and whether each image is present
+lask envs list provision
 ```
 
 Expected behavior:
@@ -4773,9 +4827,9 @@ Expected behavior:
 - `lask run hello`: executes the function and exits with exit code `0` without outputting the evaluation result to stdout.
 - `lask eval greet alice`: outputs `"hello, alice"` to stdout (the default `json` display).
 - `lask run greet alice --prefix hi`: executes with the positional argument `alice` and the keyword argument `--prefix hi` bound. The evaluation result is not output.
-- `build`: executes the build inside a container (the evaluation result is not output). If a connection to the Docker daemon cannot be made, a pre-execution error occurs and it exits with exit code `3`.
+- `build`: executes the build inside a container (the evaluation result is not output). If a connection to the Docker daemon cannot be made, a pre-execution error occurs (`E-IO-ENV-RESOLVE`) and it exits with exit code `3`.
 - `provision`: executes commands in a container built from the declared recipe. If the image has not been materialized, an `E-IO-IMAGE-MISSING` diagnostic is output to stderr and it exits with exit code `3`.
-- `lask envs check provision`: enumerates the environments used by `provision` and checks reachability. Exit code `0` if all are reachable, `3` if any environment is unreachable (11.4).
+- `lask envs list provision`: lists the environments `provision` uses, what the lock resolves each to, and whether each image is on the Docker daemon. Exit code `0` whatever their status (11.4).
 
 ### 16.8 Execution Event Example
 

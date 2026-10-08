@@ -87,7 +87,7 @@ shouldReportMoved r = do
   resExit r `shouldBe` 3
   resErr r `shouldSatisfy` isInfixOf "E-MODULE-REV-MOVED"
   resErr r `shouldNotSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
-  resOut r `shouldSatisfy` isInfixOf "kit NG"
+  resOut r `shouldSatisfy` isInfixOf "failed: E-MODULE-REV-MOVED"
 
 spec :: Spec
 spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ do
@@ -107,7 +107,7 @@ spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ d
     writeFile (wProj w </> "lask.json") ("{\"dependencies\": {\"kit\": {\"git\": \"" <> url <> "\", \"rev\": \"v2\"}}}")
     r <- wRun w ["sync"]
     resErr r `shouldNotSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
-    resOut r `shouldSatisfy` isInfixOf "kit ok"
+    resOut r `shouldSatisfy` isInfixOf "fetched"
     lockField w "kit" "requested" `shouldReturn` Just "v2"
     new <- lockField w "kit" "hash"
     new `shouldNotBe` old

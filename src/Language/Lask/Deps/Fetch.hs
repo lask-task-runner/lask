@@ -18,12 +18,13 @@ where
 
 import Control.Exception (IOException, try)
 import Control.Monad (mfilter, unless, when)
+import Data.Maybe (isNothing)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Deps.Cache (cachePathFor, holdsPinned)
-import Language.Lask.Deps.Lock (LockEntry (..), childPath)
+import Language.Lask.Deps.Lock (LockEntry (..), childPath, lockDisagreement)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Hash (hashFile, hashTree, symlinksUnder)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
@@ -57,7 +58,9 @@ sourceOf (DepUrl u) = SrcUrl u
 -- git, the commit that content was taken from.
 data Pinned = Pinned
   { pinHash :: Text,
-    pinRev :: Maybe Text
+    pinRev :: Maybe Text,
+    -- | Whether it was fetched now, rather than found in the cache.
+    pinFetched :: Bool
   }
   deriving (Show, Eq)
 
@@ -84,7 +87,7 @@ ensureEntry cacheDir locked name entry = case entry of
   DepUrl {} -> do
     present <- maybe (pure False) isCached expected
     case expected of
-      Just h | present -> pure (Right (Pinned h Nothing))
+      Just h | present -> pure (Right (Pinned h Nothing False))
       _ -> fetchVerified (sourceOf entry)
   DepGit url ref -> case pinnedRev of
     Nothing -> fetchVerified (sourceOf entry)
@@ -99,7 +102,7 @@ ensureEntry cacheDir locked name entry = case entry of
           let current = maybe old fst names
           present <- maybe (pure False) isCached expected
           case expected of
-            Just h | present -> pure (Right (Pinned h (Just current)))
+            Just h | present -> pure (Right (Pinned h (Just current) False))
             _ -> fetchVerified (SrcGit url old)
     where
       sameRef = fmap lkRequested locked == Just (Just ref)
@@ -109,10 +112,7 @@ ensureEntry cacheDir locked name entry = case entry of
     -- an entry that now names another repository, reference or URL is
     -- a new pin, fetched without it (spec 5, 11.5). E-MODULE-HASH-MISMATCH
     -- is for content that changed under an unchanged reference.
-    expected = lkHash <$> mfilter sameSource locked
-    sameSource l = case entry of
-      DepGit url ref -> lkGit l == Just url && lkRequested l == Just ref
-      DepUrl url -> lkUrl l == Just url
+    expected = lkHash <$> mfilter (isNothing . lockDisagreement entry) locked
     single = entryIsSingleFile entry
     -- An entry is checked rather than trusted for being there: a shared
     -- or tampered cache must not stand in for what the lock pins.
@@ -143,7 +143,7 @@ ensureEntry cacheDir locked name entry = case entry of
                   -- Whatever is there under this hash is not its content.
                   cleanup target
                   moveInto tmpPath target
-              pure (Right (Pinned computedHash commit))
+              pure (Right (Pinned computedHash commit True))
 
     moved ref commit old =
       mkDiagnostic EModuleRevMoved StageIo NoSpan $
@@ -166,16 +166,19 @@ syncAll ::
   FilePath ->
   -- | What the lock records for a dependency path, if anything.
   (Text -> Maybe LockEntry) ->
+  -- | Run around the fetch of each entry, by its path: how a caller
+  -- reports progress.
+  (Text -> DepEntry -> IO (Either Diagnostic Pinned) -> IO (Either Diagnostic Pinned)) ->
   DepsFile ->
   IO [(Text, DepEntry, Either Diagnostic Pinned)]
-syncAll cacheDir locked rootDeps =
+syncAll cacheDir locked around rootDeps =
   go Set.empty [("" , name, entry) | (name, entry) <- Map.toList (depsEntries rootDeps)]
   where
     go _ [] = pure []
     go seen ((parent, name, entry) : rest)
       | path `Set.member` seen = go seen rest
       | otherwise = do
-          r <- ensureEntry cacheDir (locked path) name entry
+          r <- around path entry (ensureEntry cacheDir (locked path) name entry)
           case r of
             Left d -> ((path, entry, Left d) :) <$> go seen' rest
             Right p -> do

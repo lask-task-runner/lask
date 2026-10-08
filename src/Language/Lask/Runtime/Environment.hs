@@ -36,7 +36,7 @@ import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Vector as V
 import Language.Lask.Runtime.Glob (globPrefix, matchGlob)
-import Language.Lask.Runtime.Image (ImagePins, Recipe (..), imageExists, recipeSource, recipeTag, resolveRegistry)
+import Language.Lask.Runtime.Image (ImagePins, Recipe (..), absentImage, imageExists, recipeSource, recipeTag, resolveRegistry)
 import System.Directory
   ( createDirectoryIfMissing,
     doesDirectoryExist,
@@ -506,8 +506,8 @@ materializedImage pins baseDir resolved = case resolved of
         ok <- imageExists tag
         if not ok
           then
-            pure . Left . ioFailure EIoImageMissing $
-              "image for recipe '" <> df <> "' is not materialized; run 'lask sync'"
+            Left
+              <$> absentImage ("image for recipe '" <> df <> "' is not materialized; run 'lask sync'")
           else pure (Right (Just (tag, opts)))
 
 -- | Run a process, relaying its output line by line to the command

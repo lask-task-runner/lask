@@ -19,6 +19,7 @@ module Language.Lask.Deps.Lock
     loadLockFile,
     parseLockFile,
     renderLockFile,
+    lockDisagreement,
   )
 where
 
@@ -34,6 +35,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import Language.Lask.Deps.File (DepEntry (..))
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
 import Language.Lask.ErrorCode (ErrorCode (EModuleLockStale), Stage (StageStatic))
 import Language.Lask.Span (Span (NoSpan))
@@ -179,3 +181,20 @@ renderLockFile lf =
 
 err :: Text -> Diagnostic
 err = mkDiagnostic EModuleLockStale StageStatic NoSpan
+
+-- | How a lock entry disagrees with the entry @lask.json@ declares, if
+-- it does (spec 5, 11.5): another repository or URL, or, for git,
+-- another requested reference. Such an entry is /stale/: the program
+-- cannot be read against it (@E-MODULE-LOCK-STALE@), @lask sync@ pins
+-- it afresh rather than holding the new content to its hash, and
+-- @lask deps list@ reports it. Nothing else makes an entry stale: a
+-- newer tag upstream is not known without the network.
+lockDisagreement :: DepEntry -> LockEntry -> Maybe Text
+lockDisagreement e locked = case e of
+  DepGit url rev
+    | lkGit locked /= Just url -> Just "different source"
+    | lkRequested locked /= Just rev -> Just ("locked " <> maybe "-" id (lkRequested locked) <> ", declared " <> rev)
+    | otherwise -> Nothing
+  DepUrl url
+    | lkUrl locked /= Just url -> Just "different source"
+    | otherwise -> Nothing

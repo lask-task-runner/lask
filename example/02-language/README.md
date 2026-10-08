@@ -77,7 +77,7 @@ The thing to take away: a command string swallows the rest of its line. `$ uname
 **Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits and other container options, an image built from the local `Dockerfile`, and environments held in a `Map<Environment>` and chosen at run time.
 
 ```bash
-lask envs check              # is each one actually reachable?
+lask envs list               # every image, and whether each is on the Docker daemon
 lask sync
 lask eval tool-versions
 lask eval uname-in --env built
@@ -128,13 +128,13 @@ The thing to take away: a named or namespace import brings none of a module's co
 
 ## 09-dependencies
 
-**Docker, and one network step.** The same imports as 08, reaching a module in another repository: `lask.json` says what a dependency is, the committed `lask.lock.json` says which bytes it is, and `lask deps` is the only thing that fetches.
+**Docker, and one network step.** The same imports as 08, reaching a module in another repository: `lask.json` says what a dependency is, the committed `lask.lock.json` says which bytes it is, and `lask sync` is the only thing that fetches.
 
 ```bash
 lask sync                    # the only step that touches the network
-lask deps why terraform
-lask deps diff terraform
-lask sync && lask eval status
+lask deps list               # what lask.json requests, what the lock pins, and whether they agree
+lask deps graph              # the dependency graph
+lask eval status
 ```
 
 The thing to take away: `check`, `run` and `eval` never reach the network, and an import reaches a dependency's root `main.lask` and nothing deeper.
