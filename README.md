@@ -69,6 +69,8 @@ Here is how Lask compares to the lighter tools it replaces and to the heavier on
 
 **When Lask pays off:** tasks that take arguments, call each other, run in pinned Docker environments, or run concurrently — the point where Makefiles and YAML pipelines usually turn into untestable shell scripts. `lask check` verifies all of it before anything executes.
 
+**Moving over:** [Migrating from Make](doc/migration/from-make.md) and [Migrating from GitHub Actions](doc/migration/from-github-actions.md) take an existing Makefile or workflow across one task at a time, with both working at every step.
+
 ## Install
 
 <details open>

@@ -406,3 +406,5 @@ Absence is reported two ways, deliberately: a function that returns a *position*
 | What appears in the log, and what is masked? | [ch. 12](spec.md#12-observability) |
 | What is this error code? | [ch. 14](spec.md#14-error-system) |
 | Show me more complete programs. | [ch. 16](spec.md#16-examples), [example/](../example) |
+
+Moving an existing project over? [Migrating from Make](migration/from-make.md) and [Migrating from GitHub Actions](migration/from-github-actions.md) map what you have onto the sections above, one task at a time.
