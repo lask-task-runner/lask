@@ -2398,7 +2398,7 @@ Reading:
 - A run reads each secret at most once. Two references that name the same secret (the same path and version, differing in their field at most) are answered by the same read, also when they are read concurrently (6.3). For a store that issues a new credential on every read, this is what makes the fields of one credential agree.
 - A resolved value is kept in memory for the rest of the run only. Nothing is written to disk.
 - Resolution never changes the process environment. A command reads the variables of its execution environment (10.6), and a `local` command that reads the variable itself sees the reference, not the secret; a value reaches a command only as the program passes it on, for instance as `#alpine:3.20{env: {"TOKEN": get_env("TOKEN")}}`.
-- Nothing that does not evaluate a program resolves a reference: `check`, `serve`, completion and help never reach a store. `cmd --list` (11.8) reports a command whose environment reads a reference without resolving it.
+- Nothing that does not evaluate a program resolves a reference: `check`, `serve`, completion and help never reach a store. `cmd --help` (11.8) reports a command whose environment reads a reference without resolving it.
 
 The `vault` scheme (HashiCorp Vault, and stores serving the same HTTP API, such as OpenBao):
 
@@ -2756,14 +2756,14 @@ lask deps graph [--module <path>] [<name>] [--depth <n>]
 lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--module <path>]
 lask deps rm <name> [--module <path>]
 lask cmd [--module <path>] <command> [args ...]
-lask cmd --list [--module <path>]
+lask cmd --help [--module <path>]
 lask secrets list [--module <path>] [<function>]
 lask secrets check [--module <path>] [<function>] [--read]
 ```
 
 Retired subcommands:
 
-- A subcommand that another replaced is answered with the replacement, as a usage error (`E-CLI-USAGE`, exit code `4`), rather than as an unknown command: `env build` and `deps sync` by `sync`, `env list` and `envs check` by `envs list`, `deps why` by `deps graph`, and `deps diff` by `deps list`.
+- A subcommand that another replaced is answered with the replacement, as a usage error (`E-CLI-USAGE`, exit code `4`), rather than as an unknown command: `env build` and `deps sync` by `sync`, `env list` and `envs check` by `envs list`, `deps why` by `deps graph`, and `deps diff` by `deps list`. The retired option `cmd --list`, given before the command name, is answered the same way with `cmd --help`.
 
 Policy on environment specification:
 
@@ -3224,13 +3224,13 @@ Syntax:
 
 ```text
 lask cmd [--module <path>] [lask options ...] <command> [args ...]
-lask cmd --list [--module <path>]
+lask cmd --help [--module <path>]
 ```
 
 Name resolution rules:
 
 - `<command>` is resolved against the command words the target module has — those it declares, `internal` ones included, and those it imports (Chapter 5) — by exact text. The `-` to `_` mapping of 11.2 must not be applied: this is a program name and not a function name, so `lask cmd docker-compose up` resolves the command word `docker-compose`.
-- A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --list`.
+- A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --help`.
 - No option for supplying or overriding the execution environment is provided (11.1, 10.4).
 
 Argument boundary rules:
@@ -3260,20 +3260,28 @@ Exit code rules:
 - The program's exit code becomes the process exit code as is, consistent with the exit code contract of 11.3 and subject to the overlap of exit codes stated there.
 - Failures before the program starts follow the existing classification: `1` for a static error, `3` for an external I/O error, `4` for a CLI usage error.
 
-Rules (`--list`):
+Rules (`--help`):
 
-- `--list` reports every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
+- `lask cmd --help` (or `-h`), with no command name, displays the CLI option help followed by the list of command words, in the way `lask run --help` lists functions (11.6).
+- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
 - An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
-- `--list` performs no network access and no build, on the same terms as `envs` (11.4).
+- The list is produced with no network access and no build, on the same terms as `envs` (11.4).
+- The option help is displayed whatever state the target module is in. When the module does not compile, its diagnostics go to stderr, the list is omitted, and the exit code is `0`.
+- `--list`, which used to report the same list, is retired: `lask cmd --list` is a CLI usage error naming `lask cmd --help` (11.1). After the command name, `--list` is an argument of the program like any other token.
 
 Execution example:
 
 ```text
-$ lask cmd --list
-go             docker  golang:1.25                 ok
-npm            docker  node:20.20.2-alpine3.23     ok
-terraform      docker  hashicorp/terraform:1.16.2  missing (lask sync)
-mv             local                               ok
+$ lask cmd --help
+Usage: lask cmd [--module PATH] [--format text|json] [--trace-id ID] [--no-color]
+                [-h|--help] [COMMAND] [ARGS...]
+...
+
+Commands in main.lask:
+  go         docker  golang:1.25
+  npm        docker  node:20.20.2-alpine3.23
+  terraform  docker  hashicorp/terraform:1.16.2  MISSING (lask sync)
+  mv         local   local
 
 $ lask cmd go test ./... > report.txt
 2026-09-12T12:56:40.217Z [#golang:1.25:1] $ go test ./...

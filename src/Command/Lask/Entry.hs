@@ -18,7 +18,7 @@ import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
 import Control.Exception (IOException, SomeException, fromException, toException, try)
-import Control.Monad (forM, forM_, unless, when, (>=>))
+import Control.Monad (forM, unless, when, (>=>))
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
@@ -575,67 +575,96 @@ advisoryJson a =
 -- | @lask cmd@ (spec 11.8): run a declared command in its declared
 -- environment, as an argument vector rather than through a shell.
 cmdCmd :: CmdOpts -> IO ()
-cmdCmd cmdOpts = do
-  let opts = cmdCommon cmdOpts
-  compiled <- compileOrExit opts
-  let core = compiledCore compiled
-      table = Map.findWithDefault Map.empty (cpEntry core) (cpCommands core)
-  if cmdList cmdOpts
-    then listCommands opts core table
-    else case cmdName cmdOpts of
-      Nothing -> usageError opts "no command given; try 'lask cmd --list'"
-      Just name -> case Map.lookup name table of
-        Nothing ->
-          usageError opts $
-            "'" <> name <> "' is not a command of this module; try 'lask cmd --list'"
-        Just envCore -> do
-          traceId <- maybe newTraceId pure (optTraceId opts)
-          secrets <- newSecretResolver
-          envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
-          writeErr <- newLineWriter stderr
-          let sink
-                | optJsonFormat opts = jsonCommandLog traceId writeErr
-                | otherwise = textCommandLog writeErr
-          pins <- loadPins core
-          r <- runDeclaredCommand pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
-          case r of
-            -- Failures before the program starts keep the existing
-            -- classification (spec 11.8); the program's own exit code
-            -- passes through verbatim.
-            Left failure -> failureExit opts traceId failure
-            Right 0 -> exitSuccess
-            Right code -> exitWith (ExitFailure code)
+cmdCmd cmdOpts
+  | cmdShowHelp cmdOpts = cmdCmdHelp (cmdCommon cmdOpts)
+  | otherwise = do
+      let opts = cmdCommon cmdOpts
+      compiled <- compileOrExit opts
+      let core = compiledCore compiled
+          table = Map.findWithDefault Map.empty (cpEntry core) (cpCommands core)
+      case cmdName cmdOpts of
+        Nothing -> usageError opts "no command given; try 'lask cmd --help'"
+        Just name -> case Map.lookup name table of
+          Nothing ->
+            usageError opts $
+              "'" <> name <> "' is not a command of this module; try 'lask cmd --help'"
+          Just envCore -> do
+            traceId <- maybe newTraceId pure (optTraceId opts)
+            secrets <- newSecretResolver
+            envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
+            writeErr <- newLineWriter stderr
+            let sink
+                  | optJsonFormat opts = jsonCommandLog traceId writeErr
+                  | otherwise = textCommandLog writeErr
+            pins <- loadPins core
+            r <- runDeclaredCommand pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
+            case r of
+              -- Failures before the program starts keep the existing
+              -- classification (spec 11.8); the program's own exit code
+              -- passes through verbatim.
+              Left failure -> failureExit opts traceId failure
+              Right 0 -> exitSuccess
+              Right code -> exitWith (ExitFailure code)
 
--- | The declared commands of the entry module, with the state of the
--- image each needs (spec 11.8). No network access and no build. An
--- environment that cannot be evaluated here — a variable it reads is
--- unset, say — is listed with the failure rather than ending the list.
-listCommands :: CommonOpts -> CoreProgram -> Map.Map Text Core -> IO ()
-listCommands opts core table = do
-  pins <- loadPins core
-  rows <- mapM (row pins) (Map.toList table)
-  if optJsonFormat opts
-    then
-      TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode $
-        [ A.object
-            [ (AK.fromText "name", A.String name),
-              (AK.fromText "kind", A.String kind),
-              (AK.fromText "target", A.String target),
-              (AK.fromText "present", A.Bool present)
-            ]
-        | (name, kind, target, present) <- rows
+-- | @lask cmd --help@: the option help, then every command word of
+-- the entry module with the state of the image it needs, as @lask run
+-- --help@ lists its functions (spec 11.6, 11.8). The option help is
+-- always printed; a module that does not compile only loses the list.
+cmdCmdHelp :: CommonOpts -> IO ()
+cmdCmdHelp opts = do
+  putStrLn cmdOptionsHelp
+  r <- compileFile (optModule opts)
+  case r of
+    Left ds -> TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+    Right compiled -> do
+      let core = compiledCore compiled
+          table = Map.findWithDefault Map.empty (cpEntry core) (cpCommands core)
+      rows <- commandRows core table
+      case (optJsonFormat opts, rows) of
+        (True, _) -> TIO.putStrLn (commandRowsJson rows)
+        (False, []) -> pure ()
+        (False, _) ->
+          TIO.putStrLn . T.intercalate "\n" $
+            ("\nCommands in " <> T.pack (optModule opts) <> ":")
+              : map ("  " <>) (commandRowsText rows)
+  exitSuccess
+
+-- | A command's name, the kind and target of its environment, and
+-- whether that image is present (spec 11.8).
+type CommandRow = (Text, Text, Text, Bool)
+
+commandRowsJson :: [CommandRow] -> Text
+commandRowsJson rows =
+  TE.decodeUtf8 . BL.toStrict . A.encode $
+    [ A.object
+        [ (AK.fromText "name", A.String name),
+          (AK.fromText "kind", A.String kind),
+          (AK.fromText "target", A.String target),
+          (AK.fromText "present", A.Bool present)
         ]
-    else do
-      let width = maximum (8 : [T.length n | (n, _, _, _) <- rows])
-      forM_ rows $ \(name, kind, target, present) ->
-        TIO.putStrLn
-          ( T.justifyLeft width ' ' name
-              <> "  "
-              <> T.justifyLeft 6 ' ' kind
-              <> "  "
-              <> target
-              <> (if present then "" else "  MISSING (lask sync)")
-          )
+    | (name, kind, target, present) <- rows
+    ]
+
+commandRowsText :: [CommandRow] -> [Text]
+commandRowsText rows =
+  [ T.justifyLeft width ' ' name
+      <> "  "
+      <> T.justifyLeft 6 ' ' kind
+      <> "  "
+      <> target
+      <> (if present then "" else "  MISSING (lask sync)")
+  | (name, kind, target, present) <- rows
+  ]
+  where
+    width = maximum (8 : [T.length n | (n, _, _, _) <- rows])
+
+-- | No network access and no build (spec 11.8). An environment that
+-- cannot be evaluated is a row with the failure rather than the end of
+-- the list.
+commandRows :: CoreProgram -> Map.Map Text Core -> IO [CommandRow]
+commandRows core table = do
+  pins <- loadPins core
+  mapM (row pins) (Map.toList table)
   where
     row pins (name, envCore) = do
       r <- evalCommandEnv readEnvVarUnresolved core envCore

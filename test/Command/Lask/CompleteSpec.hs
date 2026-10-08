@@ -218,7 +218,7 @@ spec = do
 
     it "offers the subcommand's own options before the command word" $ do
       vs <- valuesFor ["cmd", "--"]
-      vs `shouldOffer` ["--list", "--module"]
+      vs `shouldOffer` ["--help", "--module"]
 
     it "completes nothing at all after the command word" $ do
       -- Spec 11.8: every token there reaches the program verbatim,

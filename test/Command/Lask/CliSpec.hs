@@ -226,7 +226,9 @@ spec = beforeAll findLask $ do
                 (["envs", "--module", "main.lask", "f", "--check"], "envs list"),
                 (["envs", "check"], "envs list"),
                 (["deps", "why", "kit"], "deps graph"),
-                (["deps", "diff", "kit"], "deps list")
+                (["deps", "diff", "kit"], "deps list"),
+                (["cmd", "--list"], "cmd --help"),
+                (["cmd", "--module", "main.lask", "--list"], "cmd --help")
               ]
           ]
 
@@ -411,29 +413,43 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 0
         resOut r `shouldBe` "--help"
 
+    it "passes --list after the command name to the program" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["cmd", "printf", "%s", "--list"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "--list"
+
     it "reports an unknown command as a usage error (exit 4)" $ \lask ->
       withProject proj $ \dir -> do
         r <- runLask lask dir ["cmd", "nope"] ""
         resExit r `shouldBe` 4
-        resErr r `shouldSatisfy` isInfixOf "lask cmd --list"
+        resErr r `shouldSatisfy` isInfixOf "lask cmd --help"
 
     it "reports a missing command name as a usage error" $ \lask ->
       withProject proj $ \dir -> do
         r <- runLask lask dir ["cmd"] ""
         resExit r `shouldBe` 4
 
-    it "lists the declared commands with their environments" $ \lask ->
+    it "lists the declared commands after the option help under --help" $ \lask ->
       withProject proj $ \dir -> do
-        r <- runLask lask dir ["cmd", "--list"] ""
+        r <- runLask lask dir ["cmd", "--help"] ""
         resExit r `shouldBe` 0
-        resOut r `shouldSatisfy` isInfixOf "echo"
-        resOut r `shouldSatisfy` isInfixOf "local"
+        resOut r `shouldSatisfy` isInfixOf "--module"
+        resOut r `shouldSatisfy` isInfixOf "Commands in main.lask:"
+        resOut r `shouldSatisfy` isInfixOf "  echo      local   local"
 
-    it "lists commands as JSON under --format json" $ \lask ->
+    it "lists commands as JSON under --format json --help" $ \lask ->
       withProject proj $ \dir -> do
-        r <- runLask lask dir ["cmd", "--format", "json", "--list"] ""
+        r <- runLask lask dir ["cmd", "--format", "json", "--help"] ""
         resExit r `shouldBe` 0
         resOut r `shouldSatisfy` isInfixOf "\"name\":\"echo\""
+
+    it "still prints the option help under --help when the module does not compile" $ \lask ->
+      withProject [("main.lask", "x: Number = \"s\"\ncommand { \"echo\" } on #local\n")] $ \dir -> do
+        r <- runLask lask dir ["cmd", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldSatisfy` isInfixOf "--module"
+        resOut r `shouldNotSatisfy` isInfixOf "Commands in"
 
     it "exits 1 on a static error before running anything" $ \lask ->
       withProject [("main.lask", "x: Number = \"s\"\ncommand { \"echo\" } on #local\n")] $ \dir -> do

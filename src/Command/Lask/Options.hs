@@ -11,6 +11,7 @@ module Command.Lask.Options
     DepsAddSource (..),
     pRootCommand,
     runOptionsHelp,
+    cmdOptionsHelp,
     argSeparator,
     protectArgSeparator,
     retiredCommand,
@@ -61,10 +62,12 @@ data SecretsOpts = SecretsOpts
   }
 
 -- | @lask cmd@ (spec 11.8): a declared command and everything after
--- its name, or @--list@.
+-- its name, or @--help@.
 data CmdOpts = CmdOpts
   { cmdCommon :: CommonOpts,
-    cmdList :: Bool,
+    -- | @--help@ / @-h@ before the command name, which also lists the
+    -- module's commands. After the name it reaches 'cmdArgs'.
+    cmdShowHelp :: Bool,
     cmdName :: Maybe Text,
     cmdArgs :: [Text]
   }
@@ -134,7 +137,7 @@ pCmdOpts :: Parser CmdOpts
 pCmdOpts =
   CmdOpts
     <$> pCommon
-    <*> switch (long "list" <> help "List the commands the module declares")
+    <*> switch (long "help" <> short 'h' <> help "Show this help text and list the module's commands")
     <*> optional (T.pack <$> argument str (metavar "COMMAND"))
     <*> many (T.pack <$> argument str (metavar "ARGS..."))
 
@@ -203,8 +206,8 @@ pRootCommand =
         <> command
           "cmd"
           ( info
-              (CmdCmd <$> pCmdOpts <**> helper)
-              (progDesc "Run a declared command in its declared environment" <> noIntersperse)
+              (CmdCmd <$> pCmdOpts)
+              (progDesc cmdDesc <> noIntersperse)
           )
         <> command "repl" (withHelp (CmdRepl <$> pCommon) (progDesc "Start an interactive session"))
         <> metavar "COMMAND"
@@ -241,6 +244,22 @@ pRootCommand =
       )
   where
     withHelp p = info (p <**> helper)
+
+-- | The option help of @lask cmd --help@, printed before the module's
+-- command list, as 'runOptionsHelp' is for @run@ / @eval@.
+cmdOptionsHelp :: String
+cmdOptionsHelp =
+  fst (renderFailure failure "lask cmd")
+  where
+    failure =
+      parserFailure
+        defaultPrefs
+        (info (CmdCmd <$> pCmdOpts) (progDesc cmdDesc <> noIntersperse))
+        (ShowHelpText Nothing)
+        []
+
+cmdDesc :: String
+cmdDesc = "Run a declared command in its declared environment"
 
 -- | The option help of @run@ / @eval@, printed by @lask run --help@
 -- before the module's function list (spec 11.6).
@@ -280,6 +299,7 @@ retiredCommand args = case args of
   "deps" : "sync" : _ -> Just ("deps sync", "sync")
   "deps" : "why" : _ -> Just ("deps why", "deps graph")
   "deps" : "diff" : _ -> Just ("deps diff", "deps list")
+  "cmd" : rest | "--list" `elem` cmdOptions rest -> Just ("cmd --list", "cmd --help")
   "envs" : rest
     | "--check" `elem` rest -> Just ("envs --check", "envs list")
     | otherwise -> case dropOptions rest of
@@ -289,6 +309,12 @@ retiredCommand args = case args of
         _ -> Nothing
   _ -> Nothing
   where
+    -- The options before the command name; after it, @--list@ is
+    -- the program's own argument (spec 11.8).
+    cmdOptions ws = case ws of
+      o : _ : more | o `elem` ["--module", "--format", "--trace-id"] -> cmdOptions more
+      o : more | take 1 o == "-" -> o : cmdOptions more
+      _ -> []
     -- The old @envs@ took the common options before its function.
     dropOptions ws = case ws of
       o : _ : more | o `elem` ["--module", "--format", "--trace-id"] -> dropOptions more

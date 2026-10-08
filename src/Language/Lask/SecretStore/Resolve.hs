@@ -140,7 +140,7 @@ once table key action = do
       pure (Map.insert key started m, started)
   wait a
 
--- | A variable read where no store may be reached (@lask cmd --list@
+-- | A variable read where no store may be reached (@lask cmd --help@
 -- reports without network access): an ordinary value as it is, and a
 -- reference as a failure saying so.
 readEnvVarUnresolved :: Text -> IO (Maybe Text)
