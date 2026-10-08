@@ -546,7 +546,7 @@ rootCommands =
   [ -- Run tasks.
     runLike "run" "Run a function (its result is not printed)",
     runLike "eval" "Run a function and print its result",
-    (plain "cmd" "Run a declared command in its declared environment" (commonOpts <> [switchOpt "list" "List the commands the module declares"]))
+    (plain "cmd" "Run a declared command in its declared environment" commonOpts)
       { cmdPos = [PosCommandWord],
         -- Spec 11.8: every token after the command word reaches the
         -- program verbatim, @--help@ included.
