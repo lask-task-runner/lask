@@ -1,0 +1,16 @@
+{
+    "images": {
+        "#ghcr.io/open-webui/open-webui:v0.6.34-ollama": {
+            "digest": "sha256:1249d08476aaa95dfeed3fe8cf904a66432dd2c6d8ce369232a281ec512c35dd",
+            "kind": "registry",
+            "ref": "ghcr.io/open-webui/open-webui:v0.6.34-ollama"
+        },
+        "#ollama/ollama:0.12.5": {
+            "digest": "sha256:e43c26d2d1ebc726bc932166d2979086310b2f9c5ccd64fb06b55d1ea2c4f2cc",
+            "kind": "registry",
+            "ref": "ollama/ollama:0.12.5"
+        }
+    },
+    "lock_version": 1,
+    "modules": {}
+}

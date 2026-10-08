@@ -1,0 +1,155 @@
+// A Go release with a software bill of materials and a signature, from a
+// machine with nothing installed but Lask and Docker.
+//
+//   lask sync                            # one-time: fetches tools, pulls and builds the images
+//   COSIGN_PASSWORD=... lask run keygen  # one-time: cosign.key and cosign.pub
+//   COSIGN_PASSWORD=... lask run release --version v1.0.0
+//   lask run verify
+
+import * as tools from "tools"
+
+// The module and build caches live in a Docker volume, shared by every
+// Go container below, so the second build of each platform is quick.
+// Grype's vulnerability database is kept the same way.
+go_cache = "lask-go-cache"
+grype_cache = "lask-grype-cache"
+
+command { "go", "gofmt" } on tools.go(cache_dir = go_cache)
+command { "syft" } on tools.syft()
+command { "grype" } on tools.grype(cache_dir = grype_cache)
+command { "sha256sum", "rm" } on tools.unix()
+command { "cosign" } on cosign_image
+
+// cosign's own image has no shell, so this recipe copies it onto Alpine.
+// Lask builds it at `lask sync` and pins it by the recipe's hash.
+cosign_image = #./tools/cosign.Dockerfile
+
+// cosign with the password of cosign.key; `!!` keeps it out of the logs.
+internal cosign_with(password!!: String): Runnable =
+  runnable(cosign_image, env = {"COSIGN_PASSWORD": password})
+
+type Platform = Record<os: String, arch: String>
+
+// Every platform a release is built for.
+platforms: Array<Platform> = [
+  {os: "linux", arch: "amd64"},
+  {os: "linux", arch: "arm64"},
+  {os: "darwin", arch: "arm64"},
+  {os: "windows", arch: "amd64"}
+]
+
+// Vet and test the module.
+test() = do {
+  vet = async $ go vet ./...
+  unit = async $ go test ./...
+  await vet
+  await unit
+}
+
+// Build hello for one platform.
+//
+// The target is part of the environment rather than the command: the
+// same `go build` runs in a container whose GOOS and GOARCH say where
+// the binary is for.
+//
+// @param os       GOOS, e.g. linux.
+// @param arch     GOARCH, e.g. arm64.
+// @param version  Stamped into the binary as main.version.
+// @return The path of the binary, under dist/.
+// @example lask eval build linux arm64 --version v1.0.0
+build(os: String, arch: String, --version: String = "dev"): String = do {
+  ext = if (os == "windows") { ".exe" } else { "" }
+  out = "dist/hello_#{version}_#{os}_#{arch}#{ext}"
+  target = tools.go(goos = os, goarch = arch, cgo_enabled = "0", cache_dir = go_cache)
+  $[target] go build -trimpath -ldflags "-s -w -X main.version=#{version}" -o #{out} ./cmd/hello
+  out
+}
+
+// Build hello for every platform, all at once.
+//
+// @param version  Stamped into each binary as main.version.
+// @return The paths of the binaries, in the order of `platforms`.
+build_all(--version: String = "dev"): Array<String> =
+  all(map(platforms, \(p: Platform) -> async build(p.os, p.arch, version = version)))
+
+// Write the software bill of materials of the release.
+//
+// Syft reads the module list Go embeds in each binary, so the SBOM
+// describes what was actually built, standard library included.
+//
+// @param version  The release the SBOM is for.
+// @return The path of the SBOM.
+sbom(--version: String = "dev"): String = do {
+  out = "dist/hello_#{version}.spdx.json"
+  $ syft scan dir:dist --source-name hello --source-version #{version} -o spdx-json=#{out}
+  out
+}
+
+// Check the SBOM for known vulnerabilities.
+//
+// @param sbom_file  The SBOM to check.
+// @param fail_on    The lowest severity that fails the release.
+// @example lask run scan dist/hello_dev.spdx.json --fail-on critical
+scan(sbom_file: String, --fail_on: String = "high") =
+  $ grype sbom:#{sbom_file} --fail-on #{fail_on}
+
+// Write dist/checksums.txt over every file in dist/.
+//
+// @return The path of the checksums file.
+checksums(): String = do {
+  $ cd dist && rm -f checksums.txt* && sha256sum * > checksums.txt
+  "dist/checksums.txt"
+}
+
+// Create the key pair the release is signed with.
+//
+// cosign.key stays private; cosign.pub is the half a project publishes.
+// This example's .gitignore leaves out both.
+//
+// @param password  Encrypts cosign.key.
+keygen(--password!!: String = get_env("COSIGN_PASSWORD")) =
+  $[cosign_with(password)] cosign generate-key-pair
+
+// Sign dist/checksums.txt, and so every file it lists.
+//
+// The signature stays local: nothing is uploaded to Sigstore's
+// transparency log, and verify is told not to look there.
+//
+// @param password  Decrypts cosign.key.
+sign(--password!!: String = get_env("COSIGN_PASSWORD")) =
+  $[cosign_with(password)] cosign sign-blob --yes --key cosign.key --tlog-upload=false --bundle dist/checksums.txt.bundle dist/checksums.txt
+
+// Check the signature, then every file against checksums.txt.
+//
+// This is what someone downloading the release runs, with cosign.pub.
+verify() = do {
+  $ cosign verify-blob --key cosign.pub --insecure-ignore-tlog=true --bundle dist/checksums.txt.bundle dist/checksums.txt
+  $ cd dist && sha256sum -c checksums.txt
+}
+
+// Test, build for every platform, describe, scan, sign and verify.
+//
+// The vulnerability scan runs while the release is being signed, and
+// the release fails if the scan does.
+//
+// @param version   Stamped into each binary and the SBOM.
+// @param fail_on   The lowest vulnerability severity that fails the release.
+// @param password  Decrypts cosign.key.
+// @return The files of the release.
+// @example lask eval release --version v1.0.0
+release(
+  --version: String = "dev",
+  --fail_on: String = "high",
+  --password!!: String = get_env("COSIGN_PASSWORD")
+): Array<String> = do {
+  test()
+  $ rm -rf dist
+  binaries = build_all(version = version)
+  sbom_file = sbom(version = version)
+  scanned = async scan(sbom_file, fail_on = fail_on)
+  checksums()
+  sign(password = password)
+  await scanned
+  verify()
+  concat_array(binaries, [sbom_file, "dist/checksums.txt", "dist/checksums.txt.bundle"])
+}

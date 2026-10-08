@@ -1,0 +1,96 @@
+// A local LLM, from a machine with nothing installed but Lask and Docker.
+//
+//   lask sync                          # one-time: pulls the images
+//   lask run pull                      # one-time: downloads the model (~400 MB)
+//   lask eval ask "Why is the sky blue?"
+//   lask run serve                     # chat in the browser, http://localhost:3000
+
+// Models live in a Docker volume, so they survive between runs. Remove
+// them with `docker volume rm lask-ollama-models`.
+models_volume = "lask-ollama-models:/root/.ollama"
+
+// Downloading a model is the one step that needs the network.
+ollama_online = #ollama/ollama:0.12.5{volumes: [models_volume]}
+
+// Everything else runs with no network at all, so no prompt can leave
+// the machine, and a model that was never pulled fails rather than
+// downloading quietly.
+ollama_offline = #ollama/ollama:0.12.5{volumes: [models_volume], network: "none"}
+
+// Open WebUI's image with Ollama built in: one container, so neither
+// server needs a port of its own. The page is published on 127.0.0.1
+// only, since sign-in is off (WEBUI_AUTH). Its settings and chat history
+// are kept in a second volume.
+webui = #ghcr.io/open-webui/open-webui:v0.6.34-ollama{
+  volumes: [models_volume, "lask-open-webui:/app/backend/data"],
+  publish: ["127.0.0.1:3000:8080"],
+  env: {"WEBUI_AUTH": "False"}
+}
+
+// Small enough for a laptop without a GPU.
+default_model = "qwen2.5:0.5b"
+
+// Run a shell script next to a throwaway Ollama server.
+//
+// The container lasts as long as the script, and so does the server: it
+// starts in the background, and the script begins once it answers. A
+// server that has not answered within a minute fails the task with its
+// log.
+//
+// Ollama draws a progress spinner on stderr even when no one is
+// watching, so the command log shows escape codes; the answer, on
+// stdout, is clean.
+internal with_server(env: Runnable, script: String): String =
+  $[env] sh -c #{shell_quote(concat("ollama serve >/tmp/ollama.log 2>&1 & for i in $(seq 60); do ollama list >/dev/null 2>&1 && break; sleep 1; done; ollama list >/dev/null 2>&1 || { cat /tmp/ollama.log >&2; exit 1; }; ", script))}
+
+// Download a model into the volume.
+//
+// @param model  Any name from https://ollama.com/library.
+// @example lask run pull --model llama3.2:1b
+pull(--model: String = default_model) =
+  with_server(ollama_online, "ollama pull #{shell_quote(model)}")
+
+// The models downloaded so far.
+//
+// @return One model per entry.
+models(): Array<String> = do {
+  rows = drop(lines(with_server(ollama_offline, "ollama list")), 1)
+  filter(map(rows, \(l: String) -> first(split(l, " "))), \(n: String) -> n != "")
+}
+
+// Ask a model one question.
+//
+// Nothing here is a chat session: the answer goes to the return value,
+// so `eval` can hand it to the next program.
+//
+// @param prompt  The question.
+// @param model   Which model answers; pull it first.
+// @return The model's answer.
+// @example lask eval ask "Write a haiku about task runners"
+ask(prompt: String, --model: String = default_model): String =
+  with_server(ollama_offline, "ollama run #{shell_quote(model)} -- #{shell_quote(prompt)}")
+  |> trim
+
+// Put one question to several models, at the same time.
+//
+// Each model gets its own container and server, started together, all
+// reading the one volume of models.
+//
+// @param prompt  The question.
+// @param models  The models to compare; pull each first.
+// @return Each model's name and its answer, in the order given.
+// @example lask eval compare "Explain a monad in one sentence" qwen2.5:0.5b llama3.2:1b
+compare(prompt: String, ...models: Array<String>): Array<Record<model: String, answer: String>> = do {
+  handles = map(models, \(m: String) -> async ask(prompt, model = m))
+  answers = all(handles)
+  map(zip(models, answers), \(p: Record<first: String, second: String>) -> { model: p.first, answer: p.second })
+}
+
+// Chat in the browser, until you stop it.
+//
+// @param model  Pulled first if it is missing, so it is ready to pick.
+serve(--model: String = default_model) = do {
+  if (!contains_array(models(), model)) { pull(model = model) } else { "" }
+  log("open http://localhost:3000 (the first start takes a minute)")
+  $[webui] bash /app/backend/start.sh
+}
