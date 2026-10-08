@@ -3,8 +3,8 @@
 // An environment is a value: it is declared once, passed around, stored
 // in a map and selected at runtime like anything else.
 //
-//   lask envs list             # every image this module can reach for
-//   lask envs check            # …and whether each one is reachable
+//   lask envs list             # every image this module can reach for,
+//                              # and whether each is on the Docker daemon
 //   lask sync                  # materialize them (run/eval never pull)
 //   lask eval alpine_version
 //   lask eval tool_versions --env docker

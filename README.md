@@ -213,15 +213,18 @@ lask> $[#rancher/cowsay] cowsay "Lask"
 ## Usage
 
 ```bash
-$ lask check                       # static validation
 $ lask run <function> [args...]    # execute (result not printed)
 $ lask eval <function> [args...]   # execute and print the result as JSON
 $ lask cmd <command> [args...]     # run a declared command in its declared image
-$ lask envs list | check [fn]      # list referenced environments / check they are reachable
-$ lask sync [--frozen]             # fetch dependencies, pull/build images, write the lock
-$ lask deps add <name> <source>    # add a dependency: --git <url> --rev <rev>, or --url <url>
-$ lask deps why <name>             # show why a dependency is in the graph
 $ lask repl                        # interactive session
+
+$ lask sync [--frozen] [--prune]   # fetch dependencies, pull/build images, write the lock
+$ lask deps list | graph [name]    # the dependencies and their status / the dependency graph
+$ lask deps add <name> <source>    # add a dependency: --git <url> --rev <rev>, or --url <url>
+$ lask deps rm <name>              # remove a dependency no module imports
+$ lask envs list [fn]              # the environments, their pinned images, and whether each is present
+
+$ lask check                       # static validation
 $ lask serve                       # language server (LSP)
 $ lask version                     # print the lask version
 ```

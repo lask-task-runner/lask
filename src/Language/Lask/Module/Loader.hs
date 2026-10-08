@@ -34,7 +34,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.File
-import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..), childPath, defaultLockFileName, loadLockFile, lookupHash)
+import Language.Lask.Deps.Lock (LockFile (..), childPath, defaultLockFileName, loadLockFile, lockDisagreement, lookupHash)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
 import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, EModuleDeepImport, EModuleLockStale, EModuleUnresolved, ENameUndefined), Stage (StageStatic))
 import Language.Lask.Span (Span (NoSpan))
@@ -186,7 +186,7 @@ loadProgramEnv env entryPath = do
               [ (n, why)
               | (n, e) <- Map.toList (depsEntries df),
                 Just locked <- [Map.lookup n covered],
-                Just why <- [entryDisagreement e locked]
+                Just why <- [lockDisagreement e locked]
               ]
          in case (lock, missing, disagreeing) of
               (Nothing, (_ : _), _) ->
@@ -199,15 +199,6 @@ loadProgramEnv env entryPath = do
                   "the lock file disagrees with " <> T.pack defaultDepsFileName
                     <> " for dependency '" <> n <> "' (" <> why <> "); run 'lask sync'"
               _ -> Nothing
-
-    entryDisagreement e locked = case e of
-      DepGit url rev
-        | lkGit locked /= Just url -> Just "different source"
-        | lkRequested locked /= Just rev -> Just ("locked " <> maybe "-" id (lkRequested locked) <> ", declared " <> rev)
-        | otherwise -> Nothing
-      DepUrl url
-        | lkUrl locked /= Just url -> Just "different source"
-        | otherwise -> Nothing
 
     stale = mkDiagnostic EModuleLockStale StageStatic NoSpan
 

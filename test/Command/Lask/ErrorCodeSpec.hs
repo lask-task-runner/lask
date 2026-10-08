@@ -112,8 +112,9 @@ trigger c = case c of
       pure (Result (exitOf code) out err)
   EIoEnvResolve -> Scripted 3 $ \lask ->
     withFakeDocker $ \state extra -> withProject pinned $ \dir -> do
+      void (runLaskEnv lask dir extra ["sync"] "")
       writeFile (state </> "daemon-down") ""
-      runLaskEnv lask dir extra ["envs", "check"] ""
+      runLaskEnv lask dir extra ["eval", "hi"] ""
   EIoImageMissing -> Scripted 3 $ \lask ->
     withFakeDocker $ \_ extra -> withProject pinned $ \dir ->
       runLaskEnv lask dir extra ["eval", "hi"] ""
