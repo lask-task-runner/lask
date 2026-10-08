@@ -26,6 +26,14 @@ To work on the app:
 lask run dev     # http://localhost:3000, reloads as you edit
 ```
 
+To watch the browser tests run:
+
+```bash
+lask run test-ui   # http://localhost:9323, Playwright's UI mode
+```
+
+It installs and builds first, then serves Playwright's UI mode from the container. Pick a test and run it, in Chromium or Firefox, and step through every action with a snapshot of the page before and after. The browsers still have no window of their own, since the container has no display; what you see is the UI's record of each step, as it runs.
+
 ## What the tasks look like
 
 Everything lives in [main.lask](main.lask). The two environments come from [lask-module-tools](https://github.com/lask-task-runner/lask-module-tools) (declared in [lask.json](lask.json), pinned in [lask.lock.json](lask.lock.json)): Node for the npm steps, and Playwright's own image, which carries the browsers and the libraries they need:
