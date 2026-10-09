@@ -5,7 +5,7 @@ Each directory here is a whole Lask project — a `main.lask` you can check, run
 The numbers are a reading order, not a dependency order. Starting from nothing, they group like this:
 
 1. [01](#01-values-and-types) · [02](#02-functions) · [03](#03-control-flow) — the language itself, all pure.
-2. [04](#04-commands) · [05](#05-environments) — what makes it a task runner.
+2. [04](#04-environments) · [05](#05-commands) — what makes it a task runner.
 3. [06](#06-concurrency) · [07](#07-errors) · [08](#08-modules) · [09](#09-dependencies) — what makes it hold up.
 4. [10](#10-standard-library) · [11](#11-data) · [12](#12-io-and-secrets) · [13](#13-files-and-paths) — the library, as it is actually used.
 5. [14](#14-docs-and-cli) — how the same file becomes a command line and a help page.
@@ -59,20 +59,7 @@ lask eval checklist ; lask eval steps
 
 The thing to take away: every `case` needs an `else`, last, always — exhaustiveness is never inferred — and `case` is the only thing that narrows a union.
 
-## 04-commands
-
-**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation, `shell_quote`, `run`, and the `command ... on ...` declarations that dispatch a bare `$`.
-
-```bash
-lask sync
-lask eval probe --path /etc/os-release
-lask eval inspect            # a command that exits 3, without raising
-lask eval report
-```
-
-The thing to take away: a command string swallows the rest of its line. `$ uname -s |> trim` hands `|> trim` to the shell and returns the empty string; the pipe belongs on the next line.
-
-## 05-environments
+## 04-environments
 
 **Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits and other container options, an image built from the local `Dockerfile`, and environments held in a `Map<Environment>` and chosen at run time.
 
@@ -84,6 +71,19 @@ lask eval uname-in --env built
 ```
 
 The thing to take away: an environment is a value. A command that names none is a static error, never a quiet fall back to the host.
+
+## 05-commands
+
+**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation, `shell_quote`, `run`, and the `command ... on ...` declarations that dispatch a bare `$`.
+
+```bash
+lask sync
+lask eval probe --path /etc/os-release
+lask eval inspect            # a command that exits 3, without raising
+lask eval report
+```
+
+The thing to take away: a command string swallows the rest of its line. `$ uname -s |> trim` hands `|> trim` to the shell and returns the empty string; the pipe belongs on the next line.
 
 ## 06-concurrency
 

@@ -1,14 +1,11 @@
-// Environments are values: this task runs inside a Docker image, so
-// nothing has to be installed locally.
-cowsay(message: String): String = $[#rancher/cowsay] cowsay "#{message}"
+// cowsay comes from this image. `lask sync` pins it in lask.lock.json.
+command { "cowsay" } on #rancher/cowsay
 
-// Types are inferred, so annotations are optional — and a task that
-// runs no command at all is just a pure function.
+// A task that runs no command is an ordinary function.
 hello(--name = "World") = "Hello, #{name}!"
 
-// Tasks compose: call another task exactly like an ordinary function.
-// >>> lask run cowsay-hello Lask
+// Calls hello, then runs cowsay in its container.
 cowsay_hello(name: String) = do {
   message = hello(name = name)
-  cowsay(message)
+  $ cowsay "#{message}"
 }
