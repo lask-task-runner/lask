@@ -3,6 +3,9 @@
 module Language.Lask.Syntax.ParserSpec (spec) where
 
 import Data.Either (isLeft, isRight)
+import Data.List (isInfixOf)
+import qualified Data.Text as T
+import Language.Lask.Diagnostic (Diagnostic (..))
 import qualified Data.Set as Set
 import Data.Text (Text)
 import Language.Lask.Lexer.Token (CmdStream (..), Op (..), Spanned (..))
@@ -631,3 +634,13 @@ spec = do
             <> "}"
         )
         `shouldSatisfy` isRight
+
+  -- A command runs to the end of its line (spec 6.6), so one inside a
+  -- call takes the call's ")" with it.
+  describe "commands inside brackets" $ do
+    let notes src = either (map T.unpack . diagNotes) (const []) (parseModule "test.lask" src)
+    it "names the command that took a closing bracket" $
+      notes "f() = length($[#local] ls)\n"
+        `shouldSatisfy` any (isInfixOf "the command on line 1 runs to the end of its line, so its closing ')'")
+    it "says nothing about a command whose brackets balance" $
+      notes "f() = do {\n  x = $[#local] echo '(' \")\" $(date)\n  x +\n}\n" `shouldBe` []

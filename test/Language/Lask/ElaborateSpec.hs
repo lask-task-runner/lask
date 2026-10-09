@@ -541,6 +541,8 @@ spec = do
         "publish(tag: String): String = do {\n  if (tag == \"\") { return \"skip\" }\n  \"released\"\n}"
     it "requires guard blocks to end with return" $
       rejects "f(c: Bool) = do {\n  if (c) { 1 }\n  2\n}" ESyntaxReturnPosition
+    it "accepts an empty else for a side effect under a condition" $
+      accepts "f(c: Bool) = do {\n  if (c) { log(\"x\") } else {}\n  2\n}"
     it "rejects unreachable statements after return" $
       rejects "f(): Number = do {\n  return 1\n  2\n}" ESyntaxReturnPosition
     it "rejects return in for bodies" $

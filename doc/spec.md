@@ -3822,6 +3822,11 @@ Additional requirements related to types and names:
 - For type mismatches, include `expected` and `actual`.
 - For name resolution failures, candidates or a summary of the search scope may be included.
 
+Additional requirements related to commands:
+
+- The message of a failed command execution is its standard error output (6.6). When that is empty or only whitespace, as for a tool that reports on standard output, the diagnostic's `message` says instead that the command exited with its code and wrote nothing to standard error, and that its output is in the command execution log (12.3). Only the diagnostic changes: the `Error` value a program catches keeps the empty `message`.
+- A syntax error in a module where a command string holds a closing bracket that it never opened carries a note naming that command's line: the command ran to the end of its line (6.6) and took the bracket of an enclosing call with it.
+
 JSON format example:
 
 ```json

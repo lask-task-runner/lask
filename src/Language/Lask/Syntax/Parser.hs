@@ -24,11 +24,11 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Void (Void)
 import Control.Monad.Combinators.Expr (Operator (InfixL), makeExprParser)
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
+import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
 import Language.Lask.ErrorCode (ErrorCode (ESyntaxUnexpectedToken), Stage (StageSyntax))
 import Language.Lask.Lexer (lexLayout)
 import Language.Lask.Lexer.Token
-import Language.Lask.Span (Span (..), fromSourcePos)
+import Language.Lask.Span (Position (..), Span (..), fromSourcePos)
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.TokenStream
 import Text.Megaparsec hiding (State, Token, Tokens, token)
@@ -51,8 +51,49 @@ parseExpr file src = do
 runP :: P a -> FilePath -> [Spanned Token] -> Either Diagnostic a
 runP p file toks =
   case evalState (runParserT p file (TokStream toks)) [] of
-    Left bundle -> Left (bundleToDiagnostic bundle)
+    Left bundle -> Left (foldl (flip withNote) (bundleToDiagnostic bundle) (commandHints toks))
     Right a -> Right a
+
+-- | A command string runs to the end of its line (spec 6.6), closing
+-- brackets included, so a command written inside a call's brackets
+-- takes the call's @)@ with it, and the parse fails somewhere after,
+-- at a place that says nothing about why. When it fails, each command
+-- with a closing bracket it never opened is named.
+commandHints :: [Spanned Token] -> [Text]
+commandHints toks =
+  [ "the command on line "
+      <> T.pack (show (line (spanStartPos sp)))
+      <> " runs to the end of its line, so its closing '"
+      <> T.singleton c
+      <> "' was read as part of the command; a command cannot sit inside brackets: bind it to a name on its own line first"
+  | Spanned sp (TCommand _ _ parts) <- toks,
+    Just c <- [unopenedCloser (T.concat [t | Chunk _ t <- parts])]
+  ]
+  where
+    spanStartPos (Span start _) = start
+
+-- | The first closing bracket that no opening one before it matches,
+-- outside quotes.
+--
+-- >>> :set -XOverloadedStrings
+-- >>> unopenedCloser "ls)"
+-- Just ')'
+-- >>> unopenedCloser "echo '(' \")\" $(date)"
+-- Nothing
+unopenedCloser :: Text -> Maybe Char
+unopenedCloser = go [] Nothing . T.unpack
+  where
+    go _ _ [] = Nothing
+    go open (Just q) (c : cs)
+      | c == q = go open Nothing cs
+      | otherwise = go open (Just q) cs
+    go open Nothing (c : cs)
+      | c `elem` ("'\"" :: String) = go open (Just c) cs
+      | c `elem` ("([{" :: String) = go (c : open) Nothing cs
+      | Just o <- lookup c [(')', '('), (']', '['), ('}', '{')] = case open of
+          (o' : rest) | o' == o -> go rest Nothing cs
+          _ -> Just c
+      | otherwise = go open Nothing cs
 
 bundleToDiagnostic :: ParseErrorBundle TokStream Void -> Diagnostic
 bundleToDiagnostic bundle =
