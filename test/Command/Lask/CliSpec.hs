@@ -718,6 +718,20 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["run", "f"] ""
         resExit r `shouldBe` 42
         resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO"
+    -- A linter reports on stdout and leaves stderr empty.
+    it "says what happened when a failed command wrote nothing to stderr, leaving the error value alone" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "lint() = $[#local] echo 'app.py:1: unused import'; exit 3\n\
+            \caught(): String = try { lint() } catch (e) { \"[#{e.message}]\" }\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["run", "lint"] ""
+          resExit r `shouldBe` 3
+          resErr r `shouldContain` "E-RUNTIME-COMMAND-NONZERO: the command exited with code 3 and wrote nothing to stderr"
+          c <- runLask lask dir ["eval", "caught"] ""
+          resOut c `shouldBe` "\"[]\"\n"
     it "passes a command's exit code through await" $ \lask ->
       withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 75\n  await h\n}\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""

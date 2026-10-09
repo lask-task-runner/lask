@@ -70,7 +70,8 @@ transformBlock (Block sp stmts) = Block sp <$> go stmts
       | blockEndsWithReturn b = pure ()
       | otherwise =
           Left . mkDiag ssp $
-            "an if statement without else is allowed only when its block ends with return"
+            "an if statement without else is allowed only when its block ends with return; "
+              <> "for a side effect under a condition, add an empty else: if (c) { ... } else {}"
 
     unreachable ssp =
       mkDiag ssp "unreachable statements after return"

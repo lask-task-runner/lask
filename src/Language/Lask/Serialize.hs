@@ -28,6 +28,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Language.Lask.Core.AST (Lam (..))
+import Language.Lask.ErrorCode (ErrorCode (ERuntimeCommandNonzero))
 import Language.Lask.Runtime.Value
 import Language.Lask.Types (renderType)
 
@@ -114,7 +115,20 @@ renderValueText v = case v of
 --
 -- It lives here rather than beside 'LaskFailure' because the fallback
 -- needs 'encodeValue'.
+--
+-- A failed command's message is its stderr (6.6), which many tools
+-- leave empty: a linter reports on stdout. Shown as it is, that is a
+-- diagnostic with nothing after the code, so the message says what
+-- happened instead. The error value is left alone; a program that
+-- catches the failure still reads the empty stderr.
 failureMessage :: LaskFailure -> Text
 failureMessage lf = case lfError lf of
-  VRecord m | Just (VString s) <- Map.lookup "message" m -> s
+  VRecord m
+    | Just (VString s) <- Map.lookup "message" m,
+      lfCode lf == Just ERuntimeCommandNonzero,
+      T.null (T.strip s) ->
+        "the command exited with code "
+          <> maybe "?" renderValueText (Map.lookup "code" m)
+          <> " and wrote nothing to stderr; its output is in the command log"
+    | Just (VString s) <- Map.lookup "message" m -> s
   other -> encodeValue other
