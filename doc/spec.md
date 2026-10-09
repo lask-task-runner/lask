@@ -3192,6 +3192,7 @@ Rules (images):
 
 - `sync` materializes every image the program requires (10.3): every head reachable from the entry module, in the root project or in any dependency. Registry references are pulled and verified against their locked digest, and recipes are built, each for its `platform` if one is given.
 - An image named only in a dependency's declarations that nothing reachable references is neither materialized nor recorded in the lock. The lock entry of an image nothing references any more is dropped.
+- When any image fails to materialize, the images recorded in the lock are left as they were: no pin is added, replaced or dropped, and the summary reports the lock file unchanged (or updated for its modules only). A failed `sync` therefore never costs a pin that still worked.
 - Images are content-addressed, so an image whose registry digest or recipe hash is unchanged is not re-materialized.
 - The images are materialized after the modules, since reading the program needs its modules; a program that does not compile keeps its modules synced and reports the static error. A project that declares no dependency still has its images materialized.
 - `sync` executes no command inside the resulting containers.
