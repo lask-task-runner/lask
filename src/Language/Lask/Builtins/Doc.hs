@@ -249,7 +249,7 @@ builtinDocs =
         doc
           "15.6"
           [ "`all(hs)` waits for every handle and returns the results in input order.",
-            "It may fail as soon as any handle fails."
+            "It fails as soon as any handle fails, and cancels the rest, stopping the commands they are running."
           ]
       ),
       ("race", doc "15.6" ["`race(hs)` returns the result of the first handle to finish, whether it succeeded or failed."]),

@@ -37,7 +37,8 @@ concurrent(): Array<String> = do {
 //
 // `async e` is sugar for `spawn(\() -> e)`, so a set of handles can be
 // built with `map` and joined at once with `all`, which returns the
-// results in input order.
+// results in input order. If one step fails, `all` fails at once with
+// that failure and stops the steps still running.
 //
 // @return One line per step, in the order given.
 gather(): Array<String> = do {

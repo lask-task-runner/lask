@@ -2142,7 +2142,7 @@ Error value conversion of failures caused by non-zero exit (carrying over the ex
 
 Stopping an abandoned command:
 
-- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
+- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
 - An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
@@ -4234,7 +4234,7 @@ Semantics:
 Failure rules:
 
 - `await` on a handle whose computation failed re-raises that failure unchanged (6.3, 8.6): the same `Error` value, with its code and message, and therefore the same exit code if it goes uncaught (11.3). `all` and `race` do the same with the failure they receive.
-- `all` may fail as soon as any single one fails.
+- `all` fails as soon as any one of them fails, whichever position it holds in the array, with that failure. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7), so none is left running after the failure is reported.
 - `race` on an empty array is `E-RUNTIME-VALUE`: there is no result to return.
 
 ### 15.7 Error Handling Functions

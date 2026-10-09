@@ -7,6 +7,7 @@ module Command.Lask.CliSpec (spec) where
 
 import Command.Lask.Complete (Opt (..), Plan (..), classify)
 import Command.Lask.Harness
+import Control.Concurrent (threadDelay)
 import Data.IORef (readIORef)
 import Data.List (isInfixOf, isPrefixOf, nub, sort)
 import qualified Data.Text as T
@@ -780,6 +781,23 @@ spec = beforeAll findLask $ do
                 cs `shouldContain` ["stop -t 3 " <> name]
                 cs `shouldContain` ["rm --force " <> name]
               _ -> expectationFailure ("expected one named run, got " <> show named)
+
+  describe "stopping the commands all cancels when one fails (spec 8.7, 15.6)" $ do
+    it "fails at the first failure, wherever it is, and stops the rest" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "slow() = $[#local] sleep 3; touch marker\n\
+            \quick() = $[#local] sleep 0.5; exit 7\n\
+            \f() = all([async slow(), async quick()])\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["run", "f"] ""
+          resExit r `shouldBe` 7
+          resErr r `shouldContain` "killed"
+          resErr r `shouldNotContain` "W-ASYNC-UNAWAITED"
+          threadDelay 4000000
+          doesFileExist (dir </> "marker") `shouldReturn` False
 
   describe "never-awaited async (spec 6.3, 14.2)" $ do
     it "runs it to completion and reports it, keeping the exit code" $ \lask ->
