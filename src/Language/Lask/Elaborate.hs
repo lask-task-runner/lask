@@ -42,6 +42,7 @@ import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTar
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), commandWords, validCommandName)
+import Language.Lask.Deps.Cache (inCache)
 import Language.Lask.Runtime.Image (recipeSource)
 import Language.Lask.Types
 import System.FilePath (isAbsolute, joinPath, normalise, splitDirectories, takeDirectory, (</>))
@@ -1948,11 +1949,18 @@ dispatchEnv ctx path sp parts = do
 -- | A recipe path written in the module at @modulePath@, as the path
 -- relative to the program's base directory @base@ that names the same
 -- file. Module paths and the base directory are both relative to where
--- lask runs, or both absolute; where they are not alike (a dependency
--- cache moved elsewhere by LASK_CACHE_DIR), the module-relative path is
--- kept whole, which the base directory joins to unchanged.
-recipePath :: FilePath -> FilePath -> FilePath -> FilePath
-recipePath base modulePath written
+-- lask runs, or both absolute; where they are not alike, the
+-- module-relative path is kept whole, which the base directory joins to
+-- unchanged.
+--
+-- A recipe in a dependency is written as it would be under the default
+-- cache, @.lask/deps/...@, wherever @LASK_CACHE_DIR@ puts the cache
+-- (@cacheDir@): the path is part of the recipe's lock key and hash, and
+-- a lock must not depend on where the machine that wrote it kept its
+-- cache. Reading the file maps it back ('resolveInBase').
+recipePath :: FilePath -> FilePath -> FilePath -> FilePath -> FilePath
+recipePath base cacheDir modulePath written
+  | Just canonical <- inCache cacheDir target = canonical
   | isAbsolute base /= isAbsolute target = target
   | otherwise =
       let b = parts base
@@ -2082,7 +2090,7 @@ elabEnv ctx path locals sp h mArgs = case classifyHead h of
     recipeArg (k, c)
       | k `elem` ["dockerfile", "context"],
         CStrLit p <- coreF c =
-          (k, c {coreF = CStrLit (T.pack (recipePath (progBaseDir (ctxProg ctx)) path (T.unpack p)))})
+          (k, c {coreF = CStrLit (T.pack (recipePath (progBaseDir (ctxProg ctx)) (progCacheDir (ctxProg ctx)) path (T.unpack p)))})
       | otherwise = (k, c)
 
     -- An image option is read before anything runs, by `lask env

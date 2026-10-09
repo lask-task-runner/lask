@@ -84,6 +84,9 @@ data ModCtx = ModCtx
 data Program = Program
   { progEntry :: FilePath,
     progBaseDir :: FilePath,
+    -- | Where the project's dependencies are cached: @.lask/deps@ under
+    -- the base directory, unless @LASK_CACHE_DIR@ moved it.
+    progCacheDir :: FilePath,
     progModules :: Map FilePath LoadedModule,
     -- | Topological order, dependencies first; entry module last.
     progOrder :: [FilePath],
@@ -167,6 +170,7 @@ loadProgramEnv env entryPath = do
               Program
                 { progEntry = entry,
                   progBaseDir = baseDir,
+                  progCacheDir = leCacheDir env,
                   progModules = mods,
                   progOrder = reverse order,
                   progProject = rootDeps

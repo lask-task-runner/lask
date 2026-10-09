@@ -1200,6 +1200,40 @@ spec = beforeAll findLask $ do
         r3 <- runLaskEnv lask proj extraEnv ["sync", "--frozen"] ""
         resExit r3 `shouldBe` 0
 
+    -- A lock is committed and read on other machines, so it must not
+    -- record where the machine that wrote it kept its cache (spec 11.7).
+    it "writes the same lock for a dependency's recipe wherever LASK_CACHE_DIR puts the cache" $ \lask ->
+      withFakeDocker $ \_ extra ->
+        withSystemTempDirectory "lask-deps-recipe" $ \root -> do
+          let kit = root </> "kit"
+              defaultProj = root </> "default"
+              movedProj = root </> "moved"
+              moved = ("LASK_CACHE_DIR", root </> "cache") : extra
+          createDirectoryIfMissing True (kit </> "images")
+          writeFile (kit </> "images" </> "Dockerfile") "FROM scratch\n"
+          writeFile (kit </> "main.lask") "hello(): String = $[#./images/Dockerfile] cat x\n"
+          git kit ["init", "--quiet"]
+          git kit ["add", "."]
+          git kit ["commit", "--quiet", "-m", "init"]
+          git kit ["tag", "v1"]
+          let setUp proj env = do
+                createDirectoryIfMissing True proj
+                writeFile (proj </> "main.lask") "import { hello } from \"kit\"\nf(): String = hello()\n"
+                a <- runLaskEnv lask proj env ["deps", "add", "kit", "--git", "file://" <> kit, "--rev", "v1"] ""
+                resExit a `shouldBe` 0
+                b <- runLaskEnv lask proj env ["sync"] ""
+                resExit b `shouldBe` 0
+                readFile (proj </> "lask.lock.json")
+          lockDefault <- setUp defaultProj extra
+          lockMoved <- setUp movedProj moved
+          lockMoved `shouldBe` lockDefault
+          lockDefault `shouldContain` "\"#.lask/deps/"
+          -- And a lock written with the default cache holds under the
+          -- moved one.
+          writeFile (movedProj </> "lask.lock.json") lockDefault
+          r <- runLaskEnv lask movedProj moved ["sync", "--frozen"] ""
+          resExit r `shouldBe` 0
+
     it "reports a dependency whose own project file cannot be read, and writes nothing" $ \lask ->
       withSystemTempDirectory "lask-deps-transitive" $ \root -> do
         let kit = root </> "kit"
