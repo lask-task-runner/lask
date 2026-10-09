@@ -1,8 +1,8 @@
 // Modules and imports
 //
 // One file is one module. Inside a project, modules import each other
-// by relative path; across projects, they are pinned dependencies —
-// example/terraform shows that side of it.
+// by relative path; across projects, they are pinned dependencies,
+// which 09-dependencies shows.
 //
 //   lask check
 //   lask eval page_title "  Release Notes  "

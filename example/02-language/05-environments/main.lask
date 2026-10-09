@@ -7,7 +7,8 @@
 //                              # and whether each is on the Docker daemon
 //   lask sync                  # materialize them (run/eval never pull)
 //   lask eval alpine_version
-//   lask eval tool_versions --env docker
+//   lask eval tool_versions
+//   lask eval uname_in --env built
 
 // The host itself. There is no default environment, so `#local` is
 // something you write — a command that names no environment at all is
