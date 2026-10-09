@@ -3,6 +3,7 @@
 [![test](https://github.com/lask-task-runner/lask/actions/workflows/test.yml/badge.svg)](https://github.com/lask-task-runner/lask/actions/workflows/test.yml)
 [![release](https://img.shields.io/github/v/release/lask-task-runner/lask?sort=semver)](https://github.com/lask-task-runner/lask/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![docs](https://img.shields.io/badge/docs-lask--task--runner.github.io-4f46e5)](https://lask-task-runner.github.io/)
 
 <div align="center">
   <img alt="Lask in 20 seconds: write tasks in main.lask, with a typo flagged in the editor and fixed; lask run release runs each step in its own container on Docker; the same run on a laptop and on GitHub Actions, Jenkins, GitLab CI and CircleCI, on the same pinned images" src="doc/assets/lask-pv-short.gif" width="960">
@@ -33,7 +34,7 @@ The recording above and the excerpt below come from [example/01-projects/02-weba
 
 Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, *runnable* and *secure*.
 
-**Approachable**. One `.lask` file in a directory is already a project: no scaffolding, no config, nothing to install but Lask and Docker. The syntax is borrowed from languages you already write — C-family braces, `try` / `catch`, `async` / `await`, TypeScript's type notation — and the whole language and CLI fit on one [Quick Reference](doc/quick-reference.md) page, short enough for you to read in ten minutes and for a coding model to hold in context.
+**Approachable**. One `.lask` file in a directory is already a project: no scaffolding, no config, nothing to install but Lask and Docker. The syntax is borrowed from languages you already write — C-family braces, `try` / `catch`, `async` / `await`, TypeScript's type notation — and the whole language and CLI fit on one [Quick Reference](https://lask-task-runner.github.io/reference/quick-reference) page, short enough for you to read in ten minutes and for a coding model to hold in context.
 
 **Verifiable**. `lask check` resolves every name, argument and type before a single command runs, over the very definitions CI will execute — no second copy in YAML to drift. The same errors appear in your editor as you type, so a typo costs seconds, not a red CI log.
 
@@ -69,7 +70,19 @@ Here is how Lask compares to the lighter tools it replaces and to the heavier on
 
 **When Lask pays off:** tasks that take arguments, call each other, run in pinned Docker environments, or run concurrently — the point where Makefiles and YAML pipelines usually turn into untestable shell scripts. `lask check` verifies all of it before anything executes.
 
-**Moving over:** [Migrating from Make](doc/migration/from-make.md) and [Migrating from GitHub Actions](doc/migration/from-github-actions.md) take an existing Makefile or workflow across one task at a time, with both working at every step.
+**Moving over:** [Migrating from Make](https://lask-task-runner.github.io/guide/migration/from-make) and [Migrating from GitHub Actions](https://lask-task-runner.github.io/guide/migration/from-github-actions) take an existing Makefile or workflow across one task at a time, with both working at every step.
+
+## Documentation
+
+The documentation is at **<https://lask-task-runner.github.io/>**, with a copy for each release:
+
+- [Getting started](https://lask-task-runner.github.io/guide/getting-started) and [Your first real task file](https://lask-task-runner.github.io/guide/first-task-file): from installing Lask to a CI task of your own.
+- [Language guide](https://lask-task-runner.github.io/language/): the whole language, one runnable topic at a time.
+- [Quick Reference](https://lask-task-runner.github.io/reference/quick-reference): the language and the CLI on one page.
+- [Migrating from Make](https://lask-task-runner.github.io/guide/migration/from-make) and [from GitHub Actions](https://lask-task-runner.github.io/guide/migration/from-github-actions).
+- [The tools module](https://lask-task-runner.github.io/modules/tools/): the official module of ready-made environments, function by function.
+
+The [language specification](doc/spec.md) and the [compatibility policy](doc/compatibility.md) live in this repository, and the site shows them too.
 
 ## Install
 
@@ -231,7 +244,7 @@ $ lask serve                       # language server (LSP)
 $ lask version                     # print the lask version
 ```
 
-The [Quick Reference](doc/quick-reference.md) covers the whole language and CLI in ten minutes; [doc/spec.md](doc/spec.md) is the full specification behind it.
+The [Quick Reference](https://lask-task-runner.github.io/reference/quick-reference) covers the whole language and CLI in ten minutes; [doc/spec.md](doc/spec.md) is the full specification behind it.
 
 ## Status
 
@@ -239,7 +252,7 @@ Lask is pre-1.0: features are `experimental` until 1.0, and breaking changes are
 
 ## Feedback
 
-Questions, ideas and feedback of any kind are welcome in [GitHub Discussions](https://github.com/lask-task-runner/lask/discussions): ask in [Q&A](https://github.com/lask-task-runner/lask/discussions/categories/q-a), suggest a feature in [Ideas](https://github.com/lask-task-runner/lask/discussions/categories/ideas), or share what you built in [Show and tell](https://github.com/lask-task-runner/lask/discussions/categories/show-and-tell). If something in this README or the [Quick Reference](doc/quick-reference.md) was unclear, or a task you wanted to write did not fit the language, that is worth a discussion too.
+Questions, ideas and feedback of any kind are welcome in [GitHub Discussions](https://github.com/lask-task-runner/lask/discussions): ask in [Q&A](https://github.com/lask-task-runner/lask/discussions/categories/q-a), suggest a feature in [Ideas](https://github.com/lask-task-runner/lask/discussions/categories/ideas), or share what you built in [Show and tell](https://github.com/lask-task-runner/lask/discussions/categories/show-and-tell). If something in this README or the [documentation](https://lask-task-runner.github.io/) was unclear, or a task you wanted to write did not fit the language, that is worth a discussion too.
 
 Found a bug? Please open an [issue](https://github.com/lask-task-runner/lask/issues).
 
