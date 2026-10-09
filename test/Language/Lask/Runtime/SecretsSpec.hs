@@ -29,6 +29,18 @@ spec = before_ resetSecretRegistryForTests . after_ resetSecretRegistryForTests 
       registerSecret "42"
       maskSecrets "num=42" `shouldReturn` "num=***"
 
+    it "masks a short value only where it stands as a word of its own" $ do
+      registerSecret "x"
+      maskSecrets "$ echo x nonexistent example x-ray xx" `shouldReturn` "$ echo *** nonexistent example ***-ray xx"
+
+    it "masks a short number as a value, not inside a longer one" $ do
+      registerSecret "42"
+      maskSecrets "num=42 port=8042 v42" `shouldReturn` "num=*** port=8042 v42"
+
+    it "masks a value of 8 characters or more wherever it appears" $ do
+      registerSecret "hunter22"
+      maskSecrets "pw=xhunter22x" `shouldReturn` "pw=x***x"
+
     it "does not register the empty string (a no-op match anyway)" $ do
       registerSecret ""
       maskSecrets "anything at all" `shouldReturn` "anything at all"
