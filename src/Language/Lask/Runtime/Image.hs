@@ -43,6 +43,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Language.Lask.Deps.Cache (resolveInBase)
 import Language.Lask.Deps.Hash (hashBytes)
 import Language.Lask.Deps.Lock (LockImage (..))
 import Language.Lask.ErrorCode (ErrorCode (EIoEnvResolve, EIoImageMissing))
@@ -82,7 +83,8 @@ recipeSource df
 -- covered, so its tag does not move.
 recipeTag :: FilePath -> Recipe -> IO (Either Text Text)
 recipeTag baseDir (Recipe dockerfile context buildArgs platform) = do
-  r <- try (BS.readFile (baseDir </> T.unpack dockerfile))
+  file <- resolveInBase baseDir (T.unpack dockerfile)
+  r <- try (BS.readFile file)
   pure $ case r of
     Left e ->
       Left ("cannot read Dockerfile '" <> dockerfile <> "': " <> T.pack (show (e :: IOException)))
@@ -136,17 +138,19 @@ imageExists tag = do
 -- The build's steps are reported as they run: @[3/6] RUN apk add ...@.
 buildRecipe :: (Text -> IO ()) -> FilePath -> Recipe -> Text -> IO (Either Text ())
 buildRecipe report baseDir (Recipe dockerfile context buildArgs platform) tag = do
+  file <- resolveInBase baseDir (T.unpack dockerfile)
+  dir <- resolveInBase baseDir (T.unpack context)
   let args =
         [ "build",
           "--progress=plain",
           "-f",
-          baseDir </> T.unpack dockerfile,
+          file,
           "-t",
           T.unpack tag
         ]
           <> maybe [] (\p -> ["--platform", T.unpack p]) platform
           <> concat [["--build-arg", T.unpack (k <> "=" <> v)] | (k, v) <- sortOn fst buildArgs]
-          <> [baseDir </> T.unpack context]
+          <> [dir]
   -- BuildKit writes its plain progress to stderr: a step is a line
   -- such as @#7 [3/6] RUN apk add ...@.
   r <- streamProcess "docker build" (proc "docker" args) (const (pure ())) $ \line ->
