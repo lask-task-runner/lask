@@ -1,6 +1,6 @@
 # Lask Quick Reference
 
-The whole language and CLI on one page, for someone who wants to write a task now and read the rules later. Every section links to the chapter of the [language specification](spec.md) that defines it; when this page is not enough, follow the link. Installation and the case for Lask are in the [README](../README.md).
+The whole language and CLI on one page, for someone who wants to write a task now and read the rules later. Every section links to the chapter of the [language specification](spec.md) that defines it; when this page is not enough, follow the link. Installation is in the [README](../README.md#install).
 
 ## A module, end to end
 
@@ -382,11 +382,14 @@ Absence is reported two ways, deliberately: a function that returns a *position*
 
 - `+` is arithmetic only. Strings join with `concat` or `#{...}`.
 - There is no unary minus. `0 - 1`.
-- `if` without `else` is not an expression; it exists only as a `return` guard.
+- `if` without `else` is not an expression; it exists only as a `return` guard. For a side effect under a condition, give it an empty `else`: `if (c) { log("...") } else {}`.
 - Every `case` needs an `else`, and it must be last.
 - A command with no environment is an error, never the host. `#local` is something you write.
-- A command string swallows the rest of its line.
-- `lask run` prints nothing. You wanted `lask eval`.
+- A command string swallows the rest of its line, closing brackets included, so a `$` command cannot sit inside a call's parentheses. Bind it to a name on its own line first.
+- A command runs as `/bin/sh -c <string>` in its container, with the project directory mounted at `/work` as the working directory. An image without `/bin/sh` cannot run a command.
+- `lask run` writes nothing to stdout: the return value is not printed, and the command log goes to stderr. To see the value, use `lask eval`.
+- A `Bool` parameter takes a value on the command line: `--verbose true`, never a bare `--verbose`.
+- `lask run` and `lask eval` read stdin to the end before the task starts. Started from a script that leaves stdin open, they wait; give them `</dev/null`.
 - Conformance is invariant: `Array<Number>` is not an `Array<Any>`.
 - Keyword parameters must have defaults; positional parameters must not.
 - `for` takes an array, not a number and not a map.

@@ -10,16 +10,16 @@ The numbers are a reading order, not a dependency order. Starting from nothing, 
 4. [10](#10-standard-library) · [11](#11-data) · [12](#12-io-and-secrets) · [13](#13-files-and-paths) — the library, as it is actually used.
 5. [14](#14-docs-and-cli) — how the same file becomes a command line and a help page.
 
-Five of the topics run nothing but the language and need no Docker (**pure** below). The rest run real commands in real containers:
+Six of the topics run nothing but the language and need no Docker (marked **Pure** below). The rest run real commands in real containers:
 
 ```bash
 cd example/02-language/<topic>
 lask check          # always first: nothing runs, everything is resolved
 lask envs list      # which images this module can reach for
-lask sync           # materialize them — run and eval never pull
+lask sync           # pull or build them; run and eval never pull images
 ```
 
-`lask run` prints nothing by design; `lask eval` prints the return value. Below, `eval` is used wherever there is something to see.
+`lask run` writes nothing to stdout: the command log goes to stderr, and the return value is not printed. `lask eval` also prints the return value to stdout. Below, `eval` is used wherever there is something to see.
 
 ---
 
@@ -116,7 +116,7 @@ The thing to take away: static errors are not catchable. `lask check` finds them
 
 ## 08-modules
 
-**Docker** for the last task. Named imports with `as`, namespace imports, `internal`, re-export, and `import command`, which brings in the command words another module declares.
+**Docker for the last task only.** This topic covers named imports with `as`, namespace imports, `internal`, re-export, and `import command`, which brings in the command words another module declares.
 
 ```bash
 lask eval page-title "  Release Notes  "
@@ -167,7 +167,7 @@ The thing to take away: every format decodes to the same handful of value kinds,
 
 ## 12-io-and-secrets
 
-**Docker** for the two secret tasks. `stdin`, the stdout contract, `get_env` / `find_env` / `has_env` / `get_env_or`, `!!` secret bindings, `mark_secret`, secret references, and `log`.
+**Docker for the two secret tasks only.** This topic covers `stdin`, the stdout contract, `get_env` / `find_env` / `has_env` / `get_env_or`, `!!` secret bindings, `mark_secret`, secret references, and `log`.
 
 ```bash
 echo '{"name":"api","port":8080}' | lask eval service-line
@@ -183,7 +183,7 @@ The thing to take away: `run` writes nothing to stdout and `eval` writes the ret
 
 ## 13-files-and-paths
 
-**Docker** for two tasks; the rest is `#local`. `read_file`, `write_file`, `make_dir`, `list_dir`, `glob`, `file_exists`, `remove_file`, and the path helpers.
+**Docker for two tasks; the rest run on `#local`.** This topic covers `read_file`, `write_file`, `make_dir`, `list_dir`, `glob`, `file_exists`, `remove_file`, and the path helpers.
 
 ```bash
 lask eval describe-path tmp/report.json
