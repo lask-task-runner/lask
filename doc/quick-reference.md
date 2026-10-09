@@ -270,7 +270,7 @@ b = async test_web()
 r = { api: await a, web: await b }    // await joins; a failure inside is raised here
 ```
 
-`async e` is `spawn(\() -> e)`. Awaiting the same handle twice gives the same result. `all(handles)` waits for every one, `race(handles)` for the first.
+`async e` is `spawn(\() -> e)`. Awaiting the same handle twice gives the same result. `all(handles)` waits for every one and, if one fails, cancels the rest; `race(handles)` waits for the first and cancels the rest.
 
 ## Errors
 

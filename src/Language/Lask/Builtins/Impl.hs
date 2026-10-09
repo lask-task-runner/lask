@@ -294,7 +294,7 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     -- All of them are consumed, even if one fails before the rest are
     -- reached.
     mapM_ (trackAwaited (hookAsync hooks)) handles
-    VArray . V.fromList <$> mapM awaitHandle handles
+    VArray . V.fromList <$> awaitAll handles
   ("race", [VArray xs]) -> do
     let handles = [a | VAsync (AsyncHandle a) <- V.toList xs]
     case handles of
@@ -645,6 +645,20 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
 
     tshow :: Int -> Text
     tshow = T.pack . show
+
+    -- The handles are waited for in the order they finish, so a failure
+    -- is seen as soon as it happens, whatever its position. The others
+    -- are then cancelled, as race cancels the losers, which stops the
+    -- commands they are running and logs them as killed (15.6, 8.7);
+    -- otherwise they would run on after the program has finished.
+    awaitAll handles = go handles
+      where
+        go [] = mapM (\a -> waitCatch a >>= either throwIO pure) handles
+        go pending = do
+          (done, r) <- waitAnyCatch pending
+          case r of
+            Left failure -> mapM_ cancel handles >> throwIO failure
+            Right _ -> go (filter (/= done) pending)
 
     -- A failed computation's failure is re-raised as it was (spec 6.3).
     awaitHandle a = do
