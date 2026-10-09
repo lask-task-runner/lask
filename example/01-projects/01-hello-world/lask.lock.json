@@ -1,0 +1,11 @@
+{
+    "images": {
+        "#rancher/cowsay": {
+            "digest": "sha256:5dab61268bc18daf56febb5a856b618961cd806dbc49a22a636128ca26f0bd94",
+            "kind": "registry",
+            "ref": "rancher/cowsay"
+        }
+    },
+    "lock_version": 1,
+    "modules": {}
+}

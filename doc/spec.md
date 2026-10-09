@@ -197,6 +197,12 @@ This section defines the principal terms used in this specification.
 - Core function: A built-in function that is the normalization target of syntactic sugar, or is integral to a language feature. It cannot be declared or overridden by user code (7.2).
 - Built-in library: The set of built-in symbols available without explicit imports (Chapter 15).
 - Pre-execution error: A failure detected and reported before function evaluation begins (environment resolution, argument binding, etc.).
+- Runnable: An execution environment together with run options for its container, such as `memory` or `network` (6.7, 15.5). An `Environment` is a `Runnable` with no options, so wherever a command takes a `Runnable`, an `Environment` may be given.
+- Command declaration: A top-level `command { "<word>", ... } on <environment>` declaration (Chapter 5), which assigns an execution environment to programs by name, so that a command naming one of them needs no `[env]` of its own.
+- Command word: The name of a program that a command declaration registers, together with the environment that provides it (Chapter 5). A module has the command words it declares and those it imports.
+- Dispatch: Choosing the execution environment of a command written without `[env]` by matching the programs its command string runs against the module's command words (10.9).
+- Secret binding: A binding whose name is marked `!!`, whose value is masked wherever it appears in what the implementation writes to stderr (6.10, 12.8).
+- Materialization: Making an image the program requires present on the Docker daemon, by pulling a registry reference or building a recipe, and recording the result in the lock file (10.3). Only `sync` materializes images (11.7).
 
 ## 2. Notation
 
@@ -2494,6 +2500,11 @@ Each profile has at least the following execution attributes.
 - Environment variable injection rules
 - Permission boundary and access constraints
 
+How this implementation launches a command:
+
+- `docker`: the container is started with the image's entrypoint replaced by `/bin/sh`, and the command string is run as `/bin/sh -c <command string>`. An image must therefore provide `/bin/sh`; an image without a shell (a distroless or `scratch`-based tool image) cannot run a command, and is wrapped in an image that has one.
+- `local`: the command string is run by the host's shell, `/bin/sh -c` on POSIX systems and `cmd.exe /c` on Windows.
+
 Implementations may extend with additional profiles, but must not break compatible behavior with the above 2 profiles.
 
 ### 10.3 Container Image Resolution and Materialization
@@ -2558,6 +2569,7 @@ Rules:
 
 - The default cwd for `local` is the project base directory where execution started.
 - The default cwd for `docker` is the working directory determined by the implementation inside the container.
+  - This implementation bind-mounts the project base directory, read-write, at `/work` in the container and uses `/work` as the default cwd. A relative path in a command therefore names the same file on the host and in the container, and a file the command writes there is on the host afterwards.
 - An explicit specification takes precedence over the default cwd.
 - If the cwd does not exist or is inaccessible, it is a pre-execution error.
 

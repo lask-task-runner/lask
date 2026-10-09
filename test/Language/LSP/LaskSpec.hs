@@ -463,7 +463,7 @@ spec = do
 realSources :: [(FilePath, Text)]
 realSources =
   [ ("main.lask", "doctest"),
-    ("example/01-projects/01-hello-world/main.lask", "cowsay"),
+    ("example/01-projects/01-hello-world/main.lask", "cowsay_hello"),
     ("example/02-language/09-dependencies/main.lask", "status")
   ]
 
