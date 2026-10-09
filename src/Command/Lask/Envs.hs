@@ -15,6 +15,7 @@ module Command.Lask.Envs
     collectRegistryRefs,
     collectRegistryImages,
     collectEnvReadsFrom,
+    readsStdin,
   )
 where
 
@@ -90,6 +91,17 @@ reachableFrom core starts = go Set.empty starts
 
     topRefs c =
       [(p, n) | CVar (TopRef p n) <- map coreF (c : descendants c)]
+
+-- | Whether a declaration can reach the @stdin@ reference (spec 9.3):
+-- whether it, or anything it refers to, names @stdin@, here or in the
+-- environments of the program's command declarations.
+readsStdin :: CoreProgram -> Key -> Bool
+readsStdin core start =
+  any names (map cdCore (reachableFrom core (start : envRefs)) <> envs)
+  where
+    envs = commandEnvs core
+    envRefs = [(p, n) | c <- envs, CVar (TopRef p n) <- map coreF (c : descendants c)]
+    names c = or [True | CVar (BuiltinRef "stdin") <- map coreF (c : descendants c)]
 
 -- | The environment variables a declaration can read by name (spec
 -- 11.10): the literal names given to @get_env@, @find_env@ and

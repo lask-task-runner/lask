@@ -16,7 +16,9 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirector
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Exit (ExitCode (..))
-import System.Process (proc, readCreateProcessWithExitCode)
+import System.IO (hClose, hGetContents)
+import System.Process (CreateProcess (cwd, std_err, std_in, std_out), StdStream (CreatePipe), createProcess, proc, readCreateProcessWithExitCode, waitForProcess)
+import System.Timeout (timeout)
 import Test.Hspec
 
 spec :: Spec
@@ -97,13 +99,13 @@ spec = beforeAll findLask $ do
     it "leaves the lock as it was when an image fails to materialize" $ \lask ->
       withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
         _ <- runLaskEnv lask dir extra ["sync"] ""
-        before <- lockText dir
-        length before `seq` writeFile (dir </> "main.lask") "command { \"cat\" } on #alpine:0.0.404\nhi(): String = $ cat x\n"
+        pinned <- lockText dir
+        length pinned `seq` writeFile (dir </> "main.lask") "command { \"cat\" } on #alpine:0.0.404\nhi(): String = $ cat x\n"
         b <- runLaskEnv lask dir extra ["sync"] ""
         resExit b `shouldBe` 3
         resOut b `shouldContain` "lask.lock.json unchanged"
-        lockText dir `shouldReturn` before
-        writeFile (dir </> "main.lask") (snd (head proj))
+        lockText dir `shouldReturn` pinned
+        mapM_ (\(name, content) -> writeFile (dir </> name) content) proj
         r <- runLaskEnv lask dir extra ["eval", "hi"] ""
         resExit r `shouldBe` 0
 
@@ -707,6 +709,21 @@ spec = beforeAll findLask $ do
         r `shouldBe` Result 0 "\"/tmp\"\n" ""
 
   describe "stdin (spec 9)" $ do
+    -- A CI step or a process manager may start lask with stdin open and
+    -- never write to it. A function that cannot refer to stdin must not
+    -- wait for it to close.
+    it "does not wait on an open stdin for a function that cannot refer to it" $ \lask ->
+      withProject [("main.lask", "hello(): String = \"hi\"\nshout(): String = to_upper(stdin)\n")] $ \dir -> do
+        (Just hin, Just hout, _, ph) <-
+          createProcess (proc lask ["eval", "hello"]) {cwd = Just dir, std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
+        done <- timeout 10000000 (waitForProcess ph)
+        hClose hin
+        done `shouldBe` Just ExitSuccess
+        hGetContents hout >>= (`shouldBe` "\"hi\"\n")
+    it "still reads stdin to the end for a function that refers to it, through another function" $ \lask ->
+      withProject [("main.lask", "shout(): String = upper()\nupper(): String = to_upper(stdin)\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "shout"] "abc"
+        r `shouldBe` Result 0 "\"ABC\"\n" ""
     it "binds stdin as a String" $ \lask ->
       withProject [("main.lask", "shout(): String = to_upper(trim(stdin))\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "shout"] "  hello  \n"

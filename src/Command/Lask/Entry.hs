@@ -11,7 +11,7 @@ import Command.Lask.ArgCodec
 import Command.Lask.Common
 import Command.Lask.Project (cmdDepsAdd, cmdDepsGraph, cmdDepsList, cmdDepsRm, cmdEnvsList, cmdSync)
 import Command.Lask.Complete (completionScript)
-import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom)
+import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, readsStdin)
 import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
@@ -164,7 +164,11 @@ cmdRunEval printResult runOpts = do
   -- Before anything is evaluated, and before stdin is read: a refused
   -- confirmation leaves nothing half done (spec 11.2).
   confirmOrExit opts (runConfirm runOpts) compiled fnName key cd posVals kwVals
-  stdinText <- readStdinOrExit opts
+  -- Read only by a function that can refer to it: a program that
+  -- never names stdin cannot tell it was left unread (9.2), and a
+  -- script that starts lask with stdin open, as a CI step or a
+  -- process manager does, would otherwise wait on it for nothing.
+  stdinText <- if readsStdin core key then readStdinOrExit opts else pure ""
   traceId <- maybe newTraceId pure (optTraceId opts)
   -- One serialized stderr line writer shared by command logs and
   -- execution events, so concurrent emitters never interleave.

@@ -2252,7 +2252,7 @@ Channel separation rules:
 
 ### 9.2 Ingestion of Standard Input
 
-Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure. Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable (9.3).
+Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure, when the function called can refer to `stdin`: when it, or a declaration it reaches, or the environment of one of the program's command declarations, names `stdin` (9.3). A function that cannot refer to it cannot observe its contents, so stdin is then not read at all, and the run does not wait for it to close. Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable (9.3).
 
 1. Read stdin until EOF.
 2. Fix the entire input that was read as a single input snapshot.
