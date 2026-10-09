@@ -16,7 +16,7 @@
 -- there is no natural threading path between the builtin evaluator
 -- ("Language.Lask.Builtins.Impl") and command execution logging
 -- ("Language.Lask.Runtime.Environment"). Values are matched by exact
--- substring, so a registered secret stays masked wherever it later
+-- substring (one shorter than 8 characters as a whole word only), so a registered secret stays masked wherever it later
 -- appears in a command string or relayed output line, however it got
 -- there (string interpolation, a shell variable assignment, ...) — but
 -- equally, a value that has been *transformed* since registration no
@@ -34,6 +34,7 @@ where
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
+import Data.Char (isAlphaNum)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
@@ -106,7 +107,10 @@ maskSecrets :: Text -> IO Text
 maskSecrets input = do
   secrets <- readIORef secretRegistry
   let ordered = sortOn (Down . T.length) secrets
-  pure (foldl' (\acc s -> replaceAll s mask acc) input ordered)
+      replace s
+        | T.length s < minLineLength = replaceWhole s mask
+        | otherwise = replaceAll s mask
+  pure (foldl' (\acc s -> replace s acc) input ordered)
 
 -- | 'maskSecrets' over every string in a JSON document, keys
 -- included. The environment metadata of a command execution log
@@ -147,6 +151,43 @@ maskFailure lf = do
   err <- maskValue (lfError lf)
   frames <- traverse maskSecrets (lfFrames lf)
   pure lf {lfError = err, lfFrames = frames}
+
+-- | As 'replaceAll', for an occurrence that stands as a word of its
+-- own only: one not preceded or followed by a letter, a digit or @_@.
+-- A value this short found inside another word is not the secret
+-- appearing; masking it there hides unrelated output, and the letters
+-- around the mask give the secret away (@none***istent@ for @x@).
+--
+-- >>> :set -XOverloadedStrings
+-- >>> replaceWhole "x" "***" "x nonexistent x-ray box"
+-- "*** nonexistent ***-ray box"
+-- >>> replaceWhole "x" "***" "xx x"
+-- "xx ***"
+replaceWhole :: Text -> Text -> Text -> Text
+replaceWhole needle replacement haystack
+  | T.null needle = haystack
+  | otherwise = case pieces of
+      [] -> haystack
+      first : rest -> T.concat (first : go first (zip [1 :: Int ..] rest))
+  where
+    pieces = T.splitOn needle haystack
+    lastIx = length pieces - 1
+    word c = isAlphaNum c || c == '_'
+    -- The character before an occurrence: the end of the piece before
+    -- it, or, when that piece is empty, the previous occurrence.
+    before i left
+      | not (T.null left) = Just (T.last left)
+      | i > 1 = Just (T.last needle)
+      | otherwise = Nothing
+    -- The character after it, likewise.
+    after i right
+      | not (T.null right) = Just (T.head right)
+      | i < lastIx = Just (T.head needle)
+      | otherwise = Nothing
+    go _ [] = []
+    go left ((i, right) : more) =
+      let standsAlone = not (maybe False word (before i left)) && not (maybe False word (after i right))
+       in (if standsAlone then replacement else needle) : right : go right more
 
 replaceAll :: Text -> Text -> Text -> Text
 replaceAll needle replacement haystack
