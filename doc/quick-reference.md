@@ -389,7 +389,7 @@ Absence is reported two ways, deliberately: a function that returns a *position*
 - A command runs as `/bin/sh -c <string>` in its container, with the project directory mounted at `/work` as the working directory. An image without `/bin/sh` cannot run a command.
 - `lask run` writes nothing to stdout: the return value is not printed, and the command log goes to stderr. To see the value, use `lask eval`.
 - A `Bool` parameter takes a value on the command line: `--verbose true`, never a bare `--verbose`.
-- `lask run` and `lask eval` read stdin to the end before the task starts. Started from a script that leaves stdin open, they wait; give them `</dev/null`.
+- A task that refers to `stdin` reads it to the end before it starts. Started from a script that leaves stdin open, it waits; give it `</dev/null`. A task that never refers to `stdin` does not read it.
 - Conformance is invariant: `Array<Number>` is not an `Array<Any>`.
 - Keyword parameters must have defaults; positional parameters must not.
 - `for` takes an array, not a number and not a map.
