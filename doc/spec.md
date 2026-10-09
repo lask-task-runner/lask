@@ -67,7 +67,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [9.8 Secret References](#98-secret-references)
   - [10. Execution Environments](#10-execution-environments)
     - [10.1 The `Environment` Type and Environment Expressions](#101-the-environment-type-and-environment-expressions)
-    - [10.2 Target Environment Profiles and Environment Constructor Signatures](#102-target-environment-profiles-and-environment-constructor-signatures)
+    - [10.2 Target Environment Profiles and Their Options](#102-target-environment-profiles-and-their-options)
     - [10.3 Container Image Resolution and Materialization](#103-container-image-resolution-and-materialization)
     - [10.4 Environment Resolution Rules](#104-environment-resolution-rules)
     - [10.5 Working Directory Rules](#105-working-directory-rules)
@@ -79,10 +79,10 @@ This document is the language specification of Lask that satisfies the requireme
     - [11.1 Subcommands](#111-subcommands)
     - [11.2 Function Invocation](#112-function-invocation)
     - [11.3 Input/Output Contract](#113-inputoutput-contract)
-    - [11.4 Environment Check (`envs`)](#114-environment-check-envs)
+    - [11.4 Environment List (`envs`)](#114-environment-list-envs)
     - [11.5 Dependency Management (`deps`)](#115-dependency-management-deps)
     - [11.6 Help Display (`--help`)](#116-help-display---help)
-    - [11.7 Environment Materialization (`env`)](#117-environment-materialization-env)
+    - [11.7 Synchronization (`sync`)](#117-synchronization-sync)
     - [11.8 Command Invocation (`cmd`)](#118-command-invocation-cmd)
     - [11.9 Interactive Session (`repl`)](#119-interactive-session-repl)
     - [11.10 Secret References (`secrets`)](#1110-secret-references-secrets)
@@ -187,7 +187,7 @@ This section defines the principal terms used in this specification.
 - Function: An evaluation unit that receives input and returns a value. The basic unit of execution in this specification.
 - Task: A colloquial term used in practice; in Lask, an execution target expressed as a function.
 - Module: A source-file unit consisting of a set of declarations and imports.
-- Execution environment: The target context in which commands are executed. Specified by environment expressions `#local` / `#docker(...)` (and the container sugar `#image-name`).
+- Execution environment: The target context in which commands are executed. Specified by environment expressions: `#local`, an image reference such as `#alpine:3.20`, or a recipe path such as `#./images/build/Dockerfile`.
 - Project file: `lask.json` (Chapter 5), which declares external Lask source code fetched over the internet.
 - Lock file: `lask.lock.json` (Chapter 5), which records the resolution of the whole dependency graph and of the container images it requires.
 - Execution event: A time-series record unit representing calls, return values, and failures.
@@ -197,6 +197,12 @@ This section defines the principal terms used in this specification.
 - Core function: A built-in function that is the normalization target of syntactic sugar, or is integral to a language feature. It cannot be declared or overridden by user code (7.2).
 - Built-in library: The set of built-in symbols available without explicit imports (Chapter 15).
 - Pre-execution error: A failure detected and reported before function evaluation begins (environment resolution, argument binding, etc.).
+- Runnable: An execution environment together with run options for its container, such as `memory` or `network` (6.7, 15.5). An `Environment` is a `Runnable` with no options, so wherever a command takes a `Runnable`, an `Environment` may be given.
+- Command declaration: A top-level `command { "<word>", ... } on <environment>` declaration (Chapter 5), which assigns an execution environment to programs by name, so that a command naming one of them needs no `[env]` of its own.
+- Command word: The name of a program that a command declaration registers, together with the environment that provides it (Chapter 5). A module has the command words it declares and those it imports.
+- Dispatch: Choosing the execution environment of a command written without `[env]` by matching the programs its command string runs against the module's command words (10.9).
+- Secret binding: A binding whose name is marked `!!`, whose value is masked wherever it appears in what the implementation writes to stderr (6.10, 12.8).
+- Materialization: Making an image the program requires present on the Docker daemon, by pulling a registry reference or building a recipe, and recording the result in the lock file (10.3). Only `sync` materializes images (11.7).
 
 ## 2. Notation
 
@@ -322,7 +328,8 @@ Lexical rules:
 - Number literals do not include a sign. `-` and `+` are always interpreted as binary operators. Negative numbers cannot be expressed as literals and are constructed with expressions such as `0 - 1` (unary minus is not provided).
 - `env_head` is the leading token of an environment expression (6.7) and is read with longest match. It terminates at the position where a character that is not an `env_char` (whitespace, `]`, `,`, `)`, `}`, etc.) appears.
 - A `#` not followed by at least one `env_char` is a lexical error (except for the interpolation opener `#{` inside interpreted strings and command strings).
-- The character set of `env_char` is defined so that any Docker image reference including registry, repository, tag, and digest can be written. `@` is included for digest specification (e.g. `#alpine@sha256:...`).
+- The character set of `env_char` is defined so that any Docker image reference including registry, repository, tag, and digest can be written. `@` is included for digest specification (e.g. `#alpine@sha256:...`). It also covers a relative path to a Dockerfile (`#./images/build/Dockerfile`, 6.7).
+- A path in an `env_head` cannot contain whitespace or any character outside `env_char`; a Dockerfile meant to be named by one must be placed at a path that can be written.
 
 Reserved words:
 
@@ -358,7 +365,8 @@ This chapter defines the types of values that Lask handles, type annotations, ty
   - `Bool`: Boolean values
   - `Null`: Absence of a value
   - `Void`: Absence of a return value
-  - `Environment`: The execution environment of commands (Chapter 10). It holds a special position distinct from the other base types in that its values are constructed only by environment expressions (6.7) and its serialization is limited to a metadata representation (4.5, 13.1).
+  - `Environment`: The execution environment of commands (Chapter 10): where a command runs, and in which image. It holds a special position distinct from the other base types in that its values are constructed only by environment expressions (6.7) and its serialization is limited to a metadata representation (4.5, 13.1).
+  - `Runnable`: An environment together with the run options it is run with (10.2): what a command execution needs. Its values are constructed only by `runnable` (15.5) and its sugar `#head{...}` (6.7). `Environment` conforms to it (4.4); serialization is as for `Environment`.
 - Composite types
   - `Array<T>`: An array whose element type is `T`
   - `Map<T>`: A map with string keys and value type `T`
@@ -594,6 +602,7 @@ Type conformance relation:
 - Top type: any `T` conforms to `Any`. `Any` is the only top type.
 - Union introduction: a type `T` that is not a union conforms to `U1 | ... | Un` when `T` conforms to some `Ui`.
 - Union elimination: `T1 | ... | Tm` conforms to `U` when every `Ti` conforms to `U`.
+- Environments: `Environment` conforms to `Runnable`. An environment is a runnable with no run options (10.1), so it may be placed wherever a command execution needs a runnable. `Runnable` does not conform to `Environment`.
 - No conformance relation exists for any pair of types other than the above.
 
 The two union rules together give: `String` conforms to `String | Null`; `String | Null` conforms to `String | Null | Number`; `String | Null` conforms to `Any`; and `String | Null` does **not** conform to `String`. Moving from a union to one of its members is not a conformance step: it requires the runtime check of `cast` (15.8) or the type dispatch of `case` (6.4). The relation remains reflexive, transitive, and antisymmetric on canonical forms, and `Any` remains the only top type.
@@ -670,11 +679,11 @@ Type parameters within the body of their declaration (rigidity):
   - `Array<T>`, `Map<T>`, `Record<field1: T1, field2: T2, ...>`
   - `T1 | T2 | ...` (every member of a union is a data type by the well-formedness rules of 4.2, so a union is always directly serializable; a value serializes as the member it actually is, 13.1)
 - Not directly serializable
-  - `Void`, `Environment`
+  - `Void`, `Environment`, `Runnable`
   - `AsyncHandle<T>`
   - `Function<T1, T2, ..., R>`
 - Function values are converted to reference metadata (`FunctionRef`; 13.2) in execution records and external output.
-- Likewise, `Void` and `Environment` are converted to a tagged metadata representation (13.1) in external output. Restoration by deserialization is not guaranteed for either (the round-trip rules of 13.1).
+- Likewise, `Void`, `Environment` and `Runnable` are converted to a tagged metadata representation (13.1) in external output. Restoration by deserialization is not guaranteed for either (the round-trip rules of 13.1).
 
 ## 5. Declarations and Modules
 
@@ -720,22 +729,22 @@ Declaration termination rules:
 Command declarations:
 
 - A command declaration registers each name as a **command word**: the name of a program that the given environment provides. It binds no value name. Command words are the sole means by which a command execution expression with no environment specification obtains an environment (6.6, 10.9); a module has the words it declares and those it imports (below).
-- A name is a `string_lit` containing no interpolation. The set of command words a module has must be determinable without evaluating it, for the same reason 10.2 requires literal `dockerfile` and `context` arguments.
+- A name is a `string_lit` containing no interpolation. The set of command words a module has must be determinable without evaluating it, for the same reason 10.2 requires an image to be named by the head of an environment expression.
 - A name is valid exactly when submitting it alone, as a whole command string, to the dispatch procedure of 10.9 yields exactly one candidate whose text is the name itself. Otherwise it is a static error (`E-TYPE-COMMAND-NAME`). The rule is stated against the procedure so that a name that could never be recognized in a command string is rejected where it is written; `docker-compose`, `7z` and `g++` are valid, while `my prog`, `a=b`, `/usr/bin/x` and `foo*` are not.
-- The environment is any expression of type `Environment`; any other type is a static error (`E-TYPE-COMMAND-ENV`). It is elaborated in the module that declares it, and evaluated when a command it selects runs, not when the module is loaded.
+- The environment is any expression of type `Runnable` — an `Environment`, which conforms to it (4.4), or a runnable with its run options; any other type is a static error (`E-TYPE-COMMAND-ENV`). It is elaborated in the module that declares it, and evaluated when a command it selects runs, not when the module is loaded.
 - The environment must not have an effect. It must not reach, directly or through the top-level declarations it references, command execution (15.5, and so no command execution expression), the filesystem (15.11), diagnostic output (15.12), nondeterministic generation (15.13), the functions that wait (15.7), or the standard input (9.3). Reachability over-approximates as enumeration does (11.4): a reference counts whether or not it is ever called. A violation is a static error (`E-TYPE-COMMAND-EFFECT`). Reading the variables of the process (15.9) is permitted.
-- The restriction is what an environment has to satisfy for everything that reads it without running a task. Every image a declaration can name stays enumerable (11.4), since enumeration walks its expression; an image reference built at run time is reported as dynamic, as it is anywhere else (10.3); `cmd` can evaluate the environment without running anything and without consuming the standard input, which belongs to the program (11.8); and the environment means the same wherever the word is used, including in a module that imports it.
+- The restriction is what an environment has to satisfy for everything that reads it without running a task. Every image a declaration can name stays enumerable (11.4), since enumeration walks its expression; `cmd` can evaluate the environment without running anything and without consuming the standard input, which belongs to the program (11.8); and the environment means the same wherever the word is used, including in a module that imports it.
 - `#local` is permitted, and is how a module states which programs it runs on the host.
 - A command declaration takes a visibility marker like any other declaration. Omitting it is equivalent to `export`, and makes the words **exported command words** of the module; `internal` keeps them to it. Exporting a word changes nothing in another module until that module imports the word by name.
 - The same word declared twice within one module, or both declared and imported, is a static error (`E-TYPE-COMMAND-DUPLICATE`). The names occupy no namespace shared with values or types, so they cannot collide with a declaration, a value import, or a type alias.
 
 ```lask
 node = #node:20.20.2-alpine3.23
-go(--proxy: String = ""): Environment = #docker("golang:1.25", env = {"GOPROXY": proxy})
+go(--proxy: String = ""): Runnable = #golang:1.25{env: {"GOPROXY": proxy}}
 
 command { "go", "gofmt" } on go(proxy = "direct")
 command { "node", "npm", "npx" } on node
-command { "docker-compose" } on #docker("docker/compose:2.29.7")
+command { "docker-compose" } on #docker/compose:2.29.7
 internal command { "mv", "rm", "ls" } on #local
 ```
 
@@ -750,8 +759,8 @@ Command imports and exports:
 
 ```lask fragment
 // tools/main.lask
-go(--proxy: String = ""): Environment = #docker("golang:1.25", env = {"GOPROXY": proxy})
-aws(--profile: String = ""): Environment = #docker("amazon/aws-cli:2.36.41", env = {"AWS_PROFILE": profile})
+go(--proxy: String = ""): Runnable = #golang:1.25{env: {"GOPROXY": proxy}}
+aws(--profile: String = ""): Runnable = #amazon/aws-cli:2.36.41{env: {"AWS_PROFILE": profile}}
 command { "go", "gofmt" } on go()
 export command { "node", "npm" } on #node:20.20.2-alpine3.23
 internal command { "helper" } on #local
@@ -904,15 +913,16 @@ Consistency:
 
 Fetching and verification:
 
-- Dependencies are fetched into a per-project, content-addressed cache and verified against `hash` by the CLI (`lask deps sync`; 11.5). A verification failure is `E-MODULE-HASH-MISMATCH`.
+- Dependencies are fetched into a per-project, content-addressed cache and verified against `hash` by the CLI (`lask sync`; 11.7). A verification failure is `E-MODULE-HASH-MISMATCH`.
 - The cache is located at `.lask/deps` under the base directory for module resolution, unless `LASK_CACHE_DIR` names another directory. A project may therefore be copied, cache included, to a machine without network access.
-- The presence of an entry is not taken as proof of its content: a cache may be shared between projects or written by something other than `deps sync`. Every subcommand that resolves a dependency verifies its entry against `hash` when it uses it, at most once per resolution. An entry that is itself a symbolic link does not verify. `deps sync` replaces an entry that does not verify with a fresh fetch.
+- Where the cache is does not reach the lock file. A recipe written in a dependency is recorded, in its lock key and in the context path its hash covers (10.3), by its path under `.lask/deps`, as if the cache were in its default place, and read from wherever `LASK_CACHE_DIR` puts it. A lock written on one machine therefore holds on another whose cache is elsewhere.
+- The presence of an entry is not taken as proof of its content: a cache may be shared between projects or written by something other than `sync`. Every subcommand that resolves a dependency verifies its entry against `hash` when it uses it, at most once per resolution. An entry that is itself a symbolic link does not verify. `sync` replaces an entry that does not verify with a fresh fetch.
 - A dependency must not contain symbolic links: their content would depend on the machine that reads them, outside what `hash` covers. A source that contains one is refused when it is fetched. The content hash of a tree never follows a link; it covers the link's own path and target text.
 - A local import (`./`, `../`) in a module of a dependency must resolve inside that dependency's tree; a single-file dependency has no local imports. Otherwise it is `E-MODULE-UNRESOLVED`. What a dependency loads is thereby what its `hash` covers.
-- If a tag recorded as `requested` later resolves to a different commit, `deps sync` reports `E-MODULE-REV-MOVED`. This is distinguished from `E-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
+- If a tag recorded as `requested` later resolves to a different commit, `sync` reports `E-MODULE-REV-MOVED`. This is distinguished from `E-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
 - `check`, `run`, `eval`, and `envs` must not access the network for module resolution. If a declared dependency is not present in the cache, or fails verification, it is a static error (`E-MODULE-UNRESOLVED`).
 - An external module may itself have a `lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted) and are recorded in the root project's lock file, each under its dependency path (`parent>child`).
-- A `lask.json` that a fetched dependency carries but that is not a valid project file is a failure of that dependency in `deps sync` and `deps add`, reported with the dependency it belongs to; its dependencies are not taken to be none.
+- A `lask.json` that a fetched dependency carries but that is not a valid project file is a failure of that dependency in `sync` and `deps add`, reported with the dependency it belongs to; its dependencies are not taken to be none.
 
 Examples:
 
@@ -1472,7 +1482,7 @@ A command execution expression is syntactic sugar for concisely writing shell co
 Definition as a function:
 
 - `run` is a core function that executes a command in the specified execution environment and returns the entire result (exit code, standard output, standard error).
-- Its signature is `run(env: Environment, cmd: String): CommandResult`. The execution environment is a required positional parameter: there is no default execution environment (10.1), and a keyword parameter cannot express a required argument because 6.1 requires one to have a default value.
+- Its signature is `run(env: Runnable, cmd: String): CommandResult`; an `Environment` conforms to `Runnable` (4.4). The execution environment is a required positional parameter: there is no default execution environment (10.1), and a keyword parameter cannot express a required argument because 6.1 requires one to have a default value.
 - `run` succeeds regardless of the exit code as long as the command completes (8.7). Failures occur only for execution infrastructure faults (unresolvable environment, inability to connect, inability to launch the command, etc.).
 
 The `CommandResult` type:
@@ -1513,7 +1523,7 @@ Here `run` is a core function and must not be directly declared or overridden by
 Environment specification rules:
 
 - `Environment` is a basic type defined in 4.1, and the responsibilities of execution environments are defined in Chapter 10.
-- `env` is an expression of type `Environment`. It is usually constructed with an environment expression (6.7) — `#local` or `#docker(...)` (including the sugar `#image-name`) — but any expression that returns an `Environment` value (a variable reference, etc.) can be placed there.
+- `env` is an expression of type `Runnable`: an `Environment`, which conforms to it (4.4), or a runnable. It is usually written as an environment expression (6.7) — `#local`, an image reference such as `#alpine:3.20`, a recipe such as `#./images/build/Dockerfile`, or any of these with run options, `#alpine:3.20{memory: "4g"}` — but any expression of either type (a variable reference, a call, etc.) can be placed there.
 - If resolution of `env` fails, it is a pre-execution error.
 - When an environment specification is present it is the environment, and dispatch is not performed whatever the command string contains. When it is absent the environment is the one dispatch selects (10.9), and its absence is a static error when dispatch selects none. There is no default execution environment (10.1).
 - Whitespace after `$` is not significant. The command string begins immediately after `$`, after the stream specifier, or after the closing `]`, and its leading whitespace is removed, so `$go test` and `$ go test` are the same expression. Only a stream specifier and an environment specification may follow `$` without intervening whitespace.
@@ -1521,9 +1531,9 @@ Environment specification rules:
 
 Typing rules:
 
-- `run` is typed as `Function<Environment, String, CommandResult>` (7.5).
+- `run` is typed as `Function<Runnable, String, CommandResult>` (7.5).
 - As a result of the desugaring, the expression type of `$ ...`, `$1 ...`, and `$2 ...` is `String`, and the expression type of `$* ...` is `CommandResult`.
-- If `env` does not conform to `Environment`, it is a type error.
+- If `env` does not conform to `Runnable`, it is a type error.
 - The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a static error (`E-TYPE-BOUND`).
 - The stringifiable types are `String`, `Number`, `Bool`, `Any`, a union all of whose members are stringifiable, and a type parameter whose bound entails `stringifiable` (4.4). This is the named bound `stringifiable` (4.2). Every other type, `Null` included, is not stringifiable, and `to_string` (15.3) accepts exactly the same set. `String | Null` is therefore **not** stringifiable: a value that may be absent cannot be interpolated into a command, and must be resolved by `case` (6.4) or `cast` (15.8) first. `Any` is stringifiable statically and may still fail at runtime (15.3), because its content is unknown until then.
 
@@ -1568,52 +1578,68 @@ lint(): String = do {
 ### 6.7 Environment Expressions
 
 ```ebnf
-EnvExpr     = env_head [ EnvArgList ] .
+EnvExpr     = env_head [ EnvArgList ] [ RunOptions ] .
 EnvArgList  = "(" [ EnvArgument { "," EnvArgument } ] ")" .
-EnvArgument = [ lower_id "=" ] Expression .
+EnvArgument = lower_id "=" Expression .
+RunOptions  = "{" [ RunOption { "," RunOption } ] "}" .
+RunOption   = lower_id ":" Expression .
 ```
 
-An environment expression constructs a command execution target (Chapter 10) as a value in the form `#environment-kind(arguments...)`, and the type of the expression is always `Environment`. The arguments for each environment kind are given against an environment constructor signature (10.2) defined with the same parameter rules as functions (6.1: positional binding and default values).
+An environment expression names a command execution target (Chapter 10). Its head names the target: the host, an image in a registry, or a recipe that builds an image. The optional argument list in parentheses gives the **image options** that decide which image it is (10.2); the expression without braces is of type `Environment`. The optional list in braces gives the **run options** that decide how it runs, and makes it a `Runnable` (4.1): it is sugar for `runnable` (15.5).
+
+Heads:
+
+- `#local`: local execution on the host (the `local` profile of 10.2). It takes neither list.
+- `#./path`: a **recipe**. A head whose body begins with `.` is a path, relative to the directory of the module the expression is written in, naming the Dockerfile the image is built from (the recipe form of 10.2). Example: `#./images/build/Dockerfile`.
+- `#reference`: a **registry reference**. Any other head is a reference to an image in a registry, with an optional registry, tag or digest (the registry-reference form of 10.2). Examples: `#alpine:3.20`, `#ghcr.io/astral-sh/ruff:0.15.1`, `#ubuntu@sha256:9cee...`.
+
+The head is the only place an image is named. No string, variable, argument or other expression can name one, so the images a program uses are those written as heads in its source files, and are known by reading them (10.3).
 
 Syntax rules:
 
-- `env_head` is the lexical token defined in 3.3: `#` followed by an environment kind name or a Docker image name.
-- The opening `(` of `EnvArgList` must be placed immediately after `env_head` without intervening whitespace. A `(` with intervening whitespace is not part of the environment expression and is interpreted as an independent expression.
-- When an `EnvArgList` is present, the body of `env_head` (the part excluding `#`) must be an environment kind name conforming to `lower_id`. If it does not conform (e.g. `#alpine:3.12(...)`), it is a syntax error.
-- An `EnvArgument` is a positional argument (`Expression`) or a named argument (`lower_id "=" Expression`). Positional arguments must be placed before all named arguments.
-- The argument of the environment kind `env` must be a string literal containing no interpolation (10.2).
-- The rules for named arguments are the same as for keyword arguments in function calls (6.1, 7.5). The name must match a keyword parameter name of the environment constructor signature; naming a positional parameter and duplicate specification of the same parameter are static errors (`E-TYPE-ENV-CONSTRUCT` for environment expressions).
+- `env_head` is the lexical token defined in 3.3.
+- The opening `(` of `EnvArgList` must be placed immediately after `env_head`, and the opening `{` of `RunOptions` immediately after `env_head` or after the closing `)` of `EnvArgList`, without intervening whitespace. A `(` or `{` with intervening whitespace is not part of the environment expression.
+- Every argument is named. A positional argument is a static error (`E-TYPE-ENV-CONSTRUCT`).
+- `EnvArgList` takes the image options of the head's form (10.2): `platform` for either form, and `context` and `build_args` for a recipe. Each is given as a string literal containing no interpolation (`build_args`: a table of such literals), since it is read without evaluating the program (10.3). A run option, an unknown name, a duplicate, or a value that is not such a literal is a static error (`E-TYPE-ENV-CONSTRUCT`).
+- `RunOptions` takes the run options of 10.2, by the same names as the keyword parameters of `runnable`. A run option takes any expression of its type, including a function's parameters and values read from outside the program (15.9). An image option, an unknown name or a duplicate is a static error (`E-TYPE-ENV-CONSTRUCT`). A key is a `lower_id`; the braces are not an object literal and build no value of their own.
+- `#local` with either list, even an empty one, is a static error (`E-TYPE-ENV-CONSTRUCT`).
+- A Docker image whose reference is `local` is written with its namespace, `#library/local`.
+- Environment profile names such as `local` / `docker` are not reserved words. In positions without `#`, they can be used as ordinary identifiers. `#docker` is the registry reference to the image `docker`.
 - Because `env_char` includes `.`, an accessor `.` cannot follow immediately after `env_head` (it is absorbed into the token). If processing is needed, first bind it to a variable.
 
 Desugaring rules:
 
-- When there are no arguments, the `EnvArgList` can be omitted. `#name` (whose body matches an environment kind name of 10.2) is syntactic sugar for `#name()`. Example: `#local` is equivalent to `#local()`.
-- A `#image-name` whose body does not match an environment kind name is syntactic sugar for `#docker("image-name")` (Docker sugar). Example: `#alpine:3.12` is equivalent to `#docker("alpine:3.12")`.
-- Therefore, to specify a Docker image with the same name as an environment kind name (e.g. `local`), the explicit form `#docker("local")` must be used.
-- Environment kind names such as `local` / `docker` are not reserved words. In positions without `#`, they can be used as ordinary identifiers.
+- `#head(image options){k1: e1, ..., kn: en}` is syntactic sugar for `runnable(#head(image options), k1 = e1, ..., kn = en)` (15.5). It refers to the built-in `runnable` whatever the name `runnable` is bound to in scope.
+- The sugar is available on a head only. Run options for an environment held in a variable are given with `runnable(e, ...)`.
 
 Typing rules:
 
-- The type of an `EnvExpr` is `Environment`.
-- Arguments are checked against the environment constructor signature of 10.2 using the call consistency of 7.5 (argument binding, type conformance, default-value completion) and the named argument rules of this section.
-- An unknown environment kind, a missing positional argument, or an unknown named argument is a static error (7.7).
+- An `EnvExpr` without `RunOptions` is of type `Environment`; one with `RunOptions` is of type `Runnable`.
+- Arguments are checked against the options of 10.2 using the call consistency of 7.5 (type conformance) and the rules of this section.
 
 Evaluation rules:
 
-- Argument expressions are evaluated left to right in written order (positional arguments, then named arguments).
-- The evaluation result is an `Environment` value consisting of the environment kind and the normalized parameter set. Runtime environment resolution follows 10.4.
+- Argument expressions are evaluated left to right in written order.
+- The evaluation result is a value consisting of the profile, the image the head names with its image options, and, for a runnable, the run options given (8.8). Runtime environment resolution follows 10.4.
 - If evaluation of an argument expression fails, the whole environment expression fails.
 
 Examples:
 
 ```lask
 e1 = #local
-e2 = #alpine:3.12
-e3 = #docker("alpine:3.12", memory="4g")
+e2 = #alpine:3.20
+e3 = #alpine:3.20{memory: "4g", env: {"TOKEN": get_env("TOKEN")}}
 e4 = #ubuntu@sha256:9cee2b382fe2412cd77d5d437d15a93da8de373813621f2e4d406e3df0cf0e7c
-e5 = #docker(dockerfile = "infra/Dockerfile", context = ".")
+e5 = #./infra/Dockerfile(context = ".", build_args = {"GO_VERSION": "1.25"})
+e6 = #node:24.21.0-alpine3.24(platform = "linux/amd64"){memory: "2g"}
 
-run_in(env: Environment): String =
+// A function that lets its caller choose the image, and says how to run it.
+python(--image: Environment = #python:3.12.14-alpine3.24, --index_url: String | Null = null): Runnable =
+  runnable(image, env = {"PYTHONUNBUFFERED": "1", "PIP_INDEX_URL": index_url})
+
+e7 = python(image = #python:3.13.2-alpine3.24)
+
+run_in(env: Runnable): String =
   $[env] uname -a
 ```
 
@@ -1899,7 +1925,7 @@ Consistency of helper functions (normalization targets of syntactic sugar):
 - `for_each`: `Function<Array<T>, Function<T, U>, Void>`
 - `recover`: `Function<Function<T>, Function<Error, T>, T>`
 - `fail`: `Function<Error, T>`
-- `run`: `Function<Environment, String, CommandResult>`
+- `run`: `Function<Runnable, String, CommandResult>`
 
 Type variables in signatures (`T`, `U`, etc.) are instantiated and checked per call according to the polymorphism rules of 4.4. This applies to a call of a declaration that declares type parameters exactly as it does to a built-in: the argument binding of this section is unchanged, and each bound argument is checked against its parameter type with the instantiation applied. Keyword parameters and variadic collection are unaffected by instantiation, being declaration parameter information rather than part of the function type.
 
@@ -1909,8 +1935,9 @@ Where a variadic parameter's element type is a type parameter, the first collect
 
 Consistency of environment expressions:
 
-- The arguments of an environment expression `#kind(args)` (6.7) are subject to the same verification items as this section (argument binding, type conformance, default-value completion) against the environment constructor signatures of 10.2. Because environment constructor signatures always resolve statically as declarations, default-value completion and named arguments are always available.
-- Violations concerning named arguments (unknown names, duplicate bindings) are reported as `E-TYPE-ENV-CONSTRUCT` for environment expressions (7.7).
+- The image options of an environment expression `#head(...)` and the run options of `runnable(e, ...)` and its sugar `#head{...}` (6.7, 15.5) are named arguments bound to the options of 10.2 by name, and each is checked for type conformance against its option. An option left unbound is not completed with a value: it stays unset.
+- `runnable` resolves statically as a built-in, so its run options are always available as keyword arguments. Called as a function value, it takes its environment alone (positional only, as above), and gives no run option.
+- Violations concerning these arguments (a positional argument where a name is required, an unknown name, a duplicate binding, an image option given to `runnable` or an image option not given as a literal, a run option in a head's parentheses) are reported as `E-TYPE-ENV-CONSTRUCT` (7.7).
 
 ### 7.6 Static Expansion Order of Syntactic Sugar
 
@@ -1924,7 +1951,7 @@ The expansion order during static verification is as follows.
 6. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
 7. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
 8. Sequential-execution expansion of `do { ... }`
-9. Expansion of environment expression sugar (`#name` -> `#name()`, and `#image-name` other than environment kind names -> `#docker("image-name")`)
+9. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
 10. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
 11. Command sugar expansion of `$ cmd` / `$[env] cmd`
 
@@ -1951,7 +1978,7 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-COMMAND-EFFECT`: the environment of a command declaration can reach an effect (Chapter 5)
 - `E-TYPE-COMMAND-NAME`: a command declaration names a program that could never be recognized in a command string (Chapter 5)
 - `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5)
-- `E-TYPE-ENV-CONSTRUCT`: invalid environment expression (unknown environment kind, neither or both of a registry reference and a recipe, an empty registry reference, a non-literal `dockerfile`/`context`, a recipe path escaping the module tree, a dynamic image reference in a dependency domain, or an unknown or duplicate named argument; 10.2, 10.3)
+- `E-TYPE-ENV-CONSTRUCT`: invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree; 6.7, 10.2, 10.3, 15.5)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
 - `E-TYPE-CASE-DUPLICATE`: two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4)
@@ -2122,25 +2149,33 @@ Error value conversion of failures caused by non-zero exit (carrying over the ex
 
 Stopping an abandoned command:
 
-- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
+- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
 - An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
 
 ### 8.8 Evaluation of Environment Expressions (Core Expression)
 
-An environment expression `#kind(args)` (6.7) is a core expression that remains after sugar expansion (7.6) and is evaluated by the following procedure.
+An environment expression `#head(image options)` (6.7) is a core expression evaluated by the following procedure.
 
-1. Evaluate the argument expressions from left to right in written order (positional arguments, followed by named arguments).
-2. Bind the evaluated values to the parameters of the environment constructor signature (10.2), and complete any keyword parameters not given by evaluating their default-value expressions (identical to the default argument rules of 8.3).
-3. Return an `Environment` value consisting of the environment kind and the normalized parameter set.
-4. If the evaluation of an argument expression or a default-value expression fails, the entire environment expression fails.
+1. Evaluate the argument expressions from left to right in written order.
+2. Return an `Environment` value consisting of the profile (`local` or `docker`) and the image the head names, with its image options.
+3. If the evaluation of an argument expression fails, the entire environment expression fails.
 
-Resolution of an environment value to an execution environment (10.4) is performed not at environment expression evaluation time but immediately before command launch by `run`.
+The sugar `#head(image options){run options}` has been expanded to `runnable(#head(image options), run options)` (7.6). An application of `runnable(e, k1 = e1, ..., kn = en)` (15.5) is evaluated as follows.
+
+1. Evaluate `e` to an `Environment` value, then the run option expressions from left to right in written order.
+2. If the profile of `e` is `local` and any run option is set, the application fails (`E-RUNTIME-VALUE`): `local` takes none.
+3. Return a `Runnable` value consisting of `e` and the run options given. An option given `null` is not set (10.2).
+4. If the evaluation of `e` or of a run option expression fails, the entire application fails.
+
+There is no other way to give run options. `runnable` takes an `Environment`, so the options of a runnable are given once, where it is made, and no rule decides how one set of options combines with another.
+
+Resolution of an environment or runnable value to an execution environment (10.4) is performed not at evaluation time but immediately before command launch by `run`.
 
 Equality comparison:
 
-- `==` / `!=` (6.2) on `Environment` values is determined by structural equality of the environment kind and the normalized parameter set.
+- `==` / `!=` (6.2) on `Environment` and `Runnable` values is determined by structural equality of the profile, the image with its image options, and the set of run options that are set. An `Environment` and a `Runnable` with no run option set are equal: `#alpine:3.20 == runnable(#alpine:3.20)`, and `#alpine:3.20{memory: null} == #alpine:3.20`.
 
 ### 8.9 Evaluation of Accessor Expressions (Core Expression)
 
@@ -2217,7 +2252,7 @@ Channel separation rules:
 
 ### 9.2 Ingestion of Standard Input
 
-Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure. Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable (9.3).
+Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure, when the function called can refer to `stdin`: when it, or a declaration it reaches, or the environment of one of the program's command declarations, names `stdin` (9.3). A function that cannot refer to it cannot observe its contents, so stdin is then not read at all, and the run does not wait for it to close. Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable (9.3).
 
 1. Read stdin until EOF.
 2. Fix the entire input that was read as a single input snapshot.
@@ -2337,7 +2372,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 
 ```lask
 aws(key_id: String, secret: String) =
-  #docker("amazon/aws-cli:2.31.9", env = {"AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret})
+  #amazon/aws-cli:2.31.9{env: {"AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret}}
 
 deploy(
   --key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
@@ -2369,8 +2404,8 @@ Reading:
 - A value resolved from a reference is registered for masking (12.8). This is the one case in which a value is registered because of where it came from: writing a reference is how the environment declares the value secret. Binding it to a `!!`-marked name (6.10) remains good practice and changes nothing.
 - A run reads each secret at most once. Two references that name the same secret (the same path and version, differing in their field at most) are answered by the same read, also when they are read concurrently (6.3). For a store that issues a new credential on every read, this is what makes the fields of one credential agree.
 - A resolved value is kept in memory for the rest of the run only. Nothing is written to disk.
-- Resolution never changes the process environment. A command reads the variables of its execution environment (10.6), and a `local` command that reads the variable itself sees the reference, not the secret; a value reaches a command only as the program passes it on, for instance as `#docker(..., env = {"TOKEN": get_env("TOKEN")})`.
-- Nothing that does not evaluate a program resolves a reference: `check`, `serve`, completion and help never reach a store. `cmd --list` (11.8) reports a command whose environment reads a reference without resolving it.
+- Resolution never changes the process environment. A command reads the variables of its execution environment (10.6), and a `local` command that reads the variable itself sees the reference, not the secret; a value reaches a command only as the program passes it on, for instance as `#alpine:3.20{env: {"TOKEN": get_env("TOKEN")}}`.
+- Nothing that does not evaluate a program resolves a reference: `check`, `serve`, completion and help never reach a store. `cmd --help` (11.8) reports a command whose environment reads a reference without resolving it.
 
 The `vault` scheme (HashiCorp Vault, and stores serving the same HTTP API, such as OpenBao):
 
@@ -2402,66 +2437,61 @@ This chapter defines the execution environments that can be specified when invok
 
 ### 10.1 The `Environment` Type and Environment Expressions
 
-`Environment` is a built-in primitive type (4.1) representing the execution-target context that `run` (6.6) receives as its first positional argument. `Environment` values are constructed only by evaluating an environment expression (6.7) `#environment-kind(arguments...)`.
+`Environment` is a built-in primitive type (4.1) representing an execution target: where a command runs, and in which image. `Runnable` (4.1) is an environment together with the run options it is run with (10.2), and is what `run` (6.6) receives as its first positional argument. `Environment` values are constructed only by evaluating an environment expression (6.7), and `Runnable` values only by `runnable` (15.5) and its sugar `#head{...}` (6.7). An `Environment` conforms to `Runnable` (4.4): it is a runnable with no run options.
 
 Rules:
 
 - `Environment` must not be overridden by user-defined type aliases or value declarations.
-- `Environment` values must be resolvable to at least the following 2 families.
-  - `#local` (local execution)
-  - `#docker(...)` (container execution, including the sugar `#image-name`)
-- The `env` argument of `run` must be normalized to an `Environment` value at evaluation time.
+- `Environment` values must be resolvable to at least the following 2 profiles.
+  - `local`: `#local` (local execution)
+  - `docker`: a registry-reference head `#<image>` or a recipe head `#./<Dockerfile>` (container execution)
+- The `env` argument of `run` must be normalized to an `Environment` or `Runnable` value at evaluation time.
 - There is no default execution environment. Every command execution expression determines its environment from the expression itself — from its environment specification, or by dispatch over its command string (6.6, 10.9) — and an expression that determines none is a static error (`E-TYPE-COMMAND-NOENV`). Local execution is written `#local`, like any other environment, or is registered for a program by a command declaration (Chapter 5).
-- No CLI option or other external configuration may supply, alter, or override the environment of a command.
+- No CLI option or other external configuration may supply or replace the environment of a command, or name its image. A value from outside the program may reach a run option, as an argument passed to a function that gives it to `runnable` (15.5); it cannot reach the image.
 - The rule replaces an earlier implicit fallback to `#local`. Its purpose is that a program's dependence on the host be stated rather than assumed: under a fallback, deleting a command declaration or mistyping a program name left the command running against whatever the host happened to provide, which is the failure Lask exists to prevent.
 
 Type conformance:
 
 - The type and signature of `run` follow the definition in 7.5.
-- Passing a value other than `Environment` to the `env` argument is a type error.
+- Passing a value other than `Environment` or `Runnable` to the `env` argument is a type error.
 
-### 10.2 Target Environment Profiles and Environment Constructor Signatures
+### 10.2 Target Environment Profiles and Their Options
 
-The execution environment profiles specified by this specification are defined as pairs of an environment kind name and an environment constructor signature. The parameter rules of the signature (positional binding, default values, type annotations) are identical to those of function parameters (6.1), and the caller supplies positional and named arguments via an environment expression (6.7).
-
-The environment kinds that can be used in environment expressions are the 2 kinds `local` and `docker`. Both are self-contained on the host running Lask. Environments that span hosts are not provided: their contents cannot be pinned, they carry state between runs, and no boundary can be placed around what they may do. A remote host is reached by running a client for it inside a container (`$[#alpine:3.20] ssh ...`), which keeps the tool that reaches it pinned.
+The execution environment profiles specified by this specification are `local` and `docker`. Both are self-contained on the host running Lask. Environments that span hosts are not provided: their contents cannot be pinned, they carry state between runs, and no boundary can be placed around what they may do. A remote host is reached by running a client for it inside a container (`$[#alpine:3.20] ssh ...`), which keeps the tool that reaches it pinned.
 
 - `local`: local process execution on the calling host
-  - Signature: `local()` (no parameters)
-  - Notation example: `#local` (sugar for `#local()`)
+  - Written `#local`. It takes no options.
 - `docker`: execution inside a container
-  - Signature: `docker(image: String, --dockerfile: String = "", --context: String = "", ...)`.
-  - The image is given in exactly one of two forms. Giving both, or neither, is a static error (`E-TYPE-ENV-CONSTRUCT`).
-    - **Registry reference**: the positional `image`, a reference to an image in a registry. It must not be an empty string (`E-TYPE-ENV-CONSTRUCT`). It may carry a tag or a digest, or neither: a bare repository name names its `latest`. Whatever a reference names upstream, the lock pins the image it resolved to when it was materialized (10.3), so a reference that moves upstream does not move a run.
-    - **Recipe**: the keyword parameters `dockerfile` and `context`, naming a Dockerfile and its build context. `context` defaults to the directory containing the Dockerfile. `build_args` supplies the build arguments the recipe hash covers (10.3); giving it with a registry reference is a static error (`E-TYPE-ENV-CONSTRUCT`), because there is then no build for it to reach.
-  - `dockerfile` and `context` must be string literals containing no interpolation, and `build_args` a table of such literals, so that the set of images a module uses is statically determinable: all three decide which image is built. Any other expression is a static error (`E-TYPE-ENV-CONSTRUCT`).
-  - `dockerfile` and `context` must resolve inside the tree of the module in which the expression is written. A path escaping that tree is a static error (`E-TYPE-ENV-CONSTRUCT`). A recipe is therefore covered by the module's content hash (Chapter 5) and cannot be altered without invalidating the pin.
-  - Both are relative to the directory of that module, and keep naming the same file wherever the environment is later used: from a module that imports it, or from a project that depends on the tree. A library can therefore ship the recipes of its environments beside them.
-  - Implementations may extend the signature with further keyword parameters that configure the container (e.g. `--memory: String = implementation default`, `--cpus: Number = implementation default`). Unknown parameter names must be static errors (7.7).
-  - An extension parameter takes any expression of its type, like an argument anywhere else. Only `dockerfile`, `context` and `build_args` are held to literals, because they decide which image is built (10.3); the container options decide how that image runs, and are resolved when a command runs.
-  - The order keyword arguments are written in is not part of the value. Two environment expressions passing the same arguments under different orders are structurally equal (8.8), so dispatch does not see them as two environments (10.9).
-  - An extension parameter must not be able to unsettle what this chapter fixes elsewhere: the process launch method, the mount of the base directory (10.5), the streams (9.1, 11.8), or the rule that images are materialized only by `deps sync` and `env build` (10.3). A parameter that would override one of those is outside what the signature may be extended with.
-  - Notation examples: `#docker("alpine:3.12", memory="4g")`, `#docker(dockerfile = "infra/Dockerfile", context = ".")`, sugar `#alpine:3.12`
+  - The image is named by the head of the environment expression (6.7), in one of two forms.
+    - **Registry reference**: `#<reference>`, an image in a registry. It may carry a registry, a tag or a digest, or none of them: a bare repository name names its `latest`. Whatever a reference names upstream, the lock pins the image it resolved to when it was materialized (10.3), so a reference that moves upstream does not move a run.
+    - **Recipe**: `#./<path>`, a Dockerfile, with the image options `context`, naming its build context, and `build_args`, supplying the build arguments the recipe hash covers (10.3). `context` defaults to the directory containing the Dockerfile. `context` and `build_args` given to a registry reference are static errors (`E-TYPE-ENV-CONSTRUCT`), because there is then no build for them to reach.
+  - Image options: `platform` (`String`) for either form, and `context` (`String`) and `build_args` (`Map<String>`) for a recipe. They decide which image is materialized and run: `platform` selects a variant of a multi-platform image, or the platform a recipe is built for. They are given only in a head's own argument list, as literals containing no interpolation (6.7), so that the set of images a program uses is determinable by reading its source (10.3).
+  - The Dockerfile and `context` are relative to the directory of the module in which the expression is written, and must resolve inside the tree of that module. A path escaping that tree is a static error (`E-TYPE-ENV-CONSTRUCT`). A recipe is therefore covered by the module's content hash (Chapter 5) and cannot be altered without invalidating the pin.
+  - Both keep naming the same file wherever the environment is later used: from a module that imports it, or from a project that depends on the tree. A library can therefore ship the recipes of its environments beside them.
+  - Run options configure the container. They are given to `runnable` (15.5), or in braces after a head (6.7), and make a `Runnable`. Implementations may provide further run options (e.g. `memory`, `cpus`); an unknown option name must be a static error (7.7).
+  - A run option takes any expression of its type, like an argument anywhere else. It is resolved when a command runs.
+  - The order options are written in is not part of the value. Two runnables with the same image and the same options set are structurally equal (8.8), so dispatch does not see them as two environments (10.9).
+  - A run option must not be able to unsettle what this chapter fixes elsewhere: the image, the process launch method, the mount of the base directory (10.5), the streams (9.1, 11.8), or the rule that images are materialized only by `sync` (10.3). An option that would override one of those is outside what may be provided.
+  - Notation examples: `#alpine:3.12`, `#./infra/Dockerfile(context = ".")`, `#node:24.21.0-alpine3.24(platform = "linux/amd64")`; with run options, `#alpine:3.12{memory: "4g"}`, `runnable(e, memory = "4g")`
 
-The parameters this implementation provides, beyond `image` / `dockerfile` / `context` / `build_args`:
+The run options this implementation provides:
 
-| Group | Parameters |
+| Group | Options |
 | --- | --- |
 | Resource limits | `memory`, `memory_swap`, `memory_reservation`, `cpus`, `cpu_shares`, `cpuset_cpus`, `cpuset_mems`, `pids_limit`, `shm_size`, `blkio_weight`, `ulimits` |
-| Execution context | `workdir`, `user`, `env`, `platform`, `hostname`, `init` |
+| Execution context | `workdir`, `user`, `env`, `hostname`, `init` |
 | Confinement | `read_only`, `tmpfs`, `cap_drop` |
 | Network | `network`, `dns`, `dns_search`, `add_hosts`, `publish` |
 | Host filesystem | `volumes` |
 
-- `ulimits`, `tmpfs`, `cap_drop`, `dns`, `dns_search`, `publish` and `volumes` are `Array<String | Null>`; `env` and `add_hosts` are `Map<String | Null>`; `init` and `read_only` are `Bool | Null`; `cpus`, `cpu_shares`, `pids_limit` and `blkio_weight` are `Number | Null`; the rest are `String | Null`. `build_args` is `Map<String>`, held to literals.
+- `ulimits`, `tmpfs`, `cap_drop`, `dns`, `dns_search`, `publish` and `volumes` are `Array<String | Null>`; `env` and `add_hosts` are `Map<String | Null>`; `init` and `read_only` are `Bool | Null`; `cpus`, `cpu_shares`, `pids_limit` and `blkio_weight` are `Number | Null`; the rest are `String | Null`.
 - A list or table option also takes a value already typed `Array<String>` or `Map<String>`. Containers are invariant (4.4), so such a value does not conform to the nullable element type; it holds no null to leave out, and means the same.
-- An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing. This is how an argument says "not given" — a function that builds an environment passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
+- An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing. This is how an argument says "not given" — a function that builds a runnable passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
 - `workdir` is the explicit working directory 10.5 gives precedence over the default.
 - `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
 - A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the `docker` client's command line and sets its value in the client's environment, from which docker takes it. A variable the client reads itself — a name beginning with `DOCKER_`, ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, in any case — is passed with its value on the command line instead, since setting it for the client would change which daemon it reaches or how.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written.
 - A `Bool` parameter left `false` is the daemon's own default and is not passed; nothing is inferred from its absence.
-  - The sugar `#image-name` expands to `#docker("image-name")` (7.6) and is therefore the registry-reference form, under the same rules. There is no sugar for the recipe form.
 
 Each profile has at least the following execution attributes.
 
@@ -2470,31 +2500,39 @@ Each profile has at least the following execution attributes.
 - Environment variable injection rules
 - Permission boundary and access constraints
 
-Implementations may extend with additional profiles (pairs of environment kind and signature), but must not break compatible behavior with the above 2 profiles.
+How this implementation launches a command:
+
+- `docker`: the container is started with the image's entrypoint replaced by `/bin/sh`, and the command string is run as `/bin/sh -c <command string>`. An image must therefore provide `/bin/sh`; an image without a shell (a distroless or `scratch`-based tool image) cannot run a command, and is wrapped in an image that has one.
+- `local`: the command string is run by the host's shell, `/bin/sh -c` on POSIX systems and `cmd.exe /c` on Windows.
+
+Implementations may extend with additional profiles, but must not break compatible behavior with the above 2 profiles.
 
 ### 10.3 Container Image Resolution and Materialization
 
-A `docker` environment names its image either as a registry reference or as a recipe (10.2). Both forms are resolved to a concrete, immutable image ahead of execution and recorded in the lock file (Chapter 5).
+A `docker` environment names its image by its head, as a registry reference or as a recipe (10.2). Both forms are resolved to a concrete, immutable image ahead of execution and recorded in the lock file (Chapter 5).
+
+Statically known images:
+
+- An image is named only by a head (6.7), and its image options are literals. The images a program can use are therefore found by reading its source files, without evaluating them, and every one of them can be materialized and pinned ahead of execution.
+- The images a program requires are those named by the heads reachable from its entry module (11.4): from its declarations, keyword parameter defaults included, and from the environments of its command words, through every declaration they reference, in any module. A head in a module of the graph that nothing reachable references is not required.
+- Reachability over-approximates, as 11.4 does. A function's default image counts whenever the function is reachable, even where every caller passes another.
 
 Materialization:
 
 - A registry reference is pulled and resolved to a digest. The digest is recorded in the lock and verified on subsequent pulls; a mismatch is `E-IO-IMAGE-DIGEST`.
 - A reference the lock already pins is pulled by its digest, not by what is written: a machine that has never seen the image gets the very image the lock names, whatever the tag names upstream today. A reference the lock does not pin is pulled as written, and the digest it resolves to is recorded; it is then pulled once more by that digest, so that the daemon holds the pinned image under a name of its own, independent of the tag.
-- A reference written with a digest (`alpine@sha256:...`) pins itself: it is recorded with that digest.
+- A reference written with a digest (`#alpine@sha256:...`) pins itself: it is recorded with that digest.
+- A reference with `platform` is pulled for that platform. The digest the lock records is the one the reference resolves to, which for a multi-platform image is that of its index and covers every platform; the same reference used with several platforms is one lock entry, materialized once per platform.
 - The pin moves only when the program does. Writing another reference — a new tag — materializes a new image; the same tag pointing somewhere new upstream changes nothing until its entry is removed from the lock.
-- A recipe is built. The resulting image is tagged `lask/<dependency path>/<recipe hash>`, where the recipe hash covers the Dockerfile, the build context, and the declared build arguments. A changed recipe therefore yields a different image and cannot reuse a cached one.
+- A recipe is built, for its `platform` if one is given. The resulting image is tagged `lask/<dependency path>/<recipe hash>`, where the recipe hash covers the Dockerfile, the build context, the declared build arguments, and the platform. A changed recipe therefore yields a different image and cannot reuse a cached one.
 - Builds are performed with no host mount other than the declared context, without privileged mode, and without host networking.
 
 Timing:
 
-- `check`, `run`, `eval`, `envs`, and `cmd` must not build or pull an image. A build instruction is arbitrary code execution, and making it reachable from an implicit path would reintroduce the load-time execution that Chapter 5 otherwise excludes.
+- `check`, `run`, `eval`, `envs`, and `cmd` must not build or pull an image. A build instruction is arbitrary code execution, and making it reachable from an implicit path would reintroduce the load-time execution that Chapter 5 otherwise excludes. An implementation must keep the container runtime from pulling on their behalf, including for a platform the image on the daemon was not materialized for.
 - `repl` is the exception for pulls. It evaluates what is typed at it, which no one else runs and no lock records, so a reference the lock pins runs as pinned and any other runs as written, the daemon pulling it if it must. It builds nothing.
-- Images are materialized only by `lask deps sync` and `lask env build` (11.5, 11.7).
+- Images are materialized only by `lask sync` (11.7).
 - If a required image is absent when a command is to be executed, it is an external I/O error (`E-IO-IMAGE-MISSING`). The diagnostic must name the command that materializes it.
-
-Dynamic references:
-
-- If the `image` argument of `#docker(...)` is a runtime value rather than a literal, the reference cannot be enumerated or pinned ahead of execution. Such an expression is permitted, but `envs` (11.4) reports it as a dynamic image and `deps sync` cannot materialize it in advance.
 
 ### 10.4 Environment Resolution Rules
 
@@ -2502,24 +2540,21 @@ Environment resolution is performed immediately before command launch by `run`.
 
 Resolution procedure:
 
-1. Evaluate the `env` expression to obtain an `Environment` value (environment kind and normalized parameters).
-2. Classify the value's environment kind as one of `local` / `docker`.
-3. Check satisfaction of the image specification for `docker` (exactly one of a registry reference or a recipe; 10.2) and resolve it to the image recorded in the lock file (10.3).
+1. Evaluate the `env` expression to obtain an `Environment` value (profile, image and options).
+2. Classify the value's profile as one of `local` / `docker`.
+3. For `docker`, resolve its image to the image recorded in the lock file (10.3).
 4. Normalize into an executable concrete runtime configuration.
 
-Kind determination rules:
+Resolution rules:
 
-- The environment kind name of the environment expression becomes the environment kind of the `Environment` value as is (`#local()` is `local`, `#docker(...)` is `docker`).
-- The sugar `#image-name` has already been expanded to `#docker("image-name")` by static expansion (7.6).
-- A `docker` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3), and runs as that image: a registry reference as its repository at the pinned digest. If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`, and the diagnostic names `lask env build`.
+- A `docker` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3), and runs as that image: a registry reference as its repository at the pinned digest. If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`, and the diagnostic names `lask sync`. An image is told absent only by a daemon that answers: when the daemon cannot be reached, it is `E-IO-ENV-RESOLVE`, which `lask sync` would not mend.
 - A reference written with a digest resolves to itself, entry or not.
-- A reference computed at run time (10.3) has no entry and can have none. It runs as written if the image is on the target daemon, and is otherwise `E-IO-IMAGE-MISSING`, whose diagnostic says to pull it: it is never pulled for the program, and `env build` cannot materialize it.
-- An unknown environment kind is a static error (`E-TYPE-ENV-CONSTRUCT`) and must not reach runtime environment resolution.
+- Every image a `docker` value can carry was written as a head (6.7), so a missing entry means only that the lock is behind the program; there is no image the lock cannot record.
 
 Failure rules:
 
-- Unknown kinds and missing parameters are static errors (`E-TYPE-ENV-CONSTRUCT`) and do not occur in the runtime resolution of this section. The only means of specifying an execution environment is the in-language environment expression (no means of supplying an execution environment from the CLI is provided; 11.1).
-- Violation of parameter value constraints (empty image name, etc.) or absence of the execution infrastructure (Docker daemon absent, image not materialized, etc.) is a pre-execution error.
+- Invalid heads and options are static errors (`E-TYPE-ENV-CONSTRUCT`) and do not occur in the runtime resolution of this section. The only means of specifying an execution environment is the in-language environment expression (no means of supplying an execution environment from the CLI is provided; 11.1).
+- Absence of the execution infrastructure (Docker daemon absent, image not materialized, etc.) is a pre-execution error.
 - Resolution failure must be classified as an external I/O or runtime error in Chapter 14.
 
 Determinism:
@@ -2534,6 +2569,7 @@ Rules:
 
 - The default cwd for `local` is the project base directory where execution started.
 - The default cwd for `docker` is the working directory determined by the implementation inside the container.
+  - This implementation bind-mounts the project base directory, read-write, at `/work` in the container and uses `/work` as the default cwd. A relative path in a command therefore names the same file on the host and in the container, and a file the command writes there is on the host afterwards.
 - An explicit specification takes precedence over the default cwd.
 - If the cwd does not exist or is inaccessible, it is a pre-execution error.
 
@@ -2604,7 +2640,7 @@ showDocker() =
   $[#alpine:3.20] pwd
 
 showBuilt() =
-  $[#docker(dockerfile = "infra/Dockerfile", context = ".")] pwd
+  $[#./infra/Dockerfile(context = ".")] pwd
 ```
 
 ### 10.9 Command Dispatch
@@ -2679,18 +2715,28 @@ This chapter defines the external contract of the CLI.
 
 ### 11.1 Subcommands
 
-The CLI must provide the following subcommands.
+The CLI must provide the following subcommands. Its help lists them in three groups, in this order.
 
-- `serve`: provides editor integration (Language Server Protocol) functionality.
-- `check`: returns static validation results.
+Run tasks:
+
 - `run`: executes the specified function. The evaluation result is not output to stdout (11.3).
 - `eval`: executes the specified function and outputs the evaluation result to stdout. The syntax is identical to `run` (11.2).
-- `repl`: provides an execution environment for interactively evaluating expressions and functions (11.9).
-- `envs`: enumerates the execution environments used by tasks and checks their accessibility (11.4).
-- `deps`: manages external dependencies — fetches and verifies them, records new entries, and reports on the dependency graph (11.5).
-- `env`: materializes and inspects the container images the resolved graph requires (11.7).
 - `cmd`: invokes a declared command (Chapter 5) in its declared environment (11.8).
+- `repl`: provides an execution environment for interactively evaluating expressions and functions (11.9).
+
+Set up the project:
+
+- `sync`: fetches and verifies the external dependencies, materializes the container images the program requires, and writes the lock file, reporting its progress and listing what it resolved (11.7).
+- `deps`: lists, graphs, adds and removes external dependencies (11.5).
+- `envs`: lists the execution environments used by tasks, what the lock file resolves them to, what requires them, and whether each image is present (11.4).
 - `secrets`: lists the secret references in the environment and checks that the stores they name can be read from (11.10).
+
+Develop:
+
+- `check`: returns static validation results.
+- `serve`: provides editor integration (Language Server Protocol) functionality.
+- `completion`: prints the shell completion script.
+- `version`: prints the version.
 
 Basic invocation syntax:
 
@@ -2716,24 +2762,27 @@ lask eval [--module <path>] <function> [args ...]
 lask run [--module <path>] [<function>] --help
 lask eval [--module <path>] [<function>] --help
 lask repl [--module <path>]
-lask envs [--module <path>] [<function>] [--check]
-lask deps sync [--module <path>] [--frozen]
+lask envs list [--module <path>] [<function>]
+lask sync [--module <path>] [--frozen] [--prune]
+lask deps list [--module <path>]
+lask deps graph [--module <path>] [<name>] [--depth <n>]
 lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--module <path>]
-lask deps diff <name> [<from>..<to>] [--module <path>]
-lask deps why <name> [--module <path>]
-lask env build [--module <path>]
-lask env list [--module <path>]
+lask deps rm <name> [--module <path>]
 lask cmd [--module <path>] <command> [args ...]
-lask cmd --list [--module <path>]
+lask cmd --help [--module <path>]
 lask secrets list [--module <path>] [<function>]
 lask secrets check [--module <path>] [<function>] [--read]
 ```
 
+Retired subcommands:
+
+- A subcommand that another replaced is answered with the replacement, as a usage error (`E-CLI-USAGE`, exit code `4`), rather than as an unknown command: `env build` and `deps sync` by `sync`, `env list` and `envs check` by `envs list`, `deps why` by `deps graph`, and `deps diff` by `deps list`. The retired option `cmd --list`, given before the command name, is answered the same way with `cmd --help`.
+
 Policy on environment specification:
 
 - Specification of the execution environment is performed only via in-language environment expressions (6.7). No option (`--env` etc.) is provided for specifying or overriding the execution environment from the CLI.
-- Consequently, all execution environment specifications pass static validation (7.5, 7.7), and unknown environment kinds never reach runtime environment resolution (10.4).
-- To switch the execution environment per invocation, receive it via a function parameter (of type `Environment`, supplied by a caller in the same project) and pass it through to the command. A dynamic image reference constructed from a `String` is permitted in the root domain only (10.3).
+- Consequently, all execution environment specifications pass static validation (7.5, 7.7), and invalid heads or options never reach runtime environment resolution (10.4).
+- To switch the execution environment per invocation, receive it via a function parameter of type `Environment` and pass it through to the command. Its image is whichever head the caller wrote (6.7): a CLI argument can supply a run option to such a function, never an image.
 - There is no default execution environment (10.1). `cmd` (11.8) is no exception: it runs a declared command in that command's declared environment, and provides no option for choosing another.
 
 ### 11.2 Function Invocation
@@ -2796,7 +2845,7 @@ Type conformance rules:
   - An unbounded one is instantiated at `Any`. This is sound because it is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
   - One with a type bound `B` is instantiated at `B`, the widest type it admits.
   - One with a named bound is decoded at `Any`, then instantiated from the types of the decoded values, as a call instantiates it from the types of its arguments (4.4). Each value in a position of the parameter's type contributes the type a literal of it would have (4.3). The values must agree on one type, and that type must satisfy the bound; otherwise it is a usage error (`E-CLI-USAGE`) before evaluation begins. A body may compare, sort or interpolate such a value, so it cannot be handed one outside its bound.
-- Functions with positional parameters of type `Environment` are excluded from direct CLI invocation (since no decoding mode can construct an `Environment` value, this is a pre-execution error). Keyword parameters of type `Environment` are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive it as `String` etc. and construct the environment expression inside the function.
+- Functions with positional parameters of type `Environment` or `Runnable` are excluded from direct CLI invocation (since no decoding mode can construct such a value, this is a pre-execution error). Keyword parameters of these types are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive a `String` etc. and choose inside the function among environments written there (`case (target) { "amd64" -> #alpine:3.20(platform = "linux/amd64") ... }`); every image stays written as a head (6.7). A run option may be taken from such a value directly, and given to `runnable` (15.5).
 
 Confirmation:
 
@@ -2877,97 +2926,124 @@ lask run sum 1 2 3
 lask run --module ci.lask build
 
 # Execution in a container built from a recipe (in ops.lask:
-# provision() = $[#docker(dockerfile = "infra/Dockerfile")] ...)
+# provision() = $[#./infra/Dockerfile] ...)
 lask run --module ops.lask provision
 
-# Enumeration of used environments and access checks
-lask envs provision --check
+# The environments provision uses, and whether each image is present
+lask envs list provision
 ```
 
-### 11.4 Environment Check (`envs`)
+### 11.4 Environment List (`envs`)
 
-`envs` enumerates the execution environments used by tasks and checks their accessibility.
+`envs list` enumerates the execution environments used by tasks and reports, for each, what the lock file resolves it to, what requires it, and whether its image is on the Docker daemon.
 
 Syntax:
 
 ```text
-lask envs [--module <path>] [<function>] [--check]
+lask envs list [--module <path>] [<function>]
 ```
 
 Enumeration rules:
 
-- If no function is specified, the environments referenced by the entire module are enumerated (static scan of environment expressions). The environment of every command word the module has, declared or imported, is part of the scan, and so is every declaration that environment references (Chapter 5).
+- If no function is specified, the environments reachable from the module are enumerated (static scan of environment heads, 6.7): those in its declarations, keyword parameter defaults included, and in the environment of every command word the module has, declared or imported, through every declaration they reference in any module (Chapter 5). A declaration of an imported module that nothing reachable references is not scanned.
 - If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. Function-name mapping follows 11.2.
 - Reachability is an over-approximation. A superset of the environments that may be used must be reported; under-reporting is not permitted. Functions passed around as function values are included conservatively.
-- If the `image` of `#docker(image)` is a runtime value, it is enumerated as a `docker` environment with a dynamic image (permitted in the root domain only; 10.3). Recipe forms are statically determined (10.2), so they are always enumerated concretely.
+- What is enumerated is the heads: every image is named by one (6.7), so every environment is enumerated concretely. Run options change no image, and add no entry.
 
-Check rules (`--check`):
+Columns:
 
-- For each enumerated environment, only reachability is checked without executing any commands. The check must not have side effects on the target environment.
-- `local`: always succeeds. The check may include an existence check of the default cwd (10.5).
-- `docker`: checks connectivity to the Docker daemon and the presence of the materialized image recorded in the lock file (10.3). Image retrieval (pull) and building are not performed; an absent image is reported as `E-IO-IMAGE-MISSING`.
-- The check does not abort on the failure of a single environment; all environments are checked and reported together.
+- `ENVIRONMENT`: the head, in the notation of 6.7 (`#local`, `#alpine:3.20`, `#./infra/Dockerfile`). A registry reference used with a `platform` lists the platforms it is used with, `native` for the daemon's own. The content-hash directory of a cached dependency in a path is shown as `…`.
+- `KIND`: `local`, `registry` or `recipe`.
+- `PINNED`: what the lock resolves it to: the digest of a registry reference, the content-addressed tag of a recipe, shown to its first twelve hexadecimal digits (`sha256:be7c8de0160a`, `lask/b61fd44bd7eb`). `—` when there is nothing to resolve or the lock does not pin it yet.
+- `REQUIRED BY`: where each head naming it is written: the module — a file of the project by its path, a dependency by its name — and the declaration, or the command word of the entry module whose environment it is; `(default --<name>)` when the head is the default of a keyword parameter (10.3). A head that dispatch copies into a command string (10.9) is shown where it is written. Two are shown, and how many more.
+- `STATUS`: `ok` for `local`; for a `docker` environment `present`, `missing (lask sync)`, `not pinned (lask sync)`, or `?` when the daemon cannot be reached.
+
+Rules:
+
+- The Docker daemon is asked once whether it can be reached, and then whether each pinned image is present. Nothing is pulled or built, and no command runs in any environment.
+- When the daemon cannot be reached, a warning on stderr says so and why, and every `docker` status is `?`.
+- `envs list` reports; it does not fail. A missing or unpinned image, or a daemon that cannot be reached, is a status, and the exit code is `0`.
+- After the table, one line counts the environments by kind and by status.
 
 Output and exit codes:
 
-- For each environment, the environment kind, a summary of the target, and the check result (with `--check`) are output. Structured output is available with `--format json`.
-- For environments that failed the check, an error code (`E-IO-ENV-RESOLVE`, `E-IO-IMAGE-MISSING`, etc.; Chapter 14) and a summary are included.
-- Exit codes: `0` if enumeration and checks all succeed; `3` if one or more environments are inaccessible; `1` for static errors (undefined environment names, invalid environment definition file, etc.); `4` for CLI usage errors (nonexistent function name, etc.) (following the classification in 11.3).
+- The table is on stdout. With `--format json` it is an array with one object per environment: `environment`, `kind`, `pinned` (in full, or `null`), `required_by` (every place, in full) and `status`.
+- Exit codes: `0` when the environments were listed; `1` for static errors (invalid module, invalid lock file); `4` for CLI usage errors (nonexistent function name, etc.) (following the classification in 11.3).
 
 Execution example:
 
 ```text
-$ lask envs provision --check
-docker  golang:1.22@sha256:6f3c...     ok
-docker  lask//sha256-71bc... (recipe)  ok
+$ lask envs list
+ENVIRONMENT                  KIND      PINNED               REQUIRED BY                         STATUS
+#local                       local     —                    main.lask: deploy                   ok
+#golang:1.22                 registry  sha256:6f3c8a1e09bd  main.lask: build                    present
+#node:24.21.0-alpine3.24     registry  sha256:ebfe2f904627  tools: node (default --image)       missing (lask sync)
+#./infra/Dockerfile          recipe    lask/71bc04d9e2aa    main.lask: provision                present
+
+4 environments (1 local, 2 registry, 1 recipe): 1 ok, 2 present, 1 missing; 3 pinned in lask.lock.json
 ```
 
 ### 11.5 Dependency Management (`deps`)
 
-`deps` manages the external dependencies declared in the project file (Chapter 5).
+`deps` lists, graphs, edits and removes the external dependencies declared in the project file (Chapter 5). Fetching the declared dependencies and writing the lock file is `sync` (11.7).
 
 Syntax:
 
 ```text
-lask deps sync [--module <path>] [--frozen]
+lask deps list [--module <path>]
+lask deps graph [--module <path>] [<name>] [--depth <n>]
 lask deps add <name> (--git <url> [--rev <rev>] | --url <url>) [--module <path>]
-lask deps diff <name> [<from>..<to>] [--module <path>]
-lask deps why <name> [--module <path>]
+lask deps rm <name> [--module <path>]
 ```
 
-Rules (`sync`):
+Which dependencies are used:
 
-- `sync` resolves every declared dependency — including transitive dependencies — fetches it into the per-project cache (Chapter 5), verifies it against its hash, materializes every image the resolved graph requires (10.3), and writes `lask.lock.json`.
-- `sync` and `env build` (11.7) are the only subcommands permitted to access the network or to start an image build. All other subcommands resolve modules and images exclusively from the cache and the lock file, except that `repl` may pull an image (10.3).
-- A reference recorded as `rev` is resolved to a full commit SHA once and pinned thereafter. A subsequent resolution of the same reference to a different SHA is `E-MODULE-REV-MOVED`.
-- Fetched sources are stored content-addressed; re-running `sync` with an unchanged project file performs no network access for already-verified entries.
-- A hash verification failure is reported as `E-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
-- `--frozen` fails instead of writing the lock file when resolution would change it — its modules or its images. It is the intended form for continuous integration.
-- The images are materialized after the modules, since reading the program needs its modules; a program that does not compile keeps its modules synced and reports the static error. A project that declares no dependency still has its images materialized.
+- A direct dependency is **used** when a `.lask` file of the project imports it: `import ... from "<name>"` (named or as a namespace, a deep import included), `import command { ... } from "<name>"`, or a re-export from it (Chapter 5).
+- Every `.lask` file under the project directory counts, not only the modules the entry module reaches, so that a module run with `--module` keeps what it imports. Hidden directories (the module cache among them), `node_modules`, and a subdirectory with a `lask.json` of its own (another project) are not searched. A file that does not parse is searched for `from "<name>"` as text.
+- A transitive dependency is used when the dependency that declares it is.
+
+Rules (`list`):
+
+- `list` reports every dependency, direct and transitive (by its lock path, `parent>child`), with what declares it, what the lock records, and one status. It reads the project file, the lock file, and the cache; it reaches no network.
+- Columns: `NAME`, `SOURCE` (`git <repository>` or `url <url>`), `REQUESTED` (what the declaring project file requests), `LOCKED` (what the lock records as requested), `REV` (the pinned commit, to seven digits), `HASH` (the content hash, to twelve), `STATUS`.
+- The status is the first of the following that holds:
+  - `not locked (lask sync)`: declared, with no lock entry.
+  - `not in lask.json (lask sync drops it)` (`not declared by its parent` for a transitive one): a lock entry nothing declares.
+  - `unknown: its parent is not cached (lask sync)`: a transitive dependency whose parent's tree, which declares it, is not in the cache.
+  - `stale: <reason> (lask sync)`: the lock entry disagrees with the declaration: another repository or URL, or another requested reference (`locked v0.3.0, declared v0.4.0`). This is exactly the disagreement for which reading the program is `E-MODULE-LOCK-STALE` (Chapter 5), and for which `sync` pins the entry afresh. Nothing else makes an entry stale: a newer revision upstream is not known without the network, and a tag moved upstream is found by `sync` (`E-MODULE-REV-MOVED`).
+  - `unused (lask sync --prune)`: a direct dependency no `.lask` file of the project imports.
+  - `not cached (lask sync)`: the cache does not hold the content the lock pins.
+  - `ok`.
+- `list` reports; it does not fail on a status. After the table, one line counts the dependencies, direct and transitive, and their statuses.
+
+Rules (`graph`):
+
+- `graph` shows the dependency graph the lock file records, as a tree from the entry module, each dependency with its source, requested reference and pinned commit.
+- With `<name>`, only the paths that reach a dependency of that name are shown, and it is marked. A name the lock does not hold is a usage error.
+- With `--depth <n>`, only `n` levels below the entry module are shown.
 
 Rules (`add`):
 
 - `add` resolves the specified source, computes its content hash, verifies the policy, records the entry under `<name>` in `lask.json` (creating the file if it does not exist), records the resolution in `lask.lock.json`, and places the verified source in the cache.
 - `<name>` must conform to `lower_id` (3.2). If an entry with the same name already exists, it is replaced.
 - Before recording, `add` presents the images the dependency uses. In an interactive session it requires confirmation.
-- The recorded hash follows the trust-on-first-use model: the content trusted at recording time is pinned, and any subsequent change to the published source is detected by `sync`.
+- The recorded hash follows the trust-on-first-use model: the content trusted at recording time is pinned, and any subsequent change to the published source is detected by `sync` (11.7).
 - `--git` accepts `--rev` (a tag or a full commit SHA); when omitted, the repository's default branch head is resolved once and pinned. `--url` accepts an archive or a single `.lask` file (Chapter 5).
 
-Rules (`diff`):
+Rules (`rm`):
 
-- `diff` reports what changes between two revisions of a dependency, in the following order: image digest and recipe changes, the list of changed files, and the source diff.
-- With no revision range, the locked revision is compared against the revision the project file currently requests.
+- `rm` removes a direct dependency: its entry in `lask.json`, its lock entry and those of the dependencies under it, the cache entries no remaining lock entry uses, and the lock entries of the images the program no longer requires (10.3; the program is read again to find them). It reaches no network.
+- A dependency a `.lask` file of the project still imports is not removed: the imports are listed, and it is a usage error. A transitive dependency is not removed either: the dependency that declares it is named.
+- Images on the Docker daemon are not removed, since the daemon may serve other projects; the ones no longer required are named.
+- The cache is cleaned only when it is the project's own (`.lask/deps`), not one `LASK_CACHE_DIR` names, which other projects may share.
 
-Rules (`why`):
+Output and exit codes:
 
-- `why` reports the paths in the dependency graph through which the named dependency is reached, including paths introduced by re-export from another dependency (Chapter 5).
-
-Exit codes (common to all forms):
-
+- `list` and `graph` write a table and a tree to stdout; with `--format json`, an array and a nested object.
 - `0`: the operation completed successfully.
-- `1`: the project file or the lock file is missing (while dependencies are declared), malformed, stale, or violates the schema (Chapter 5); or a policy violation was detected before fetching.
-- `3`: a fetch, verification, or image materialization failure (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`).
-- `4`: CLI usage error.
+- `1`: the project file or the lock file is malformed or violates the schema (Chapter 5); or a policy violation was detected before fetching.
+- `3`: a fetch or verification failure in `add` (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`).
+- `4`: CLI usage error, including `rm` of a dependency still imported or not declared, and `graph` of a name the lock does not hold.
 
 ### 11.6 Help Display (`--help`)
 
@@ -3022,7 +3098,7 @@ Text output (`--format text`, the default). For the declaration:
 // @return The path of the produced artifact.
 // @example lask run build release --out-dir dist --publish true
 build(target: String, --out_dir: String = "dist", --publish: Bool = false): String =
-  $[#docker(dockerfile = "infra/builder.Dockerfile")] make #{target} OUT=#{out_dir}
+  $[#./infra/builder.Dockerfile] make #{target} OUT=#{out_dir}
 ```
 
 `lask run --module ci.lask build --help` outputs:
@@ -3106,35 +3182,52 @@ Output destination and exit codes:
 - Static errors (14.4) do **not** prevent help display. The help is rendered from the information that is available, a type that could not be determined is displayed as `?`, the diagnostics are written to stderr, and the exit code is `0`. Help is most needed while a module is broken, so this is a deliberate exception to the rule of 14.4 that static errors stop `run` / `eval`; no function is evaluated in this case either.
 - For `lask run --help` / `lask eval --help` without a function name, the CLI option help must always be displayed with exit code `0`. If the target module cannot be loaded, the function list is omitted.
 
-### 11.7 Environment Materialization (`env`)
+### 11.7 Synchronization (`sync`)
 
-`env` materializes and inspects the container images that the resolved dependency graph requires (10.3).
+`sync` brings the dependency cache, the container images and the lock file in line with the program: it fetches and verifies the external dependencies declared in the project file (Chapter 5), materializes the container images the program requires (10.3), and records both in `lask.lock.json`.
 
 Syntax:
 
 ```text
-lask env build [--module <path>]
-lask env list [--module <path>]
+lask sync [--module <path>] [--frozen] [--prune]
 ```
 
-Rules (`build`):
+Rules (modules):
 
-- `build` materializes every image referenced by the root project and by every dependency in the resolved graph: registry references are pulled and verified against their locked digest, and recipes are built (10.3).
-- `build` takes no selector. Images are content-addressed, so an image whose registry digest or recipe hash is unchanged is not re-materialized.
-- `build` and `deps sync` (11.5) are the only subcommands permitted to access the network or to start an image build.
-- `build` executes no command inside the resulting containers.
+- `sync` resolves every declared dependency — including transitive dependencies — fetches it into the per-project cache (Chapter 5), and verifies it against its hash.
+- A reference recorded as `rev` is resolved to a full commit SHA once and pinned thereafter. A subsequent resolution of the same reference to a different SHA is `E-MODULE-REV-MOVED`.
+- Fetched sources are stored content-addressed; re-running `sync` with an unchanged project file performs no network access for already-verified entries.
+- A hash verification failure is reported as `E-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
+- An entry whose lock record is stale (11.5) is pinned afresh: its new content is not held to the hash recorded for the old source.
+- A direct dependency no `.lask` file of the project imports (11.5) is reported with a warning. With `--prune` it is removed first, as `deps rm` removes one (11.5): from `lask.json`, from the lock with the dependencies under it, and from the project's own cache.
 
-Rules (`list`):
+Rules (images):
 
-- `list` reports, for every image reference in the resolved graph: the owning module, the source form (registry reference or recipe), the resolved digest or content-addressed local tag, and whether the image is present on the target Docker daemon. A registry reference the lock does not pin yet is reported as such.
-- `list` performs no network access and no build.
-- Structured output is available with `--format json`.
+- `sync` materializes every image the program requires (10.3): every head reachable from the entry module, in the root project or in any dependency. Registry references are pulled and verified against their locked digest, and recipes are built, each for its `platform` if one is given.
+- An image named only in a dependency's declarations that nothing reachable references is neither materialized nor recorded in the lock. The lock entry of an image nothing references any more is dropped.
+- When any image fails to materialize, the images recorded in the lock are left as they were: no pin is added, replaced or dropped, and the summary reports the lock file unchanged (or updated for its modules only). A failed `sync` therefore never costs a pin that still worked.
+- Images are content-addressed, so an image whose registry digest or recipe hash is unchanged is not re-materialized.
+- The images are materialized after the modules, since reading the program needs its modules; a program that does not compile keeps its modules synced and reports the static error. A project that declares no dependency still has its images materialized.
+- `sync` executes no command inside the resulting containers.
+
+General rules:
+
+- Apart from `deps add`, which fetches the source it records (11.5), `sync` is the only subcommand permitted to access the network or to start an image build. All other subcommands resolve modules and images exclusively from the cache and the lock file, except that `repl` may pull an image (10.3).
+- `sync` takes no selector: it always brings the whole program in line.
+- `--frozen` fails instead of writing the lock file when resolution would change it — its modules or its images (`E-MODULE-LOCK-STALE`). It is the intended form for continuous integration: it asserts that the committed lock is what resolution produces. With `--prune`, a dependency it would remove is such a change, and nothing is written.
+
+Progress and the summary:
+
+- While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
+- On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--format json` each of these is a JSON Lines event.
+- When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--format json` the summary is one object, `modules` and `images`.
+- The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the Docker daemon.
 
 Exit codes:
 
 - `0`: the operation completed successfully.
-- `1`: a static error, or a missing or stale lock file (Chapter 5).
-- `3`: a pull, digest verification, or build failure (`E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`).
+- `1`: the project file or the lock file is missing (while dependencies are declared), malformed, stale under `--frozen`, or violates the schema (Chapter 5); a policy violation was detected before fetching; or the program has a static error.
+- `3`: a fetch, verification, or image materialization failure (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`).
 - `4`: CLI usage error.
 
 ### 11.8 Command Invocation (`cmd`)
@@ -3145,13 +3238,13 @@ Syntax:
 
 ```text
 lask cmd [--module <path>] [lask options ...] <command> [args ...]
-lask cmd --list [--module <path>]
+lask cmd --help [--module <path>]
 ```
 
 Name resolution rules:
 
 - `<command>` is resolved against the command words the target module has — those it declares, `internal` ones included, and those it imports (Chapter 5) — by exact text. The `-` to `_` mapping of 11.2 must not be applied: this is a program name and not a function name, so `lask cmd docker-compose up` resolves the command word `docker-compose`.
-- A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --list`.
+- A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --help`.
 - No option for supplying or overriding the execution environment is provided (11.1, 10.4).
 
 Argument boundary rules:
@@ -3181,20 +3274,28 @@ Exit code rules:
 - The program's exit code becomes the process exit code as is, consistent with the exit code contract of 11.3 and subject to the overlap of exit codes stated there.
 - Failures before the program starts follow the existing classification: `1` for a static error, `3` for an external I/O error, `4` for a CLI usage error.
 
-Rules (`--list`):
+Rules (`--help`):
 
-- `--list` reports every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
+- `lask cmd --help` (or `-h`), with no command name, displays the CLI option help followed by the list of command words, in the way `lask run --help` lists functions (11.6).
+- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
 - An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
-- `--list` performs no network access and no build, on the same terms as `envs` (11.4).
+- The list is produced with no network access and no build, on the same terms as `envs` (11.4).
+- The option help is displayed whatever state the target module is in. When the module does not compile, its diagnostics go to stderr, the list is omitted, and the exit code is `0`.
+- `--list`, which used to report the same list, is retired: `lask cmd --list` is a CLI usage error naming `lask cmd --help` (11.1). After the command name, `--list` is an argument of the program like any other token.
 
 Execution example:
 
 ```text
-$ lask cmd --list
-go             docker  golang:1.25                 ok
-npm            docker  node:20.20.2-alpine3.23     ok
-terraform      docker  hashicorp/terraform:1.16.2  missing (lask env build)
-mv             local                               ok
+$ lask cmd --help
+Usage: lask cmd [--module PATH] [--format text|json] [--trace-id ID] [--no-color]
+                [-h|--help] [COMMAND] [ARGS...]
+...
+
+Commands in main.lask:
+  go         docker  golang:1.25
+  npm        docker  node:20.20.2-alpine3.23
+  terraform  docker  hashicorp/terraform:1.16.2  MISSING (lask sync)
+  mv         local   local
 
 $ lask cmd go test ./... > report.txt
 2026-09-12T12:56:40.217Z [#golang:1.25:1] $ go test ./...
@@ -3300,7 +3401,7 @@ Observability is the requirement to provide, in a consistent format, the informa
 Implementations must treat at least the following as observation targets.
 
 - Function call boundaries (start, end, failure)
-- Environment execution boundaries (`#local` / `#docker(...)`)
+- Environment execution boundaries (`#local` / image and recipe heads)
 - External command execution (start, exit code, output summary)
 - Type validation and runtime diagnostics
 
@@ -3335,7 +3436,7 @@ During execution of `run` (8.7), the implementation must relay the child process
 Relay rules:
 
 - The relay is performed sequentially line by line (line buffering). Output must not be accumulated until the child process exits.
-- The targets are `run` / `eval` execution, the connection diagnostics of `envs --check` (11.4), and `cmd` (11.8). The relayed content is identical regardless of which sugar (`$`, `$1`, `$2`, `$*`) was used for execution.
+- The targets are `run` / `eval` execution and `cmd` (11.8). The relayed content is identical regardless of which sugar (`$`, `$1`, `$2`, `$*`) was used for execution.
 - For `cmd` (11.8), the start line and the exit line are always emitted. Standard output is never relayed, because it is the program's own output channel and is passed through unchanged; standard error is relayed as `2|` lines unless all three streams are terminals, in which case it is attached to the terminal directly, a prefixed line-buffered relay being unable to carry a prompt, a pager, or a progress display.
 - For each command execution, a 1-based sequence number (execution number) that is unique within the top-level execution is assigned. Execution numbers are not duplicated even under concurrent execution (`async`).
 - Each log line contains a timestamp and an environment summary with the execution number. The executed command is recorded only on the start line; subsequent lines are correlated by the execution number (the command is not recorded on every line).
@@ -3350,7 +3451,7 @@ Each line is output with the following structure.
 ```
 
 - `timestamp`: UTC ISO 8601 format.
-- Environment summary: follows the notation of environment expressions (6.7). `#local`, `#<image>` (registry reference), `#docker(dockerfile = <path>)` (recipe).
+- Environment summary: follows the notation of environment expressions (6.7). `#local`, `#<image>` (registry reference), `#./<path>` (recipe).
 - Execution number: the sequence number assigned by the relay rules.
 - Kind: `$` (start line; records the executed command string as the content), `1|` (child process's standard output), `2|` (child process's standard error), `exit <code>` (exit, with exit code), `killed` (the command was abandoned and stopped before it exited; 8.7). `1` and `2` are file descriptor numbers (the same scheme as the stream specifiers in 6.6).
 - The start line (`$`) must be emitted for every command execution, and so must exactly one of the `exit` line and the `killed` line. The command string on the start line may be truncated to an implementation-defined length.
@@ -3453,6 +3554,7 @@ Masking mechanism:
 - Registration is opt-in and is never inferred from a value's origin. In particular, reading a value with `get_env` (15.9) does not register it: most environment variables (a region, a log level) are not sensitive, and masking them would degrade the usefulness of logs without improving safety. A credential read from the environment is marked at its binding, as in `--secret_key!!: String = get_env("...")`.
 - The one exception is a value resolved from a secret reference (9.8), which is registered when it is resolved. It is not inferred: the environment declared the value secret by holding a reference to it rather than the value.
 - Registration is by value, not by name, type, or source: masking is applied by finding registered values as exact substrings of observation data and replacing each match with a fixed mask, regardless of which command, binding, or interpolation the value passed through to get there.
+- A registered value shorter than 8 characters is matched only where it stands as a word of its own: an occurrence preceded or followed by a letter, a digit or `_` is left alone. A value that short found inside another word is not the secret appearing, and masking it there would hide unrelated output while the letters around the mask gave the secret away (`none***istent` for `x`). A value of 8 characters or more is matched wherever it appears.
 - Masking is applied to everything the implementation writes to stderr, at the point it is produced: the execution log (12.2), the command execution log (12.3: the logged command text, the environment metadata, and relayed output lines), execution events (12.6: arguments, results and error values), and error diagnostics (14.3: the message, the error value and the stack trace), including a failure reported in an advisory. The message of a failed command execution is its stderr (6.6), so a secret a command prints reaches the final diagnostic as well as the relayed lines.
 - Masking is never applied to a `CommandResult`'s `stdout` / `stderr` (8.7) or to any other value as observed by the running program — an error value caught by `try` / `catch` (6.9) included — nor to `eval`'s primary result on stdout (9.5/11.3): those must remain faithful to the real value.
 - A registered value that contains a line break is also registered line by line, since output is relayed one line at a time (12.3) and the whole value never appears within one line. A line shorter than 8 characters is not registered on its own: it is a fragment rather than a credential, and masking it would hide unrelated output.
@@ -3485,7 +3587,7 @@ For `json` / `pretty-json`, the following mapping rules must be satisfied.
 - `Bool`: maps to a JSON boolean.
 - `Null`: maps to JSON null.
 - `Void`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Void"}` (treated equivalently to `FunctionRef` in 13.2).
-- `Environment`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Environment","kind":"<environment kind>","params":{...}}`. `kind` is the environment kind name, and `params` is the normalized parameter set (e.g., `{"$type":"Environment","kind":"docker","params":{"image":"alpine:3.20"}}`). Parameters containing secret information are masked according to the rules in Chapter 12.
+- `Environment`, `Runnable`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Environment","kind":"<environment kind>","params":{...}}`. `kind` is the environment kind name, and `params` is the normalized parameter set: the image with its image options, and the run options that are set (e.g., `{"$type":"Environment","kind":"docker","params":{"image":"alpine:3.20"}}`). A value with at least one run option set is tagged `"$type":"Runnable"` instead; a runnable with none is its environment (8.8). Parameters containing secret information are masked according to the rules in Chapter 12.
 - `Array<T>`: maps to a JSON array preserving element order.
 - `Map<T>`: maps to a JSON object with string keys.
 - `Record<...>`: maps to a JSON object with field names as keys. An optional field (4.2) that is absent contributes no key at all; one that is present contributes its key, including when its value is null. This is where the difference between an absent key and a null value is written down.
@@ -3615,7 +3717,7 @@ Example:
   "env": {"kind": "docker", "params": {"image": "alpine:3.20@sha256:6f3c..."}},
   "error": {
     "code": "E-IO-IMAGE-MISSING",
-    "message": "image not materialized: run 'lask deps sync'",
+    "message": "image not materialized: run 'lask sync'",
     "detail": {"timeoutSec": 10}
   }
 }
@@ -3732,6 +3834,11 @@ Additional requirements related to types and names:
 - For type mismatches, include `expected` and `actual`.
 - For name resolution failures, candidates or a summary of the search scope may be included.
 
+Additional requirements related to commands:
+
+- The message of a failed command execution is its standard error output (6.6). When that is empty or only whitespace, as for a tool that reports on standard output, the diagnostic's `message` says instead that the command exited with its code and wrote nothing to standard error, and that its output is in the command execution log (12.3). Only the diagnostic changes: the `Error` value a program catches keeps the empty `message`.
+- A syntax error in a module where a command string holds a closing bracket that it never opened carries a note naming that command's line: the command ran to the end of its line (6.6) and took the bracket of an enclosing call with it.
+
 JSON format example:
 
 ```json
@@ -3792,7 +3899,7 @@ Representative examples:
 - `E-RUNTIME-COMMAND-NONZERO`: failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6)
 - `E-RUNTIME-ACCESS`: index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9)
 - `E-RUNTIME-CAST`: failure of the runtime type check of `cast` (15.8)
-- `E-RUNTIME-VALUE`: a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13)
+- `E-RUNTIME-VALUE`: a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13); or `runnable` was given a run option for a `local` environment (8.8, 15.5)
 - `E-RUNTIME-REGEX`: a malformed regular expression pattern (15.3)
 - `E-RUNTIME-TIMEOUT`: the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10).
 - `E-RUNTIME-UNTIL-EXHAUSTED`: the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10).
@@ -3809,7 +3916,7 @@ External I/O errors occur at boundaries external to the language.
 Representative examples:
 
 - `E-IO-STDIN-READ`: stdin read failure
-- `E-IO-ENV-RESOLVE`: execution environment resolution failure
+- `E-IO-ENV-RESOLVE`: execution environment resolution failure, including a Docker daemon that cannot be reached (10.4)
 - `E-IO-IMAGE-MISSING`: a required container image has not been materialized (10.3)
 - `E-IO-IMAGE-DIGEST`: a pulled image's digest does not match the pinned digest (10.3)
 - `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
@@ -4091,7 +4198,8 @@ Map operations:
 
 The built-in library provides at least the following functions.
 
-- `run`: `Function<Environment, String, CommandResult>`
+- `run`: `Function<Runnable, String, CommandResult>`
+- `runnable`: `Function<Environment, Runnable>`, with the run options of 10.2 as keyword parameters
 - `shell_quote`: `Function<String, String>`
 
 Contract:
@@ -4099,6 +4207,19 @@ Contract:
 - Follows the rules of 6.6, 8.7, and Chapter 10. `CommandResult` is the built-in type alias defined in 6.6.
 - `run` succeeds regardless of the exit code as long as the command completes. The diagnostic code for failures caused by a non-zero exit of the command execution expressions `$`, `$1`, and `$2` (6.6) is `E-RUNTIME-COMMAND-NONZERO`.
 - Environment resolution failure is `E-IO-ENV-RESOLVE`.
+
+Runnables:
+
+- `runnable(env, k1 = v1, ...)` returns `env` with the run options given (10.2): how the image runs, never which image it is. Each run option is a keyword parameter defaulting to `null`, and an option given `null` is not set.
+- `#head{k1: v1, ...}` is its sugar (6.7).
+- It takes an `Environment` only. A `Runnable` is not one (4.4), so the options of a runnable are given once, where it is made (8.8).
+- An image option given to it is a static error (`E-TYPE-ENV-CONSTRUCT`): the image is named by a head, with its image options (6.7).
+- A run option for a `local` environment is `E-TYPE-ENV-CONSTRUCT` when the environment is `#local` written as the argument, and `E-RUNTIME-VALUE` when it is reached as a value. `runnable(e)` with no run option is a runnable for any environment.
+
+```lask
+python(--image: Environment = #python:3.12.14-alpine3.24, --user: String | Null = null): Runnable =
+  runnable(image, user = user, env = {"PYTHONUNBUFFERED": "1"})
+```
 
 Quoting:
 
@@ -4133,7 +4254,7 @@ Semantics:
 Failure rules:
 
 - `await` on a handle whose computation failed re-raises that failure unchanged (6.3, 8.6): the same `Error` value, with its code and message, and therefore the same exit code if it goes uncaught (11.3). `all` and `race` do the same with the failure they receive.
-- `all` may fail as soon as any single one fails.
+- `all` fails as soon as any one of them fails, whichever position it holds in the array, with that failure. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7), so none is left running after the failure is reported.
 - `race` on an empty array is `E-RUNTIME-VALUE`: there is no result to return.
 
 ### 15.7 Error Handling Functions
@@ -4352,13 +4473,13 @@ Semantics:
 
 The built-in library provides at least the following functions.
 
-- `read_file`: `Function<String, Environment, String>`
-- `write_file`: `Function<String, String, Environment, Void>`
-- `file_exists`: `Function<String, Environment, Bool>`
-- `remove_file`: `Function<String, Environment, Void>`
-- `make_dir`: `Function<String, Environment, Void>`
-- `list_dir`: `Function<String, Environment, Array<String>>`
-- `glob`: `Function<String, Environment, Array<String>>`
+- `read_file`: `Function<String, Runnable, String>`
+- `write_file`: `Function<String, String, Runnable, Void>`
+- `file_exists`: `Function<String, Runnable, Bool>`
+- `remove_file`: `Function<String, Runnable, Void>`
+- `make_dir`: `Function<String, Runnable, Void>`
+- `list_dir`: `Function<String, Runnable, Array<String>>`
+- `glob`: `Function<String, Runnable, Array<String>>`
 
 The environment argument:
 
@@ -4721,11 +4842,11 @@ lask run greet alice --prefix hi
 lask run --module ci/main.lask build
 
 # Execution in a container built from a recipe (provision uses
-# #docker(dockerfile = "infra/Dockerfile"); images come from the lock file)
+# #./infra/Dockerfile; images come from the lock file)
 lask run --module ops.lask provision
 
-# Enumerating available environments and checking access
-lask envs provision --check
+# The environments provision uses, and whether each image is present
+lask envs list provision
 ```
 
 Expected behavior:
@@ -4734,9 +4855,9 @@ Expected behavior:
 - `lask run hello`: executes the function and exits with exit code `0` without outputting the evaluation result to stdout.
 - `lask eval greet alice`: outputs `"hello, alice"` to stdout (the default `json` display).
 - `lask run greet alice --prefix hi`: executes with the positional argument `alice` and the keyword argument `--prefix hi` bound. The evaluation result is not output.
-- `build`: executes the build inside a container (the evaluation result is not output). If a connection to the Docker daemon cannot be made, a pre-execution error occurs and it exits with exit code `3`.
+- `build`: executes the build inside a container (the evaluation result is not output). If a connection to the Docker daemon cannot be made, a pre-execution error occurs (`E-IO-ENV-RESOLVE`) and it exits with exit code `3`.
 - `provision`: executes commands in a container built from the declared recipe. If the image has not been materialized, an `E-IO-IMAGE-MISSING` diagnostic is output to stderr and it exits with exit code `3`.
-- `lask envs provision --check`: enumerates the environments used by `provision` and checks reachability. Exit code `0` if all are reachable, `3` if any environment is unreachable (11.4).
+- `lask envs list provision`: lists the environments `provision` uses, what the lock resolves each to, and whether each image is on the Docker daemon. Exit code `0` whatever their status (11.4).
 
 ### 16.8 Execution Event Example
 
@@ -4758,7 +4879,7 @@ An event output example on failure involving command execution with environments
   "env": {"kind": "docker", "params": {"image": "alpine:3.20@sha256:6f3c..."}},
   "error": {
     "code": "E-IO-IMAGE-MISSING",
-    "message": "image not materialized: run 'lask deps sync'",
+    "message": "image not materialized: run 'lask sync'",
     "detail": {"timeoutSec": 10}
   }
 }

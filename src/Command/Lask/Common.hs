@@ -1,0 +1,104 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | What the subcommands share: compiling the entry module or exiting,
+-- reporting usage errors, rendering diagnostics, and reading the lock
+-- (spec 11.3, 14.3).
+module Command.Lask.Common
+  ( compileOrExit,
+    usageError,
+    renderDiags,
+    renderDiagsLines,
+    diagJson,
+    loadLockOrExit,
+    encodeJsonText,
+  )
+where
+
+import Command.Lask.Options (CommonOpts (..))
+import qualified Data.Aeson as A
+import qualified Data.ByteString.Lazy as BL
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.IO as TIO
+import Language.Lask (Compiled (..), compileFile)
+import Language.Lask.Deps.Lock
+import Language.Lask.Diagnostic (Diagnostic (..))
+import Language.Lask.ErrorCode
+import Language.Lask.Span (Position (..), Span (..))
+import Language.Lask.Utils (Pretty (pretty))
+import System.Exit (ExitCode (..), exitWith)
+import System.FilePath (takeDirectory, (</>))
+import System.IO (stderr)
+
+compileOrExit :: CommonOpts -> IO Compiled
+compileOrExit opts = do
+  r <- compileFile (optModule opts)
+  case r of
+    Right compiled -> pure compiled
+    Left ds -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+      exitWith (ExitFailure 1)
+
+
+usageError :: CommonOpts -> Text -> IO a
+usageError opts msg = do
+  if optJsonFormat opts
+    then
+      TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
+        A.object [("code", A.String (codeText ECliUsage)), ("message", A.String msg)]
+    else TIO.hPutStrLn stderr (codeText ECliUsage <> ": " <> msg)
+  exitWith (ExitFailure 4)
+
+-- | Diagnostics for stdout (@check@): a JSON array in json mode.
+renderDiags :: Bool -> [Diagnostic] -> Text
+renderDiags jsonFormat ds
+  | jsonFormat = TE.decodeUtf8 (BL.toStrict (A.encode (map diagJson ds)))
+  | otherwise = T.intercalate "\n" (map (T.pack . pretty) ds)
+
+-- | Diagnostics for stderr: JSON Lines, one object per line
+-- (spec 12.2 canonical form; discriminated by code + stage).
+renderDiagsLines :: Bool -> [Diagnostic] -> Text
+renderDiagsLines jsonFormat ds
+  | jsonFormat =
+      T.intercalate "\n" (map (TE.decodeUtf8 . BL.toStrict . A.encode . diagJson) ds)
+  | otherwise = T.intercalate "\n" (map (T.pack . pretty) ds)
+
+diagJson :: Diagnostic -> A.Value
+diagJson d =
+  A.object $
+    [ ("code", A.String (codeText (diagCode d))),
+      ("stage", A.String (stageText (diagStage d))),
+      ("message", A.String (diagMessage d))
+    ]
+      <> location (diagSpan d)
+      <> maybe [] (\e -> [("expected", A.String e)]) (diagExpected d)
+      <> maybe [] (\a -> [("actual", A.String a)]) (diagActual d)
+  where
+    location (Span (Position file l c) _) =
+      [ ( "location",
+          A.object
+            [ ("file", A.String (T.pack file)),
+              ("line", A.Number (fromIntegral l)),
+              ("column", A.Number (fromIntegral c))
+            ]
+        )
+      ]
+    location NoSpan = []
+
+loadLockOrExit :: CommonOpts -> IO LockFile
+loadLockOrExit opts = do
+  let baseDir = takeDirectory (optModule opts)
+  r <- loadLockFile (baseDir </> defaultLockFileName)
+  case r of
+    Left d -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+      exitWith (ExitFailure 1)
+    Right Nothing -> do
+      TIO.hPutStrLn stderr (codeText EModuleLockStale <> ": no lock file; run 'lask sync'")
+      exitWith (ExitFailure 1)
+    Right (Just lf) -> pure lf
+
+-- | A JSON value as one line of text.
+encodeJsonText :: A.Value -> Text
+encodeJsonText = TE.decodeUtf8 . BL.toStrict . A.encode

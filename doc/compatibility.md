@@ -103,7 +103,7 @@ For each breaking change, a migration guide containing at least the following mu
 - Cases requiring manual fixes
 - Rollback procedure or compatibility mode
 
-Examples must be written uniformly in the current environment notation, including `#local`, `#docker(...)`, `#remote(...)`, and the syntactic sugar `#image-name`.
+Examples must be written uniformly in the current environment notation, including `#local`, image heads such as `#alpine:3.20(...)`, and recipe heads such as `#./infra/Dockerfile(...)`.
 
 ## 7. Compatibility Verification
 

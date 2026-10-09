@@ -28,6 +28,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Language.Lask.Core.AST (Lam (..))
+import Language.Lask.ErrorCode (ErrorCode (ERuntimeCommandNonzero))
 import Language.Lask.Runtime.Value
 import Language.Lask.Types (renderType)
 
@@ -52,10 +53,17 @@ valueToJson v = case v of
   VAsync _ -> A.object [("$type", A.String "AsyncHandle")]
   VEnv (EnvValue kind params) ->
     A.object
-      [ ("$type", A.String "Environment"),
+      -- A value with a run option is a runnable (spec 13.1); one with
+      -- none is its environment, which is a runnable with no options.
+      [ ("$type", A.String (if any (`notElem` imageParams) (Map.keys params) then "Runnable" else "Environment")),
         ("kind", A.String kind),
         ("params", A.Object (KM.fromList [(AK.fromText k, valueToJson x) | (k, x) <- Map.toList params]))
       ]
+
+-- | The parameters of an environment that name its image (spec 10.2);
+-- any other is a run option.
+imageParams :: [Text]
+imageParams = ["image", "dockerfile", "context", "build_args", "platform"]
 
 -- | 'FunctionRef' metadata (spec 13.2).
 functionRefJson :: Lam -> A.Value
@@ -107,7 +115,20 @@ renderValueText v = case v of
 --
 -- It lives here rather than beside 'LaskFailure' because the fallback
 -- needs 'encodeValue'.
+--
+-- A failed command's message is its stderr (6.6), which many tools
+-- leave empty: a linter reports on stdout. Shown as it is, that is a
+-- diagnostic with nothing after the code, so the message says what
+-- happened instead. The error value is left alone; a program that
+-- catches the failure still reads the empty stderr.
 failureMessage :: LaskFailure -> Text
 failureMessage lf = case lfError lf of
-  VRecord m | Just (VString s) <- Map.lookup "message" m -> s
+  VRecord m
+    | Just (VString s) <- Map.lookup "message" m,
+      lfCode lf == Just ERuntimeCommandNonzero,
+      T.null (T.strip s) ->
+        "the command exited with code "
+          <> maybe "?" renderValueText (Map.lookup "code" m)
+          <> " and wrote nothing to stderr; its output is in the command log"
+    | Just (VString s) <- Map.lookup "message" m -> s
   other -> encodeValue other

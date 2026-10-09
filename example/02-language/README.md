@@ -5,21 +5,21 @@ Each directory here is a whole Lask project — a `main.lask` you can check, run
 The numbers are a reading order, not a dependency order. Starting from nothing, they group like this:
 
 1. [01](#01-values-and-types) · [02](#02-functions) · [03](#03-control-flow) — the language itself, all pure.
-2. [04](#04-commands) · [05](#05-environments) — what makes it a task runner.
+2. [04](#04-environments) · [05](#05-commands) — what makes it a task runner.
 3. [06](#06-concurrency) · [07](#07-errors) · [08](#08-modules) · [09](#09-dependencies) — what makes it hold up.
 4. [10](#10-standard-library) · [11](#11-data) · [12](#12-io-and-secrets) · [13](#13-files-and-paths) — the library, as it is actually used.
 5. [14](#14-docs-and-cli) — how the same file becomes a command line and a help page.
 
-Five of the topics run nothing but the language and need no Docker (**pure** below). The rest run real commands in real containers:
+Six of the topics run nothing but the language and need no Docker (marked **Pure** below). The rest run real commands in real containers:
 
 ```bash
 cd example/02-language/<topic>
 lask check          # always first: nothing runs, everything is resolved
-lask envs           # which images this module can reach for
-lask env build      # materialize them — run and eval never pull
+lask envs list      # which images this module can reach for
+lask sync           # pull or build them; run and eval never pull images
 ```
 
-`lask run` prints nothing by design; `lask eval` prints the return value. Below, `eval` is used wherever there is something to see.
+`lask run` writes nothing to stdout: the command log goes to stderr, and the return value is not printed. `lask eval` also prints the return value to stdout. Below, `eval` is used wherever there is something to see.
 
 ---
 
@@ -59,12 +59,25 @@ lask eval checklist ; lask eval steps
 
 The thing to take away: every `case` needs an `else`, last, always — exhaustiveness is never inferred — and `case` is the only thing that narrows a union.
 
-## 04-commands
+## 04-environments
+
+**Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits and other container options, an image built from the local `Dockerfile`, and environments held in a `Map<Environment>` and chosen at run time.
+
+```bash
+lask envs list               # every image, and whether each is on the Docker daemon
+lask sync
+lask eval tool-versions
+lask eval uname-in --env built
+```
+
+The thing to take away: an environment is a value. A command that names none is a static error, never a quiet fall back to the host.
+
+## 05-commands
 
 **Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation, `shell_quote`, `run`, and the `command ... on ...` declarations that dispatch a bare `$`.
 
 ```bash
-lask env build
+lask sync
 lask eval probe --path /etc/os-release
 lask eval inspect            # a command that exits 3, without raising
 lask eval report
@@ -72,25 +85,12 @@ lask eval report
 
 The thing to take away: a command string swallows the rest of its line. `$ uname -s |> trim` hands `|> trim` to the shell and returns the empty string; the pipe belongs on the next line.
 
-## 05-environments
-
-**Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits and other container options, an image built from the local `Dockerfile`, and environments held in a `Map<Environment>` and chosen at run time.
-
-```bash
-lask envs --check            # is each one actually reachable?
-lask env build
-lask eval tool-versions
-lask eval uname-in --env built
-```
-
-The thing to take away: an environment is a value. A command that names none is a static error, never a quiet fall back to the host.
-
 ## 06-concurrency
 
 **Docker.** `async` / `await`, `spawn`, `all`, `race`, and where a background failure surfaces.
 
 ```bash
-lask env build
+lask sync
 time lask run sequential     # two one-second steps, one after the other
 time lask run concurrent     # the same two, overlapped
 lask eval gather ; lask eval fastest ; lask eval handled
@@ -103,7 +103,7 @@ The thing to take away: `async` starts the work, `await` joins it, and a failure
 **Docker.** `try` / `catch` / `finally`, `fail` and `error`, `recover`, `$*` for an expected non-zero exit, and how a code becomes the exit code of the process. Then `retry_if` with a backoff strategy, `until` for waiting on a state, and `timeout`.
 
 ```bash
-lask env build
+lask sync
 lask eval build-with-retry
 lask eval classify --path /nope ; echo "exit $?"
 lask run always-fails ; echo "exit $?"
@@ -116,25 +116,25 @@ The thing to take away: static errors are not catchable. `lask check` finds them
 
 ## 08-modules
 
-**Docker** for the last task. Named imports with `as`, namespace imports, `internal`, re-export, and `import command`, which brings in the command words another module declares.
+**Docker for the last task only.** This topic covers named imports with `as`, namespace imports, `internal`, re-export, and `import command`, which brings in the command words another module declares.
 
 ```bash
 lask eval page-title "  Release Notes  "
 lask eval known-targets
-lask env build && lask eval ship --version 1.4.0
+lask sync && lask eval ship --version 1.4.0
 ```
 
 The thing to take away: a named or namespace import brings none of a module's command words with it — only `import command` does, and dispatch is resolved where the command is written.
 
 ## 09-dependencies
 
-**Docker, and one network step.** The same imports as 08, reaching a module in another repository: `lask.json` says what a dependency is, the committed `lask.lock.json` says which bytes it is, and `lask deps` is the only thing that fetches.
+**Docker, and one network step.** The same imports as 08, reaching a module in another repository: `lask.json` says what a dependency is, the committed `lask.lock.json` says which bytes it is, and `lask sync` is the only thing that fetches.
 
 ```bash
-lask deps sync               # the only step that touches the network
-lask deps why terraform
-lask deps diff terraform
-lask env build && lask eval status
+lask sync                    # the only step that touches the network
+lask deps list               # what lask.json requests, what the lock pins, and whether they agree
+lask deps graph              # the dependency graph
+lask eval status
 ```
 
 The thing to take away: `check`, `run` and `eval` never reach the network, and an import reaches a dependency's root `main.lask` and nothing deeper.
@@ -167,13 +167,13 @@ The thing to take away: every format decodes to the same handful of value kinds,
 
 ## 12-io-and-secrets
 
-**Docker** for the two secret tasks. `stdin`, the stdout contract, `get_env` / `find_env` / `has_env` / `get_env_or`, `!!` secret bindings, `mark_secret`, secret references, and `log`.
+**Docker for the two secret tasks only.** This topic covers `stdin`, the stdout contract, `get_env` / `find_env` / `has_env` / `get_env_or`, `!!` secret bindings, `mark_secret`, secret references, and `log`.
 
 ```bash
 echo '{"name":"api","port":8080}' | lask eval service-line
 printf 'api\nweb-frontend\n' | lask eval longest-name
 APP_ENV=prod lask eval where-am-i
-lask env build && lask run show-token     # watch the log mask it
+lask sync && lask run show-token     # watch the log mask it
 # the same task, with the token held in Vault (spec 9.8)
 LASK_SECRETS=vault VAULT_ADDR=https://vault.example.com VAULT_TOKEN=... \
   APP_TOKEN='{vault://secret/app#token}' lask secrets check show-token
@@ -183,13 +183,13 @@ The thing to take away: `run` writes nothing to stdout and `eval` writes the ret
 
 ## 13-files-and-paths
 
-**Docker** for two tasks; the rest is `#local`. `read_file`, `write_file`, `make_dir`, `list_dir`, `glob`, `file_exists`, `remove_file`, and the path helpers.
+**Docker for two tasks; the rest run on `#local`.** This topic covers `read_file`, `write_file`, `make_dir`, `list_dir`, `glob`, `file_exists`, `remove_file`, and the path helpers.
 
 ```bash
 lask eval describe-path tmp/report.json
 lask run write-report && lask eval read-report
 lask eval inventory
-lask env build && lask eval same-path-two-worlds
+lask sync && lask eval same-path-two-worlds
 lask run clean
 ```
 

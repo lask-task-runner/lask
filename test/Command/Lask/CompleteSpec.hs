@@ -105,7 +105,7 @@ spec = do
   describe "subcommands and options" $ do
     it "offers the subcommands of spec 11.1" $ do
       vs <- valuesFor [""]
-      vs `shouldOffer` ["run", "eval", "check", "envs", "deps", "completion"]
+      vs `shouldOffer` ["run", "eval", "check", "envs", "sync", "deps", "completion"]
 
     it "offers a subcommand's options once a dash is typed" $ do
       vs <- valuesFor ["check", "--"]
@@ -132,8 +132,9 @@ spec = do
     it "completes the shells of `lask completion`" $
       valuesFor ["completion", ""] `shouldReturn` ["bash", "zsh", "fish"]
 
-    it "completes dependency names from the project file" $
-      valuesFor ["deps", "why", ""] `shouldReturn` ["terraform"]
+    it "completes dependency names from the project file" $ do
+      valuesFor ["deps", "graph", ""] `shouldReturn` ["terraform"]
+      valuesFor ["deps", "rm", ""] `shouldReturn` ["terraform"]
 
   describe "paths" $ do
     it "filters --module to modules and directories" $ do
@@ -217,7 +218,7 @@ spec = do
 
     it "offers the subcommand's own options before the command word" $ do
       vs <- valuesFor ["cmd", "--"]
-      vs `shouldOffer` ["--list", "--module"]
+      vs `shouldOffer` ["--help", "--module"]
 
     it "completes nothing at all after the command word" $ do
       -- Spec 11.8: every token there reaches the program verbatim,

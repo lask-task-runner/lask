@@ -9,7 +9,7 @@
 -- other path is an external import: its first segment must be a
 -- dependency name declared in @lask.json@ and present in
 -- the cache (@E-MODULE-UNRESOLVED@ otherwise). Module resolution
--- never accesses the network; fetching is done by @lask deps sync@.
+-- never accesses the network; fetching is done by @lask sync@.
 module Language.Lask.Module.Loader
   ( Program (..),
     LoadedModule (..),
@@ -34,7 +34,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.File
-import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..), childPath, defaultLockFileName, loadLockFile, lookupHash)
+import Language.Lask.Deps.Lock (LockFile (..), childPath, defaultLockFileName, loadLockFile, lockDisagreement, lookupHash)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
 import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, EModuleDeepImport, EModuleLockStale, EModuleUnresolved, ENameUndefined), Stage (StageStatic))
 import Language.Lask.Span (Span (NoSpan))
@@ -84,6 +84,9 @@ data ModCtx = ModCtx
 data Program = Program
   { progEntry :: FilePath,
     progBaseDir :: FilePath,
+    -- | Where the project's dependencies are cached: @.lask/deps@ under
+    -- the base directory, unless @LASK_CACHE_DIR@ moved it.
+    progCacheDir :: FilePath,
     progModules :: Map FilePath LoadedModule,
     -- | Topological order, dependencies first; entry module last.
     progOrder :: [FilePath],
@@ -167,6 +170,7 @@ loadProgramEnv env entryPath = do
               Program
                 { progEntry = entry,
                   progBaseDir = baseDir,
+                  progCacheDir = leCacheDir env,
                   progModules = mods,
                   progOrder = reverse order,
                   progProject = rootDeps
@@ -186,28 +190,19 @@ loadProgramEnv env entryPath = do
               [ (n, why)
               | (n, e) <- Map.toList (depsEntries df),
                 Just locked <- [Map.lookup n covered],
-                Just why <- [entryDisagreement e locked]
+                Just why <- [lockDisagreement e locked]
               ]
          in case (lock, missing, disagreeing) of
               (Nothing, (_ : _), _) ->
-                Just . stale $ "no lock file; run 'lask deps sync'"
+                Just . stale $ "no lock file; run 'lask sync'"
               (_, (n : _), _) ->
                 Just . stale $
-                  "the lock file does not cover dependency '" <> n <> "'; run 'lask deps sync'"
+                  "the lock file does not cover dependency '" <> n <> "'; run 'lask sync'"
               (_, _, ((n, why) : _)) ->
                 Just . stale $
                   "the lock file disagrees with " <> T.pack defaultDepsFileName
-                    <> " for dependency '" <> n <> "' (" <> why <> "); run 'lask deps sync'"
+                    <> " for dependency '" <> n <> "' (" <> why <> "); run 'lask sync'"
               _ -> Nothing
-
-    entryDisagreement e locked = case e of
-      DepGit url rev
-        | lkGit locked /= Just url -> Just "different source"
-        | lkRequested locked /= Just rev -> Just ("locked " <> maybe "-" id (lkRequested locked) <> ", declared " <> rev)
-        | otherwise -> Nothing
-      DepUrl url
-        | lkUrl locked /= Just url -> Just "different source"
-        | otherwise -> Nothing
 
     stale = mkDiagnostic EModuleLockStale StageStatic NoSpan
 
@@ -303,7 +298,7 @@ resolveImport env ctx pathText
             pure . Left . stale $
               "the lock file does not pin dependency '"
                 <> childPath (mcPath ctx) depName
-                <> "'; run 'lask deps sync'"
+                <> "'; run 'lask sync'"
           Just hash -> do
             let single = entryIsSingleFile entry
                 base = cachePathFor (leCacheDir env) hash single
@@ -312,14 +307,14 @@ resolveImport env ctx pathText
             if not present
               then
                 pure . Left . unresolved $
-                  "dependency '" <> depName <> "' is not in the cache; run 'lask deps sync'"
+                  "dependency '" <> depName <> "' is not in the cache; run 'lask sync'"
               else
                 if not intact
                   then
                     pure . Left . unresolved $
                       "dependency '" <> depName <> "': the cache does not hold the content the lock pins ("
                         <> hash
-                        <> "); run 'lask deps sync'"
+                        <> "); run 'lask sync'"
                   else
                     if single
                       then

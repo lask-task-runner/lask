@@ -1,6 +1,6 @@
 # Lask Quick Reference
 
-The whole language and CLI on one page, for someone who wants to write a task now and read the rules later. Every section links to the chapter of the [language specification](spec.md) that defines it; when this page is not enough, follow the link. Installation and the case for Lask are in the [README](../README.md).
+The whole language and CLI on one page, for someone who wants to write a task now and read the rules later. Every section links to the chapter of the [language specification](spec.md) that defines it; when this page is not enough, follow the link. Installation is in the [README](../README.md#install).
 
 ## A module, end to end
 
@@ -44,15 +44,17 @@ $ lask run release --help
 
 | Command | What it does |
 | --- | --- |
-| `lask check` | Static validation only. Nothing is evaluated, no image is pulled. |
 | `lask run <fn> [args...]` | Execute a task. Writes **nothing** to stdout. |
 | `lask eval <fn> [args...]` | Same, and writes the return value to stdout (JSON by default). |
 | `lask cmd <prog> [args...]` | Run a declared command in its declared image, stdio passed through. |
 | `lask repl` | Evaluate expressions interactively. `:r` reloads the module, keeping what was typed. |
-| `lask envs [fn] [--check]` | List the environments a module uses; `--check` tests access. |
-| `lask env build \| list` | Materialize / inspect container images. |
-| `lask deps sync \| add \| why \| diff` | Fetch, verify and report on external dependencies. |
+| `lask sync [--frozen] [--prune]` | Fetch dependencies, pull and build images and write the lock, showing progress and ending with a table of every module and image; `--frozen` fails instead of changing anything (CI); `--prune` removes dependencies no `.lask` file imports. |
+| `lask deps list` | Every dependency, what `lask.json` requests and the lock pins, and its status: `ok`, `stale`, `unused`, `not cached`, … |
+| `lask deps graph [name] [--depth n]` | The dependency graph from the entry module; with a name, only the paths that reach it. |
+| `lask deps add \| rm <name>` | Add a dependency (`--git <url> --rev <rev>` or `--url <url>`); remove one no module imports. |
+| `lask envs list [fn]` | The environments a module uses, the image the lock pins each to, what requires it, and whether it is on the Docker daemon. |
 | `lask secrets list \| check [fn]` | List the secret references in the environment; check that their stores can be reached and read. |
+| `lask check` | Static validation only. Nothing is evaluated, no image is pulled. |
 | `lask serve` | Language server (LSP). |
 | `lask completion <shell>` | Emit a completion script (bash, zsh, fish). |
 | `lask version` | Print the version. |
@@ -94,7 +96,7 @@ import { send } from "notify"                   // external dependency, by name
 export { rollout } from "./lib/deploy.lask"     // re-export, parameter list intact
 ```
 
-External dependencies are declared in `lask.json` (`git` + `rev`, or `url`) and pinned by content hash in the committed `lask.lock.json`. `check`, `run`, `eval` and `envs` never touch the network; `lask deps sync` is what fetches and verifies. The import graph must be acyclic, and an import reaches only a dependency's root `main.lask`. → [11.5](spec.md#115-dependency-management-deps)
+External dependencies are declared in `lask.json` (`git` + `rev`, or `url`) and pinned by content hash in the committed `lask.lock.json`. `check`, `run`, `eval` and `envs` never touch the network; `lask sync` is what fetches and verifies. The import graph must be acyclic, and an import reaches only a dependency's root `main.lask`. → [11.5](spec.md#115-dependency-management-deps), [11.7](spec.md#117-synchronization-sync)
 
 ## Types
 
@@ -225,16 +227,20 @@ A command string runs **to the end of the line** — nothing of the enclosing ex
 
 ```lask
 #local                          // the host
-#alpine:3.20                    // sugar for #docker("alpine:3.20")
+#alpine:3.20                    // an image in a registry
 #ubuntu@sha256:9cee...          // a digest works too
-#docker("alpine:3.20", memory = "4g")
-#docker(dockerfile = "infra/Dockerfile", context = ".")   // built from a recipe
-#docker("node:20-alpine", env = {"CI": "1"}, network = "none", read_only = true)
+#./infra/Dockerfile(context = ".", build_args = {"V": "1"})   // built from a recipe
+#node:20-alpine(platform = "linux/amd64")                     // one platform's variant
+#alpine:3.20{memory: "4g"}      // run options in braces: a Runnable
+#node:20-alpine{env: {"CI": "1"}, network: "none", read_only: true}
+runnable(e, memory = "8g")      // the same for an Environment value e
 ```
 
-A registry reference may leave out its tag — a bare name means `latest` — since `lask env build` pins the digest it resolves to in `lask.lock.json`, and runs use that. `dockerfile` and `context` must be literals inside the module's own tree, which is what makes every image enumerable and pinnable.
+The head is the only place an image is named — no string or variable can name one — so every image a program uses is found by reading its source, and `lask sync` pins each. A registry reference may leave out its tag — a bare name means `latest` — since the lock pins the digest it resolved to, and runs use that. A recipe path starts with `.` and is relative to the module's directory, inside its own tree.
 
-The container is configured by further keyword arguments: `memory`, `memory_swap`, `memory_reservation`, `cpus`, `cpu_shares`, `cpuset_cpus`, `cpuset_mems`, `pids_limit`, `shm_size`, `blkio_weight`, `ulimits`; `workdir`, `user`, `env`, `platform`, `hostname`, `init`; `read_only`, `tmpfs`, `cap_drop`; `network`, `dns`, `dns_search`, `add_hosts`, `publish`; `volumes`; and `build_args` on a recipe, which is a literal like `dockerfile`. Environment variable names are not `lower_id`, so quote them: `env = {"CI": "1"}`. An option given `null` is left out, as are the `null` elements of a list or table — `""` is a value and is passed on. → [10.2](spec.md#102-target-environment-profiles-and-environment-constructor-signatures)
+**Image options** in parentheses decide which image is used: `platform`, and `context` and `build_args` on a recipe. They are literals. **Run options** in braces decide how it runs, and take any expression: `memory`, `memory_swap`, `memory_reservation`, `cpus`, `cpu_shares`, `cpuset_cpus`, `cpuset_mems`, `pids_limit`, `shm_size`, `blkio_weight`, `ulimits`; `workdir`, `user`, `env`, `hostname`, `init`; `read_only`, `tmpfs`, `cap_drop`; `network`, `dns`, `dns_search`, `add_hosts`, `publish`; `volumes`. Environment variable names are not `lower_id`, so quote them: `env: {"CI": "1"}`. An option given `null` is left out, as are the `null` elements of a list or table — `""` is a value and is passed on. → [10.2](spec.md#102-target-environment-profiles-and-their-options)
+
+`#head{...}` is sugar for `runnable(#head, ...)`, which turns an `Environment` into a `Runnable`. An `Environment` is a `Runnable` with no options, so `$[...]`, `run` and `command ... on` take either. `runnable` takes an `Environment` only: options are given once. A function can take the image as `--image: Environment = #python:3.12` and return `runnable(image, env = {...})`, so a caller picks the version with `python(image = #python:3.13)`. → [6.7](spec.md#67-environment-expressions), [15.5](spec.md#155-command-execution-functions)
 
 **Dispatch.** A `$` with no `[env]` gets its environment from the command words in the string, matched against the command words the module declares or imports. → [10.9](spec.md#109-command-dispatch)
 
@@ -252,7 +258,7 @@ Matching is lexical and exact: `cd web && npm ci` selects the Node image, `FOO=1
 
 A declaration's environment is evaluated when a command runs, and may not have effects — no command, file, `stdin`, `log` or random value, directly or through what it calls (`E-TYPE-COMMAND-EFFECT`); `get_env` is fine. → [5](spec.md#5-declarations-and-modules)
 
-Images are materialized only by `lask deps sync` and `lask env build`; `run` and `eval` never pull or build, and a missing image is `E-IO-IMAGE-MISSING` naming the command that would fix it. → [10.3](spec.md#103-container-image-resolution-and-materialization)
+Images are materialized only by `lask sync`; `run` and `eval` never pull or build, and a missing image is `E-IO-IMAGE-MISSING` naming the command that would fix it. → [10.3](spec.md#103-container-image-resolution-and-materialization)
 
 ## Concurrency
 
@@ -264,7 +270,7 @@ b = async test_web()
 r = { api: await a, web: await b }    // await joins; a failure inside is raised here
 ```
 
-`async e` is `spawn(\() -> e)`. Awaiting the same handle twice gives the same result. `all(handles)` waits for every one, `race(handles)` for the first.
+`async e` is `spawn(\() -> e)`. Awaiting the same handle twice gives the same result. `all(handles)` waits for every one and, if one fails, cancels the rest; `race(handles)` waits for the first and cancels the rest.
 
 ## Errors
 
@@ -376,11 +382,14 @@ Absence is reported two ways, deliberately: a function that returns a *position*
 
 - `+` is arithmetic only. Strings join with `concat` or `#{...}`.
 - There is no unary minus. `0 - 1`.
-- `if` without `else` is not an expression; it exists only as a `return` guard.
+- `if` without `else` is not an expression; it exists only as a `return` guard. For a side effect under a condition, give it an empty `else`: `if (c) { log("...") } else {}`.
 - Every `case` needs an `else`, and it must be last.
 - A command with no environment is an error, never the host. `#local` is something you write.
-- A command string swallows the rest of its line.
-- `lask run` prints nothing. You wanted `lask eval`.
+- A command string swallows the rest of its line, closing brackets included, so a `$` command cannot sit inside a call's parentheses. Bind it to a name on its own line first.
+- A command runs as `/bin/sh -c <string>` in its container, with the project directory mounted at `/work` as the working directory. An image without `/bin/sh` cannot run a command.
+- `lask run` writes nothing to stdout: the return value is not printed, and the command log goes to stderr. To see the value, use `lask eval`.
+- A `Bool` parameter takes a value on the command line: `--verbose true`, never a bare `--verbose`.
+- A task that refers to `stdin` reads it to the end before it starts. Started from a script that leaves stdin open, it waits; give it `</dev/null`. A task that never refers to `stdin` does not read it.
 - Conformance is invariant: `Array<Number>` is not an `Array<Any>`.
 - Keyword parameters must have defaults; positional parameters must not.
 - `for` takes an array, not a number and not a map.
@@ -400,3 +409,5 @@ Absence is reported two ways, deliberately: a function that returns a *position*
 | What appears in the log, and what is masked? | [ch. 12](spec.md#12-observability) |
 | What is this error code? | [ch. 14](spec.md#14-error-system) |
 | Show me more complete programs. | [ch. 16](spec.md#16-examples), [example/](../example) |
+
+Moving an existing project over? [Migrating from Make](migration/from-make.md) and [Migrating from GitHub Actions](migration/from-github-actions.md) map what you have onto the sections above, one task at a time.

@@ -4,6 +4,7 @@
 module Language.Lask.Runtime.Value
   ( Value (..),
     EnvValue (..),
+    withRunOptions,
     Closure (..),
     AsyncHandle (..),
     Scope,
@@ -30,7 +31,7 @@ import qualified Data.Text as T
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import Language.Lask.Core.AST (Lam)
-import Language.Lask.ErrorCode (ErrorCode)
+import Language.Lask.ErrorCode (ErrorCode (..))
 
 data Value
   = VNumber !Scientific
@@ -66,12 +67,25 @@ instance Show AsyncHandle where
   show _ = "<async>"
 
 -- | Environment value: kind and normalized constructor parameters
--- (spec 8.8).
+-- (spec 8.8). An option given @null@ is not set, and is not among the
+-- parameters.
 data EnvValue = EnvValue
   { envKind :: Text,
     envParams :: Map Text Value
   }
   deriving (Show)
+
+-- | An environment with its run options (spec 8.8, 15.5). An option
+-- given @null@ is not set. A @local@ environment takes none.
+withRunOptions :: EnvValue -> [(Text, Value)] -> Either LaskFailure EnvValue
+withRunOptions (EnvValue kind params) opts
+  | kind == "local", not (null set) =
+      Left (runtimeFailure ERuntimeValue "a local environment takes no run options")
+  | otherwise = Right (EnvValue kind (Map.union (Map.fromList set) params))
+  where
+    set = [(k, v) | (k, v) <- opts, notNull v]
+    notNull VNull = False
+    notNull _ = True
 
 type Scope = Map Text Value
 

@@ -8,22 +8,21 @@ module Command.Lask.Entry
 where
 
 import Command.Lask.ArgCodec
+import Command.Lask.Common
+import Command.Lask.Project (cmdDepsAdd, cmdDepsGraph, cmdDepsList, cmdDepsRm, cmdEnvsList, cmdSync)
 import Command.Lask.Complete (completionScript)
-import Command.Lask.Envs (EnvRef (..), collectEnvReadsFrom, collectEnvRefs, collectEnvRefsFrom, collectRecipes)
+import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, readsStdin)
 import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
 import Command.Lask.Options
-import Control.Applicative ((<|>))
 import Control.Exception (IOException, SomeException, fromException, toException, try)
-import Control.Monad (forM, forM_, unless, when, (>=>))
+import Control.Monad (forM, unless, when, (>=>))
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
-import Data.Either (isRight)
-import Data.IORef (atomicModifyIORef', newIORef)
 import Data.List (nub, sort)
 import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import qualified Data.Set as Set
@@ -38,11 +37,7 @@ import qualified Language.LSP.Lask as LSP
 import Language.Lask (Compiled (..), Partial (..), compileFile, compileFilePartial)
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (entryPublicValues)
-import Language.Lask.Deps.Cache (cacheDirFor)
-import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
-import Language.Lask.Deps.File
-import Language.Lask.Deps.Lock
-import Language.Lask.Diagnostic (Advisory (..), Diagnostic (..))
+import Language.Lask.Diagnostic (Advisory (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
 import Language.Lask.ErrorCode
@@ -51,8 +46,8 @@ import Language.Lask.Obs.CommandLog
 import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
-import Command.Lask.Images (ImageRow (..), Materialized (..), imageRows, loadPins, materialize)
-import Language.Lask.Runtime.Image (ImagePins, imageExists, recipeTag, resolveRegistry)
+import Command.Lask.Images (loadPins)
+import Language.Lask.Runtime.Image (ImagePins, Recipe (..), imageExists, recipeSource, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
@@ -68,9 +63,7 @@ import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
 import Paths_lask (version)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
-import System.FilePath (takeDirectory, (</>))
 import System.IO (hFlush, hIsTerminalDevice, hPutStrLn, stderr, stdin)
-import System.Process (proc)
 
 runRootCommand :: RootCommand -> IO ()
 runRootCommand cmd = case cmd of
@@ -79,13 +72,12 @@ runRootCommand cmd = case cmd of
   CmdRun runOpts -> cmdRunEval False runOpts
   CmdEval runOpts -> cmdRunEval True runOpts
   CmdRepl opts -> cmdRepl opts
-  CmdEnvs envsOpts -> cmdEnvs envsOpts
-  CmdDepsSync opts frozen -> cmdDepsSync opts frozen
+  CmdEnvsList envsOpts -> cmdEnvsList (envsCommon envsOpts) (envsFunction envsOpts)
+  CmdSync opts frozen prune -> cmdSync opts frozen prune
+  CmdDepsList opts -> cmdDepsList opts
+  CmdDepsGraph opts name depth -> cmdDepsGraph opts name depth
   CmdDepsAdd opts name source -> cmdDepsAdd opts name source
-  CmdDepsWhy opts name -> cmdDepsWhy opts name
-  CmdDepsDiff opts name -> cmdDepsDiff opts name
-  CmdEnvBuild opts -> cmdEnvBuild opts
-  CmdEnvList opts -> cmdEnvList opts
+  CmdDepsRm opts name -> cmdDepsRm opts name
   CmdSecretsList o -> cmdSecrets False o
   CmdSecretsCheck o -> cmdSecrets True o
   CmdCmd cmdOpts -> cmdCmd cmdOpts
@@ -172,7 +164,11 @@ cmdRunEval printResult runOpts = do
   -- Before anything is evaluated, and before stdin is read: a refused
   -- confirmation leaves nothing half done (spec 11.2).
   confirmOrExit opts (runConfirm runOpts) compiled fnName key cd posVals kwVals
-  stdinText <- readStdinOrExit opts
+  -- Read only by a function that can refer to it: a program that
+  -- never names stdin cannot tell it was left unread (9.2), and a
+  -- script that starts lask with stdin open, as a CI step or a
+  -- process manager does, would otherwise wait on it for nothing.
+  stdinText <- if readsStdin core key then readStdinOrExit opts else pure ""
   traceId <- maybe newTraceId pure (optTraceId opts)
   -- One serialized stderr line writer shared by command logs and
   -- execution events, so concurrent emitters never interleave.
@@ -411,9 +407,6 @@ noSuchFunction wanted names =
     target = kebabToSnake wanted
     near = [n | n <- names, T.isPrefixOf (T.take 2 target) n || T.isInfixOf target n]
 
-encodeJsonText :: A.Value -> Text
-encodeJsonText = TE.decodeUtf8 . BL.toStrict . A.encode
-
 encodeResult :: StdoutEncode -> Value -> Text
 encodeResult enc v = case enc of
   EncodeJson -> encodeValue v
@@ -469,69 +462,7 @@ exitCodeOf v = case v of
 cmdRepl :: CommonOpts -> IO ()
 cmdRepl opts = runRepl (optModule opts)
 
--- envs -----------------------------------------------------------------------
-
-cmdEnvs :: EnvsOpts -> IO ()
-cmdEnvs envsOpts = do
-  let opts = envsCommon envsOpts
-  compiled <- compileOrExit opts
-  let core = compiledCore compiled
-  -- Without a function, the whole module; with one, only what its call
-  -- graph can reach (spec 11.4).
-  scope <- case envsFunction envsOpts of
-    Nothing -> pure Nothing
-    Just fn -> case publicDecl compiled (kebabToSnake fn) of
-      Just (key, _) -> pure (Just key)
-      Nothing -> usageError opts ("no such function: '" <> fn <> "'")
-  pins <- loadPins core
-  traceId <- maybe newTraceId pure (optTraceId opts)
-  writeErr <- newLineWriter stderr
-  -- Probe processes get execution numbers too (spec 12.3).
-  execCounter <- newIORef (0 :: Int)
-  let cmdLogSink
-        | optJsonFormat opts = jsonCommandLog traceId writeErr
-        | otherwise = textCommandLog writeErr
-      nextExec = atomicModifyIORef' execCounter (\n -> (n + 1, n + 1))
-      refs =
-        nub . sort $ case scope of
-          Nothing -> collectEnvRefs core
-          Just key -> collectEnvRefsFrom core key
-  results <-
-    mapM
-      ( \ref -> do
-          status <-
-            if envsCheck envsOpts
-              then Just <$> checkEnvRef cmdLogSink nextExec (imageCheck pins core) ref
-              else pure Nothing
-          pure (ref, status)
-      )
-      refs
-  if optJsonFormat opts
-    then
-      TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode $
-        [ A.object $
-            [ (AK.fromText "name", A.String (refLabel ref)),
-              (AK.fromText "kind", A.String (refKind ref)),
-              (AK.fromText "target", A.String (refTarget ref))
-            ]
-              <> maybe [] (\s -> [(AK.fromText "status", A.String (either id (const "ok") s))]) status
-        | (ref, status) <- results
-        ]
-    else
-      mapM_
-        ( \(ref, status) ->
-            TIO.putStrLn $
-              refLabel ref
-                <> " ("
-                <> refKind ref
-                <> ": "
-                <> refTarget ref
-                <> ")"
-                <> maybe "" (either (" NG: " <>) (const " ok")) status
-        )
-        results
-  let failed = [() | (_, Just (Left _)) <- results]
-  exitWith (if null failed then ExitSuccess else ExitFailure 3)
+-- secrets ----------------------------------------------------------------------
 
 -- | @lask secrets list@ \/ @check@ (spec 11.10). Without a function,
 -- every variable; with one, the variables it reads by name, and every
@@ -554,223 +485,7 @@ cmdSecrets isCheck o = do
     then secretsCheck (optJsonFormat opts) (secretsRead o) env scope
     else secretsList (optJsonFormat opts) env scope
 
--- | Probe accessibility (spec 11.4): no command execution, no side
--- effects; docker checks daemon connectivity, remote checks SSH
--- session establishment. Probe processes relay through the command
--- execution log (spec 12.3: @envs --check@ is a relay target).
-checkEnvRef :: CommandLogSink -> IO Int -> (EnvRef -> IO (Either Text ())) -> EnvRef -> IO (Either Text ())
-checkEnvRef sink nextExec presence ref = case refKind ref of
-  "local" -> pure (Right ())
-  "docker" -> do
-    let probeCmd = "docker version"
-        envJson = A.object [("$type", A.String "Environment"), ("kind", A.String "docker")]
-    execNo <- nextExec
-    r <-
-      try . runLoggedProcess sink ("#" <> refTarget ref) envJson execNo probeCmd Nothing $
-        proc "docker" ["version", "--format", "{{.Server.Version}}"]
-    case r of
-      Right (0, _, _) -> presence ref
-      Right (_, _, errOut) -> pure (Left (codeText EIoEnvResolve <> ": " <> T.strip errOut))
-      Left e -> pure (Left (codeText EIoEnvResolve <> ": " <> T.pack (show (e :: IOError))))
-  _ -> pure (Right ())
-
--- | Whether the image an enumerated environment needs is on the daemon,
--- as the lock resolves it (spec 11.4). A reference computed at run time
--- has nothing to check before it is computed.
-imageCheck :: ImagePins -> CoreProgram -> EnvRef -> IO (Either Text ())
-imageCheck pins core ref = case T.stripPrefix "recipe " (refTarget ref) of
-  Just dockerfile -> do
-    tags <-
-      mapM
-        (\(df, ctx, buildArgs) -> recipeTag (cpBaseDir core) df ctx buildArgs)
-        [r | r@(df, _, _) <- collectRecipes core, df == dockerfile]
-    present <- mapM (either (const (pure False)) imageExists) tags
-    pure $
-      if and present
-        then Right ()
-        else Left (codeText EIoImageMissing <> ": image for recipe '" <> dockerfile <> "' is not materialized; run 'lask env build'")
-  Nothing
-    | refLabel ref == "<dynamic>" -> pure (Right ())
-    | otherwise -> either (Left . renderFailure) (const (Right ())) <$> resolveRegistry pins (refTarget ref)
-  where
-    renderFailure lf = maybe "" (\c -> codeText c <> ": ") (lfCode lf) <> failureMessage lf
-
--- deps (spec 11.5) ------------------------------------------------------------
-
--- | @lask deps sync@: fetch and verify every declared dependency
--- (including transitive ones) into the cache. This is the only
--- subcommand allowed to access the network for module resolution.
-cmdDepsSync :: CommonOpts -> Bool -> IO ()
-cmdDepsSync opts frozen = do
-  let baseDir = takeDirectory (optModule opts)
-      depsPath = baseDir </> defaultDepsFileName
-  cacheDir <- cacheDirFor baseDir
-  r <- loadDepsFile depsPath
-  case r of
-    Left d -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-      exitWith (ExitFailure 1)
-    Right Nothing -> do
-      putStrLn "no dependencies declared"
-      prior <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
-      syncImages opts frozen (baseDir </> defaultLockFileName) (maybe emptyLock id prior)
-    Right (Just df) -> do
-      let lockPath = baseDir </> defaultLockFileName
-      prior <- either (const Nothing) id <$> loadLockFile lockPath
-      results <- syncAll cacheDir (lockedEntry prior) df
-      reportSync opts results
-      if all (isRight . thd) results
-        then do
-          let newLock = LockFile (lockedModules results) Map.empty
-              -- The modules are written before the images are
-              -- resolved: reading the program needs them locked.
-              withImages = newLock {lockImages = maybe Map.empty lockImages prior}
-          -- --frozen (spec 11.5): CI asserts that the committed lock is
-          -- what resolution produces, rather than updating it.
-          if frozen && Just (lockModules newLock) /= fmap lockModules prior
-            then do
-              TIO.hPutStrLn stderr
-                (codeText EModuleLockStale <> ": the lock file is out of date (--frozen)")
-              exitWith (ExitFailure 1)
-            else do
-              unless frozen $ BL.writeFile lockPath (renderLockFile withImages)
-              syncImages opts frozen lockPath withImages
-        else exitWith (ExitFailure 3)
-
--- | The images half of @deps sync@ (spec 11.5): with the modules in the
--- cache, the program can be read, and every image it requires is
--- materialized and pinned the way its modules are. A program that does
--- not compile keeps its modules synced and stops here, since its images
--- cannot be enumerated. Under @--frozen@ nothing is written, and a lock
--- the images would change is out of date.
-syncImages :: CommonOpts -> Bool -> FilePath -> LockFile -> IO ()
-syncImages opts frozen lockPath lock = do
-  compiled <- compileOrExit opts
-  m <- materialize (compiledCore compiled) (lockImages lock)
-  mapM_ TIO.putStrLn (matReport m)
-  mapM_ (TIO.hPutStrLn stderr) (matFailures m)
-  let updated = lock {lockImages = matImages m}
-  if frozen && updated /= lock
-    then do
-      TIO.hPutStrLn stderr
-        (codeText EModuleLockStale <> ": the images in the lock file are out of date (--frozen)")
-      exitWith (ExitFailure 1)
-    else when (updated /= lock) $ BL.writeFile lockPath (renderLockFile updated)
-  if null (matFailures m) then exitSuccess else exitWith (ExitFailure 3)
-
--- | What the lock records for a dependency path.
-lockedEntry :: Maybe LockFile -> Text -> Maybe LockEntry
-lockedEntry lock path = Map.lookup path (maybe Map.empty lockModules lock)
-
--- | The module section of the lock, from a sync in which every entry
--- resolved.
-lockedModules :: [(Text, DepEntry, Either Diagnostic Pinned)] -> Map.Map Text LockEntry
-lockedModules results =
-  Map.fromList
-    [ (p, base {lkRev = pinRev pinned <|> lkRev base})
-    | (p, e, Right pinned) <- results,
-      let base = lockEntryOf e (pinHash pinned)
-    ]
-
--- | One line per dependency path on stdout, and the diagnostic of each
--- failure on stderr.
-reportSync :: CommonOpts -> [(Text, DepEntry, Either Diagnostic Pinned)] -> IO ()
-reportSync opts =
-  mapM_ $ \(path, _, status) -> case status of
-    Right _ -> TIO.putStrLn (path <> " ok")
-    Left d -> do
-      TIO.putStrLn (path <> " NG")
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-
-thd :: (a, b, c) -> c
-thd (_, _, c) = c
-
--- | The lock record of a declared entry (spec chapter 5). @requested@
--- keeps the reference that was written; @rev@ is filled in here only
--- when that reference is already a full commit SHA, and otherwise from
--- the commit the fetch checked out.
-lockEntryOf :: DepEntry -> Text -> LockEntry
-lockEntryOf (DepGit u r) h =
-  LockEntry (Just u) Nothing (Just r) (if isFullSha r then Just r else Nothing) h
-lockEntryOf (DepUrl u) h = LockEntry Nothing (Just u) Nothing Nothing h
-
-isFullSha :: Text -> Bool
-isFullSha r = T.length r == 40 && T.all (\c -> c `elem` ("0123456789abcdef" :: String)) r
-
--- | @lask deps add@: declare the entry, then resolve the whole project
--- file the way @deps sync@ does. The new entry is pinned on first use:
--- its content hash and, for git, the commit it came from. Every other
--- entry is verified against what the lock already pins, and the lock's
--- images are kept. Nothing is written unless every entry resolves.
-cmdDepsAdd :: CommonOpts -> Text -> DepsAddSource -> IO ()
-cmdDepsAdd opts name source = do
-  unless (isLowerIdent name) $
-    usageError opts ("dependency name must be a lower-case identifier: '" <> name <> "'")
-  let baseDir = takeDirectory (optModule opts)
-      depsPath = baseDir </> defaultDepsFileName
-      lockPath = baseDir </> defaultLockFileName
-      entry = case source of
-        AddGit url rev -> DepGit url rev
-        AddUrl url -> DepUrl url
-  -- The entry reaches git and curl without passing through the project
-  -- file's parser, so it is checked the same way here.
-  case validateSource name entry of
-    Left d -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-      exitWith (ExitFailure 1)
-    Right () -> pure ()
-  cacheDir <- cacheDirFor baseDir
-  existingE <- loadDepsFile depsPath
-  existing <- case existingE of
-    Left d -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-      exitWith (ExitFailure 1)
-    Right mDf -> pure (maybe emptyDepsFile id mDf)
-  prior <- either (const Nothing) id <$> loadLockFile lockPath
-  let updated = existing {depsEntries = Map.insert name entry (depsEntries existing)}
-      -- The entry being added, and whatever it pulled in before, is
-      -- resolved afresh; the rest keeps its pins.
-      replaced path = path == name || (name <> ">") `T.isPrefixOf` path
-      locked path = if replaced path then Nothing else lockedEntry prior path
-  results <- syncAll cacheDir locked updated
-  unless (all (isRight . thd) results) $ do
-    reportSync opts [r | r@(_, _, Left _) <- results]
-    exitWith (ExitFailure 3)
-  BL.writeFile depsPath (renderDepsFile updated)
-  BL.writeFile lockPath . renderLockFile $
-    LockFile (lockedModules results) (maybe Map.empty lockImages prior)
-  case [pinHash p | (path, _, Right p) <- results, path == name] of
-    hash : _ -> TIO.putStrLn (name <> " " <> hash)
-    [] -> pure ()
-  exitSuccess
-  where
-    isLowerIdent t = case T.uncons t of
-      Just (c, rest) ->
-        (c >= 'a' && c <= 'z' || c == '_') && T.all identChar rest
-      Nothing -> False
-    identChar c =
-      c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
-
 -- Shared helpers -----------------------------------------------------------------
-
-compileOrExit :: CommonOpts -> IO Compiled
-compileOrExit opts = do
-  r <- compileFile (optModule opts)
-  case r of
-    Right compiled -> pure compiled
-    Left ds -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
-      exitWith (ExitFailure 1)
-
-
-usageError :: CommonOpts -> Text -> IO a
-usageError opts msg = do
-  if optJsonFormat opts
-    then
-      TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
-        A.object [("code", A.String (codeText ECliUsage)), ("message", A.String msg)]
-    else TIO.hPutStrLn stderr (codeText ECliUsage <> ": " <> msg)
-  exitWith (ExitFailure 4)
 
 -- | The confirmation the project file asks for before this call
 -- (spec 5, 11.2). Asked at the terminal when stdin and stderr are
@@ -840,42 +555,6 @@ readStdinOrExit opts = do
             else TIO.hPutStrLn stderr (codeText EIoStdinRead <> ": " <> T.pack (show e))
           exitWith (ExitFailure 3)
 
--- | Diagnostics for stdout (@check@): a JSON array in json mode.
-renderDiags :: Bool -> [Diagnostic] -> Text
-renderDiags jsonFormat ds
-  | jsonFormat = TE.decodeUtf8 (BL.toStrict (A.encode (map diagJson ds)))
-  | otherwise = T.intercalate "\n" (map (T.pack . pretty) ds)
-
--- | Diagnostics for stderr: JSON Lines, one object per line
--- (spec 12.2 canonical form; discriminated by code + stage).
-renderDiagsLines :: Bool -> [Diagnostic] -> Text
-renderDiagsLines jsonFormat ds
-  | jsonFormat =
-      T.intercalate "\n" (map (TE.decodeUtf8 . BL.toStrict . A.encode . diagJson) ds)
-  | otherwise = T.intercalate "\n" (map (T.pack . pretty) ds)
-
-diagJson :: Diagnostic -> A.Value
-diagJson d =
-  A.object $
-    [ ("code", A.String (codeText (diagCode d))),
-      ("stage", A.String (stageText (diagStage d))),
-      ("message", A.String (diagMessage d))
-    ]
-      <> location (diagSpan d)
-      <> maybe [] (\e -> [("expected", A.String e)]) (diagExpected d)
-      <> maybe [] (\a -> [("actual", A.String a)]) (diagActual d)
-  where
-    location (Span (Position file l c) _) =
-      [ ( "location",
-          A.object
-            [ ("file", A.String (T.pack file)),
-              ("line", A.Number (fromIntegral l)),
-              ("column", A.Number (fromIntegral c))
-            ]
-        )
-      ]
-    location NoSpan = []
-
 -- | An advisory in the JSON form of 14.3, marked by @severity@ (14.2).
 advisoryJson :: Advisory -> A.Value
 advisoryJson a =
@@ -897,117 +576,99 @@ advisoryJson a =
           ]
         NoSpan -> []
 
--- | @lask env build@ (spec 11.7): materialize every image the program
--- requires — registry references pulled and pinned, recipes built — and
--- record in the lock what each resolved to. With @deps sync@, the only
--- subcommand permitted to pull or to start a build.
-cmdEnvBuild :: CommonOpts -> IO ()
-cmdEnvBuild opts = do
-  compiled <- compileOrExit opts
-  let core = compiledCore compiled
-      lockPath = cpBaseDir core </> defaultLockFileName
-  existing <- either (const Nothing) id <$> loadLockFile lockPath
-  m <- materialize core (maybe Map.empty lockImages existing)
-  mapM_ TIO.putStrLn (matReport m)
-  -- A project with no image and no lock gets no lock file for nothing.
-  unless (isNothing existing && Map.null (matImages m)) $
-    BL.writeFile lockPath . renderLockFile $
-      (maybe emptyLock id existing) {lockImages = matImages m}
-  unless (null (matFailures m)) $ do
-    mapM_ (TIO.hPutStrLn stderr) (matFailures m)
-    exitWith (ExitFailure 3)
-
--- | @lask env list@ (spec 11.7): every image the program references,
--- what the lock resolves it to, and whether it is on the daemon. No
--- network access and no build.
-cmdEnvList :: CommonOpts -> IO ()
-cmdEnvList opts = do
-  compiled <- compileOrExit opts
-  rows <- imageRows (compiledCore compiled)
-  if optJsonFormat opts
-    then
-      TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode $
-        [ A.object
-            [ (AK.fromText "source", A.String (irSource r)),
-              (AK.fromText "kind", A.String (irKind r)),
-              (AK.fromText "resolved", maybe A.Null A.String (irResolved r)),
-              (AK.fromText "present", A.Bool (irPresent r))
-            ]
-        | r <- rows
-        ]
-    else forM_ rows $ \r ->
-      TIO.putStrLn $
-        irSource r
-          <> "  "
-          <> irKind r
-          <> "  "
-          <> maybe "not pinned (lask env build)" id (irResolved r)
-          <> (if irPresent r then "  present" else "  MISSING")
-
 -- | @lask cmd@ (spec 11.8): run a declared command in its declared
 -- environment, as an argument vector rather than through a shell.
 cmdCmd :: CmdOpts -> IO ()
-cmdCmd cmdOpts = do
-  let opts = cmdCommon cmdOpts
-  compiled <- compileOrExit opts
-  let core = compiledCore compiled
-      table = Map.findWithDefault Map.empty (cpEntry core) (cpCommands core)
-  if cmdList cmdOpts
-    then listCommands opts core table
-    else case cmdName cmdOpts of
-      Nothing -> usageError opts "no command given; try 'lask cmd --list'"
-      Just name -> case Map.lookup name table of
-        Nothing ->
-          usageError opts $
-            "'" <> name <> "' is not a command of this module; try 'lask cmd --list'"
-        Just envCore -> do
-          traceId <- maybe newTraceId pure (optTraceId opts)
-          secrets <- newSecretResolver
-          envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
-          writeErr <- newLineWriter stderr
-          let sink
-                | optJsonFormat opts = jsonCommandLog traceId writeErr
-                | otherwise = textCommandLog writeErr
-          pins <- loadPins core
-          r <- runDeclaredCommand pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
-          case r of
-            -- Failures before the program starts keep the existing
-            -- classification (spec 11.8); the program's own exit code
-            -- passes through verbatim.
-            Left failure -> failureExit opts traceId failure
-            Right 0 -> exitSuccess
-            Right code -> exitWith (ExitFailure code)
+cmdCmd cmdOpts
+  | cmdShowHelp cmdOpts = cmdCmdHelp (cmdCommon cmdOpts)
+  | otherwise = do
+      let opts = cmdCommon cmdOpts
+      compiled <- compileOrExit opts
+      let core = compiledCore compiled
+          table = Map.findWithDefault Map.empty (cpEntry core) (cpCommands core)
+      case cmdName cmdOpts of
+        Nothing -> usageError opts "no command given; try 'lask cmd --help'"
+        Just name -> case Map.lookup name table of
+          Nothing ->
+            usageError opts $
+              "'" <> name <> "' is not a command of this module; try 'lask cmd --help'"
+          Just envCore -> do
+            traceId <- maybe newTraceId pure (optTraceId opts)
+            secrets <- newSecretResolver
+            envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
+            writeErr <- newLineWriter stderr
+            let sink
+                  | optJsonFormat opts = jsonCommandLog traceId writeErr
+                  | otherwise = textCommandLog writeErr
+            pins <- loadPins core
+            r <- runDeclaredCommand pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
+            case r of
+              -- Failures before the program starts keep the existing
+              -- classification (spec 11.8); the program's own exit code
+              -- passes through verbatim.
+              Left failure -> failureExit opts traceId failure
+              Right 0 -> exitSuccess
+              Right code -> exitWith (ExitFailure code)
 
--- | The declared commands of the entry module, with the state of the
--- image each needs (spec 11.8). No network access and no build. An
--- environment that cannot be evaluated here — a variable it reads is
--- unset, say — is listed with the failure rather than ending the list.
-listCommands :: CommonOpts -> CoreProgram -> Map.Map Text Core -> IO ()
-listCommands opts core table = do
-  pins <- loadPins core
-  rows <- mapM (row pins) (Map.toList table)
-  if optJsonFormat opts
-    then
-      TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode $
-        [ A.object
-            [ (AK.fromText "name", A.String name),
-              (AK.fromText "kind", A.String kind),
-              (AK.fromText "target", A.String target),
-              (AK.fromText "present", A.Bool present)
-            ]
-        | (name, kind, target, present) <- rows
+-- | @lask cmd --help@: the option help, then every command word of
+-- the entry module with the state of the image it needs, as @lask run
+-- --help@ lists its functions (spec 11.6, 11.8). The option help is
+-- always printed; a module that does not compile only loses the list.
+cmdCmdHelp :: CommonOpts -> IO ()
+cmdCmdHelp opts = do
+  putStrLn cmdOptionsHelp
+  r <- compileFile (optModule opts)
+  case r of
+    Left ds -> TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+    Right compiled -> do
+      let core = compiledCore compiled
+          table = Map.findWithDefault Map.empty (cpEntry core) (cpCommands core)
+      rows <- commandRows core table
+      case (optJsonFormat opts, rows) of
+        (True, _) -> TIO.putStrLn (commandRowsJson rows)
+        (False, []) -> pure ()
+        (False, _) ->
+          TIO.putStrLn . T.intercalate "\n" $
+            ("\nCommands in " <> T.pack (optModule opts) <> ":")
+              : map ("  " <>) (commandRowsText rows)
+  exitSuccess
+
+-- | A command's name, the kind and target of its environment, and
+-- whether that image is present (spec 11.8).
+type CommandRow = (Text, Text, Text, Bool)
+
+commandRowsJson :: [CommandRow] -> Text
+commandRowsJson rows =
+  TE.decodeUtf8 . BL.toStrict . A.encode $
+    [ A.object
+        [ (AK.fromText "name", A.String name),
+          (AK.fromText "kind", A.String kind),
+          (AK.fromText "target", A.String target),
+          (AK.fromText "present", A.Bool present)
         ]
-    else do
-      let width = maximum (8 : [T.length n | (n, _, _, _) <- rows])
-      forM_ rows $ \(name, kind, target, present) ->
-        TIO.putStrLn
-          ( T.justifyLeft width ' ' name
-              <> "  "
-              <> T.justifyLeft 6 ' ' kind
-              <> "  "
-              <> target
-              <> (if present then "" else "  MISSING (lask env build)")
-          )
+    | (name, kind, target, present) <- rows
+    ]
+
+commandRowsText :: [CommandRow] -> [Text]
+commandRowsText rows =
+  [ T.justifyLeft width ' ' name
+      <> "  "
+      <> T.justifyLeft 6 ' ' kind
+      <> "  "
+      <> target
+      <> (if present then "" else "  MISSING (lask sync)")
+  | (name, kind, target, present) <- rows
+  ]
+  where
+    width = maximum (8 : [T.length n | (n, _, _, _) <- rows])
+
+-- | No network access and no build (spec 11.8). An environment that
+-- cannot be evaluated is a row with the failure rather than the end of
+-- the list.
+commandRows :: CoreProgram -> Map.Map Text Core -> IO [CommandRow]
+commandRows core table = do
+  pins <- loadPins core
+  mapM (row pins) (Map.toList table)
   where
     row pins (name, envCore) = do
       r <- evalCommandEnv readEnvVarUnresolved core envCore
@@ -1021,7 +682,7 @@ listCommands opts core table = do
     describeResolved resolved = case resolved of
       ResolvedLocal -> ("local", "local")
       ResolvedDocker image _ -> ("docker", image)
-      ResolvedRecipe df _ _ -> ("docker", "recipe " <> df)
+      ResolvedRecipe r _ -> ("docker", "recipe " <> recipeSource (rcDockerfile r))
 
 -- | Whether the image a command needs is on the target daemon. No
 -- network access and no build (spec 11.8, 10.3).
@@ -1029,8 +690,8 @@ imagePresent :: ImagePins -> FilePath -> ResolvedEnv -> IO Bool
 imagePresent pins baseDir resolved = case resolved of
   ResolvedLocal -> pure True
   ResolvedDocker ref _ -> either (const False) (const True) <$> resolveRegistry pins ref
-  ResolvedRecipe df ctx opts -> do
-    tagE <- recipeTag baseDir df ctx (recipeBuildArgs opts)
+  ResolvedRecipe r _ -> do
+    tagE <- recipeTag baseDir r
     either (const (pure False)) imageExists tagE
 
 -- | Evaluate a command's environment (spec 11.8). The environment of a
@@ -1051,63 +712,3 @@ evalCommandEnv readEnv core c = do
     refuseCommand _ _ = pure (Left (refusal "the environment of a command declaration tried to run a command"))
     refuseFile _ _ = pure (Left (refusal "the environment of a command declaration tried to access a file"))
     refusal = ioFailure EIoEnvResolve
-
--- | @lask deps why@ (spec 11.5): the graph paths through which a
--- dependency is reached. A name may appear in the lock without
--- appearing in the project file, because a dependency can pull it in
--- or re-export it (chapter 5).
-cmdDepsWhy :: CommonOpts -> Text -> IO ()
-cmdDepsWhy opts name = do
-  lock <- loadLockOrExit opts
-  let paths = [p | p <- Map.keys (lockModules lock), name `elem` T.splitOn ">" p]
-  if null paths
-    then usageError opts ("no such dependency in the lock file: '" <> name <> "'")
-    else mapM_ (TIO.putStrLn . T.replace ">" " -> ") paths
-
--- | @lask deps diff@ (spec 11.5): what changes between the locked
--- revision and the one the project file currently requests. The
--- capability delta comes first, because that is the part a reviewer
--- can check quickly.
-cmdDepsDiff :: CommonOpts -> Text -> IO ()
-cmdDepsDiff opts name = do
-  let baseDir = takeDirectory (optModule opts)
-  lock <- loadLockOrExit opts
-  dfE <- loadDepsFile (baseDir </> defaultDepsFileName)
-  df <- case dfE of
-    Left d -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-      exitWith (ExitFailure 1)
-    Right mDf -> pure (maybe emptyDepsFile id mDf)
-  entry <- case Map.lookup name (depsEntries df) of
-    Just e -> pure e
-    Nothing -> usageError opts ("no such dependency: '" <> name <> "'")
-  locked <- case Map.lookup name (lockModules lock) of
-    Just e -> pure e
-    Nothing -> usageError opts ("dependency '" <> name <> "' is not in the lock file")
-  let requested = case entry of
-        DepGit _ r -> Just r
-        DepUrl _ -> Nothing
-      diffLine l r
-        | l == r = "  = " <> maybe "-" id l
-        | otherwise = "  - " <> maybe "-" id l <> "\n  + " <> maybe "-" id r
-  TIO.putStrLn "revision:"
-  TIO.putStrLn (diffLine (lkRequested locked) requested)
-  TIO.putStrLn "content hash:"
-  TIO.putStrLn ("  = " <> lkHash locked)
-  when (lkRequested locked /= requested) $
-    TIO.putStrLn "run 'lask deps sync' to resolve and review the new revision"
-
-
-loadLockOrExit :: CommonOpts -> IO LockFile
-loadLockOrExit opts = do
-  let baseDir = takeDirectory (optModule opts)
-  r <- loadLockFile (baseDir </> defaultLockFileName)
-  case r of
-    Left d -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
-      exitWith (ExitFailure 1)
-    Right Nothing -> do
-      TIO.hPutStrLn stderr (codeText EModuleLockStale <> ": no lock file; run 'lask deps sync'")
-      exitWith (ExitFailure 1)
-    Right (Just lf) -> pure lf
-

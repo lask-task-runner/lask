@@ -269,8 +269,8 @@ section :: Text -> [Text] -> Text
 section header body = T.intercalate "\n" (header : map ("  " <>) body)
 
 -- | Drop the fields that would only repeat one another: a bare
--- @#local@ is just @local@, and @#docker(\"img\")@ is labelled by its
--- own image.
+-- @#local@ is just @local@, and an image head is labelled by its own
+-- image.
 envRow :: EnvRef -> [Text]
 envRow ref
   | refLabel ref == refTarget ref && refKind ref == refTarget ref = [refKind ref]

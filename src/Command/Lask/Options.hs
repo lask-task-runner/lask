@@ -11,8 +11,10 @@ module Command.Lask.Options
     DepsAddSource (..),
     pRootCommand,
     runOptionsHelp,
+    cmdOptionsHelp,
     argSeparator,
     protectArgSeparator,
+    retiredCommand,
   )
 where
 
@@ -46,10 +48,10 @@ data RunOpts = RunOpts
     runArgs :: [Text]
   }
 
+-- | @lask envs list@ (spec 11.4).
 data EnvsOpts = EnvsOpts
   { envsCommon :: CommonOpts,
-    envsFunction :: Maybe Text,
-    envsCheck :: Bool
+    envsFunction :: Maybe Text
   }
 
 -- | @lask secrets list@ \/ @check@ (spec 11.10).
@@ -60,10 +62,12 @@ data SecretsOpts = SecretsOpts
   }
 
 -- | @lask cmd@ (spec 11.8): a declared command and everything after
--- its name, or @--list@.
+-- its name, or @--help@.
 data CmdOpts = CmdOpts
   { cmdCommon :: CommonOpts,
-    cmdList :: Bool,
+    -- | @--help@ / @-h@ before the command name, which also lists the
+    -- module's commands. After the name it reaches 'cmdArgs'.
+    cmdShowHelp :: Bool,
     cmdName :: Maybe Text,
     cmdArgs :: [Text]
   }
@@ -74,13 +78,14 @@ data RootCommand
   | CmdRun RunOpts
   | CmdEval RunOpts
   | CmdRepl CommonOpts
-  | CmdEnvs EnvsOpts
-  | CmdDepsSync CommonOpts Bool
+  | CmdEnvsList EnvsOpts
+  | -- | @--frozen@, @--prune@.
+    CmdSync CommonOpts Bool Bool
+  | CmdDepsList CommonOpts
+  | -- | A dependency to show the paths to, and a depth.
+    CmdDepsGraph CommonOpts (Maybe Text) (Maybe Int)
   | CmdDepsAdd CommonOpts Text DepsAddSource
-  | CmdDepsWhy CommonOpts Text
-  | CmdDepsDiff CommonOpts Text
-  | CmdEnvBuild CommonOpts
-  | CmdEnvList CommonOpts
+  | CmdDepsRm CommonOpts Text
   | CmdSecretsList SecretsOpts
   | CmdSecretsCheck SecretsOpts
   | CmdCmd CmdOpts
@@ -132,7 +137,7 @@ pCmdOpts :: Parser CmdOpts
 pCmdOpts =
   CmdOpts
     <$> pCommon
-    <*> switch (long "list" <> help "List the commands the module declares")
+    <*> switch (long "help" <> short 'h' <> help "Show this help text and list the module's commands")
     <*> optional (T.pack <$> argument str (metavar "COMMAND"))
     <*> many (T.pack <$> argument str (metavar "ARGS..."))
 
@@ -168,7 +173,6 @@ pEnvsOpts =
   EnvsOpts
     <$> pCommon
     <*> optional (T.pack <$> argument str (metavar "FUNCTION"))
-    <*> switch (long "check" <> help "Check accessibility of each environment")
 
 -- | Two deviations from the obvious parser for @run@ \/ @eval@.
 --
@@ -186,13 +190,12 @@ pEnvsOpts =
 pRootCommand :: Parser RootCommand
 pRootCommand =
   subparser
-    ( command "serve" (withHelp (pure CmdServe) (progDesc "Start the language server"))
-        <> command "check" (withHelp (CmdCheck <$> pCommon) (progDesc "Statically validate the module"))
+    ( commandGroup "Run tasks:"
         <> command
           "run"
           ( info
               (CmdRun <$> pRunOpts)
-              (progDesc "Run a function (result is not printed)" <> noIntersperse)
+              (progDesc "Run a function (its result is not printed)" <> noIntersperse)
           )
         <> command
           "eval"
@@ -200,27 +203,63 @@ pRootCommand =
               (CmdEval <$> pRunOpts)
               (progDesc "Run a function and print its result" <> noIntersperse)
           )
-        <> command "repl" (withHelp (CmdRepl <$> pCommon) (progDesc "Interactive session"))
-        <> command "envs" (withHelp (CmdEnvs <$> pEnvsOpts) (progDesc "List and check environments"))
-        <> command "deps" (withHelp pDepsCommand (progDesc "Manage external dependencies"))
-        <> command "env" (withHelp pEnvCommand (progDesc "Materialize and inspect container images"))
-        <> command "secrets" (withHelp pSecretsCommand (progDesc "List and check secret references"))
         <> command
           "cmd"
           ( info
-              (CmdCmd <$> pCmdOpts <**> helper)
-              (progDesc "Run a declared command in its declared environment" <> noIntersperse)
+              (CmdCmd <$> pCmdOpts)
+              (progDesc cmdDesc <> noIntersperse)
           )
-        <> command
-          "completion"
-          ( withHelp
-              (CmdCompletion <$> argument (maybeReader parseShell) (metavar "bash|zsh|fish"))
-              (progDesc "Print the shell completion script")
-          )
-        <> command "version" (withHelp (pure CmdVersion) (progDesc "Print the lask version"))
+        <> command "repl" (withHelp (CmdRepl <$> pCommon) (progDesc "Start an interactive session"))
+        <> metavar "COMMAND"
     )
+    <|> subparser
+      ( commandGroup "Set up the project:"
+          <> command
+            "sync"
+            ( withHelp
+                ( CmdSync
+                    <$> pCommon
+                    <*> switch (long "frozen" <> help "Fail instead of updating lask.json or the lock file")
+                    <*> switch (long "prune" <> help "Remove the dependencies no .lask file of the project imports")
+                )
+                (progDesc "Fetch dependencies, pull and build images, and write the lock file")
+            )
+          <> command "deps" (withHelp pDepsCommand (progDesc "List, graph, add and remove dependencies"))
+          <> command "envs" (withHelp pEnvsCommand (progDesc "List environments, their images, and whether each is present"))
+          <> command "secrets" (withHelp pSecretsCommand (progDesc "List and check secret references"))
+          <> hidden
+      )
+    <|> subparser
+      ( commandGroup "Develop:"
+          <> command "check" (withHelp (CmdCheck <$> pCommon) (progDesc "Statically validate the module"))
+          <> command "serve" (withHelp (pure CmdServe) (progDesc "Start the language server"))
+          <> command
+            "completion"
+            ( withHelp
+                (CmdCompletion <$> argument (maybeReader parseShell) (metavar "bash|zsh|fish"))
+                (progDesc "Print the shell completion script")
+            )
+          <> command "version" (withHelp (pure CmdVersion) (progDesc "Print the lask version"))
+          <> hidden
+      )
   where
     withHelp p = info (p <**> helper)
+
+-- | The option help of @lask cmd --help@, printed before the module's
+-- command list, as 'runOptionsHelp' is for @run@ / @eval@.
+cmdOptionsHelp :: String
+cmdOptionsHelp =
+  fst (renderFailure failure "lask cmd")
+  where
+    failure =
+      parserFailure
+        defaultPrefs
+        (info (CmdCmd <$> pCmdOpts) (progDesc cmdDesc <> noIntersperse))
+        (ShowHelpText Nothing)
+        []
+
+cmdDesc :: String
+cmdDesc = "Run a declared command in its declared environment"
 
 -- | The option help of @run@ / @eval@, printed by @lask run --help@
 -- before the module's function list (spec 11.6).
@@ -238,16 +277,49 @@ runOptionsHelp subcommand =
       | subcommand == "eval" = "Run a function and print its result"
       | otherwise = "Run a function (result is not printed)"
 
-pEnvCommand :: Parser RootCommand
-pEnvCommand =
+pEnvsCommand :: Parser RootCommand
+pEnvsCommand =
   hsubparser
     ( command
-        "build"
-        (info (CmdEnvBuild <$> pCommon) (progDesc "Materialize every image the program requires"))
-        <> command
-          "list"
-          (info (CmdEnvList <$> pCommon) (progDesc "Report every image reference and whether it is present"))
+        "list"
+        ( info
+            (CmdEnvsList <$> pEnvsOpts)
+            (progDesc "List the environments, what the lock resolves them to, what requires them, and whether each image is on the Docker daemon")
+        )
     )
+
+-- | The spelling that replaced a retired command (spec 11.1), for the
+-- arguments that invoke one. Answered before parsing, so the old
+-- spelling is told where to go rather than only that it is not a
+-- command.
+retiredCommand :: [String] -> Maybe (String, String)
+retiredCommand args = case args of
+  "env" : "build" : _ -> Just ("env build", "sync")
+  "env" : "list" : _ -> Just ("env list", "envs list")
+  "deps" : "sync" : _ -> Just ("deps sync", "sync")
+  "deps" : "why" : _ -> Just ("deps why", "deps graph")
+  "deps" : "diff" : _ -> Just ("deps diff", "deps list")
+  "cmd" : rest | "--list" `elem` cmdOptions rest -> Just ("cmd --list", "cmd --help")
+  "envs" : rest
+    | "--check" `elem` rest -> Just ("envs --check", "envs list")
+    | otherwise -> case dropOptions rest of
+        [] | all (`notElem` ["--help", "-h"]) rest -> Just ("envs", "envs list")
+        "check" : _ -> Just ("envs check", "envs list")
+        w : _ | w /= "list" -> Just ("envs " <> w, "envs list " <> w)
+        _ -> Nothing
+  _ -> Nothing
+  where
+    -- The options before the command name; after it, @--list@ is
+    -- the program's own argument (spec 11.8).
+    cmdOptions ws = case ws of
+      o : _ : more | o `elem` ["--module", "--format", "--trace-id"] -> cmdOptions more
+      o : more | take 1 o == "-" -> o : cmdOptions more
+      _ -> []
+    -- The old @envs@ took the common options before its function.
+    dropOptions ws = case ws of
+      o : _ : more | o `elem` ["--module", "--format", "--trace-id"] -> dropOptions more
+      o : more | take 1 o == "-" -> dropOptions more
+      _ -> ws
 
 pSecretsCommand :: Parser RootCommand
 pSecretsCommand =
@@ -278,14 +350,21 @@ pDepsCommand :: Parser RootCommand
 pDepsCommand =
   hsubparser
     ( command
-        "sync"
+        "list"
         ( info
-            ( CmdDepsSync
-                <$> pCommon
-                <*> switch (long "frozen" <> help "Fail instead of updating the lock file")
-            )
-            (progDesc "Fetch and verify all declared dependencies")
+            (CmdDepsList <$> pCommon)
+            (progDesc "List the dependencies, what lask.json requests and the lock pins, and whether each is in use")
         )
+        <> command
+          "graph"
+          ( info
+              ( CmdDepsGraph
+                  <$> pCommon
+                  <*> optional (T.pack <$> argument str (metavar "NAME" <> help "Show only the paths that reach this dependency"))
+                  <*> optional (option auto (long "depth" <> metavar "N" <> help "Show N levels of dependencies"))
+              )
+              (progDesc "Show the dependency graph the lock records")
+          )
         <> command
           "add"
           ( info
@@ -297,16 +376,10 @@ pDepsCommand =
               (progDesc "Fetch a source, record it with its content hash, and cache it")
           )
         <> command
-          "why"
+          "rm"
           ( info
-              (CmdDepsWhy <$> pCommon <*> (T.pack <$> argument str (metavar "NAME")))
-              (progDesc "Report the graph paths through which a dependency is reached")
-          )
-        <> command
-          "diff"
-          ( info
-              (CmdDepsDiff <$> pCommon <*> (T.pack <$> argument str (metavar "NAME")))
-              (progDesc "Report what a dependency bump would change")
+              (CmdDepsRm <$> pCommon <*> (T.pack <$> argument str (metavar "NAME")))
+              (progDesc "Remove a dependency no module imports, with what only it needed")
           )
     )
   where

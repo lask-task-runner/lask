@@ -41,9 +41,9 @@ Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, 
 
 **Programmable**. A task is an ordinary function — typed keyword arguments with defaults, a return value — and control flow, error handling and concurrency belong to the language, not to shell convention. Tasks call each other inside a project, and are imported across projects, along with the environments they run in: `import command { "go" } from "tools"`. Being a DSL, it takes fewer lines than an SDK in Go or TypeScript, with no project to build around it.
 
-**Runnable**. Every piece runs on its own: a task with `lask run`, an expression in the REPL, a one-off command in its container with `lask cmd go test ./...`. A task's signature is its command line — `release(--dry_run = false)` is `lask run release --dry-run true` — and its doc comment (`@param`, `@return`, `@example`) is the single source for both `--help` and the editor's hover, alongside the inferred return type and every image the task will need.
+**Runnable**. Every piece runs on its own: a task with `lask run`, an expression in the REPL, a one-off command in its container with `lask cmd go test ./...`. A task's signature is its command line: calling `release(dry_run = true)` in Lask is the same call as `lask run release --dry-run true` from the shell. Its doc comment (`@param`, `@return`, `@example`) is the single source for both `--help` and the editor's hover, alongside the inferred return type and every image the task will need.
 
-**Secure**. Secrets stay out of the code and out of the log: a `!!` binding is masked wherever its value appears, and an environment variable like `{vault://secret/aws#secret_key}` is resolved from Vault when read, so the same program runs with or without a vault. Imports are pinned by content hash in a committed lock file, and only `lask deps sync` touches the network. Every command runs in a container you can lock down with `network = "none"`, `read_only = true` or `cap_drop`, and a task like `deploy` can ask for a typed confirmation before it runs.
+**Secure**. Secrets stay out of the code and out of the log: a `!!` binding is masked wherever its value appears in the log, and an environment variable like `{vault://secret/aws#secret_key}` is resolved from Vault when read, so the same program runs with or without a vault. Imports are pinned by content hash in a committed lock file, and only `lask sync` touches the network. A container can be locked down with `network = "none"`, `read_only = true` or `cap_drop`. Separately, a task like `deploy` can ask for a typed confirmation before it runs; that guards against mistakes, and is not a security boundary.
 
 ## Comparison
 
@@ -60,7 +60,7 @@ Here is how Lask compares to the lighter tools it replaces and to the heavier on
 | Code reuse across projects               | ✅ hash-pinned module imports | `include` | `includes` | ✅ Git modules |
 | Incremental rebuilds                     | — | ✅ file targets | ✅ checksum / timestamp | ✅ content-addressed cache |
 | Config format                            | typed DSL | Makefile | YAML | Go / Python / TypeScript |
-| What you install                         | ✅ Lask + Docker, and nothing a task uses | make, plus every tool a task uses | single binary, plus every tool a task uses | binary + Docker + an SDK toolchain |
+| What you install                         | ✅ Lask + Docker; host tools only for what runs on `#local` | make, plus every tool a task uses | single binary, plus every tool a task uses | binary + Docker + an SDK toolchain |
 
 **When to use something else:**
 
@@ -68,6 +68,8 @@ Here is how Lask compares to the lighter tools it replaces and to the heavier on
 - If you need artifact caching at build-system scale, or you want your pipeline written in Go or TypeScript with a full SDK behind it, Dagger goes further than Lask does — at the cost of an engine to run and an ecosystem to keep.
 
 **When Lask pays off:** tasks that take arguments, call each other, run in pinned Docker environments, or run concurrently — the point where Makefiles and YAML pipelines usually turn into untestable shell scripts. `lask check` verifies all of it before anything executes.
+
+**Moving over:** [Migrating from Make](doc/migration/from-make.md) and [Migrating from GitHub Actions](doc/migration/from-github-actions.md) take an existing Makefile or workflow across one task at a time, with both working at every step.
 
 ## Install
 
@@ -135,7 +137,7 @@ $ stack --local-bin-path /usr/local/bin/ install
 
 </details>
 
-Verify with `lask --help`. Archives and packages for every platform are on the [latest release](https://github.com/lask-task-runner/lask/releases/latest); an APT repository and Chocolatey support are planned.
+Verify with `lask version`. Lask runs containers through the `docker` command, so Docker must be installed and its daemon running (Docker Desktop on macOS and Windows, Docker Engine on Linux). Archives and packages for every platform are on the [latest release](https://github.com/lask-task-runner/lask/releases/latest); an APT repository and Chocolatey support are planned.
 
 <details>
 <summary><b>Shell completion</b> &middot; bash, zsh, fish</summary>
@@ -197,7 +199,7 @@ The script only ever asks the binary, so it keeps working across upgrades. Compl
 
 ## Example
 
-Before a task first runs in a container, `lask env build` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
+Before a task first runs in a container, `lask sync` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
 
 Run a command in any image straight from the REPL, with nothing installed locally:
 
@@ -213,16 +215,18 @@ lask> $[#rancher/cowsay] cowsay "Lask"
 ## Usage
 
 ```bash
-$ lask check                       # static validation
 $ lask run <function> [args...]    # execute (result not printed)
 $ lask eval <function> [args...]   # execute and print the result as JSON
 $ lask cmd <command> [args...]     # run a declared command in its declared image
-$ lask envs [--check]              # list/check referenced environments
-$ lask env build | list            # materialize / inspect container images
-$ lask deps sync                   # fetch + verify external dependencies
-$ lask deps add <name> <source>    # add a dependency: --git <url> --rev <rev>, or --url <url>
-$ lask deps why <name>             # show why a dependency is in the graph
 $ lask repl                        # interactive session
+
+$ lask sync [--frozen] [--prune]   # fetch dependencies, pull/build images, write the lock
+$ lask deps list | graph [name]    # the dependencies and their status / the dependency graph
+$ lask deps add <name> <source>    # add a dependency: --git <url> --rev <rev>, or --url <url>
+$ lask deps rm <name>              # remove a dependency no module imports
+$ lask envs list [fn]              # the environments, their pinned images, and whether each is present
+
+$ lask check                       # static validation
 $ lask serve                       # language server (LSP)
 $ lask version                     # print the lask version
 ```

@@ -20,6 +20,9 @@ lask run --help     # every task in the module, from its own comments
 | --- | --- | --- |
 | [01-hello-world/](01-projects/01-hello-world) | The smallest thing that is still a project: a pure task, a containerized one, and one calling the other. | Docker |
 | [02-webapp-on-aws/](01-projects/02-webapp-on-aws) | A full AWS stack — Python Lambda API, React front end, RDS, Cognito, CloudFront, Playwright tests — from a machine with none of those tools installed. | Docker, AWS account |
+| [03-local-llm/](01-projects/03-local-llm) | A local LLM with no install: pull a model, ask it from the command line, compare several models at once, or chat in the browser with Open WebUI. | Docker |
+| [04-nextjs-e2e/](01-projects/04-nextjs-e2e) | A Next.js app whose lint, build and Playwright tests in Chromium and Firefox run the same on a laptop and in CI, with no Node or browsers installed. | Docker |
+| [05-go-supply-chain/](01-projects/05-go-supply-chain) | A signed Go release: four platforms built at once, an SBOM, a vulnerability scan and a cosign signature, in one task. | Docker |
 
 ## 02-language
 
@@ -30,8 +33,8 @@ One directory per topic, in reading order. The whole of the [Quick Reference](..
 | [01-values-and-types](02-language/01-values-and-types) | Bindings, annotations, type aliases, records, maps, unions, optional fields, generics, `cast` |
 | [02-functions](02-language/02-functions) | Positional, variadic and keyword parameters, lambdas, higher-order functions, `\|>` and `>>` |
 | [03-control-flow](02-language/03-control-flow) | `do`, `if`, guard `return`, all three forms of `case`, `for` |
-| [04-commands](02-language/04-commands) | `$`, `$1`, `$2`, `$*`, interpolation, dispatch, `run`, `shell_quote` |
-| [05-environments](02-language/05-environments) | `#local`, tags, digests, `#docker(...)`, a Dockerfile recipe, environments as values |
+| [04-environments](02-language/04-environments) | `#local`, tags, digests, run options and `runnable`, a Dockerfile recipe, environments as values |
+| [05-commands](02-language/05-commands) | `$`, `$1`, `$2`, `$*`, interpolation, dispatch, `run`, `shell_quote` |
 | [06-concurrency](02-language/06-concurrency) | `async` / `await`, `spawn`, `all`, `race` |
 | [07-errors](02-language/07-errors) | `try` / `catch` / `finally`, `fail`, `error`, `recover`, exit codes |
 | [08-modules](02-language/08-modules) | Named and namespace imports, `internal`, re-export, per-module command declarations |

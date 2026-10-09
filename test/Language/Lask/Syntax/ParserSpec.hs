@@ -3,6 +3,9 @@
 module Language.Lask.Syntax.ParserSpec (spec) where
 
 import Data.Either (isLeft, isRight)
+import Data.List (isInfixOf)
+import qualified Data.Text as T
+import Language.Lask.Diagnostic (Diagnostic (..))
 import qualified Data.Set as Set
 import Data.Text (Text)
 import Language.Lask.Lexer.Token (CmdStream (..), Op (..), Spanned (..))
@@ -422,15 +425,27 @@ spec = do
 
   describe "environment expressions" $ do
     it "parses bare environment heads" $
-      pExpr "#local" `shouldBe` Right (EEnv "local" Nothing)
+      pExpr "#local" `shouldBe` Right (EEnv "local" Nothing Nothing)
 
     it "parses docker image sugar heads" $
-      pExpr "#alpine:3.12" `shouldBe` Right (EEnv "alpine:3.12" Nothing)
+      pExpr "#alpine:3.12" `shouldBe` Right (EEnv "alpine:3.12" Nothing Nothing)
 
-    it "parses constructor arguments" $
-      pExpr "#docker(\"alpine:3.12\", memory = \"4g\")"
+    it "parses run options in braces" $
+      pExpr "#alpine:3.12{memory: \"4g\"}"
         `shouldBe` Right
-          (EEnv "docker" (Just [posArg (str "alpine:3.12"), kwArg "memory" (str "4g")]))
+          (EEnv "alpine:3.12" Nothing (Just [kwArg "memory" (str "4g")]))
+
+    it "parses a recipe head" $
+      pExpr "#./infra/Dockerfile(context = \".\")"
+        `shouldBe` Right (EEnv "./infra/Dockerfile" (Just [kwArg "context" (str ".")]) Nothing)
+
+    it "parses run options in braces after the head" $
+      pExpr "#alpine:3.12(platform = \"linux/amd64\"){memory: \"4g\"}"
+        `shouldBe` Right
+          (EEnv "alpine:3.12" (Just [kwArg "platform" (str "linux/amd64")]) (Just [kwArg "memory" (str "4g")]))
+
+    it "does not attach spaced braces as run options" $
+      pExpr "#alpine:3.12 {memory: \"4g\"}" `shouldSatisfy` isLeft
 
     it "does not attach a spaced ( as constructor arguments" $
       pExpr "#local (1)" `shouldSatisfy` isRight
@@ -442,13 +457,13 @@ spec = do
         `shouldBe` Right
           ( ECommand
               StreamOut
-              (Just (ex (EEnv "alpine:3.12" Nothing)))
+              (Just (ex (EEnv "alpine:3.12" Nothing Nothing)))
               [TPChunk NoSpan "echo ", TPInterp (var "msg")]
           )
 
     it "parses stream selectors" $
       pExpr "$*[#local] ls"
-        `shouldBe` Right (ECommand StreamAll (Just (ex (EEnv "local" Nothing))) [TPChunk NoSpan "ls"])
+        `shouldBe` Right (ECommand StreamAll (Just (ex (EEnv "local" Nothing Nothing))) [TPChunk NoSpan "ls"])
 
   describe "do blocks and statements" $ do
     it "parses do blocks with binds and trailing expression" $
@@ -619,3 +634,13 @@ spec = do
             <> "}"
         )
         `shouldSatisfy` isRight
+
+  -- A command runs to the end of its line (spec 6.6), so one inside a
+  -- call takes the call's ")" with it.
+  describe "commands inside brackets" $ do
+    let notes src = either (map T.unpack . diagNotes) (const []) (parseModule "test.lask" src)
+    it "names the command that took a closing bracket" $
+      notes "f() = length($[#local] ls)\n"
+        `shouldSatisfy` any (isInfixOf "the command on line 1 runs to the end of its line, so its closing ')'")
+    it "says nothing about a command whose brackets balance" $
+      notes "f() = do {\n  x = $[#local] echo '(' \")\" $(date)\n  x +\n}\n" `shouldBe` []

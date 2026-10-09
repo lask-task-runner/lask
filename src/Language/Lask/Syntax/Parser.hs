@@ -24,11 +24,11 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Void (Void)
 import Control.Monad.Combinators.Expr (Operator (InfixL), makeExprParser)
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
+import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
 import Language.Lask.ErrorCode (ErrorCode (ESyntaxUnexpectedToken), Stage (StageSyntax))
 import Language.Lask.Lexer (lexLayout)
 import Language.Lask.Lexer.Token
-import Language.Lask.Span (Span (..), fromSourcePos)
+import Language.Lask.Span (Position (..), Span (..), fromSourcePos)
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.TokenStream
 import Text.Megaparsec hiding (State, Token, Tokens, token)
@@ -51,8 +51,49 @@ parseExpr file src = do
 runP :: P a -> FilePath -> [Spanned Token] -> Either Diagnostic a
 runP p file toks =
   case evalState (runParserT p file (TokStream toks)) [] of
-    Left bundle -> Left (bundleToDiagnostic bundle)
+    Left bundle -> Left (foldl (flip withNote) (bundleToDiagnostic bundle) (commandHints toks))
     Right a -> Right a
+
+-- | A command string runs to the end of its line (spec 6.6), closing
+-- brackets included, so a command written inside a call's brackets
+-- takes the call's @)@ with it, and the parse fails somewhere after,
+-- at a place that says nothing about why. When it fails, each command
+-- with a closing bracket it never opened is named.
+commandHints :: [Spanned Token] -> [Text]
+commandHints toks =
+  [ "the command on line "
+      <> T.pack (show (line (spanStartPos sp)))
+      <> " runs to the end of its line, so its closing '"
+      <> T.singleton c
+      <> "' was read as part of the command; a command cannot sit inside brackets: bind it to a name on its own line first"
+  | Spanned sp (TCommand _ _ parts) <- toks,
+    Just c <- [unopenedCloser (T.concat [t | Chunk _ t <- parts])]
+  ]
+  where
+    spanStartPos (Span start _) = start
+
+-- | The first closing bracket that no opening one before it matches,
+-- outside quotes.
+--
+-- >>> :set -XOverloadedStrings
+-- >>> unopenedCloser "ls)"
+-- Just ')'
+-- >>> unopenedCloser "echo '(' \")\" $(date)"
+-- Nothing
+unopenedCloser :: Text -> Maybe Char
+unopenedCloser = go [] Nothing . T.unpack
+  where
+    go _ _ [] = Nothing
+    go open (Just q) (c : cs)
+      | c == q = go open Nothing cs
+      | otherwise = go open (Just q) cs
+    go open Nothing (c : cs)
+      | c `elem` ("'\"" :: String) = go open (Just c) cs
+      | c `elem` ("([{" :: String) = go (c : open) Nothing cs
+      | Just o <- lookup c [(')', '('), (']', '['), ('}', '{')] = case open of
+          (o' : rest) | o' == o -> go rest Nothing cs
+          _ -> Just c
+      | otherwise = go open Nothing cs
 
 bundleToDiagnostic :: ParseErrorBundle TokStream Void -> Diagnostic
 bundleToDiagnostic bundle =
@@ -440,6 +481,7 @@ pSingleType = choice [pQualifiedNamed, pUnqualified]
         "Null" -> pure (SType sp SNull)
         "Void" -> pure (SType sp SVoid)
         "Environment" -> pure (SType sp SEnvironment)
+        "Runnable" -> pure (SType sp SRunnable)
         "Array" -> pGeneric1 sp SArray
         "Map" -> pGeneric1 sp SMap
         "AsyncHandle" -> pGeneric1 sp SAsyncHandle
@@ -649,18 +691,34 @@ pEnvExpr = do
   Spanned sp h <- matchTok "environment expression" $ \t -> case t of
     TEnvHead n -> Just n
     _ -> Nothing
-  nxt <- peekTok
-  case nxt of
-    Just (Spanned sp2 TLParen)
-      | adjacent sp sp2 -> do
-          _ <- sym TLParen
-          as <- sepBy pArg (sym TComma)
-          e <- sym TRParen
-          pure (Expr (sp <> e) (EEnv h (Just as)))
-    _ -> pure (Expr sp (EEnv h Nothing))
+  (as, sp1) <- adjacentList sp TLParen TRParen pArg
+  (os, sp2) <- adjacentList sp1 TLBrace TRBrace pRunOption
+  pure (Expr sp2 (EEnv h as os))
   where
     adjacent (Span _ e) (Span s _) = e == s
     adjacent _ _ = False
+
+    -- A list opened immediately after what precedes it (spec 6.7): one
+    -- opened after whitespace is not part of the environment expression.
+    adjacentList :: Span -> Token -> Token -> P a -> P (Maybe [a], Span)
+    adjacentList prev open close item = do
+      nxt <- peekTok
+      case nxt of
+        Just (Spanned sp' t)
+          | t == open && adjacent prev sp' -> do
+              _ <- sym open
+              xs <- sepBy item (sym TComma)
+              e <- sym close
+              pure (Just xs, prev <> e)
+        _ -> pure (Nothing, prev)
+
+    -- A run option @name: value@, carried as the keyword argument of
+    -- the @runnable@ call the braces stand for.
+    pRunOption = do
+      Spanned ksp k <- lowerId
+      _ <- sym TColon
+      v <- pExpr
+      pure (Arg (ksp <> exprSpan v) (AKw k v))
 
 pCommandExpr :: P Expr
 pCommandExpr = do

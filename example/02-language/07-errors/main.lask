@@ -3,7 +3,7 @@
 // A failure carries an `Error` — `{code, message}` — and an uncaught one
 // becomes the exit code of the process.
 //
-//   lask env build
+//   lask sync
 //   lask eval build_with_retry
 //   lask eval classify --path /nope   ; echo $?
 

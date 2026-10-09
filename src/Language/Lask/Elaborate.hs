@@ -42,6 +42,8 @@ import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTar
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), commandWords, validCommandName)
+import Language.Lask.Deps.Cache (inCache)
+import Language.Lask.Runtime.Image (recipeSource)
 import Language.Lask.Types
 import System.FilePath (isAbsolute, joinPath, normalise, splitDirectories, takeDirectory, (</>))
 
@@ -255,9 +257,10 @@ renderEnvCore c = case coreF c of
   CEnv "local" _ -> "#local"
   CEnv "docker" args -> case (lookup "image" args, lookup "dockerfile" args) of
     (Just (Core _ (CStrLit img)), _) -> "#" <> img
-    (_, Just (Core _ (CStrLit df))) -> "#docker(dockerfile = \"" <> df <> "\")"
-    _ -> "#docker(...)"
+    (_, Just (Core _ (CStrLit df))) -> "#" <> recipeSource df
+    _ -> "#?"
   CEnv kind _ -> "#" <> kind
+  CRunnable base _ -> renderEnvCore base <> "{...}"
   -- An environment named by a binding, or produced by a call, is
   -- shown as what was written: its value exists only at run time.
   CVar (TopRef _ n) -> n
@@ -571,6 +574,7 @@ typeFromS ctx path st = do
       SNull -> pure TyNull
       SVoid -> pure TyVoid
       SEnvironment -> pure TyEnvironment
+      SRunnable -> pure TyRunnable
       SArray t -> TyArray <$> go t
       SMap t -> TyMap <$> go t
       SAsyncHandle t -> TyAsync <$> go t
@@ -862,7 +866,12 @@ infer ctx path locals (Expr sp f) = case f of
       TyAsync r -> pure (Core sp (CAwait c), r)
       other -> mismatch (exprSpan inner) (TyAsync TyAny) other
   ECommand stream env parts -> elabCommand ctx path locals sp stream env parts
-  EEnv h args -> elabEnv ctx path locals sp h args
+  EEnv h args opts -> do
+    (env, envTy) <- elabEnv ctx path locals sp h args
+    -- #head{k: v} stands for runnable(#head, k = v) (spec 6.7).
+    case opts of
+      Nothing -> pure (env, envTy)
+      Just os -> elabRunnable ctx path locals sp env os
 
 spanStart :: Span -> Position
 spanStart (Span s _) = s
@@ -999,6 +1008,7 @@ typeToS sp t = SType sp $ case t of
   TyNull -> SNull
   TyVoid -> SVoid
   TyEnvironment -> SEnvironment
+  TyRunnable -> SRunnable
   TyArray e -> SArray (typeToS sp e)
   TyMap e -> SMap (typeToS sp e)
   TyRecord fs -> SRecord [(Spanned sp k, fieldOptional f, typeToS sp (fieldType f)) | (k, f) <- Map.toList fs]
@@ -1686,9 +1696,9 @@ elabCommand ctx path locals sp stream mEnv parts = do
   (envCore, shownEnv, viaWords) <- case mEnv of
     Just envExpr -> do
       (c, t) <- infer ctx path locals envExpr
-      unless (conforms ctx t TyEnvironment) $
-        abort . withExpectedActual "Environment" (renderType t) $
-          diag ETypeCommandEnv (exprSpan envExpr) "command environment must be an Environment"
+      unless (conforms ctx t TyRunnable) $
+        abort . withExpectedActual "Runnable" (renderType t) $
+          diag ETypeCommandEnv (exprSpan envExpr) "command environment must be an Environment or a Runnable"
       pure (c, Nothing, [])
     Nothing -> do
       (c, ws) <- dispatchEnv ctx path sp parts
@@ -1749,9 +1759,9 @@ moduleCommandSites ctx path = case Map.lookup path (progModules (ctxProg ctx)) o
 declaredEnv :: Ctx -> FilePath -> Expr -> TC Core
 declaredEnv ctx path e = do
   (c, t) <- infer ctx path Map.empty e
-  unless (conforms ctx t TyEnvironment) $
-    abort . withExpectedActual "Environment" (renderType t) $
-      diag ETypeCommandEnv (exprSpan e) "the environment of a command declaration must be an Environment"
+  unless (conforms ctx t TyRunnable) $
+    abort . withExpectedActual "Runnable" (renderType t) $
+      diag ETypeCommandEnv (exprSpan e) "the environment of a command declaration must be an Environment or a Runnable"
   effect <- reachableEffect ctx c
   case effect of
     Nothing -> pure c
@@ -1791,6 +1801,8 @@ envSource ctx path idx = walk Set.empty Nothing
     walk seen lastBinding c = case coreF c of
       CEnv {}
         | literalEnv c -> pure (SrcLiteral (envKey c))
+      CRunnable {}
+        | literalEnv c -> pure (SrcLiteral (envKey c))
       CVar (TopRef p n)
         | not (Set.member (p, n) seen) -> do
             cd <- demandDecl ctx (p, n)
@@ -1799,6 +1811,7 @@ envSource ctx path idx = walk Set.empty Nothing
 
     literalEnv c = case coreF c of
       CEnv _ args -> all (literal . snd) args
+      CRunnable base args -> literalEnv base && all (literal . snd) args
       _ -> False
     literal c = case coreF c of
       CStrLit _ -> True
@@ -1819,6 +1832,12 @@ envKey c = case coreF c of
   -- options in a different order denote the same environment, and
   -- selection compares environment values (10.9).
   CEnv kind args -> kind <> "(" <> T.intercalate "," [k <> "=" <> envKey v | (k, v) <- sortOn fst args] <> ")"
+  -- A runnable runs as its environment with the options merged in,
+  -- so it is keyed as one argument list: #a{m: 1} and the same
+  -- environment written with that option compare equal (spec 8.8).
+  CRunnable base args -> case coreF base of
+    CEnv kind eargs -> envKey (base {coreF = CEnv kind (eargs <> args)})
+    _ -> T.pack (show (coreF base))
   CStrLit t -> "\"" <> t <> "\""
   CNumber n -> T.pack (show n)
   CBool b -> if b then "true" else "false"
@@ -1930,11 +1949,18 @@ dispatchEnv ctx path sp parts = do
 -- | A recipe path written in the module at @modulePath@, as the path
 -- relative to the program's base directory @base@ that names the same
 -- file. Module paths and the base directory are both relative to where
--- lask runs, or both absolute; where they are not alike (a dependency
--- cache moved elsewhere by LASK_CACHE_DIR), the module-relative path is
--- kept whole, which the base directory joins to unchanged.
-recipePath :: FilePath -> FilePath -> FilePath -> FilePath
-recipePath base modulePath written
+-- lask runs, or both absolute; where they are not alike, the
+-- module-relative path is kept whole, which the base directory joins to
+-- unchanged.
+--
+-- A recipe in a dependency is written as it would be under the default
+-- cache, @.lask/deps/...@, wherever @LASK_CACHE_DIR@ puts the cache
+-- (@cacheDir@): the path is part of the recipe's lock key and hash, and
+-- a lock must not depend on where the machine that wrote it kept its
+-- cache. Reading the file maps it back ('resolveInBase').
+recipePath :: FilePath -> FilePath -> FilePath -> FilePath -> FilePath
+recipePath base cacheDir modulePath written
+  | Just canonical <- inCache cacheDir target = canonical
   | isAbsolute base /= isAbsolute target = target
   | otherwise =
       let b = parts base
@@ -1946,148 +1972,198 @@ recipePath base modulePath written
     target = collapseDots (normalise (takeDirectory modulePath </> written))
     parts = filter (/= ".") . splitDirectories . collapseDots . normalise
 
+-- | The heads of an environment expression (spec 6.7): the host, a
+-- recipe path, or a registry reference. The head is the only place an
+-- image is named.
+data EnvHead = HeadLocal | HeadRecipe Text | HeadRegistry Text
+
+classifyHead :: Text -> EnvHead
+classifyHead h
+  | h == "local" = HeadLocal
+  | "." `T.isPrefixOf` h = HeadRecipe h
+  | otherwise = HeadRegistry h
+
+-- | The run options of the @docker@ profile (spec 10.2, 15.5): how an
+-- image runs, never which image it is. They are the keyword parameters
+-- of @runnable@, and each takes any expression of its type.
+--
+-- A container option given null is left out: the one way an argument
+-- can say "not given" without giving up a value a caller might mean,
+-- such as "" (10.2). A list or a table says it by being empty, and
+-- leaves out its null elements and null values the same way.
+dockerRunOptions :: [(Text, Type)]
+dockerRunOptions =
+  [ -- Resource limits.
+    ("memory", text),
+    ("memory_swap", text),
+    ("memory_reservation", text),
+    ("cpus", number),
+    ("cpu_shares", number),
+    ("cpuset_cpus", text),
+    ("cpuset_mems", text),
+    ("pids_limit", number),
+    ("shm_size", text),
+    ("blkio_weight", number),
+    ("ulimits", list),
+    -- Execution context.
+    ("workdir", text),
+    ("user", text),
+    ("env", table),
+    ("hostname", text),
+    ("init", switch),
+    -- Confinement: these narrow the boundary of 10.7.
+    ("read_only", switch),
+    ("tmpfs", list),
+    ("cap_drop", list),
+    -- Network.
+    ("network", text),
+    ("dns", list),
+    ("dns_search", list),
+    ("add_hosts", table),
+    ("publish", list),
+    -- Host filesystem beyond the base directory mount (10.5).
+    ("volumes", list)
+  ]
+  where
+    nullable t = mkUnion t [TyNull]
+    text = nullable TyString
+    number = nullable TyNumber
+    switch = nullable TyBool
+    list = TyArray (nullable TyString)
+    table = TyMap (nullable TyString)
+
+-- | The options that decide which image is used (spec 6.7, 10.2). They
+-- are given only in a head's own argument list, as literals, so that
+-- the images a program uses are known by reading it.
+imageOptionNames :: [Text]
+imageOptionNames = ["platform", "context", "build_args"]
+
+-- | The type of a runnable's options, for a diagnostic that points at
+-- the braces.
+runOptionNames :: [Text]
+runOptionNames = map fst dockerRunOptions
+
 elabEnv :: Ctx -> FilePath -> Locals -> Span -> Text -> Maybe [Arg] -> TC (Core, Type)
-elabEnv ctx path locals sp h mArgs = do
-  argsOrdered <- traverse validateOrder mArgs
-  case h of
-    "local" -> do
-      case argsOrdered of
-        Just (_ : _) -> envErr "local() takes no arguments"
-        _ -> pure ()
-      pure (Core sp (CEnv "local" []), TyEnvironment)
-    "docker" -> do
-      args <- maybe (envErr "docker(...) requires an image reference or a recipe") pure argsOrdered
-      let hasPositional = any (\(Arg _ af) -> case af of APos _ -> True; _ -> False) args
-          -- A container option given null is left out: the one way an
-          -- argument can say "not given" without giving up a value a
-          -- caller might mean, such as "" (10.2). A list or a table
-          -- says it by being empty, and leaves out its null elements
-          -- and null values the same way.
-          nullable t = mkUnion t [TyNull]
-          text = nullable TyString
-          number = nullable TyNumber
-          switch = nullable TyBool
-          list = TyArray (nullable TyString)
-          table = TyMap (nullable TyString)
-          optionals =
-            [ ("image", TyString),
-              ("dockerfile", TyString),
-              ("context", TyString),
-              ("build_args", TyMap TyString),
-              -- Resource limits.
-              ("memory", text),
-              ("memory_swap", text),
-              ("memory_reservation", text),
-              ("cpus", number),
-              ("cpu_shares", number),
-              ("cpuset_cpus", text),
-              ("cpuset_mems", text),
-              ("pids_limit", number),
-              ("shm_size", text),
-              ("blkio_weight", number),
-              ("ulimits", list),
-              -- Execution context.
-              ("workdir", text),
-              ("user", text),
-              ("env", table),
-              ("platform", text),
-              ("hostname", text),
-              ("init", switch),
-              -- Confinement: these narrow the boundary of 10.7.
-              ("read_only", switch),
-              ("tmpfs", list),
-              ("cap_drop", list),
-              -- Network.
-              ("network", text),
-              ("dns", list),
-              ("dns_search", list),
-              ("add_hosts", table),
-              ("publish", list),
-              -- Host filesystem beyond the base directory mount (10.5).
-              ("volumes", list)
-            ]
-      named <-
-        if hasPositional
-          then bindEnvArgs "docker" [("image", TyString)] optionals args
-          else bindEnvArgs "docker" [] optionals args
-      validateDockerEnv named
-      pure (Core sp (CEnv "docker" (map recipeArg named)), TyEnvironment)
-    imageName -> case mArgs of
-      -- #image-name sugar: docker("image-name") (spec 6.7).
-      Nothing ->
-        pure
-          ( Core sp (CEnv "docker" [("image", Core sp (CStrLit imageName))]),
-            TyEnvironment
-          )
-      -- An unknown environment kind is a static error (spec 10.4).
-      Just _ -> envErr ("unknown environment kind: '" <> imageName <> "'")
+elabEnv ctx path locals sp h mArgs = case classifyHead h of
+  HeadLocal -> case mArgs of
+    Nothing -> pure (Core sp (CEnv "local" []), TyEnvironment)
+    Just _ -> envErr "#local takes no argument list"
+  HeadRegistry ref -> do
+    when (h == "docker" && any positional (maybe [] id mArgs)) $
+      () <$ envErr removedDocker
+    opts <- options [("platform", TyString)]
+    _ <- requireLiteral opts "platform"
+    pure (Core sp (CEnv "docker" (("image", Core sp (CStrLit ref)) : opts)), TyEnvironment)
+  HeadRecipe written -> do
+    dockerfile <- treePath "the recipe path" written
+    opts <- options [("platform", TyString), ("context", TyString), ("build_args", TyMap TyString)]
+    _ <- requireLiteral opts "platform"
+    mapM_ (treePath "'context'") =<< requireLiteral opts "context"
+    requireLiteralTable opts "build_args"
+    pure
+      ( Core sp (CEnv "docker" (map recipeArg (("dockerfile", Core sp (CStrLit dockerfile)) : opts))),
+        TyEnvironment
+      )
   where
     envErr :: Text -> TC a
     envErr = abort . diag ETypeEnvConstruct sp
 
+    positional (Arg _ af) = case af of
+      APos _ -> True
+      AKw _ _ -> False
+
+    options imageOpts = bindEnvOptions ctx path locals imageOpts unknown (maybe [] id mArgs)
+
+    unknown n
+      | h == "docker" || n `elem` ["image", "dockerfile"] = removedDocker
+      | n `elem` imageOptionNames = "'" <> n <> "' is only valid on a recipe head, #./path/Dockerfile(" <> n <> " = ...)"
+      | n `elem` runOptionNames =
+          "'" <> n <> "' is a run option: give it in braces, as #" <> h <> "{" <> n <> ": ...}, or to runnable(...)"
+      | otherwise = "unknown image option: '" <> n <> "'"
+
     -- A recipe path is written relative to the directory of the module
     -- that declares it (10.2), and is read — by the runtime, by
-    -- `lask env build`, in the lock — relative to the program's base
+    -- `lask sync`, in the lock — relative to the program's base
     -- directory, since the value it ends up in no longer knows its
     -- module. It is rewritten here, where the module is known. A recipe
     -- beside the entry module keeps the path it was written with.
     recipeArg (k, c)
       | k `elem` ["dockerfile", "context"],
         CStrLit p <- coreF c =
-          (k, c {coreF = CStrLit (T.pack (recipePath (progBaseDir (ctxProg ctx)) path (T.unpack p)))})
+          (k, c {coreF = CStrLit (T.pack (recipePath (progBaseDir (ctxProg ctx)) (progCacheDir (ctxProg ctx)) path (T.unpack p)))})
       | otherwise = (k, c)
 
-    -- Positional arguments must precede named ones (spec 6.7).
-    validateOrder args = do
-      let go _ [] = pure ()
-          go sawNamed (Arg _ af : rest) = case af of
-            AKw _ _ -> go True rest
-            APos _
-              | sawNamed -> () <$ envErr "positional arguments must precede named arguments"
-              | otherwise -> go False rest
-      go False args
-      pure args
+    -- An image option is read before anything runs, by `lask env
+    -- build`, which has no evaluator to compute it with (10.3).
+    requireLiteral :: [(Text, Core)] -> Text -> TC (Maybe Text)
+    requireLiteral named key = case lookup key named of
+      Nothing -> pure Nothing
+      Just (Core _ (CStrLit t))
+        | T.null t -> envErr ("'" <> key <> "' must not be empty")
+        | otherwise -> pure (Just t)
+      Just _ -> envErr ("'" <> key <> "' must be a string literal without interpolation")
 
-    -- Bind positional-then-named args against a constructor signature.
-    bindEnvArgs :: Text -> [(Text, Type)] -> [(Text, Type)] -> [Arg] -> TC [(Text, Core)]
-    bindEnvArgs kind required optional args = do
-      let (posArgs, kwArgs) = span (\(Arg _ af) -> case af of APos _ -> True; _ -> False) args
-      when (length posArgs > length required) $
-        () <$ envErr (kind <> "(...) has too many positional arguments")
-      posBound <-
-        mapM
-          ( \((pname, pty), arg) -> case arg of
-              Arg _ (APos e) -> do
-                c <- checkEnvArg e pty
-                pure (pname, c)
-              Arg asp (AKw _ _) ->
-                abort (diag ETypeEnvConstruct asp "positional arguments must precede named arguments")
-          )
-          (zip required posArgs)
-      let boundNames = Set.fromList (map fst posBound)
-          sigNamed = Map.fromList (required <> optional)
-      kwBound <-
-        foldM
-          ( \acc arg -> case arg of
-              Arg asp (AKw n e) -> do
-                when (n `Set.member` Set.union boundNames (Set.fromList (map fst acc))) $
-                  () <$ abort (diag ETypeEnvConstruct asp ("duplicate environment argument: '" <> n <> "'"))
-                case Map.lookup n sigNamed of
-                  Just pty -> do
-                    c <- checkEnvArg e pty
-                    pure (acc <> [(n, c)])
-                  Nothing ->
-                    abort (diag ETypeEnvConstruct asp ("unknown environment argument: '" <> n <> "'"))
-              Arg asp (APos _) ->
-                abort (diag ETypeEnvConstruct asp "positional arguments must precede named arguments")
-          )
-          []
-          kwArgs
-      let bound = posBound <> kwBound
-          missing = [n | (n, _) <- required, n `notElem` map fst bound]
-      unless (null missing) $
-        () <$ envErr (kind <> "(...) is missing required argument: " <> T.intercalate ", " missing)
-      pure bound
+    requireLiteralTable :: [(Text, Core)] -> Text -> TC ()
+    requireLiteralTable named key = case lookup key named of
+      Nothing -> pure ()
+      Just (Core _ (CMapLit kvs))
+        | all (isLiteralString . snd) kvs -> pure ()
+      Just _ -> envErr ("'" <> key <> "' must be a table of string literals without interpolation")
+      where
+        isLiteralString c = case coreF c of
+          CStrLit _ -> True
+          _ -> False
+
+    -- A recipe resolves inside the tree of the module it is written in
+    -- (10.2), so the module's content hash covers it.
+    treePath :: Text -> Text -> TC Text
+    treePath what p
+      | isAbsolute (T.unpack p) = envErr (what <> " must be a relative path inside the module tree")
+      | ".." `elem` splitDirectories (normalise (T.unpack p)) = envErr (what <> " must not escape the module tree")
+      | otherwise = pure (T.pack (normalise (T.unpack p)))
+
+-- | A runnable (spec 6.7, 15.5): an environment with run options,
+-- from @runnable(env, k = v, ...)@ or its sugar @#head{k: v, ...}@. It
+-- takes an 'Environment' only, so options are given once and never
+-- applied over a runnable's.
+elabRunnable :: Ctx -> FilePath -> Locals -> Span -> Core -> [Arg] -> TC (Core, Type)
+elabRunnable ctx path locals sp env args = do
+  opts <- bindEnvOptions ctx path locals dockerRunOptions unknown args
+  case coreF env of
+    CEnv "local" _
+      | not (null opts) -> abort (diag ETypeEnvConstruct sp "#local takes no run options")
+    _ -> pure ()
+  pure (Core sp (CRunnable env opts), TyRunnable)
+  where
+    unknown n
+      | n `elem` ["image", "dockerfile"] = "a runnable cannot change the image; name it by the head, as #alpine:3.20"
+      | n `elem` imageOptionNames =
+          "'" <> n <> "' decides the image, and is given on the head, as #alpine:3.20(" <> n <> " = ...)"
+      | otherwise = "unknown run option: '" <> n <> "'"
+
+-- | Migration hint for the removed @#docker(...)@ form.
+removedDocker :: Text
+removedDocker =
+  "#docker(...) was removed: name the image by the head, as #alpine:3.20(memory = \"4g\"), "
+    <> "or a recipe by its path, as #./images/build/Dockerfile(context = \".\")"
+
+-- | Bind the named arguments of an environment expression or an option
+-- application against the options it accepts (spec 6.7, 7.5).
+bindEnvOptions :: Ctx -> FilePath -> Locals -> [(Text, Type)] -> (Text -> Text) -> [Arg] -> TC [(Text, Core)]
+bindEnvOptions ctx path locals sig unknown = foldM step []
+  where
+    step acc (Arg asp af) = case af of
+      APos _ ->
+        abort . diag ETypeEnvConstruct asp $
+          "environment options are named, as memory = \"4g\"; the image is named by the head, as #alpine:3.20"
+      AKw n e -> do
+        when (n `elem` map fst acc) $
+          () <$ abort (diag ETypeEnvConstruct asp ("duplicate environment option: '" <> n <> "'"))
+        case lookup n sig of
+          Just ty -> do
+            c <- checkEnvArg e ty
+            pure (acc <> [(n, c)])
+          Nothing -> abort (diag ETypeEnvConstruct asp (unknown n))
 
     -- A list or table option is declared with nullable elements, so
     -- that a literal can hold a null to leave out (10.2). Containers
@@ -2105,68 +2181,6 @@ elabEnv ctx path locals sp h mArgs = do
           case r of
             Right c -> pure c
             Left d -> either (const (abort d)) pure =<< tryTC (check ctx path locals e plain)
-
-    coreStrLit (Core _ (CStrLit t)) = Just t
-    coreStrLit _ = Nothing
-
-    -- The image is given either as a registry reference or as a recipe
-    -- (spec 10.2). Exactly one form; a registry reference carries a tag
-    -- or digest; a recipe is a literal path inside the module tree.
-    validateDockerEnv :: [(Text, Core)] -> TC ()
-    validateDockerEnv named = do
-      let present k = maybe False (const True) (lookup k named)
-      case (present "image", present "dockerfile") of
-        (True, True) ->
-          () <$ envErr "docker(...) takes either an image reference or a 'dockerfile' recipe, not both"
-        (False, False) ->
-          () <$ envErr "docker(...) requires an image reference or a 'dockerfile' recipe"
-        (True, False) -> do
-          when (present "context") $
-            () <$ envErr "'context' is only valid together with 'dockerfile'"
-          when (present "build_args") $
-            () <$ envErr "'build_args' is only valid together with 'dockerfile'"
-          case lookup "image" named >>= coreStrLit of
-            -- A runtime image value stays permitted here; whether the
-            -- owning module may use one is a trust-domain rule (16.1).
-            Nothing -> pure ()
-            -- A reference without a tag names the repository's
-            -- `latest`; the lock pins whatever that resolved to when it
-            -- was materialized (10.3), so it cannot move under a run.
-            Just img
-              | T.null img -> () <$ envErr "the image reference must not be empty"
-              | otherwise -> pure ()
-        (False, True) -> do
-          _ <- requireTreePath named "dockerfile"
-          _ <- requireTreePath named "context"
-          requireLiteralTable named "build_args"
-
-    -- Build arguments decide which image a recipe builds, and are part
-    -- of its hash (10.3), so they are read before anything runs: by
-    -- `lask env build`, which has no evaluator to compute them with.
-    requireLiteralTable :: [(Text, Core)] -> Text -> TC ()
-    requireLiteralTable named key = case lookup key named of
-      Nothing -> pure ()
-      Just (Core _ (CMapLit kvs))
-        | all (isLiteralString . snd) kvs -> pure ()
-      Just _ -> envErr ("'" <> key <> "' must be a table of string literals without interpolation")
-      where
-        isLiteralString c = case coreF c of
-          CStrLit _ -> True
-          _ -> False
-
-    requireTreePath :: [(Text, Core)] -> Text -> TC (Maybe Text)
-    requireTreePath named key = case lookup key named of
-      Nothing -> pure Nothing
-      Just c -> case coreStrLit c of
-        Nothing ->
-          envErr ("'" <> key <> "' must be a string literal without interpolation")
-        Just p
-          | T.null p -> envErr ("'" <> key <> "' must not be empty")
-          | isAbsolute (T.unpack p) ->
-              envErr ("'" <> key <> "' must be a relative path inside the module tree")
-          | ".." `elem` splitDirectories (normalise (T.unpack p)) ->
-              envErr ("'" <> key <> "' must not escape the module tree")
-          | otherwise -> pure (Just p)
 
 -- Calls (spec 7.5) ------------------------------------------------------------------------
 
@@ -2192,6 +2206,12 @@ elabCall ctx path locals sp fn args mExpected = do
         other -> abort (diag ETypeCall (exprSpan fn) ("cannot call a value of type " <> renderType other))
       (posCores, kwCores, retTy) <- bindStatic tvs bounds ret params
       pure (Core sp (CApp fnCore posCores kwCores), retTy)
+    -- runnable's keyword parameters are the run options (spec 15.5).
+    CalleeBuiltin "runnable" _ -> case args of
+      Arg _ (APos e) : rest -> do
+        env <- check ctx path locals e TyEnvironment
+        elabRunnable ctx path locals sp env rest
+      _ -> abort (diag ETypeArity sp "runnable(...) takes an environment, then its run options by name")
     CalleeBuiltin name scheme -> elabBuiltinCall name scheme
     CalleeValue fnCore fnTy -> case fnTy of
       TyFun paramTys retTy -> do

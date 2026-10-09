@@ -1,0 +1,100 @@
+// A Next.js app and its Playwright tests, from a machine with nothing
+// installed but Lask and Docker — the same run on a laptop and in CI.
+//
+//   lask sync          # one-time: fetches the tools module, pulls the images
+//   lask run ci        # install, lint and build, then the browser tests
+//   lask run dev       # the dev server, http://localhost:3000
+
+import * as tools from "tools"
+
+command { "node", "npm", "npx" } on node
+
+// One Node image for every npm step. It is Debian-based, like the
+// Playwright image, so the native packages npm installs (Next's SWC
+// compiler) load in both.
+node_image = #node:24.21.0-bookworm-slim
+quiet: Map<String> = {"NEXT_TELEMETRY_DISABLED": "1"}
+
+node = tools.node(image = node_image, extra_env = quiet)
+
+// The dev server publishes its port, so the browser on the host reaches it.
+internal dev_server(port: Number): Runnable =
+  runnable(node_image, env = quiet, publish = ["#{port}:3000"])
+
+// The tag is the @playwright/test version in package.json: the image
+// carries that release's browsers, and no other.
+playwright_image = #mcr.microsoft.com/playwright:v1.63.0-noble
+playwright = tools.playwright(image = playwright_image, extra_env = merge(quiet, {"CI": "1"}))
+
+// Playwright's UI mode, published to the host. tools.playwright takes no
+// ports, so this gives the same image the run options it would have set:
+// an init process, a larger /dev/shm, and no browser downloads.
+internal playwright_ui(port: Number): Runnable = runnable(playwright_image,
+  env = merge(quiet, {"PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"}),
+  init = true,
+  shm_size = "1g",
+  publish = ["127.0.0.1:#{port}:9323"]
+)
+
+// Install the dependencies exactly as package-lock.json pins them.
+install() = $ npm ci --no-audit --no-fund
+
+// Check the code with ESLint (Next's core-web-vitals rules).
+lint() = $ npm run lint
+
+// Build the production bundle into .next/.
+build() = $ npm run build
+
+// Run the Playwright tests in Chromium and Firefox.
+//
+// Playwright starts the production server itself (playwright.config.js),
+// inside the same container as the browsers, so run build first. The
+// HTML report lands in playwright-report/.
+//
+// @param grep  Run only the tests whose title matches.
+// @example lask run test-e2e --grep health
+test_e2e(--grep: String = "") = case {
+  grep == "" -> $[playwright] npx playwright test
+  else -> $[playwright] npx playwright test --grep #{shell_quote(grep)}
+}
+
+// Watch the browser tests run, in Playwright's UI mode, until you stop it.
+//
+// The UI is a web page served from the container: open it, pick a test
+// and run it, then step through each action with a snapshot of the page
+// before and after. It is published on 127.0.0.1 only.
+//
+// @param port  The port on the host.
+// @example lask run test-ui
+test_ui(--port: Number = 9323) = do {
+  install()
+  build()
+  log("open http://localhost:#{port}")
+  $[playwright_ui(port)] npx playwright test --ui-host=0.0.0.0 --ui-port=9323
+}
+
+// Everything CI runs: install, then lint and build side by side, then
+// the browser tests against the build.
+//
+// @example lask sync --frozen && lask run ci
+ci() = do {
+  install()
+  checked = async lint()
+  built = async build()
+  await checked
+  await built
+  test_e2e()
+}
+
+// The dev server with hot reload, until you stop it.
+//
+// Edits on the host show up within a few seconds: the project
+// directory is mounted into the container, not copied, and the server
+// polls it for changes (next.config.mjs).
+//
+// @param port  The port on the host; inside the container it is 3000.
+// @example lask run dev --port 8080
+dev(--port: Number = 3000) = do {
+  log("open http://localhost:#{port}")
+  $[dev_server(port)] npm run dev
+}

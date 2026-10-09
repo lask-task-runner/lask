@@ -496,7 +496,7 @@ data PosSpec = PosFunction | PosCommandWord | PosDepName | PosShell | PosFree
 
 -- | What a subcommand does with the tokens after its positional.
 data Boundary
-  = -- | Ordinary parsing continues (@envs@).
+  = -- | Ordinary parsing continues (@envs list@).
     NoBoundary
   | -- | They are the function's arguments (spec 11.2): lask's options
     -- give way to the function's keyword parameters.
@@ -543,25 +543,33 @@ plain n h opts = Cmd n h [] (opts <> [helpOpt]) [] NoBoundary
 -- that they cannot drift apart unnoticed.
 rootCommands :: [Cmd]
 rootCommands =
-  [ plain "serve" "Start the language server" [],
-    plain "check" "Statically validate the module" commonOpts,
-    runLike "run" "Run a function (result is not printed)",
+  [ -- Run tasks.
+    runLike "run" "Run a function (its result is not printed)",
     runLike "eval" "Run a function and print its result",
-    plain "repl" "Interactive session" commonOpts,
-    (plain "envs" "List and check environments" (commonOpts <> [switchOpt "check" "Check accessibility of each environment"]))
-      { cmdPos = [PosFunction]
-      },
-    Cmd "deps" "Manage external dependencies" depsSubs [helpOpt] [] NoBoundary,
-    Cmd "env" "Materialize and inspect container images" envSubs [helpOpt] [] NoBoundary,
-    Cmd "secrets" "List and check secret references" secretsSubs [helpOpt] [] NoBoundary,
-    (plain "cmd" "Run a declared command in its declared environment" (commonOpts <> [switchOpt "list" "List the commands the module declares"]))
+    (plain "cmd" "Run a declared command in its declared environment" commonOpts)
       { cmdPos = [PosCommandWord],
         -- Spec 11.8: every token after the command word reaches the
         -- program verbatim, @--help@ included.
         cmdBoundary = ProgramArgs
       },
-    plain "version" "Print the lask version" [],
-    (plain "completion" "Print the shell completion script" []) {cmdPos = [PosShell]}
+    plain "repl" "Start an interactive session" commonOpts,
+    -- Set up the project.
+    plain
+      "sync"
+      "Fetch dependencies, pull and build images, and write the lock file"
+      ( commonOpts
+          <> [ switchOpt "frozen" "Fail instead of updating lask.json or the lock file",
+               switchOpt "prune" "Remove the dependencies no .lask file of the project imports"
+             ]
+      ),
+    Cmd "deps" "List, graph, add and remove dependencies" depsSubs [helpOpt] [] NoBoundary,
+    Cmd "envs" "List environments, their images, and whether each is present" envsSubs [helpOpt] [] NoBoundary,
+    Cmd "secrets" "List and check secret references" secretsSubs [helpOpt] [] NoBoundary,
+    -- Develop.
+    plain "check" "Statically validate the module" commonOpts,
+    plain "serve" "Start the language server" [],
+    (plain "completion" "Print the shell completion script" []) {cmdPos = [PosShell]},
+    plain "version" "Print the lask version" []
   ]
   where
     runLike n h =
@@ -598,17 +606,14 @@ rootCommands =
       ]
 
     depsSubs =
-      [ plain
-          "sync"
-          "Fetch and verify all declared dependencies"
-          (commonOpts <> [switchOpt "frozen" "Fail instead of updating the lock file"]),
+      [ plain "list" "List the dependencies, what lask.json requests and the lock pins, and whether each is in use" commonOpts,
+        (plain "graph" "Show the dependency graph the lock records" (commonOpts <> [valueOpt "depth" VOpaque "Show N levels of dependencies"]))
+          { cmdPos = [PosDepName]
+          },
         (plain "add" "Fetch a source, record it with its content hash, and cache it" (commonOpts <> addSource))
           { cmdPos = [PosFree]
           },
-        (plain "why" "Report the graph paths through which a dependency is reached" commonOpts)
-          { cmdPos = [PosDepName]
-          },
-        (plain "diff" "Report what a dependency bump would change" commonOpts)
+        (plain "rm" "Remove a dependency no module imports, with what only it needed" commonOpts)
           { cmdPos = [PosDepName]
           }
       ]
@@ -632,9 +637,10 @@ rootCommands =
           }
       ]
 
-    envSubs =
-      [ plain "build" "Materialize every image the program requires" commonOpts,
-        plain "list" "Report every image reference and whether it is present" commonOpts
+    envsSubs =
+      [ (plain "list" "List the environments, what the lock resolves them to, what requires them, and whether each image is on the Docker daemon" commonOpts)
+          { cmdPos = [PosFunction]
+          }
       ]
 
 -- | The walk state: what the words consumed so far have established.
@@ -1026,6 +1032,7 @@ declaredName d = case AST.declF d of
 
 isEnvType :: Maybe AST.SType -> Bool
 isEnvType (Just (AST.SType _ AST.SEnvironment)) = True
+isEnvType (Just (AST.SType _ AST.SRunnable)) = True
 isEnvType _ = False
 
 isBoolType :: Maybe AST.SType -> Bool
@@ -1041,6 +1048,7 @@ typeText (AST.SType _ f) = case f of
   AST.SNull -> "Null"
   AST.SVoid -> "Void"
   AST.SEnvironment -> "Environment"
+  AST.SRunnable -> "Runnable"
   AST.SArray t -> "Array<" <> typeText t <> ">"
   AST.SMap t -> "Map<" <> typeText t <> ">"
   AST.SRecord _ -> "Record"

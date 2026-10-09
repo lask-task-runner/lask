@@ -3,45 +3,58 @@
 // An environment is a value: it is declared once, passed around, stored
 // in a map and selected at runtime like anything else.
 //
-//   lask envs                  # every image this module can reach for
-//   lask envs --check          # …and whether each one is reachable
-//   lask env build             # materialize them (run/eval never pull)
+//   lask envs list             # every image this module can reach for,
+//                              # and whether each is on the Docker daemon
+//   lask sync                  # materialize them (run/eval never pull)
 //   lask eval alpine_version
-//   lask eval tool_versions --env docker
+//   lask eval tool_versions
+//   lask eval uname_in --env built
 
 // The host itself. There is no default environment, so `#local` is
 // something you write — a command that names no environment at all is
 // a static error, never a quiet fall back to the host.
 host = #local
 
-// Sugar for #docker("alpine:3.22.2"). A tag is optional — a bare
-// `#alpine` means `latest` — because `lask env build` pins the digest a
+// An image is named by the head of the expression, and only there: no
+// string or variable can name one, so reading the source is enough to
+// know every image it uses. A tag is optional — a bare
+// `#alpine` means `latest` — because `lask sync` pins the digest a
 // reference resolves to in lask.lock.json, and every run uses that.
 alpine = #alpine:3.22.2
 
 // A digest pins the exact bytes, which no tag can promise.
 pinned = #alpine@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
 
-// The constructor takes resource limits as keyword arguments.
-small = #docker("alpine:3.22.2", memory = "256m", cpus = 1)
+// Run options go in braces after the head: resource limits, for one.
+// The braces make a Runnable — the environment, and how to run it. They
+// are sugar for runnable(#alpine:3.22.2, memory = "256m", cpus = 1).
+small = #alpine:3.22.2{memory: "256m", cpus: 1}
 
 // It configures the rest of the container the same way: variables, the
 // network, and what the container may write to. These are ordinary
 // arguments — literals here, but they may be computed like any other.
 // Variable names are not `lower_id`, so they are written as strings.
-sealed = #docker(
-  "alpine:3.22.2",
-  env = {"LANG": "C.UTF-8"},
-  network = "none",
-  read_only = true,
-  tmpfs = ["/tmp"],
-  cap_drop = ["ALL"]
-)
+sealed = #alpine:3.22.2{
+  env: {"LANG": "C.UTF-8"},
+  network: "none",
+  read_only: true,
+  tmpfs: ["/tmp"],
+  cap_drop: ["ALL"]
+}
 
-// The other form of an image: a recipe. `dockerfile` and `context` must
-// be literals inside this module's own tree, which is what keeps the
-// set of images a module uses enumerable and pinnable.
-built = #docker(dockerfile = "Dockerfile", context = ".")
+// The other form of an image: a recipe, named by its Dockerfile's path.
+// What decides the image goes in parentheses: the path, `context` and
+// `build_args`, literals inside this module's own tree, which is what
+// keeps the set of images a module uses enumerable and pinnable.
+built = #./Dockerfile(context = ".")
+
+// A function can let its caller choose the image, and say how to run
+// whichever it gets. The default image is written here, and a caller's
+// is written where it calls — `alpine_shell(image = #alpine:3.21)` — so
+// either way it is a head someone wrote. runnable() takes an
+// Environment, so the options are given once, here.
+alpine_shell(--image: Environment = #alpine:3.22.2): Runnable =
+  runnable(image, env = {"PS1": "lask$ "}, read_only = true)
 
 command { "uname" } on host
 command { "jq" } on built
