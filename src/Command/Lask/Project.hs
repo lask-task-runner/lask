@@ -298,31 +298,37 @@ cmdSync opts frozen prune = do
     let core = compiledCore compiled
     (images, mats) <- materialize pg core (lockImages baseLock)
     let updated = baseLock {lockImages = images}
-        changed = Just updated /= prior
     when (frozen && updated /= baseLock) $ do
       imageSummary <- imageSummaryRows paths (Just updated) mats
       summary opts began moduleRows imageSummary "lask.lock.json unchanged"
       TIO.hPutStrLn stderr (codeText EModuleLockStale <> ": the images in the lock file are out of date (--frozen)")
       exitWith (ExitFailure 1)
-    unless frozen $ when (updated /= baseLock) $ BL.writeFile (pLock paths) (renderLockFile updated)
+    let failures = [(irHead (matRow m), e) | m <- mats, Failed e <- [matOutcome m]]
+        -- An image that failed has no pin to record, and the pins it
+        -- would replace are still the last ones that worked: a failed
+        -- materialization leaves the images in the lock as they were,
+        -- as a failed module leaves the whole lock (11.7).
+        recorded = if null failures then updated else baseLock
+        changed = Just recorded /= prior
+    unless frozen $ when (recorded /= baseLock) $ BL.writeFile (pLock paths) (renderLockFile recorded)
     -- The cache entries of the modules pruned, and of those under them.
     when (prune && pOwnCache paths && not frozen) $
-      cleanCache paths (Set.fromList (map lkHash (Map.elems (lockModules updated)))) (map lkHash (Map.elems (maybe Map.empty lockModules prior)))
-    imageSummary <- imageSummaryRows paths (Just updated) mats
+      cleanCache paths (Set.fromList (map lkHash (Map.elems (lockModules recorded)))) (map lkHash (Map.elems (maybe Map.empty lockModules prior)))
+    imageSummary <- imageSummaryRows paths (Just recorded) mats
     let written
           | frozen = "lask.lock.json unchanged"
           | prune && not (null removing) = "lask.json and lask.lock.json updated"
+          | changed && not (null failures) = "lask.lock.json updated (modules only)"
           | changed = "lask.lock.json updated"
           | otherwise = "lask.lock.json unchanged"
     summary opts began moduleRows imageSummary written
-    let dropped = Map.keys (maybe Map.empty lockImages prior) `minus` Map.keys images
+    let dropped = Map.keys (maybe Map.empty lockImages prior) `minus` Map.keys (lockImages recorded)
     unless (null dropped) $
       note pg ("images no longer required (kept on the Docker daemon): " <> T.intercalate ", " (map (T.drop 1) dropped))
     unless prune $
       mapM_
         (\n -> note pg ("warning: '" <> n <> "' is declared in lask.json but no module imports it (lask sync --prune removes it)"))
         unused
-    let failures = [(irHead (matRow m), e) | m <- mats, Failed e <- [matOutcome m]]
     mapM_ (\(h, e) -> TIO.hPutStrLn stderr (shortPath h <> ": " <> e)) failures
     if null failures then exitSuccess else exitWith (ExitFailure 3)
   where

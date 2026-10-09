@@ -92,6 +92,20 @@ spec = beforeAll findLask $ do
         resErr b `shouldContain` "E-IO-IMAGE-DIGEST"
         lockText dir >>= (`shouldContain` "sha256:aaa")
 
+    -- A failed sync must not cost the pins that still work.
+    it "leaves the lock as it was when an image fails to materialize" $ \lask ->
+      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["sync"] ""
+        before <- lockText dir
+        length before `seq` writeFile (dir </> "main.lask") "command { \"cat\" } on #alpine:0.0.404\nhi(): String = $ cat x\n"
+        b <- runLaskEnv lask dir extra ["sync"] ""
+        resExit b `shouldBe` 3
+        resOut b `shouldContain` "lask.lock.json unchanged"
+        lockText dir `shouldReturn` before
+        writeFile (dir </> "main.lask") (snd (head proj))
+        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit r `shouldBe` 0
+
     -- A run never pulls, and keeps the daemon from pulling on its
     -- behalf (spec 10.3).
     it "runs with --pull=never" $ \lask ->
