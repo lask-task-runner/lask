@@ -13,11 +13,13 @@
 module Language.Lask.Embed.Do ((>>=), (>>)) where
 
 import GHC.Stack (HasCallStack, callStack)
-import Language.Lask.Embed (E, bindE, callSpan, thenE)
+import Language.Lask.Embed.Internal (E, bindE, callSpan, thenE)
 import Prelude hiding ((>>), (>>=))
 
+-- | @x <- e@: bind the result of @e@ once, for the rest of the block.
 (>>=) :: (HasCallStack) => E v a -> (E v a -> E v b) -> E v b
 (>>=) = bindE (callSpan callStack)
 
+-- | A statement run for its effects, then the rest of the block.
 (>>) :: (HasCallStack) => E v a -> E v b -> E v b
 (>>) = thenE (callSpan callStack)

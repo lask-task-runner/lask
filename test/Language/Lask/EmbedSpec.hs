@@ -16,19 +16,15 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Command.Lask.Envs (EnvRef (..), collectEnvReadsFrom, collectEnvRefsFrom)
-import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Core.AST
 import Language.Lask.Core.Pretty (renderDecl)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), elaborateProgram)
 import Language.Lask.Embed
 import qualified Language.Lask.Embed.Do as L
-import Language.Lask.ErrorCode (ErrorCode (..))
+import Language.Lask.Embed.Internal (programModule)
+import Language.Lask.Embed.Run
 import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
-import Language.Lask.Obs.ExecLog (noLogSink)
-import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
-import Language.Lask.Runtime.Value (EnvValue (..), LaskFailure (..), Value (..), runtimeFailure)
 import Language.Lask.Span (Span (..))
 import Test.Hspec hiding (parallel)
 
@@ -233,14 +229,9 @@ scripted = do
   let runner env cmd = do
         modifyIORef' ran ((imageOf env, cmd) :)
         pure (Right (0, reply cmd, ""))
-      hooks =
-        RtHooks
-          { hookRunCommand = runner,
-            hookRunFile = \_ _ -> pure (Left (runtimeFailure ERuntimeValue "no files here")),
-            hookLog = noLogSink,
-            hookAsync = noAsyncTracker,
-            hookReadEnv = \_ -> pure Nothing
-          }
+      -- No variables, so that a test does not depend on the environment
+      -- it runs in.
+      hooks = (commandHooks runner) {hookReadEnv = \_ -> pure Nothing}
   pure (hooks, reverse <$> readIORef ran)
   where
     imageOf e = case Map.lookup "image" (envParams e) of
@@ -298,13 +289,21 @@ spec = do
 
   describe "static analysis" $ do
     it "sees every environment a task can reach, including those of commands chosen by run-time output" $ do
-      let envs name = sort (Set.toList (Set.fromList (map refLabel (collectEnvRefsFrom (progCore embedded) (programModule, name)))))
+      let envs = sort . environments embedded
       envs "test_each" `shouldBe` ["alpine/git:2.45.2", "golang:1.22"]
       envs "ship" `shouldBe` ["alpine/git:2.45.2", "golang:1.22"]
       envs "both" `shouldBe` ["golang:1.22", "node:20"]
 
     it "sees the environment variables a task reads" $
-      collectEnvReadsFrom (progCore embedded) (programModule, "deploy") `shouldBe` Just (Set.fromList ["KUBE_CONTEXT"])
+      variables embedded "deploy" `shouldBe` Just (Set.fromList ["KUBE_CONTEXT"])
+
+  describe "inspection" $ do
+    it "describes a task's parameters and docs as --help does" $
+      usage (either (error . show) id (assemble [export (doc "Publish the latest tag" release)])) "release"
+        `shouldBe` Just "release <target: String> [--dry_run: Bool = true]\n    Publish the latest tag"
+
+    it "shows what a task lowers to" $
+      lowered embedded "fact" `shouldBe` Just "fact(n: Number): Number =\n  if (n == 0) do {\n    1\n  } else do {\n    (n * fact((n - 1)))\n  }"
 
   describe "evaluation" $ do
     it "recurses through a name on a run-time value" $ do

@@ -131,3 +131,199 @@ uninstall_completion(--shell: String = "zsh"): String = do {
     $[#local] rm -f #{completion_dirs[shell]}/#{completion_files[shell]}
   }
 }
+
+// ---------------------------------------------------------------------
+// CI and release
+//
+// What the workflows in .github/workflows do between checkout and
+// upload. They first build lask with stack and then run these tasks
+// with the binary they just built, so a commit is checked by itself.
+// ---------------------------------------------------------------------
+
+// The lask binary `stack build` produced from this checkout.
+internal built_lask(): String = do {
+  root = $[#local] stack path --local-install-root
+  path_join([trim(root), "bin", "lask"])
+}
+
+// Run the unit tests with coverage and then the doctests, on the host.
+//
+// Coverage is recorded, not enforced: there is no threshold yet, only a
+// number to watch from one push to the next.
+ci_test() = do {
+  $[#local] stack test --coverage
+  $[#local] stack exec doctest app src
+}
+
+// Check that the committed lask.cabal is what stack generates from
+// package.yaml.
+//
+// lask.cabal is committed so that a project can depend on lask from
+// GitHub: cabal cannot read package.yaml, and stack is deprecating it.
+// The build that runs before this regenerates the file, so a difference
+// means package.yaml changed without the result being committed. The
+// hpack version in its header is ignored: it is whichever stack ran.
+ci_cabal(): String = $[#local] git diff --exit-code -I "hpack version" -- lask.cabal
+
+// Print per-module coverage as a Markdown table.
+//
+// Reads what `ci_test` left behind, so it runs after it.
+//
+// @example lask eval --stdout-encode text coverage-report
+coverage_report(): String = $[#local] tools/coverage-report.sh
+
+// Run a containerized task from a directory whose path holds a colon.
+//
+// The base directory reaches `docker run` as the mount source, and it
+// used to be pasted into `-v <source>:/work`, where every colon in it
+// became a field separator. A Windows base directory splits at its
+// drive letter — `C:\proj` was read as source `C`, target `\proj` and
+// mode `/work` — and a POSIX directory whose name holds a colon splits
+// the same way, which is what makes the regression reachable on Linux.
+//
+// EnvironmentSpec already asserts the argument vector, including the
+// Windows case. Only the daemon can say whether it accepts what we
+// build, so that assertion is worth this container.
+//
+// @param dir   Directory the hello-world example is copied into.
+// @param lask  The lask binary to drive.
+// @complete dir @dir
+// @complete lask @file
+smoke_colon_dir(--dir = path_join([get_env_or("RUNNER_TEMP", "/tmp"), "colon:dir"]), --lask = built_lask()): String = do {
+  d = shell_quote(dir)
+  l = shell_quote(lask)
+  $[#local] mkdir -p #{d} && cp -R example/01-projects/01-hello-world/. #{d}/
+  // A task never pulls its image (spec 10.3): `lask sync` pulls it and
+  // pins its digest in lask.lock.json first.
+  $[#local] cd #{d} && #{l} sync
+  out = $[#local] cd #{d} && #{l} run cowsay-hello Lask 2>&1
+  // The captured stream also carries the trace, and the trace echoes
+  // the command — so a bare `Hello, Lask!` matches even when nothing
+  // ran. The framed form is drawn by cowsay and appears only when the
+  // container produced it.
+  if (!contains(out, "< Hello, Lask! >")) {
+    return fail(error(1, "cowsay-hello did not draw its greeting"))
+  }
+  out
+}
+
+// Drive the generated completion scripts through bash, zsh and fish.
+//
+// The scripts are shell code, so the only place their quoting and word
+// splitting can be checked is a shell. A shell that is missing is
+// skipped, not failed.
+//
+// @param lask  The lask binary whose scripts are tested.
+// @complete lask @file
+smoke_completion(--lask = built_lask()): String =
+  $[#local] tools/completion-smoke.sh #{shell_quote(lask)}
+
+// Everything CI checks after the build: the test suites, then the
+// smoke tests that need a real Docker daemon and real shells.
+//
+// @example lask run ci
+ci() = do {
+  ci_cabal()
+  ci_test()
+  lask = built_lask()
+  smoke_colon_dir(lask = lask)
+  smoke_completion(lask = lask)
+}
+
+// The targets a release is built for, and the archive each ships in.
+release_archives: Map<String> = {
+  "linux-amd64": "tar.gz",
+  "macos-amd64": "tar.gz",
+  "macos-arm64": "tar.gz",
+  "windows-amd64": "zip"
+}
+
+// The version package.yaml declares.
+package_version(): String = do {
+  line = find(lines(read_file("package.yaml", #local)), \(l: String) -> starts_with(l, "version:"))
+  case (line) {
+    Null -> fail(error(1, "package.yaml declares no version"))
+    else -> trim(replace(line, "version:", ""))
+  }
+}
+
+// Write `<file>.sha256` in the format `sha256sum -c` reads.
+//
+// Commands run under cmd.exe on Windows, where neither shasum nor a
+// POSIX quote exists, so the hash comes from PowerShell there.
+internal write_checksum(file: String, --windows = false): String = do {
+  hash = if (windows) {
+    $[#local] pwsh -NoProfile -Command "(Get-FileHash '#{file}' -Algorithm SHA256).Hash.ToLower()"
+  } else {
+    $[#local] shasum -a 256 #{shell_quote(file)} | cut -d ' ' -f 1
+  }
+  sum = "#{file}.sha256"
+  write_file(sum, "#{trim(hash)}  #{basename(file)}\n", #local)
+  sum
+}
+
+internal archive_tar(bin_dir: String, name: String): String = do {
+  file = "#{name}.tar.gz"
+  $[#local] tar -C #{shell_quote(bin_dir)} -czf #{shell_quote(file)} lask
+  file
+}
+
+internal archive_zip(bin_dir: String, name: String): String = do {
+  file = "#{name}.zip"
+  $[#local] pwsh -NoProfile -Command "Compress-Archive -Path '#{bin_dir}/lask.exe' -DestinationPath '#{file}' -Force"
+  file
+}
+
+internal package_deb(version: String, bin_dir: String, name: String): String = do {
+  root = "dist/deb"
+  make_dir("#{root}/DEBIAN", #local)
+  make_dir("#{root}/usr/bin", #local)
+  $[#local] install -m 0755 #{shell_quote(bin_dir)}/lask #{root}/usr/bin/lask
+  control = [
+    "Package: lask",
+    "Version: #{version}",
+    "Section: utils",
+    "Priority: optional",
+    "Architecture: amd64",
+    "Maintainer: Lask maintainers <maintainers@lask.dev>",
+    "Description: Lask is a task runner based on functional programming.",
+    ""
+  ]
+  write_file("#{root}/DEBIAN/control", join(control, "\n"), #local)
+  file = "#{name}.deb"
+  $[#local] dpkg-deb --build #{root} #{shell_quote(file)}
+  file
+}
+
+// Package a built binary as the release files for one target.
+//
+// Archives the binary `stack build --copy-bins` left in bin_dir — a
+// .tar.gz, or a .zip on Windows — adds a .deb on linux-amd64, and
+// writes a .sha256 beside each file, all in the current directory.
+//
+// @param version        Version being released, without the leading v.
+// @param target         Release target: OS and architecture.
+// @param check_version  Fail unless package.yaml declares the same version.
+// @param bin_dir        Directory holding the built binary.
+// @return The files written.
+// @complete target @keys release_archives
+// @complete bin_dir @dir
+// @example lask run release-package 0.8.0 linux-amd64
+release_package(version: String, target: String, --check_version = true, --bin_dir = "dist/bin"): Array<String> = do {
+  if (!has_key(release_archives, target)) {
+    return fail(error(4, "unknown target: #{target}"))
+  }
+  if (check_version && package_version() != version) {
+    return fail(error(1, "package.yaml declares #{package_version()}, not #{version}"))
+  }
+  name = "lask-v#{version}-#{target}"
+  windows = release_archives[target] == "zip"
+  archive = if (windows) { archive_zip(bin_dir, name) } else { archive_tar(bin_dir, name) }
+  files = if (target == "linux-amd64") {
+    [archive, package_deb(version, bin_dir, name)]
+  } else {
+    [archive]
+  }
+  sums = map(files, \(f: String) -> write_checksum(f, windows = windows))
+  concat_array(files, sums)
+}
