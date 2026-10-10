@@ -8,7 +8,7 @@
 <div align="center">
   <img alt="Lask in 20 seconds: write tasks in main.lask, with a typo flagged in the editor and fixed; lask run release runs each step in its own container on Docker; the same run on a laptop and on GitHub Actions, Jenkins, GitLab CI and CircleCI, on the same pinned images" src="doc/assets/lask-pv-short.gif" width="960">
   <br>
-  <a href="doc/assets/lask-pv.mp4">▶ Watch the full 1-minute tour (MP4)</a>
+  <a href="https://lask-task-runner.github.io/">▶ Watch the full 1-minute tour on the documentation site</a>
 </div>
 
 <sub>Docker is a trademark of Docker, Inc. Other names belong to their owners; their use does not imply endorsement.</sub>
