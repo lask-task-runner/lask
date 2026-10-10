@@ -1,8 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Render Core in Lask-like notation, for tests and examples that show
--- what a program lowers to. It prints Core, not sugar: @$ cmd@ appears
--- as the @run@ and @if@ it lowers to. Nodes without a rendering print
+-- | Render Core readably, for tests and examples that show what a
+-- program lowers to. The notation borrows Lask's but is not valid Lask:
+-- it prints Core, not sugar (@$ cmd@ appears as the @run@ and @if@ it
+-- lowers to), locals have the names Core gives them, and nothing is
+-- escaped beyond quotes and newlines. Nodes without a rendering print
 -- as @…@.
 module Language.Lask.Core.Pretty (renderDecl, renderCore) where
 

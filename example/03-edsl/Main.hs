@@ -24,7 +24,6 @@ import Language.Lask.Embed
 import Language.Lask.ErrorCode (ErrorCode (..))
 import Language.Lask.Obs.ExecLog (noLogSink)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
-import Language.Lask.Runtime.Eval (applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value (EnvValue (..), LaskFailure (..), Value (..), runtimeFailure)
 import Language.Lask.Serialize (renderValueText)
 import Language.Lask.Types (renderType)
@@ -51,19 +50,18 @@ main = case program of
       T.putStrLn (T.justifyLeft 14 ' ' name <> T.intercalate ", " envs <> (if T.null vars then "" else "  reads " <> vars))
 
     section "Running tasks, with a scripted runner in place of Docker"
-    let runTask name args = do
+    let demo name args = do
           T.putStrLn ("$ lask run " <> T.unwords (name : map renderValueText args))
-          ctx <- mkRtCtx core "" scripted
-          r <- try (topValue ctx (key name) >>= \f -> applyValue ctx f args [])
+          r <- try (runTask prog scripted name args [])
           T.putStrLn $ case r of
             Right v -> "=> " <> T.replace "\n" "\n   " (renderValueText v) <> "\n"
             Left lf -> "failed: " <> renderValueText (lfError lf) <> "\n"
-    runTask "fact" [VNumber 5]
-    runTask "release" [VString "prod"]
-    runTask "ship" []
-    runTask "lint_changed" []
-    runTask "test_each" []
-    runTask "test" []
+    demo "fact" [VNumber 5]
+    demo "release" [VString "prod"]
+    demo "ship" []
+    demo "lint_changed" []
+    demo "test_each" []
+    demo "test" []
   where
     section t = T.putStrLn ("\n== " <> t <> " ==\n")
 

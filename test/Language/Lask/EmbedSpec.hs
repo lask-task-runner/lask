@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QualifiedDo #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
 module Language.Lask.EmbedSpec (spec) where
@@ -27,7 +28,6 @@ import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
 import Language.Lask.Obs.ExecLog (noLogSink)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
-import Language.Lask.Runtime.Eval (applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value (EnvValue (..), LaskFailure (..), Value (..), runtimeFailure)
 import Language.Lask.Span (Span (..))
 import Test.Hspec hiding (parallel)
@@ -76,7 +76,18 @@ source =
       "",
       "ship(): String = release(\"prod\", dry_run = false)",
       "",
-      "deploy(): String = $ go run ./cmd/deploy --context #{get_env_or(\"KUBE_CONTEXT\", \"staging\")}"
+      "deploy(): String = $ go run ./cmd/deploy --context #{get_env_or(\"KUBE_CONTEXT\", \"staging\")}",
+      "",
+      "healthy(n: Number): String = do {",
+      "  r = $* go version",
+      "  ok = r.code == 0 && !(r.stdout == \"\")",
+      "  \"#{n}: #{ok}\"",
+      "}",
+      "",
+      "clean(): Void = do {",
+      "  $ go",
+      "  do {}",
+      "}"
     ]
 
 go, npm, git :: Command
@@ -123,8 +134,19 @@ ship = task "ship" $ callWith release ["dry_run" .= false] "prod"
 deploy :: Task '[] 'TString
 deploy = task "deploy" $ run go ("run ./cmd/deploy --context " <> getEnvOr "KUBE_CONTEXT" "staging")
 
+healthy :: Task '["n" ::: 'TNumber] 'TString
+healthy = task "healthy" $ \n -> L.do
+  r <- runAll go "version"
+  ok <- field @"code" r ==. 0 &&. not_ (field @"stdout" r ==. "")
+  str n <> ": " <> str ok
+
+clean :: Task '[] 'TVoid
+clean = task "clean" $ L.do
+  run go ""
+  done
+
 embedded :: Program
-embedded = case assemble [export both, export testEach, export ship, export deploy, internal fact] of
+embedded = case assemble [export both, export testEach, export ship, export deploy, export healthy, export clean, internal fact] of
   Right p -> p
   Left errs -> error (T.unpack (T.unlines errs))
 
@@ -229,11 +251,10 @@ scripted = do
       | "git diff" `T.isPrefixOf` cmd = "a\nb"
       | otherwise = "ok"
 
-runTask :: Program -> Text -> [Value] -> [(Text, Value)] -> IO (Either LaskFailure Value, [(Text, Text)])
-runTask prog name args kws = do
+runScripted :: Program -> Text -> [Value] -> [(Text, Value)] -> IO (Either LaskFailure Value, [(Text, Text)])
+runScripted prog name args kws = do
   (hooks, ran) <- scripted
-  ctx <- mkRtCtx (progCore prog) "" hooks
-  r <- try (topValue ctx (programModule, name) >>= \f -> applyValue ctx f args kws)
+  r <- try (runTask prog hooks name args kws)
   (,) r <$> ran
 
 -- Sharing -------------------------------------------------------------------------
@@ -284,11 +305,11 @@ spec = do
 
   describe "evaluation" $ do
     it "recurses through a name on a run-time value" $ do
-      (r, _) <- runTask embedded "fact" [VNumber 5] []
+      (r, _) <- runScripted embedded "fact" [VNumber 5] []
       either (Left . lfError) Right r `shouldBe` Right (VNumber 120)
 
     it "runs a command for each line an earlier command printed" $ do
-      (_, ran) <- runTask embedded "test_each" [] []
+      (_, ran) <- runScripted embedded "test_each" [] []
       ran
         `shouldBe` [ ("alpine/git:2.45.2", "git diff --name-only origin/main"),
                      ("golang:1.22", "go test -count=1 a"),
@@ -296,15 +317,26 @@ spec = do
                    ]
 
     it "takes keyword defaults, and keyword arguments at a call" $ do
-      (dry, _) <- runTask embedded "release" [VString "prod"] []
+      (dry, _) <- runScripted embedded "release" [VString "prod"] []
       either (Left . lfError) Right dry `shouldBe` Right (VString "would publish v1.4.0 to prod")
-      (_, ran) <- runTask embedded "ship" [] []
+      (_, ran) <- runScripted embedded "ship" [] []
       map snd ran `shouldBe` ["git describe --tags --abbrev=0", "go run ./cmd/publish --tag v1.4.0 --target prod"]
+
+    it "binds the argument of signum once" $ do
+      let probing = task "probing" $ signum (L.do { _ <- run go "version"; 0 - 3 }) :: Task '[] 'TNumber
+      p <- either (fail . show) pure (assemble [export probing])
+      (r, ran) <- runScripted p "probing" [] []
+      either (Left . lfError) Right r `shouldBe` Right (VNumber (-1))
+      length ran `shouldBe` 1
+
+    it "runs a bare command word, as $ go does" $ do
+      (_, ran) <- runScripted embedded "clean" [] []
+      ran `shouldBe` [("golang:1.22", "go")]
 
     it "shares a result bound with <-, and copies a term bound with let" $ do
       sharing <- either (fail . show) pure (assemble [export versionBind, export versionLet])
-      (_, bound) <- runTask sharing "version_bind" [] []
-      (_, copied) <- runTask sharing "version_let" [] []
+      (_, bound) <- runScripted sharing "version_bind" [] []
+      (_, copied) <- runScripted sharing "version_let" [] []
       length bound `shouldBe` 1
       length copied `shouldBe` 2
 
@@ -318,6 +350,23 @@ spec = do
       errorsOf [export bad]
         `shouldBe` ["'bad' calls 'release' with --dryrun, which 'release' does not declare"]
 
+    it "rejects a keyword argument of the wrong type, or given twice" $ do
+      let wrongType = task "wrong_type" $ callWith release ["dry_run" .= trim "yes"] "prod" :: Task '[] 'TString
+          twice = task "twice" $ callWith release ["dry_run" .= false, "dry_run" .= true] "prod" :: Task '[] 'TString
+      errorsOf [export wrongType, export twice]
+        `shouldBe` [ "'wrong_type' calls 'release' with --dry_run of type String, but it is declared Bool",
+                     "'twice' calls 'release' with --dry_run more than once"
+                   ]
+
+    it "rejects one command word bound to two environments" $ do
+      let go23 = command "go" (image "golang:1.23")
+          other = task "other" $ run go23 "version" :: Task '[] 'TString
+      errorsOf [export testApi, export other]
+        `shouldBe` ["the command 'go' is bound to more than one environment: #golang:1.22, #golang:1.23"]
+
+    it "makes everything not exported internal" $
+      cpInternal (progCore embedded) `shouldBe` Set.fromList ["changed", "fact", "release", "test_api", "test_web"]
+
     it "rejects names Lask cannot write" $ do
       let bad = task "Deploy" "x" :: Task '[] 'TString
           reserved = task "for" "x" :: Task '[] 'TString
@@ -330,4 +379,4 @@ spec = do
 
     it "follows recursion without looping, and keeps one declaration per name" $
       map (snd . declKey) (progDecls embedded)
-        `shouldBe` ["both", "test_api", "test_web", "test_each", "changed", "ship", "release", "deploy", "fact"]
+        `shouldBe` ["both", "test_api", "test_web", "test_each", "changed", "ship", "release", "deploy", "healthy", "clean", "fact"]
