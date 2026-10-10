@@ -3839,6 +3839,14 @@ Additional requirements related to commands:
 - The message of a failed command execution is its standard error output (6.6). When that is empty or only whitespace, as for a tool that reports on standard output, the diagnostic's `message` says instead that the command exited with its code and wrote nothing to standard error, and that its output is in the command execution log (12.3). Only the diagnostic changes: the `Error` value a program catches keeps the empty `message`.
 - A syntax error in a module where a command string holds a closing bracket that it never opened carries a note naming that command's line: the command ran to the end of its line (6.6) and took the bracket of an enclosing call with it.
 
+Additional requirements related to reporting several errors:
+
+- Independent errors are all reported; an error that only follows from another is not. A top-level declaration, a type alias, a command declaration and a command import are each checked on their own, and each reports at most its first error.
+- A declaration that uses one that failed is still checked when the failed one's annotations give all of its type: a function declaration with its return type and the type of every keyword parameter written, or a value declaration with its type written. Otherwise the declaration that uses it reports nothing. Likewise, a type that refers to a failed type alias, and a command string whose command words include one whose declaration or import failed, report nothing.
+- A declaration that holds an error of name resolution (7.1-7.3) is not type checked; the declarations that do not are.
+- A syntax error is reported for each top-level declaration that has one: parsing resumes at the next token in column 1. A module with a syntax error is not checked further. A lexical error is the only error reported for its module.
+- Diagnostics are reported in order of file and position, each once. Text output shows at most 50 errors and then the number left out; JSON output carries every one.
+
 JSON format example:
 
 ```json

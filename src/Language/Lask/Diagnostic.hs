@@ -6,11 +6,13 @@ module Language.Lask.Diagnostic
   ( Diagnostic (..),
     Advisory (..),
     mkDiagnostic,
+    settleDiagnostics,
     withExpectedActual,
     withNote,
   )
 where
 
+import Data.List (nub, sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.ErrorCode (AdvisoryCode, ErrorCode, Stage, advisoryText, codeText, stageText)
@@ -39,6 +41,11 @@ mkDiagnostic code stage sp msg =
       diagActual = Nothing,
       diagNotes = []
     }
+
+-- | Diagnostics in the order they are reported (spec 14.3): by file
+-- and position, those without a location last, each once.
+settleDiagnostics :: [Diagnostic] -> [Diagnostic]
+settleDiagnostics = sortOn diagSpan . nub
 
 -- | An advisory diagnostic found by static analysis (spec 14.2): it
 -- carries @severity: "warning"@, and neither stops analysis nor changes

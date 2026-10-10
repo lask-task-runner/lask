@@ -938,6 +938,15 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["check", "--format", "json"] ""
         resExit r `shouldBe` 1
         resOut r `shouldSatisfy` isInfixOf "E-TYPE-MISMATCH"
+    it "check shows at most 50 errors, then how many more there are (spec 14.3)" $ \lask -> do
+      let src = concat ["f" <> show i <> "(): Number = \"s\"\n" | i <- [1 .. 53 :: Int]]
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resExit r `shouldBe` 1
+        length (filter (isInfixOf "E-TYPE-MISMATCH") (lines (resOut r))) `shouldBe` 50
+        last (lines (resOut r)) `shouldBe` "... and 3 more errors"
+        j <- runLask lask dir ["check", "--format", "json"] ""
+        T.count "\"code\":\"E-TYPE-MISMATCH\"" (T.pack (resOut j)) `shouldBe` 53
 
   describe "commands and environments (spec 16.5, 16.7)" $ do
     it "runs local commands with interpolation" $ \lask ->

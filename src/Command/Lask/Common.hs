@@ -54,7 +54,7 @@ usageError opts msg = do
 renderDiags :: Bool -> [Diagnostic] -> Text
 renderDiags jsonFormat ds
   | jsonFormat = TE.decodeUtf8 (BL.toStrict (A.encode (map diagJson ds)))
-  | otherwise = T.intercalate "\n" (map (T.pack . pretty) ds)
+  | otherwise = renderDiagsText ds
 
 -- | Diagnostics for stderr: JSON Lines, one object per line
 -- (spec 12.2 canonical form; discriminated by code + stage).
@@ -62,7 +62,23 @@ renderDiagsLines :: Bool -> [Diagnostic] -> Text
 renderDiagsLines jsonFormat ds
   | jsonFormat =
       T.intercalate "\n" (map (TE.decodeUtf8 . BL.toStrict . A.encode . diagJson) ds)
-  | otherwise = T.intercalate "\n" (map (T.pack . pretty) ds)
+  | otherwise = renderDiagsText ds
+
+-- | Diagnostics for a reader: at most 'diagLimit' of them, then how
+-- many more there are (spec 14.3). JSON output is read by a program,
+-- and carries every one.
+renderDiagsText :: [Diagnostic] -> Text
+renderDiagsText ds =
+  T.intercalate "\n" $
+    map (T.pack . pretty) shown
+      <> ["... and " <> T.pack (show (length hidden)) <> " more " <> plural hidden | not (null hidden)]
+  where
+    (shown, hidden) = splitAt diagLimit ds
+    plural [_] = "error"
+    plural _ = "errors"
+
+diagLimit :: Int
+diagLimit = 50
 
 diagJson :: Diagnostic -> A.Value
 diagJson d =

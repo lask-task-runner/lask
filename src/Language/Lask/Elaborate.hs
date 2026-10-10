@@ -16,13 +16,14 @@ module Language.Lask.Elaborate
     StaticParams (..),
     HoverInfo (..),
     elaborateProgram,
+    elaborateRecovering,
   )
 where
 
 import Control.Applicative ((<|>))
 import Control.Monad (foldM, unless, when)
-import Control.Monad.State.Strict (StateT (runStateT), evalStateT, get, gets, lift, modify, put)
-import Data.Maybe (isNothing)
+import Control.Monad.State.Strict (StateT (runStateT), get, gets, lift, modify, put)
+import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -142,7 +143,11 @@ data Ctx = Ctx
     -- is a type alias reference.
     ctxTypeVars :: Set Text,
     -- | Bounds of those type parameters that have one (spec 4.2).
-    ctxBounds :: Map Text Bound
+    ctxBounds :: Map Text Bound,
+    -- | Whether name resolution reported errors (spec 14.3). The
+    -- declarations they are in are not elaborated, and a reference to
+    -- something they left out follows from them.
+    ctxNamesFailed :: Bool
   }
 
 -- | A type is settled at this point when every variable it still
@@ -213,8 +218,30 @@ data St = St
     -- command declaration, which may run nothing (spec ch. 5).
     stCommandsBuilding :: Set FilePath,
     -- | Advisories found so far, most recent first.
-    stAdvisories :: [Advisory]
+    stAdvisories :: [Advisory],
+    stFailures :: Failures
   }
+
+-- | The top-level units (declarations, type aliases, command
+-- declarations and imports) that failed. Each contributes its first
+-- error, and the others are still checked (spec 14.3). This part of
+-- the state outlives an attempt that fails ('recoverTC'): a unit that
+-- failed while another was being elaborated failed for good, and the
+-- context it failed in may not come again.
+data Failures = Failures
+  { -- | Errors found so far, most recent first.
+    fsErrors :: [Diagnostic],
+    -- | Declarations that failed, and are not elaborated again.
+    fsDecls :: Set Key,
+    -- | Type aliases that failed.
+    fsAliases :: Set Key,
+    -- | Command words whose declaration or import failed, with the
+    -- module whose table they belong to.
+    fsWords :: Set (FilePath, Text)
+  }
+
+modifyFailures :: (Failures -> Failures) -> TC ()
+modifyFailures f = modify (\s -> s {stFailures = f (stFailures s)})
 
 -- | One command word of a module's table (spec ch. 5, 10.9).
 data CommandEntry = CommandEntry
@@ -243,7 +270,15 @@ data EnvSource
   | SrcDecl FilePath Int
   deriving (Show, Eq)
 
-type TC = StateT St (Either Diagnostic)
+-- | Why elaboration stopped.
+data Failure
+  = Failed Diagnostic
+  | -- | Something it needs failed, and was reported where it failed:
+    -- an error that only follows from another is not reported (spec
+    -- 14.3).
+    DependencyFailed
+
+type TC = StateT St (Either (Failure, Failures))
 
 -- | Record how one command execution expression got its environment.
 recordCommandUse :: Span -> Maybe Text -> [Spanned Text] -> TC ()
@@ -281,7 +316,13 @@ recordBuiltin sp n t bn =
 type Locals = Map Text Type
 
 abort :: Diagnostic -> TC a
-abort = lift . Left
+abort = failWith . Failed
+
+dependencyFailed :: TC a
+dependencyFailed = failWith DependencyFailed
+
+failWith :: Failure -> TC a
+failWith f = gets stFailures >>= \fs -> lift (Left (f, fs))
 
 -- | Record an advisory diagnostic (spec 14.2); elaboration continues.
 advise :: AdvisoryCode -> Span -> Text -> TC ()
@@ -290,13 +331,39 @@ advise code sp msg = modify (\s -> s {stAdvisories = Advisory code sp msg : stAd
 -- | Attempt an elaboration, recovering from its diagnostic. Used for
 -- bidirectional fallbacks (e.g. inferring one if branch and checking
 -- the other, so context-typed calls like @fail(e)@ work in either
--- branch, spec 15.7).
+-- branch, spec 15.7). A failed dependency is not recovered from: no
+-- other way of reading the expression can do without it.
 tryTC :: TC a -> TC (Either Diagnostic a)
 tryTC action = do
+  r <- recoverTC action
+  case r of
+    Left (Failed d) -> pure (Left d)
+    Left DependencyFailed -> dependencyFailed
+    Right a -> pure (Right a)
+
+-- | Attempt an elaboration, recovering from any failure. The state
+-- goes back to what it was before the attempt, all but the units
+-- found to fail meanwhile ('Failures').
+recoverTC :: TC a -> TC (Either Failure a)
+recoverTC action = do
   st <- get
   case runStateT action st of
-    Left d -> pure (Left d)
+    Left (f, fs) -> put st {stFailures = fs} >> pure (Left f)
     Right (a, st') -> put st' >> pure (Right a)
+
+-- | Record the failure of one top-level unit: its error, unless it
+-- only followed from another.
+recordFailure :: Failure -> TC ()
+recordFailure (Failed d) = modifyFailures (\fs -> fs {fsErrors = d : fsErrors fs})
+recordFailure DependencyFailed = pure ()
+
+-- | A declaration the scopes name but the program does not hold. Once
+-- name resolution has failed (spec 14.3) that follows from an error
+-- already reported; otherwise it is an internal error.
+missingDecl :: Ctx -> Text -> TC a
+missingDecl ctx what
+  | ctxNamesFailed ctx = dependencyFailed
+  | otherwise = abort (diag ENameUndefined NoSpan ("internal: missing " <> what))
 
 diag :: ErrorCode -> Span -> Text -> Diagnostic
 diag code sp = mkDiagnostic code StageStatic sp
@@ -309,41 +376,73 @@ mismatch sp expected actual =
 
 -- Entry point -----------------------------------------------------------------
 
+-- | Elaborate a program whose names all resolved: the core program,
+-- or every independent error found in it (spec 14.3).
 elaborateProgram :: Program -> Map FilePath GlobalScope -> Either [Diagnostic] CoreProgram
-elaborateProgram prog scopes =
-  case evalStateT (elabAll >> gets (\s -> (stDecls s, stHover s, stCommands s, stCommandUses s, stAdvisories s))) (St Map.empty Map.empty Set.empty [] [] Map.empty Set.empty []) of
-    Left d -> Left [d]
-    Right (decls, hover, commands, uses, advisories) ->
-      Right
+elaborateProgram prog scopes = case elaborateRecovering prog scopes [] of
+  ([], core) -> Right core
+  (ds, _) -> Left ds
+
+-- | Elaborate every top-level unit that does not depend on one that
+-- failed, given the errors name resolution reported. A unit holding
+-- one of those is not elaborated (spec 14.3): its names do not all
+-- mean something, and checking it would only report what follows from
+-- them. Returns the errors found, first in source order within each
+-- unit, and the core program of what did elaborate.
+elaborateRecovering :: Program -> Map FilePath GlobalScope -> [Diagnostic] -> ([Diagnostic], CoreProgram)
+elaborateRecovering prog scopes nameErrors =
+  case runStateT elabAll st0 of
+    -- Every unit recovers on its own, so only an internal error in
+    -- the recovery itself can get here.
+    Left (f, fs) -> (reverse (fsErrors fs) <> [d | Failed d <- [f]], emptyCore)
+    Right ((), st) ->
+      ( reverse (fsErrors (stFailures st)),
         CoreProgram
           { cpEntry = progEntry prog,
             cpBaseDir = progBaseDir prog,
-            cpDecls = decls,
-            cpInternal =
-              maybe Set.empty (moduleInternal . lmModule) $
-                Map.lookup (progEntry prog) (progModules prog),
-            cpCommands = Map.map (Map.map ceEnv) commands,
-            cpCommandUses = uses,
-            cpHover = hover,
+            cpDecls = stDecls st,
+            cpInternal = internal,
+            cpCommands = Map.map (Map.map ceEnv) (stCommands st),
+            cpCommandUses = stCommandUses st,
+            cpHover = stHover st,
             -- An expression elaborated twice, by a bidirectional
             -- fallback, reports once.
-            cpAdvisories = sortOn advSpan (nub advisories)
+            cpAdvisories = sortOn advSpan (nub (stAdvisories st))
           }
+      )
   where
-    ctx = Ctx prog scopes Set.empty Map.empty
+    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors))
+    (failedDecls, failedAliases, failedWords) = unitsHolding prog nameErrors
+    st0 =
+      St
+        { stDecls = Map.empty,
+          stAliases = Map.empty,
+          stActive = Set.empty,
+          stHover = [],
+          stCommandUses = [],
+          stCommands = Map.empty,
+          stCommandsBuilding = Set.empty,
+          stAdvisories = [],
+          stFailures = Failures [] failedDecls failedAliases failedWords
+        }
+    internal =
+      maybe Set.empty (moduleInternal . lmModule) $
+        Map.lookup (progEntry prog) (progModules prog)
+    emptyCore =
+      CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] []
     -- Every module's command declarations are checked, whether or not
     -- a command string uses them (spec ch. 5), and so is every type
     -- alias, whether or not a type refers to it (spec 4.2).
     elabAll = do
       mapM_ (commandTable ctx . lmPath) (Map.elems (progModules prog))
       mapM_
-        (aliasBody ctx)
+        (tryAliasBody ctx)
         [ (lmPath lm, a)
         | lm <- Map.elems (progModules prog),
           Decl _ (DTypeAlias a _ _) <- moduleDecls (lmModule lm)
         ]
       mapM_
-        (demandDecl ctx)
+        (tryDemandDecl ctx)
         [ (lmPath lm, n)
         | lm <- Map.elems (progModules prog),
           Decl _ f <- moduleDecls (lmModule lm),
@@ -352,6 +451,49 @@ elaborateProgram prog scopes =
     declValueName (DValue n _ _ _) = [n]
     declValueName (DFunction n _ _ _ _) = [n]
     declValueName _ = []
+
+-- | The top-level units that hold an error of name resolution: the
+-- declarations, the type aliases and the command words declared or
+-- imported where one is reported. A name an import binds by mistake
+-- (a duplicate) takes the module's own declaration of that name with
+-- it; a name it binds to nothing is caught where it is used
+-- ('missingDecl').
+unitsHolding :: Program -> [Diagnostic] -> (Set Key, Set Key, Set (FilePath, Text))
+unitsHolding prog ds =
+  ( Set.fromList (concat [vs | (vs, _, _) <- hits]),
+    Set.fromList (concat [ts | (_, ts, _) <- hits]),
+    Set.fromList (concat [ws | (_, _, ws) <- hits])
+  )
+  where
+    spans = [sp | d <- ds, sp@Span {} <- [diagSpan d]]
+    holdsError outer = any (outer `contains`) spans
+    hits =
+      [ unit (lmPath lm) d
+      | lm <- Map.elems (progModules prog),
+        d <- moduleDecls (lmModule lm),
+        holdsError (declSpan d)
+      ]
+    unit path (Decl _ f) = case f of
+      DValue n _ _ _ -> ([(path, n)], [], [])
+      DFunction n _ _ _ _ -> ([(path, n)], [], [])
+      DTypeAlias n _ _ -> ([], [(path, n)], [])
+      DCommand ns _ -> ([], [], [(path, n) | Spanned _ n <- ns])
+      DImportCommands ns _ -> ([], [], [(path, n) | Spanned _ n <- ns])
+      DExportCommandsFrom ns _ -> ([], [], [(path, n) | Spanned _ n <- ns])
+      DImportNamed specs _ -> imported path specs
+      DExportFrom specs _ -> imported path specs
+      DImportNamespace alias _ -> ([(path, alias)], [], [])
+    imported path specs =
+      ([(path, v) | (v, False) <- bad], [(path, v) | (v, True) <- bad], [])
+      where
+        bad = [(v, isType v) | ImportSpec sp n a <- specs, holdsError sp, let v = maybe n id a]
+    isType t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
+
+-- | Whether a span lies within another one, in the same file.
+contains :: Span -> Span -> Bool
+contains (Span s e) (Span s' e') =
+  fileName s == fileName s' && (line s, column s) <= (line s', column s') && (line e', column e') <= (line e, column e)
+contains _ _ = False
 
 -- Top-level declarations -------------------------------------------------------
 
@@ -382,7 +524,7 @@ declTypeBounds ctx key = do
       active <- gets stActive
       if key `Set.member` active
         then (\(vs, t) -> (boundMap vs, t)) <$> headerType ctx key
-        else (\cd -> (cdBounds cd, cdType cd)) <$> demandDecl ctx key
+        else (\cd -> (cdBounds cd, cdType cd)) <$> demandOrStandIn ctx key
 
 -- | 'show' into 'Text', for counts inside diagnostics.
 tshowInt :: Int -> Text
@@ -450,7 +592,7 @@ headerType ctx key@(path, name) = case lookupDeclAst ctx key of
     _ ->
       abort . diag ETypeMismatch sp $
         "recursive declaration '" <> name <> "' needs a return type annotation"
-  Nothing -> abort (diag ENameUndefined NoSpan ("internal: missing declaration " <> name))
+  Nothing -> missingDecl ctx ("declaration " <> name)
 
 paramHeaderTypes :: Ctx -> FilePath -> [Param] -> TC [Type]
 paramHeaderTypes ctx path ps =
@@ -465,21 +607,90 @@ paramHeaderTypes ctx path ps =
       Just (maybe (pure (TyArray TyAny)) (typeFromS ctx path) ann)
     positionalOf (PKeyword {}) = Nothing
 
+-- | The elaborated declaration. One that failed fails what needs it,
+-- without reporting anything more.
 demandDecl :: Ctx -> Key -> TC CoreDecl
-demandDecl ctx key@(path, name) = do
-  done <- gets stDecls
-  case Map.lookup key done of
+demandDecl ctx key = tryDemandDecl ctx key >>= maybe dependencyFailed pure
+
+-- | 'demandDecl', or for a declaration that failed, what its
+-- annotations alone say it is (spec 14.3): the declarations that use
+-- it are still checked, so their own errors are reported too.
+demandOrStandIn :: Ctx -> Key -> TC CoreDecl
+demandOrStandIn ctx key = do
+  r <- tryDemandDecl ctx key
+  case r of
     Just cd -> pure cd
-    Nothing -> do
-      d <- maybe (abort (diag ENameUndefined NoSpan ("internal: missing declaration " <> name))) pure (lookupDeclAst ctx key)
-      modify (\s -> s {stActive = Set.insert key (stActive s)})
-      cd <- elabDecl ctx path d
-      modify $ \s ->
-        s
-          { stActive = Set.delete key (stActive s),
-            stDecls = Map.insert key cd (stDecls s)
-          }
-      pure cd
+    Nothing -> recoverTC (standIn ctx key) >>= either (const dependencyFailed) (maybe dependencyFailed pure)
+
+-- | Elaborate a declaration once, recording its error if it fails.
+-- Nothing when it failed, now or before.
+tryDemandDecl :: Ctx -> Key -> TC (Maybe CoreDecl)
+tryDemandDecl ctx key@(path, name) = do
+  done <- gets stDecls
+  failed <- gets (fsDecls . stFailures)
+  case Map.lookup key done of
+    Just cd -> pure (Just cd)
+    Nothing
+      | key `Set.member` failed -> pure Nothing
+      | otherwise -> do
+          d <- maybe (missingDecl ctx ("declaration " <> name)) pure (lookupDeclAst ctx key)
+          r <- recoverTC $ do
+            modify (\s -> s {stActive = Set.insert key (stActive s)})
+            elabDecl ctx path d
+          case r of
+            Right cd -> do
+              modify $ \s ->
+                s
+                  { stActive = Set.delete key (stActive s),
+                    stDecls = Map.insert key cd (stDecls s)
+                  }
+              pure (Just cd)
+            Left f -> do
+              recordFailure f
+              modifyFailures (\fs -> fs {fsDecls = Set.insert key (fsDecls fs)})
+              pure Nothing
+
+-- | What a declaration's annotations alone say it is, when they say
+-- all of it: a function with its return type and the type of every
+-- keyword parameter written, or a binding with its type written. Its
+-- core is only a reference to it, never evaluated: a program with a
+-- failed declaration does not run.
+standIn :: Ctx -> Key -> TC (Maybe CoreDecl)
+standIn ctx key@(path, name) = case lookupDeclAst ctx key of
+  Just (Decl sp f) -> case f of
+    DFunction _ tps ps (Just rt) _
+      | annotated ps -> do
+          vs <- typeVarsOf ctx path tps
+          let ctx' = withTypeVars vs ctx
+          params <- headerParams ctx' ps
+          ret <- typeFromS ctx' path rt
+          pure (Just (stub sp (map fst vs) (funType params ret) (Just params) (boundMap vs)))
+    DValue _ _ (Just ann) rhs -> do
+      t <- typeFromS ctx path ann
+      case exprF rhs of
+        ELambda ps _ _
+          | annotated ps -> do
+              params <- headerParams ctx ps
+              pure (Just (stub sp [] t (Just params) Map.empty))
+          | otherwise -> pure Nothing
+        _ -> pure (Just (stub sp [] t Nothing Map.empty))
+    _ -> pure Nothing
+  Nothing -> pure Nothing
+  where
+    annotated ps = and [isJust ann | Param _ (PKeyword _ _ ann _) <- ps]
+    stub sp vs t params bounds = CoreDecl path name vs t (Core sp (CVar (TopRef path name))) params bounds
+    funType params ret =
+      TyFun (map snd (spPositional params) <> [TyArray e | Just (_, e) <- [spVariadic params]]) ret
+    headerParams c ps = do
+      pos <- sequence [(,) n <$> maybe (pure TyAny) (typeFromS c path) ann | Param _ (PPositional n _ ann) <- ps]
+      var <- sequence [(,) n <$> variadicElem c ann | Param _ (PVariadic n ann) <- ps]
+      kws <- sequence [(,) n <$> typeFromS c path ann | Param _ (PKeyword n _ (Just ann) _) <- ps]
+      pure (StaticParams pos (listToMaybe var) kws)
+    variadicElem c ann = do
+      t <- maybe (pure (TyArray TyAny)) (typeFromS c path) ann
+      case t of
+        TyArray e -> pure e
+        _ -> dependencyFailed
 
 elabDecl :: Ctx -> FilePath -> Decl -> TC CoreDecl
 elabDecl ctx0 path (Decl sp f) = case f of
@@ -657,25 +868,42 @@ aliasType ctx path sp qualifier n args = do
 
 -- | The body of a declared type alias, with the type parameters it
 -- binds, elaborated once and cached. A parameterised alias is
--- elaborated with its parameters standing for themselves.
+-- elaborated with its parameters standing for themselves. An alias
+-- that failed fails the types that refer to it, without reporting
+-- anything more.
 aliasBody :: Ctx -> Key -> TC ([(Text, Maybe Bound)], Type)
-aliasBody ctx key@(defPath, defName) = do
+aliasBody ctx key = tryAliasBody ctx key >>= maybe dependencyFailed pure
+
+-- | 'aliasBody', recording the alias's error if it fails. Nothing when
+-- it failed, now or before.
+tryAliasBody :: Ctx -> Key -> TC (Maybe ([(Text, Maybe Bound)], Type))
+tryAliasBody ctx key@(defPath, defName) = do
   cached <- gets stAliases
+  failed <- gets (fsAliases . stFailures)
   case Map.lookup key cached of
-    Just pb -> pure pb
-    Nothing -> do
-      (tps, rhs) <- aliasRhs
-      vs <- typeVarsOf ctx defPath tps
-      t <- typeFromS (withTypeVars vs ctx) defPath rhs
-      modify (\s -> s {stAliases = Map.insert key (vs, t) (stAliases s)})
-      pure (vs, t)
+    Just pb -> pure (Just pb)
+    Nothing
+      | key `Set.member` failed -> pure Nothing
+      | otherwise -> do
+          (tps, rhs) <- aliasRhs
+          r <- recoverTC $ do
+            vs <- typeVarsOf ctx defPath tps
+            (,) vs <$> typeFromS (withTypeVars vs ctx) defPath rhs
+          case r of
+            Right pb -> do
+              modify (\s -> s {stAliases = Map.insert key pb (stAliases s)})
+              pure (Just pb)
+            Left f -> do
+              recordFailure f
+              modifyFailures (\fs -> fs {fsAliases = Set.insert key (fsAliases fs)})
+              pure Nothing
   where
     aliasRhs =
       case Map.lookup defPath (progModules (ctxProg ctx)) of
         Just lm
           | (r : _) <- [(tps, t) | Decl _ (DTypeAlias a tps t) <- moduleDecls (lmModule lm), a == defName] ->
               pure r
-        _ -> abort (diag ENameUndefined NoSpan ("internal: missing type alias " <> defName))
+        _ -> missingDecl ctx ("type alias " <> defName)
 
 -- Lambdas and parameters ----------------------------------------------------------
 
@@ -697,7 +925,7 @@ elabLambda ctx path locals sp mName ps retAnn body = do
   retTy <- traverse (typeFromS ctx path) retAnn
   -- Wrapped after the early-return transform so the rebindings sit in
   -- a plain, return-free block (spec 6.10 desugaring).
-  body' <- wrapSecretParams secretParams <$> lift (transformFunctionBody body)
+  body' <- wrapSecretParams secretParams <$> either abort pure (transformFunctionBody body)
   (bodyCore, bodyTy) <- case retTy of
     Just t -> (,) <$> check ctx path bodyLocals body' t <*> pure t
     Nothing -> infer ctx path bodyLocals body'
@@ -1863,16 +2091,40 @@ commandTable ctx path = do
           }
       pure table
 
+-- Each declaration and import is a unit of its own (spec 14.3): one
+-- that fails leaves its words out of the table, and marks them failed
+-- so that a command string using one reports nothing more.
 buildCommandTable :: Ctx -> FilePath -> TC (Map Text CommandEntry)
-buildCommandTable ctx path = foldM addSite Map.empty (moduleCommandSites ctx path)
+buildCommandTable ctx path = foldM recoverSite Map.empty (moduleCommandSites ctx path)
   where
+    recoverSite tbl site = do
+      failed <- gets (fsWords . stFailures)
+      let names = siteNames site
+      if any (\(Spanned _ n) -> (path, n) `Set.member` failed) names
+        then pure tbl
+        else do
+          r <- recoverTC (addSite tbl site)
+          case r of
+            Right tbl' -> pure tbl'
+            Left f -> do
+              recordFailure f
+              -- A word the table already has keeps its entry: the
+              -- earlier declaration of a duplicate is not the one at
+              -- fault.
+              let lost = [(path, n) | Spanned _ n <- names, not (Map.member n tbl)]
+              modifyFailures (\fs -> fs {fsWords = Set.union (Set.fromList lost) (fsWords fs)})
+              pure tbl
+
+    siteNames (SiteDecl _ names _) = names
+    siteNames (SiteImport names _) = names
+
     addSite tbl (SiteDecl i names envExpr) = do
       env <- declaredEnv ctx path envExpr
       src <- envSource ctx path i env
       foldM (addDeclared env src i) tbl names
     addSite tbl (SiteImport names key) = do
       target <- commandTable ctx key
-      foldM (addImported target) tbl names
+      foldM (addImported key target) tbl names
 
     addDeclared env src i tbl (Spanned sp n) = do
       unless (validCommandName n) $
@@ -1884,8 +2136,13 @@ buildCommandTable ctx path = foldM addSite Map.empty (moduleCommandSites ctx pat
     -- The resolver has already checked that the target exports the
     -- word. The same declaration reached along two import paths is
     -- one entry; anything else under the same word is a duplicate.
-    addImported target tbl (Spanned sp n) = case Map.lookup n target of
-      Nothing -> abort (diag ENameUndefined sp ("module exports no command '" <> n <> "'"))
+    addImported key target tbl (Spanned sp n) = case Map.lookup n target of
+      Nothing -> do
+        -- A word whose declaration failed in the module it comes from
+        -- has been reported there.
+        failed <- gets (fsWords . stFailures)
+        when ((key, n) `Set.member` failed) dependencyFailed
+        abort (diag ENameUndefined sp ("module exports no command '" <> n <> "'"))
       Just entry -> case Map.lookup n tbl of
         Just prev
           | ceOrigin prev == ceOrigin entry -> pure tbl
@@ -1906,11 +2163,16 @@ dispatchEnv ctx path sp parts = do
       "this command is reached from the environment of a command declaration, "
         <> "which must not run commands"
   tbl <- commandTable ctx path
+  failed <- gets (fsWords . stFailures)
   case commandWords parts of
     NotAnalysable _ why ->
       abort . diag ETypeCommandNoEnv sp $
         "the command string could not be segmented (" <> why <> "), so no command word could be read; "
           <> "give the environment explicitly with $[...]"
+    -- A word whose declaration failed could have selected the
+    -- environment: what else is wrong here follows from that.
+    Analysed ws
+      | any (\w -> cwCandidate w && (path, cwText w) `Set.member` failed) ws -> dependencyFailed
     Analysed ws -> case [(w, e) | w <- ws, cwCandidate w, Just e <- [Map.lookup (cwText w) tbl]] of
       [] -> abort (diag ETypeCommandNoEnv sp (noneMessage ws))
       matched@((w0, e0) : more) -> case [(w, e) | (w, e) <- more, ceSource e /= ceSource e0] of
@@ -2279,7 +2541,7 @@ elabCall ctx path locals sp fn args mExpected = do
           -- variables, which the header does carry.
           pure (Just (Core (exprSpan fn) (CVar (TopRef p n)), map fst vs, boundMap vs, t, Nothing))
         else do
-          cd <- demandDecl ctx key
+          cd <- demandOrStandIn ctx key
           recordVar (exprSpan fn) n (cdType cd) (Just key)
           pure (Just (Core (exprSpan fn) (CVar (TopRef p n)), cdTypeVars cd, cdBounds cd, cdType cd, cdParams cd))
 
