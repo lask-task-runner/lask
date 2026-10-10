@@ -60,9 +60,12 @@
 -- Scope. This is a second front end to Core, not yet the one the parser
 -- is built on. It covers a subset of the language: no unions, optional
 -- record fields, @Any@, @Map@, @null@, @case@, @try@, environment
--- values, run options, modules or polymorphic declarations. A program
--- runs through 'runTask' and the evaluator; the CLI (@lask run@,
--- @--help@, @envs@) does not take one yet.
+-- values, run options, modules or polymorphic declarations. 'runTask'
+-- evaluates a program with the hooks it is given, which decide where
+-- commands run; the hooks that run them in Docker are still built
+-- inside the CLI, and the CLI (@lask run@, @--help@, @envs@) does not
+-- take a program yet. Today a program can be analysed, and run against
+-- hooks of your own, such as a scripted runner in tests.
 --
 -- Every 'task' needs a type signature: the parameters and the result
 -- are read from it.
@@ -150,15 +153,16 @@ module Language.Lask.Embed
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Monad (forM)
 import Control.Monad.State.Strict (State, gets, modify, runState)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Kind (Type)
 import Data.List (nub)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Proxy (Proxy (..))
-import Data.Scientific (fromFloatDigits)
+import Data.Scientific (fromFloatDigits, fromRationalRepetend)
 import qualified Data.Set as Set
 import Data.String (IsString (..))
 import Data.Text (Text)
@@ -377,9 +381,12 @@ instance Num (E v 'TNumber) where
       sign n = if_ (n >. 0) 1 (if_ (n <. 0) (-1) 0)
 
 instance Fractional (E v 'TNumber) where
-  -- Scientific has no repeating decimals, so a rational such as 1/3 is
-  -- rounded to the nearest Double first instead of diverging.
-  fromRational r = leaf NoSpan (CNumber (fromFloatDigits (fromRational r :: Double)))
+  -- A literal is kept exactly, as the parser keeps it. Only a rational
+  -- with a repeating decimal, which Scientific cannot hold, is rounded
+  -- to the nearest Double.
+  fromRational r = leaf NoSpan . CNumber $ case fromRationalRepetend Nothing r of
+    Right (exact, Nothing) -> exact
+    _ -> fromFloatDigits (fromRational r :: Double)
   E a / E b = node2 NoSpan (CBin PDiv) a b
 
 instance IsString (E v 'TString) where
@@ -842,8 +849,8 @@ data Program = Program
 -- visited set so that recursion terminates, and check what the Haskell
 -- types do not.
 assemble :: [Export] -> Either [Text] Program
-assemble exports = case nameErrors <> dupErrors <> kwErrors <> commandErrors of
-  [] -> Right (Program core decls exported)
+assemble exports = case nameErrors <> dupErrors <> docErrors <> kwErrors <> commandErrors of
+  [] -> Right (Program core documented exported)
   errs -> Left errs
   where
     roots = [d | Export _ d <- exports]
@@ -882,16 +889,26 @@ assemble exports = case nameErrors <> dupErrors <> kwErrors <> commandErrors of
     dupErrors =
       nub
         [ "two different declarations are named '" <> snd (declKey d) <> "'"
-          | d <- roots <> concatMap declDeps decls,
+          | d <- reached,
             Just d' <- [Map.lookup (declKey d) byKey],
             identity d /= identity d'
         ]
+    -- A doc is not part of a declaration: 'doc' may be applied where a
+    -- task is exported and not where it is called.
     identity d =
       ( declCore d,
-        declDoc d,
         [(kiName k, kiType k, kiDefault k, kiHelp k) | k <- declKeywords d],
         declCommands d
       )
+    reached = roots <> concatMap declDeps decls
+    docs = Map.map nub (Map.fromListWith (flip (<>)) [(declKey d, [t]) | d <- reached, Just t <- [declDoc d]])
+    docErrors =
+      [ "'" <> name <> "' is given two different docs"
+        | ((_, name), ts) <- Map.toList docs,
+          length ts > 1
+      ]
+    -- Every declaration with the doc any of its references carries.
+    documented = [d {declDoc = declDoc d <|> listToMaybe (Map.findWithDefault [] (declKey d) docs)} | d <- decls]
 
     kwErrors =
       concat
@@ -941,8 +958,8 @@ assemble exports = case nameErrors <> dupErrors <> kwErrors <> commandErrors of
         }
 
 -- | Run one task of a program with the given positional and keyword
--- arguments. The hooks decide where commands run: Lask's own runtime,
--- or a scripted runner in tests. A failure is thrown as
+-- arguments. The hooks decide where commands run; see the module
+-- header for which are available. A failure is thrown as
 -- 'Language.Lask.Runtime.Value.LaskFailure'.
 runTask :: Program -> RtHooks -> Text -> [Value] -> [(Text, Value)] -> IO Value
 runTask prog hooks name args kws = do

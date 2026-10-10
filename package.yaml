@@ -17,7 +17,8 @@ extra-source-files:
 description: Please see the README on GitHub at <https://github.com/lask-task-runner/lask#readme>
 
 dependencies:
-  - base >= 4.7 && < 5
+  # 4.19 (GHC 9.8) for GHC.TypeError.Unsatisfiable, used by Language.Lask.Embed.
+  - base >= 4.19 && < 5
   - aeson >= 2.0 && < 3
   - aeson-pretty >= 0.8 && < 1
   - async >= 2.2 && < 3

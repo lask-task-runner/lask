@@ -268,6 +268,9 @@ versionLet :: Task '[] 'TString
 versionLet = task "version_let" $
   let v = run go "version" in v <> v
 
+universe :: Core -> [Core]
+universe c = c : concatMap universe (coreChildren c)
+
 errorsOf :: [Export] -> [Text]
 errorsOf = either id (const []) . assemble
 
@@ -363,6 +366,21 @@ spec = do
           other = task "other" $ run go23 "version" :: Task '[] 'TString
       errorsOf [export testApi, export other]
         `shouldBe` ["the command 'go' is bound to more than one environment: #golang:1.22, #golang:1.23"]
+
+    it "takes a doc given where a task is exported, and rejects two different docs" $ do
+      let ok = assemble [export (doc "Release it" release), export ship]
+          help' = either (const []) (\p -> [declDoc d | d <- progDecls p, snd (declKey d) == "release"]) ok
+      help' `shouldBe` [Just "Release it"]
+      errorsOf [export (doc "One" release), export (doc "Two" release)]
+        `shouldBe` ["'release' is given two different docs"]
+
+    it "keeps number literals exact, as the parser does" $ do
+      let lit = task "lit" (12345678901234567.5 + 1e400 + 0.1) :: Task '[] 'TNumber
+          third = task "third" (realToFrac (1 / 3 :: Rational)) :: Task '[] 'TNumber
+      p <- either (fail . show) pure (assemble [export lit, export third])
+      let numbers name = [n | Just cd <- [Map.lookup (programModule, name) (cpDecls (progCore p))], CNumber n <- map coreF (universe (cdCore cd))]
+      numbers "lit" `shouldBe` [12345678901234567.5, 1e400, 0.1]
+      numbers "third" `shouldBe` [0.3333333333333333]
 
     it "makes everything not exported internal" $
       cpInternal (progCore embedded) `shouldBe` Set.fromList ["changed", "fact", "release", "test_api", "test_web"]

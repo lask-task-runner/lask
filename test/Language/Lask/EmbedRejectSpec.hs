@@ -56,6 +56,9 @@ voidElements = task "void_elements" $ \_ -> 1
 voidKeyword :: Task '[] 'TNumber
 voidKeyword = taskWith "void_keyword" $ const 1 <$> kw "x" done
 
+voidField :: Task '["r" ::: 'TRecord '[ '("a", 'TVoid)]] 'TNumber
+voidField = task "void_field" $ \_ -> 1
+
 mappedToVoid :: Task '[] ('TArray 'TVoid)
 mappedToVoid = task "mapped_to_void" $ mapE (lines_ "a") (const done)
 
@@ -79,5 +82,7 @@ spec = describe "Language.Lask.Embed rejects at compile time" $ do
     rejected voidElements ["Void is not a data type"]
   it "a Void keyword parameter (E-TYPE-ILLFORMED)" $
     rejected voidKeyword ["Void is not a data type"]
+  it "a record field of type Void (E-TYPE-ILLFORMED)" $
+    rejected voidField ["Void is not a data type"]
   it "a loop collecting Void (E-TYPE-ILLFORMED)" $
     rejected mappedToVoid ["Void is not a data type"]
