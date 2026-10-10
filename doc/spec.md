@@ -3177,7 +3177,7 @@ Output destination and exit codes:
 
 - Help is written to stdout (the exception in 11.3). Diagnostics are written to stderr as usual.
 - `0`: the help was displayed.
-- `4`: the specified name is not a top-level declaration of the module. The usage and, where possible, candidate names are written to stderr as `E-CLI-USAGE`. A declaration that is not a function is not an error: a plain value binding is callable with no arguments (11.2), so its help is displayed with an empty parameter list.
+- `4`: the specified name is not a top-level declaration of the module. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`. A declaration that is not a function is not an error: a plain value binding is callable with no arguments (11.2), so its help is displayed with an empty parameter list.
 - `1`: the target module could not be parsed. Diagnostics are written to stderr and no help is displayed.
 - Static errors (14.4) do **not** prevent help display. The help is rendered from the information that is available, a type that could not be determined is displayed as `?`, the diagnostics are written to stderr, and the exit code is `0`. Help is most needed while a module is broken, so this is a deliberate exception to the rule of 14.4 that static errors stop `run` / `eval`; no function is evaluated in this case either.
 - For `lask run --help` / `lask eval --help` without a function name, the CLI option help must always be displayed with exit code `0`. If the target module cannot be loaded, the function list is omitted.
@@ -3244,7 +3244,7 @@ lask cmd --help [--module <path>]
 Name resolution rules:
 
 - `<command>` is resolved against the command words the target module has — those it declares, `internal` ones included, and those it imports (Chapter 5) — by exact text. The `-` to `_` mapping of 11.2 must not be applied: this is a program name and not a function name, so `lask cmd docker-compose up` resolves the command word `docker-compose`.
-- A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --help`.
+- A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --help`. It may carry candidate command words (14.3).
 - No option for supplying or overriding the execution environment is provided (11.1, 10.4).
 
 Argument boundary rules:
@@ -3832,7 +3832,11 @@ An implementation must include at least the following when reporting an error.
 Additional requirements related to types and names:
 
 - For type mismatches, include `expected` and `actual`.
-- For name resolution failures, candidates or a summary of the search scope may be included.
+- For name resolution failures, candidates or a summary of the search scope may be included. Candidates are given as follows:
+  - The pool is the names of the same kind in scope where the name was written: for an undefined name, the locals, top-level declarations, imported names, builtins and namespaces; for a type, the type names and aliases; for a namespace member or a named import, the target module's public symbols; for a command word, the module's command words; for a keyword argument, the function's keyword parameters; for a record field, the record's fields; for an environment option, the image and run options. On the command line the pool is the entry module's public functions, its command words (`lask cmd`, 11.8), or the function's keyword parameters, each given as the CLI writes it (11.2): `cowsay-hello`, `--dry-run`.
+  - Names are compared ignoring case, with `-` and `_` taken as one character. The distance is the edit distance in which inserting, deleting or substituting a character, or transposing two adjacent ones, each count as one edit.
+  - A name is a candidate when its distance from the written name is at most max(1, ⌊length / 3⌋), where length is that of the written name. Candidates are sorted by distance, then by name, and at most three are given.
+  - In text output, candidates follow the other notes as one more note: `note: did you mean 'hello'?`, or `did you mean 'a', 'b' or 'c'?` for several. In JSON output they are the array `suggestions`, and the notes are the array `notes`; each is present only when not empty.
 
 Additional requirements related to commands:
 
@@ -3850,6 +3854,23 @@ JSON format example:
   "location": {"line": 12, "column": 8},
   "expected": "Number",
   "actual": "String"
+}
+```
+
+A name resolution failure with a candidate, in text and in JSON:
+
+```text
+main.lask:2:10-2:14: E-NAME-UNDEFINED [static]: undefined name: 'helo'
+  note: did you mean 'hello'?
+```
+
+```json
+{
+  "code": "E-NAME-UNDEFINED",
+  "message": "undefined name: 'helo'",
+  "stage": "static",
+  "location": {"line": 2, "column": 10},
+  "suggestions": ["hello"]
 }
 ```
 

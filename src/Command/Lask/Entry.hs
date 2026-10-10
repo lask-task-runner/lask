@@ -59,6 +59,7 @@ import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, 
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..))
+import Language.Lask.Suggest (suggest)
 import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
 import Paths_lask (version)
 import System.Environment (getEnvironment, lookupEnv)
@@ -132,13 +133,14 @@ cmdRunEval printResult runOpts = do
   -- so it is not callable from the CLI either.
   (key, cd) <- case publicDecl compiled fnName of
     Just found -> pure found
-    Nothing -> usageError opts ("no such function: '" <> rawName <> "'")
+    Nothing -> noSuchFunction opts rawName (publicNames compiled)
 
   cliArgs <- case parseCliArgs (dropArgSeparator (runArgs runOpts)) of
     Right as -> pure as
     Left e -> usageError opts e
 
   let orUsageError = either (usageError opts) pure
+      orBindError = either (uncurry (usageErrorSuggesting opts)) pure
   (posVals, kwVals) <- case cdParams cd of
     -- A declaration with type parameters is invoked with each one
     -- decoded at the widest type it admits, and a named bound checked
@@ -146,7 +148,7 @@ cmdRunEval printResult runOpts = do
     -- opaque inside the body, which may compare or sort it (4.4).
     Just params -> do
       bound <-
-        orUsageError
+        orBindError
           (bindCliArgs (instantiateForCli (cdTypeVars cd) (cdBounds cd) params) (runArgDecode runOpts) cliArgs)
       orUsageError (uncurry (checkCliBounds (cdBounds cd) params) bound)
       pure bound
@@ -154,7 +156,7 @@ cmdRunEval printResult runOpts = do
       TyFun paramTys _ ->
         -- A function-typed value declaration: positional only
         -- (spec 11.2, example 16.3).
-        orUsageError $
+        orBindError $
           bindCliArgs
             (StaticParams (zip (map (const "arg") paramTys) paramTys) Nothing [])
             (runArgDecode runOpts)
@@ -347,7 +349,7 @@ cmdHelp subcommand runOpts = do
       let fnName = kebabToSnake rawName
       found <- case lookup fnName declsByName of
         Just h -> pure h
-        Nothing -> usageError opts (noSuchFunction rawName (map fst declsByName))
+        Nothing -> noSuchFunction opts rawName (map fst declsByName)
       let envs = case core of
             Just c -> nub (sort (collectEnvRefsFrom c (hsKey found)))
             Nothing -> []
@@ -383,6 +385,10 @@ publicDecl compiled n = do
   cd <- Map.lookup key (cpDecls (compiledCore compiled))
   pure (key, cd)
 
+-- | The names the CLI can invoke in the entry module (spec 11.2).
+publicNames :: Compiled -> [Text]
+publicNames compiled = map fst (entryPublicValues (compiledProgram compiled) (compiledScopes compiled))
+
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
   AST.DValue n _ _ _ -> Just n
@@ -394,18 +400,6 @@ docFor :: Text -> [Span] -> AST.Decl -> DocComment
 docFor src comments decl = case AST.declSpan decl of
   Span (Position _ l _) _ -> maybe emptyDoc parseDoc (docBlockAbove src comments l)
   NoSpan -> emptyDoc
-
-noSuchFunction :: Text -> [Text] -> Text
-noSuchFunction wanted names =
-  "no such function: '"
-    <> wanted
-    <> "'"
-    <> case near of
-      [] -> ""
-      (n : _) -> "; did you mean '" <> n <> "'?"
-  where
-    target = kebabToSnake wanted
-    near = [n | n <- names, T.isPrefixOf (T.take 2 target) n || T.isInfixOf target n]
 
 encodeResult :: StdoutEncode -> Value -> Text
 encodeResult enc v = case enc of
@@ -478,7 +472,7 @@ cmdSecrets isCheck o = do
     Just fn -> do
       compiled <- compileOrExit opts
       case publicDecl compiled (kebabToSnake fn) of
-        Nothing -> usageError opts ("no such function: '" <> fn <> "'")
+        Nothing -> noSuchFunction opts fn (publicNames compiled)
         Just (key, _) ->
           pure (maybe AllVariables (OnlyVariables fn) (collectEnvReadsFrom (compiledCore compiled) key))
   if isCheck
@@ -590,8 +584,10 @@ cmdCmd cmdOpts
         Nothing -> usageError opts "no command given; try 'lask cmd --help'"
         Just name -> case Map.lookup name table of
           Nothing ->
-            usageError opts $
-              "'" <> name <> "' is not a command of this module; try 'lask cmd --help'"
+            usageErrorSuggesting
+              opts
+              ("'" <> name <> "' is not a command of this module; try 'lask cmd --help'")
+              (suggest name (Map.keys table))
           Just envCore -> do
             traceId <- maybe newTraceId pure (optTraceId opts)
             secrets <- newSecretResolver

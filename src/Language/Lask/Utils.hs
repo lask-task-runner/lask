@@ -1,6 +1,7 @@
 module Language.Lask.Utils
   ( Pretty (..),
     kebabToSnake,
+    snakeToKebab,
     safeReadFile,
     showWithBrackets,
   )
@@ -29,6 +30,15 @@ class Pretty a where
 -- "show_version"
 kebabToSnake :: Text -> Text
 kebabToSnake = T.map (\c -> if c == '-' then '_' else c)
+
+-- | The inverse of 'kebabToSnake': how the CLI writes a name.
+--
+-- Example:
+--
+-- >>> snakeToKebab (T.pack "show_version")
+-- "show-version"
+snakeToKebab :: Text -> Text
+snakeToKebab = T.map (\c -> if c == '_' then '-' else c)
 
 safeReadFile :: FilePath -> ExceptT String IO Text
 safeReadFile filePath = do
