@@ -18,6 +18,7 @@ module Command.Lask.ArgCodec
 where
 
 import qualified Data.Aeson as A
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Lazy as BL
 import Data.List (nub)
 import Data.Map.Strict (Map)
@@ -39,7 +40,8 @@ import Language.Lask.Types
     requiredField,
     satisfiesNamed,
   )
-import Language.Lask.Utils (kebabToSnake)
+import Language.Lask.Suggest (suggest)
+import Language.Lask.Utils (kebabToSnake, snakeToKebab)
 
 data ArgDecodeMode = DecodeText | DecodeJson | DecodeAuto
   deriving (Show, Eq)
@@ -100,23 +102,25 @@ decodeArgValue mode raw = case mode of
 -- | Bind decoded CLI arguments against the declaration parameter info
 -- (spec 11.2): positionals in order (excess collected by a variadic
 -- parameter), keywords by mapped name, defaults for the rest. Type
--- conformance is checked by the same runtime check as @cast@.
+-- conformance is checked by the same runtime check as @cast@. A
+-- failure carries its message and, for a keyword the declaration does
+-- not take, the keyword options close to it (spec 14.3).
 bindCliArgs ::
   StaticParams ->
   ArgDecodeMode ->
   [CliArg] ->
-  Either Text ([Value], [(Text, Value)])
+  Either (Text, [Text]) ([Value], [(Text, Value)])
 bindCliArgs params mode cliArgs =
   let posRaw = [v | CliPos v <- cliArgs]
       kwRaw = [(n, v) | CliKw n v <- cliArgs]
       positional = spPositional params
       nPos = length positional
    in if any (\(_, t) -> t `elem` [TyEnvironment, TyRunnable]) positional
-        then Left "functions with Environment or Runnable positional parameters cannot be called from the CLI"
+        then plain (Left "functions with Environment or Runnable positional parameters cannot be called from the CLI")
         else
           if length posRaw < nPos
             then
-              Left $
+              plain . Left $
                 "missing positional arguments: expected "
                   <> tshow nPos
                   <> ", got "
@@ -124,7 +128,7 @@ bindCliArgs params mode cliArgs =
             else
               if length posRaw > nPos && spVariadic params == Nothing
                 then
-                  Left $
+                  plain . Left $
                     "too many positional arguments: expected "
                       <> tshow nPos
                       <> ", got "
@@ -137,23 +141,33 @@ bindCliArgs params mode cliArgs =
                             Just (_, elemTy) -> map (\v -> (v, elemTy)) extraRaw
                             Nothing -> []
                    in (,)
-                        <$> mapM (decodeAndCheck "argument") posTyped
+                        <$> plain (mapM (decodeAndCheck "argument") posTyped)
                         <*> bindKw [] kwRaw
   where
     tshow :: Show a => a -> Text
     tshow = T.pack . show
     kwTypes = spKeywords params
 
+    -- A keyword parameter as the CLI writes it (spec 11.2).
+    flag n = "--" <> snakeToKebab n
+
+    -- A failure with no correction to offer.
+    plain = first (\m -> (m, []))
+
     bindKw acc [] = Right (reverse acc)
     bindKw acc ((n, raw) : rest)
-      | n `elem` map fst acc = Left ("duplicate keyword argument: '--" <> n <> "'")
+      | n `elem` map fst acc = plain (Left ("duplicate keyword argument: '" <> flag n <> "'"))
       | otherwise = case lookup n kwTypes of
-          Nothing -> Left ("unknown keyword argument: '--" <> n <> "'")
+          Nothing ->
+            Left
+              ( "unknown keyword argument: '" <> flag n <> "'",
+                map flag (suggest n (map fst kwTypes))
+              )
           Just t
             | t `elem` [TyEnvironment, TyRunnable] ->
-                Left ("keyword parameter '--" <> n <> "' has type " <> renderType t <> " and cannot be set from the CLI")
+                plain (Left ("keyword parameter '" <> flag n <> "' has type " <> renderType t <> " and cannot be set from the CLI"))
             | otherwise -> do
-                v <- decodeAndCheck ("keyword argument '--" <> n <> "'") (raw, t)
+                v <- plain (decodeAndCheck ("keyword argument '" <> flag n <> "'") (raw, t))
                 bindKw ((n, v) : acc) rest
 
     decodeAndCheck what (raw, ty) = do

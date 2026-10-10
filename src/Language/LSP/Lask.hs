@@ -21,6 +21,7 @@ module Language.LSP.Lask
     hoverMarkdown,
     completionAt,
     documentDiagnostics,
+    quickFixes,
   )
 where
 
@@ -199,6 +200,13 @@ handle logger =
           Just file -> do
             items <- liftIO $ completionAt path (virtualFileText file) pos
             responder $ Right $ LSP.InL items,
+      requestHandler LSP.SMethod_TextDocumentCodeAction $ \req responder -> do
+        let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
+            diags = req ^. LSP.params . LSP.context . LSP.diagnostics
+        mdoc <- getVirtualFile (LSP.toNormalizedUri uri)
+        responder . Right . LSP.InL $ case mdoc of
+          Nothing -> []
+          Just file -> map LSP.InR (quickFixes uri (virtualFileText file) diags),
       notificationHandler LSP.SMethod_WorkspaceDidChangeConfiguration $ \_ -> pure (),
       notificationHandler LSP.SMethod_TextDocumentDidClose $ \_ -> pure ()
     ]
@@ -271,7 +279,8 @@ errorDiagnostic d =
     (T.pack $ pretty d)
     Nothing
     (Just [])
-    Nothing
+    -- The correction candidates, for 'quickFixes' to offer (spec 14.3).
+    (if null (D.diagSuggestions d) then Nothing else Just (J.toJSON (D.diagSuggestions d)))
 
 advisoryDiagnostic :: D.Advisory -> LSP.Diagnostic
 advisoryDiagnostic a =
@@ -285,6 +294,44 @@ advisoryDiagnostic a =
     Nothing
     (Just [])
     Nothing
+
+-- | A quick fix for each correction candidate a diagnostic carries
+-- (spec 14.3): replace the misspelt name with it. Offered only where
+-- the diagnostic's range holds the name alone, so that the edit cannot
+-- take anything else with it; a keyword argument's range, for one,
+-- covers its value too.
+quickFixes :: LSP.Uri -> Text -> [LSP.Diagnostic] -> [LSP.CodeAction]
+quickFixes uri src diags =
+  [ LSP.CodeAction
+      { LSP._title = "Change to '" <> s <> "'",
+        LSP._kind = Just LSP.CodeActionKind_QuickFix,
+        LSP._diagnostics = Just [d],
+        LSP._isPreferred = Just (i == 0),
+        LSP._disabled = Nothing,
+        LSP._edit =
+          Just
+            LSP.WorkspaceEdit
+              { LSP._changes = Just (Map.singleton uri [LSP.TextEdit (d ^. LSP.range) s]),
+                LSP._documentChanges = Nothing,
+                LSP._changeAnnotations = Nothing
+              },
+        LSP._command = Nothing,
+        LSP._data_ = Nothing
+      }
+  | d <- diags,
+    d ^. LSP.source == Just "lask",
+    Just (J.Success ss) <- [J.fromJSON <$> d ^. LSP.data_],
+    isName (rangeText (d ^. LSP.range)),
+    (i, s) <- zip [0 :: Int ..] ss
+  ]
+  where
+    rangeText (LSP.Range (Position l1 c1) (Position l2 c2))
+      | l1 == l2,
+        Just line <- listToMaybe (drop (fromIntegral l1) (T.lines src)) =
+          Just (T.take (fromIntegral c2 - fromIntegral c1) (T.drop (fromIntegral c1) line))
+      | otherwise = Nothing
+    isName (Just t) = not (T.null t) && T.all (\c -> isAsciiLower c || isAsciiUpper c || isDigit c || c == '_') t
+    isName Nothing = False
 
 -- | Semantic token atoms from the lexer: comments (collected on the
 -- side), interpolation contents (nested token streams inside string

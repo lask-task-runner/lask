@@ -938,6 +938,38 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["check", "--format", "json"] ""
         resExit r `shouldBe` 1
         resOut r `shouldSatisfy` isInfixOf "E-TYPE-MISMATCH"
+    it "check suggests a correction for a misspelt name (spec 14.3)" $ \lask ->
+      withProject [("main.lask", "hello = \"hi\"\nmain() = helo\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resExit r `shouldBe` 1
+        resOut r `shouldContain` "undefined name: 'helo'\n  note: did you mean 'hello'?"
+        j <- runLask lask dir ["check", "--format", "json"] ""
+        resOut j `shouldContain` "\"suggestions\":[\"hello\"]"
+    it "check keeps notes in JSON (spec 14.3)" $ \lask ->
+      withProject [("main.lask", "import { a } from \"./missing.lask\"\nb = a\n")] $ \dir -> do
+        j <- runLask lask dir ["check", "--format", "json"] ""
+        resExit j `shouldBe` 1
+        resOut j `shouldContain` "\"notes\":["
+
+  describe "did you mean, on the command line (spec 11.2, 14.3)" $ do
+    let src = "command { \"python\" } on #local\ncowsay_hello(--dry_run: Bool = false): Bool = dry_run\n"
+    it "suggests a function in its CLI form" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "cowsay-helo"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldBe` "E-CLI-USAGE: no such function: 'cowsay-helo'\n  note: did you mean 'cowsay-hello'?\n"
+        j <- runLask lask dir ["run", "--format", "json", "cowsay-helo"] ""
+        resErr j `shouldContain` "\"suggestions\":[\"cowsay-hello\"]"
+    it "suggests a keyword option in its CLI form" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "cowsay-hello", "--dry-rnu=true"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldBe` "E-CLI-USAGE: unknown keyword argument: '--dry-rnu'\n  note: did you mean '--dry-run'?\n"
+    it "suggests a command word" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["cmd", "pyhton"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldContain` "did you mean 'python'?"
 
   describe "commands and environments (spec 16.5, 16.7)" $ do
     it "runs local commands with interpolation" $ \lask ->

@@ -15,6 +15,7 @@ module Language.Lask.Syntax.AST
     typeParamNames,
     renderTypeParams,
     renderSType,
+    builtinTypeNames,
     ImportSpec (..),
     Secrecy (..),
     Param (..),
@@ -134,6 +135,14 @@ renderTypeParams tps = "<" <> T.intercalate ", " (map one tps) <> ">"
     one (TypeParam (Spanned _ v) b) = v <> maybe "" ((": " <>) . bound) b
     bound (SBoundNamed (Spanned _ n)) = n
     bound (SBoundType t) = renderSType t
+
+-- | The type names the grammar itself recognises (spec 4.2), which no
+-- alias declares.
+builtinTypeNames :: [Text]
+builtinTypeNames =
+  [ "Any", "Number", "String", "Bool", "Null", "Void", "Environment", "Runnable",
+    "Array", "Map", "AsyncHandle", "Record", "Function"
+  ]
 
 -- | A type as written, in the notation of 4.2.
 renderSType :: SType -> Text
