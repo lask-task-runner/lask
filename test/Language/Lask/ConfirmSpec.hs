@@ -4,10 +4,8 @@
 -- checks @lask check@ runs on it, and what is asked before a call.
 module Language.Lask.ConfirmSpec (spec) where
 
-import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import qualified Data.Text as T
 import Language.Lask (Compiled (..), compileFile)
 import Language.Lask.Confirm
 import Language.Lask.Diagnostic (Diagnostic (..))
@@ -40,7 +38,7 @@ spec = do
         let ds = either id (const []) r
         map diagCode ds `shouldBe` [EModuleConfirmTarget]
         map (spanLine . diagSpan) ds `shouldBe` [Just 3]
-        map (T.unpack . diagMessage) ds `shouldSatisfy` all ("did you mean 'deploy'" `isInfixOf`)
+        map diagSuggestions ds `shouldBe` [["deploy"]]
 
     it "reports a parameter, a value or an interpolation that does not fit" $
       withCompiled tasks badRefs $ \r ->

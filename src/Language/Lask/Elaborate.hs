@@ -832,7 +832,9 @@ aliasType ctx path sp qualifier n args = do
     Just ns ->
       case Map.lookup path (ctxScopes ctx) >>= Map.lookup ns . gsNamespaces of
         Just key -> pure key
-        Nothing -> abort (diag ENameUndefined sp ("undefined namespace: '" <> ns <> "'"))
+        Nothing ->
+          abort . suggesting ns (maybe [] (Map.keys . gsNamespaces) (Map.lookup path (ctxScopes ctx))) $
+            diag ENameUndefined sp ("undefined namespace: '" <> ns <> "'")
   case Map.lookup searchPath (ctxScopes ctx) >>= Map.lookup n . gsTypes of
     Just (TBuiltinAlias "Error") -> noArgs >> pure errorType
     Just (TBuiltinAlias "CommandResult") -> noArgs >> pure commandResultType
@@ -860,7 +862,9 @@ aliasType ctx path sp qualifier n args = do
           not (satisfiesBound (boundOf ctx) b t)
         ]
       pure (applySubst (Map.fromList (zip (map fst params) args)) body)
-    Nothing -> abort (diag ENameUndefined sp ("undefined type: '" <> n <> "'"))
+    Nothing ->
+      abort . suggesting n ([t | isNothing qualifier, t <- builtinTypeNames] <> maybe [] (Map.keys . gsTypes) (Map.lookup searchPath (ctxScopes ctx))) $
+        diag ENameUndefined sp ("undefined type: '" <> n <> "'")
   where
     noArgs =
       unless (null args) $
@@ -1279,8 +1283,18 @@ inferVar ctx path locals sp n = case Map.lookup n locals of
         | otherwise ->
             abort . diag ETypeMismatch sp $
               "cannot infer the type of polymorphic builtin '" <> bn <> "' without an expected type"
-      Nothing -> abort (diag ENameUndefined sp ("undefined name: '" <> n <> "'"))
-    Nothing -> abort (diag ENameUndefined sp ("undefined name: '" <> n <> "'"))
+      Nothing -> abort (undefinedName ctx path locals sp n)
+    Nothing -> abort (undefinedName ctx path locals sp n)
+
+-- | A name that resolves at no rank (spec 7.2), with the names in scope
+-- that lie close to it: locals, top-level declarations, imported names,
+-- builtins and namespaces.
+undefinedName :: Ctx -> FilePath -> Locals -> Span -> Text -> Diagnostic
+undefinedName ctx path locals sp n =
+  suggesting n (Map.keys locals <> maybe [] scopeNames (Map.lookup path (ctxScopes ctx))) $
+    diag ENameUndefined sp ("undefined name: '" <> n <> "'")
+  where
+    scopeNames gs = Map.keys (gsValues gs) <> Map.keys (gsNamespaces gs)
 
 -- Strings and interpolation --------------------------------------------------------
 
@@ -1380,7 +1394,8 @@ elabDot ctx path locals sp inner fsp fld = case exprF inner of
       TyRecord fields -> case Map.lookup fld fields of
         Just f -> pure (Core sp (CDot c fld), readFieldType f)
         Nothing ->
-          abort (diag ETypeAccess fsp ("record has no field '" <> fld <> "': " <> renderType t))
+          abort . suggesting fld (Map.keys fields) $
+            diag ETypeAccess fsp ("record has no field '" <> fld <> "': " <> renderType t)
       other ->
         abort (diag ETypeAccess fsp ("field access requires a Record type, got " <> renderType other))
   where
@@ -1402,7 +1417,8 @@ elabIndex ctx path locals sp inner idx = do
         Just f ->
           pure (Core sp (CDot c k), readFieldType f)
         Nothing ->
-          abort (diag ETypeAccess (exprSpan idx) ("record has no field '" <> k <> "'"))
+          abort . suggesting k (Map.keys fields) $
+            diag ETypeAccess (exprSpan idx) ("record has no field '" <> k <> "'")
       Nothing ->
         abort (diag ETypeAccess (exprSpan idx) "record index must be a string literal")
     other ->
@@ -2142,7 +2158,8 @@ buildCommandTable ctx path = foldM recoverSite Map.empty (moduleCommandSites ctx
         -- has been reported there.
         failed <- gets (fsWords . stFailures)
         when ((key, n) `Set.member` failed) dependencyFailed
-        abort (diag ENameUndefined sp ("module exports no command '" <> n <> "'"))
+        abort . suggesting n (Map.keys target) $
+          diag ENameUndefined sp ("module exports no command '" <> n <> "'")
       Just entry -> case Map.lookup n tbl of
         Just prev
           | ceOrigin prev == ceOrigin entry -> pure tbl
@@ -2174,7 +2191,9 @@ dispatchEnv ctx path sp parts = do
     Analysed ws
       | any (\w -> cwCandidate w && (path, cwText w) `Set.member` failed) ws -> dependencyFailed
     Analysed ws -> case [(w, e) | w <- ws, cwCandidate w, Just e <- [Map.lookup (cwText w) tbl]] of
-      [] -> abort (diag ETypeCommandNoEnv sp (noneMessage ws))
+      [] ->
+        abort . suggestingAny [cwText w | w <- ws, cwCandidate w] (Map.keys tbl) $
+          diag ETypeCommandNoEnv sp (noneMessage ws)
       matched@((w0, e0) : more) -> case [(w, e) | (w, e) <- more, ceSource e /= ceSource e0] of
         [] -> pure (ceEnv e0, [Spanned (cwSpan w) (cwText w) | (w, _) <- matched])
         ((w1, e1) : _) ->
@@ -2403,6 +2422,17 @@ elabRunnable ctx path locals sp env args = do
           "'" <> n <> "' decides the image, and is given on the head, as #alpine:3.20(" <> n <> " = ...)"
       | otherwise = "unknown run option: '" <> n <> "'"
 
+-- | An option an environment expression or a runnable does not take,
+-- with the image and run options close to it when it is none of them.
+-- One that is an option, given in the wrong place, is explained by the
+-- message instead.
+unknownEnvOption :: Text -> Diagnostic -> Diagnostic
+unknownEnvOption n
+  | n `elem` known || n `elem` ["image", "dockerfile"] = id
+  | otherwise = suggesting n known
+  where
+    known = imageOptionNames <> runOptionNames
+
 -- | Migration hint for the removed @#docker(...)@ form.
 removedDocker :: Text
 removedDocker =
@@ -2425,7 +2455,7 @@ bindEnvOptions ctx path locals sig unknown = foldM step []
           Just ty -> do
             c <- checkEnvArg e ty
             pure (acc <> [(n, c)])
-          Nothing -> abort (diag ETypeEnvConstruct asp (unknown n))
+          Nothing -> abort (unknownEnvOption n (diag ETypeEnvConstruct asp (unknown n)))
 
     -- A list or table option is declared with nullable elements, so
     -- that a literal can hold a null to leave out (10.2). Containers
@@ -2504,8 +2534,8 @@ elabCall ctx path locals sp fn args mExpected = do
               Just scheme -> do
                 recordBuiltin (exprSpan fn) bn (schemeType scheme) bn
                 pure (CalleeBuiltin bn scheme)
-              Nothing -> abort (diag ENameUndefined (exprSpan fn) ("undefined name: '" <> n <> "'"))
-            Nothing -> abort (diag ENameUndefined (exprSpan fn) ("undefined name: '" <> n <> "'"))
+              Nothing -> abort (undefinedName ctx path locals (exprSpan fn) n)
+            Nothing -> abort (undefinedName ctx path locals (exprSpan fn) n)
       EDot (Expr _ (EVar m)) (Spanned _ fld)
         | not (Map.member m locals),
           Nothing <- lookupValueTarget ctx path m,
@@ -2605,7 +2635,8 @@ elabCall ctx path locals sp fn args mExpected = do
           case Map.lookup n kwTypes of
             Just t -> ((n, e, t) :) <$> go (Set.insert n seen) rest
             Nothing ->
-              abort (diag ETypeKeyword asp ("unknown keyword argument: '" <> n <> "'"))
+              abort . suggesting n (map fst keywords) $
+                diag ETypeKeyword asp ("unknown keyword argument: '" <> n <> "'")
         go seen (Arg _ (APos _) : rest) = go seen rest -- unreachable (validated)
 
     goArgs subst argSlots = do
