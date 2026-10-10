@@ -22,28 +22,7 @@ permissions:
   contents: write
 
 jobs:
-  verify_version:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
-
-      - name: Verify package.yaml version matches input
-        if: inputs.check_version
-        shell: bash
-        run: |
-          PACKAGE_VERSION="$(awk '/^version:/ { print $2; exit }' package.yaml)"
-          INPUT_VERSION="${{ inputs.version }}"
-
-          echo "package.yaml version: ${PACKAGE_VERSION}"
-          echo "input version:        ${INPUT_VERSION}"
-
-          test "${PACKAGE_VERSION}" = "${INPUT_VERSION}"
-
   build:
-    needs: verify_version
     strategy:
       fail-fast: false
       matrix:
@@ -65,7 +44,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Setup Haskell Stack
-        uses: haskell/actions/setup@v2
+        uses: haskell-actions/setup@v2
         with:
           ghc-version: "9.4"
           enable-stack: true
@@ -76,47 +55,16 @@ jobs:
         run: |
           stack build --copy-bins --local-bin-path dist/bin
 
-      - name: Package for Unix
-        if: runner.os != 'Windows'
+      # The packaging is main.lask's `release-package` task, run by the
+      # binary just built. It also checks package.yaml's version, which
+      # the binary is built from, before writing anything.
+      - name: Package
         shell: bash
-        run: |
-          VERSION="${{ inputs.version }}"
-          mkdir -p dist/release
-          cp dist/bin/lask dist/release/lask
-          tar -C dist/release -czf "lask-v${VERSION}-${{ matrix.target }}.tar.gz" lask
-          shasum -a 256 "lask-v${VERSION}-${{ matrix.target }}.tar.gz" > "lask-v${VERSION}-${{ matrix.target }}.tar.gz.sha256"
-
-      - name: Package for Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = "${{ inputs.version }}"
-          New-Item -ItemType Directory -Force dist/release | Out-Null
-          Copy-Item dist/bin/lask.exe dist/release/lask.exe
-          Compress-Archive -Path dist/release/lask.exe -DestinationPath "lask-v$version-${{ matrix.target }}.zip" -Force
-          $hash = (Get-FileHash "lask-v$version-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower()
-          Set-Content -Path "lask-v$version-${{ matrix.target }}.zip.sha256" -Value "$hash  lask-v$version-${{ matrix.target }}.zip"
-
-      - name: Package Debian (.deb)
-        if: matrix.target == 'linux-amd64'
-        shell: bash
-        run: |
-          VERSION="${{ inputs.version }}"
-          PKGROOT="dist/deb"
-          mkdir -p "${PKGROOT}/DEBIAN" "${PKGROOT}/usr/bin"
-          install -m 0755 dist/bin/lask "${PKGROOT}/usr/bin/lask"
-          cat > "${PKGROOT}/DEBIAN/control" <<EOF
-          Package: lask
-          Version: ${VERSION}
-          Section: utils
-          Priority: optional
-          Architecture: amd64
-          Maintainer: Lask maintainers <maintainers@lask.dev>
-          Description: Lask is a task runner based on functional programming.
-          EOF
-          DEB="lask-v${VERSION}-${{ matrix.target }}.deb"
-          dpkg-deb --build "${PKGROOT}" "${DEB}"
-          sha256sum "${DEB}" > "${DEB}.sha256"
+        env:
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ matrix.target }}
+          CHECK_VERSION: ${{ inputs.check_version }}
+        run: dist/bin/lask run release-package "$VERSION" "$TARGET" --check-version "$CHECK_VERSION"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -136,13 +84,8 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-
-      - name: Collect all release files
-        shell: bash
-        run: |
-          mkdir -p out
-          find artifacts -type f -exec cp {} out/ \;
+          path: out
+          merge-multiple: true
 
       - name: Upload combined release artifact
         uses: actions/upload-artifact@v4

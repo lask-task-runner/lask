@@ -84,6 +84,7 @@ library
       Language.Lask.SecretStore.Vault
       Language.Lask.Serialize
       Language.Lask.Span
+      Language.Lask.Suggest
       Language.Lask.Syntax.AST
       Language.Lask.Syntax.CommandWords
       Language.Lask.Syntax.Parser
@@ -280,8 +281,10 @@ test-suite lask-test
       Language.Lask.Runtime.SecretsSpec
       Language.Lask.SecretStore.FakeVault
       Language.Lask.SecretStore.ResolveSpec
+      Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
+      Language.LaskSpec
       Language.LSP.LaskSpec
       Paths_lask
   hs-source-dirs:

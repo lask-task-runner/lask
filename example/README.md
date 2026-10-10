@@ -26,7 +26,7 @@ lask run --help     # every task in the module, from its own comments
 
 ## 02-language
 
-One directory per topic, in reading order. The whole of the [Quick Reference](../doc/quick-reference.md) is covered.
+One directory per topic, in reading order. The whole of the [Quick Reference](https://lask-task-runner.github.io/reference/quick-reference) is covered.
 
 | Topic | Covers |
 | --- | --- |

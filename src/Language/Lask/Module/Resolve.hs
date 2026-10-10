@@ -15,6 +15,7 @@ module Language.Lask.Module.Resolve
     namespaceMember,
     entryPublicValues,
     buildScopes,
+    resolveProgram,
     validateProgram,
   )
 where
@@ -27,7 +28,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Builtins.Names
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
+import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, suggesting)
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
@@ -57,7 +58,15 @@ data GlobalScope = GlobalScope
 -- | Build per-module scopes, check binding collisions, reference
 -- validity and type-alias acyclicity. Returns all diagnostics found.
 validateProgram :: Program -> Either [Diagnostic] (Map FilePath GlobalScope)
-validateProgram prog =
+validateProgram prog = case resolveProgram prog of
+  ([], scopes) -> Right scopes
+  (ds, _) -> Left ds
+
+-- | 'validateProgram', keeping the scopes when there are diagnostics:
+-- elaboration still checks the declarations that hold none (spec
+-- 14.3).
+resolveProgram :: Program -> ([Diagnostic], Map FilePath GlobalScope)
+resolveProgram prog =
   let publics = Map.map modulePublics (progModules prog)
       scoped = scopedModules prog
       scopes = Map.fromList [(p, gs) | (p, (gs, _)) <- scoped]
@@ -68,8 +77,7 @@ validateProgram prog =
           | lm <- Map.elems (progModules prog)
           ]
       cycleDiags = aliasCycleDiags prog scopes
-      allDiags = buildDiags <> refDiags <> cycleDiags
-   in if null allDiags then Right scopes else Left allDiags
+   in (buildDiags <> refDiags <> cycleDiags, scopes)
 
 -- | Per-module scopes with the collision diagnostics discarded, so
 -- that editor tooling can still resolve names in a program that does
@@ -237,8 +245,9 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
               | isType && name `Set.member` pubTypes pub -> []
               | not isType && name `Set.member` pubValues pub -> []
               | otherwise ->
-                  [ mkDiagnostic ENameUndefined StageStatic sp $
-                      "module has no public symbol named '" <> name <> "'"
+                  [ suggesting name (Set.toList (if isType then pubTypes pub else pubValues pub)) $
+                      mkDiagnostic ENameUndefined StageStatic sp $
+                        "module has no public symbol named '" <> name <> "'"
                   ]
           dups
             | isType =
@@ -336,8 +345,9 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       case Map.lookup (Map.findWithDefault (T.unpack path) path (lmImportKeys lm)) publics of
         Nothing -> []
         Just pub ->
-          [ mkDiagnostic ENameUndefined StageStatic sp $
-              "module exports no command '" <> n <> "'"
+          [ suggesting n (Set.toList (pubCommands pub)) $
+              mkDiagnostic ENameUndefined StageStatic sp $
+                "module exports no command '" <> n <> "'"
           | Spanned sp n <- ns,
             not (n `Set.member` pubCommands pub)
           ]
@@ -370,18 +380,23 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       SNamed Nothing n as
         | Map.member n (gsTypes gs) || n `Set.member` typeParams -> concatMap checkType as
         | otherwise ->
-            [mkDiagnostic ENameUndefined StageStatic sp ("undefined type: '" <> n <> "'")]
+            [ suggesting n (builtinTypeNames <> Map.keys (gsTypes gs) <> Set.toList typeParams) $
+                mkDiagnostic ENameUndefined StageStatic sp ("undefined type: '" <> n <> "'")
+            ]
       SNamed (Just ns) n as ->
         concatMap checkType as <> case Map.lookup ns (gsNamespaces gs) of
           Just key -> case Map.lookup key publics of
             Just pub
               | n `Set.member` pubTypes pub -> []
-            _ ->
-              [ mkDiagnostic ENameUndefined StageStatic sp $
-                  "namespace '" <> ns <> "' has no public type alias '" <> n <> "'"
+            pub ->
+              [ suggesting n (maybe [] (Set.toList . pubTypes) pub) $
+                  mkDiagnostic ENameUndefined StageStatic sp $
+                    "namespace '" <> ns <> "' has no public type alias '" <> n <> "'"
               ]
           Nothing ->
-            [mkDiagnostic ENameUndefined StageStatic sp ("undefined namespace: '" <> ns <> "'")]
+            [ suggesting ns (Map.keys (gsNamespaces gs)) $
+                mkDiagnostic ENameUndefined StageStatic sp ("undefined namespace: '" <> ns <> "'")
+            ]
       SArray t -> checkType t
       SMap t -> checkType t
       SAsyncHandle t -> checkType t
@@ -404,9 +419,10 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
               case Map.lookup key publics of
                 Just pub
                   | spannedValue fld `Set.member` pubValues pub -> []
-                _ ->
-                  [ mkDiagnostic ENameUndefined StageStatic (spannedSpan fld) $
-                      "namespace '" <> m <> "' has no public symbol '" <> spannedValue fld <> "'"
+                pub ->
+                  [ suggesting (spannedValue fld) (maybe [] (Set.toList . pubValues) pub) $
+                      mkDiagnostic ENameUndefined StageStatic (spannedSpan fld) $
+                        "namespace '" <> m <> "' has no public symbol '" <> spannedValue fld <> "'"
                   ]
         _ -> checkExpr sc inner
       EIndex e i -> checkExpr sc e <> checkExpr sc i
@@ -448,8 +464,11 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       EEnv _ as os -> concatMap (checkArg sc) (maybe [] id as <> maybe [] id os)
       _ -> []
       where
+        -- Locals, top-level declarations, imported names, builtins,
+        -- and namespaces, which a misspelt @ns.member@ also reaches.
         undefDiag s n =
-          mkDiagnostic ENameUndefined StageStatic s ("undefined name: '" <> n <> "'")
+          suggesting n (concatMap Set.toList sc <> Map.keys (gsValues gs) <> Map.keys (gsNamespaces gs)) $
+            mkDiagnostic ENameUndefined StageStatic s ("undefined name: '" <> n <> "'")
 
     checkArg sc (Arg _ (APos e)) = checkExpr sc e
     checkArg sc (Arg _ (AKw _ e)) = checkExpr sc e

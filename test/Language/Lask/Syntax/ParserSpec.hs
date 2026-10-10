@@ -638,7 +638,7 @@ spec = do
   -- A command runs to the end of its line (spec 6.6), so one inside a
   -- call takes the call's ")" with it.
   describe "commands inside brackets" $ do
-    let notes src = either (map T.unpack . diagNotes) (const []) (parseModule "test.lask" src)
+    let notes src = either (concatMap (map T.unpack . diagNotes)) (const []) (parseModule "test.lask" src)
     it "names the command that took a closing bracket" $
       notes "f() = length($[#local] ls)\n"
         `shouldSatisfy` any (isInfixOf "the command on line 1 runs to the end of its line, so its closing ')'")

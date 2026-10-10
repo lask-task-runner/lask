@@ -16,10 +16,10 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Language.Lask.Confirm (validateConfirm)
-import Language.Lask.Diagnostic (Diagnostic)
-import Language.Lask.Elaborate (CoreProgram, elaborateProgram)
+import Language.Lask.Diagnostic (Diagnostic, settleDiagnostics)
+import Language.Lask.Elaborate (CoreProgram, elaborateRecovering)
 import Language.Lask.Module.Loader (LoadedModule (..), ModuleReader, Program (..), collapseDots, fileReader, loadProgramWith)
-import Language.Lask.Module.Resolve (GlobalScope, buildScopes, validateProgram)
+import Language.Lask.Module.Resolve (GlobalScope, resolveProgram)
 import Language.Lask.Syntax.AST (Module)
 import Language.Lask.Syntax.Parser (parseModule)
 import System.FilePath (normalise)
@@ -46,15 +46,26 @@ compileFile = compileWith fileReader
 compileWith :: ModuleReader -> FilePath -> IO (Either [Diagnostic] Compiled)
 compileWith reader entry = do
   r <- loadProgramWith reader entry
-  pure $ do
-    prog <- r
-    scopes <- validateProgram prog
-    core <- elaborateProgram prog scopes
-    -- The project file's confirmations refer to the program; one
-    -- that no longer does is an error, never silently dropped (spec 5).
-    case validateConfirm prog scopes core of
-      [] -> pure (Compiled prog scopes core)
-      ds -> Left ds
+  pure $ case r of
+    Left ds -> Left (settleDiagnostics ds)
+    Right prog -> case checkProgram prog of
+      ([], scopes, core) ->
+        -- The project file's confirmations refer to the program; one
+        -- that no longer does is an error, never silently dropped (spec 5).
+        case validateConfirm prog scopes core of
+          [] -> Right (Compiled prog scopes core)
+          ds -> Left (settleDiagnostics ds)
+      (ds, _, _) -> Left ds
+
+-- | Name resolution and elaboration of a loaded program. Every
+-- independent error is reported (spec 14.3): a declaration that holds
+-- an error of name resolution is not elaborated, and the others still
+-- are. The core program holds the declarations that did elaborate.
+checkProgram :: Program -> ([Diagnostic], Map FilePath GlobalScope, CoreProgram)
+checkProgram prog =
+  let (nameDs, scopes) = resolveProgram prog
+      (typeDs, core) = elaborateRecovering prog scopes nameDs
+   in (settleDiagnostics (nameDs <> typeDs), scopes, core)
 
 -- | Compile an in-editor document: the entry module's text is
 -- provided directly; imported modules are read from disk.
@@ -63,6 +74,8 @@ compileText path txt = compileWith (textReader path txt) path
 
 -- | Like 'compileText' but keeps the results of the stages that did
 -- succeed, for editor features that must work on a buffer being typed.
+-- The core program holds every declaration that elaborated, so the
+-- rest of a module keeps working while one declaration is broken.
 compileTextPartial :: FilePath -> Text -> IO Partial
 compileTextPartial path txt = do
   loaded <- loadProgramWith (textReader path txt) path
@@ -75,12 +88,12 @@ compileTextPartial path txt = do
           partialCore = Nothing
         }
     Right prog ->
-      let scopes = buildScopes prog
+      let (_, scopes, core) = checkProgram prog
        in Partial
             { partialModule = lmModule <$> Map.lookup (progEntry prog) (progModules prog),
               partialProgram = Just prog,
               partialScopes = scopes,
-              partialCore = either (const Nothing) Just (elaborateProgram prog scopes)
+              partialCore = Just core
             }
 
 -- | Like 'compileFile' but keeps whatever the front end managed to
@@ -100,7 +113,7 @@ compileFilePartial path = do
             Right txt -> either (const Nothing) Just (parseModule path txt)
             Left _ -> Nothing
       pure
-        ( ds,
+        ( settleDiagnostics ds,
           Partial
             { partialModule = m,
               partialProgram = Nothing,
@@ -109,11 +122,8 @@ compileFilePartial path = do
             }
         )
     Right prog -> do
-      let (ds, scopes, core) = case validateProgram prog of
-            Left vds -> (vds, buildScopes prog, Nothing)
-            Right sc -> case elaborateProgram prog sc of
-              Left eds -> (eds, sc, Nothing)
-              Right c -> ([], sc, Just c)
+      let (ds, scopes, c) = checkProgram prog
+          core = if null ds then Just c else Nothing
       pure
         ( ds,
           Partial
