@@ -191,15 +191,15 @@ spec = do
     -- A command line is visible to every user of the host, so a value
     -- passed to the container never appears on it (spec 10.2).
     it "names an env variable on the command line and gives its value to the docker client" $ do
-      let env = [("env", VMap (Map.fromList [("CI", VNumber 1), ("TOKEN", VString "s3cr3t")]))]
-      optionArgs env `shouldBe` ["--env", "CI", "--env", "TOKEN"]
-      dockerClientEnv (Map.fromList env) `shouldBe` [("CI", "1"), ("TOKEN", "s3cr3t")]
+      let options = [("env", VMap (Map.fromList [("CI", VNumber 1), ("TOKEN", VString "s3cr3t")]))]
+      optionArgs options `shouldBe` ["--env", "CI", "--env", "TOKEN"]
+      dockerClientEnv (Map.fromList options) `shouldBe` [("CI", "1"), ("TOKEN", "s3cr3t")]
 
     it "keeps a variable the docker client reads itself on the command line" $ do
-      let env = [("env", VMap (Map.fromList [(k, VString "v") | k <- ["DOCKER_HOST", "HTTPS_PROXY", "no_proxy", "PATH", "HOME"]]))]
-      optionArgs env
+      let options = [("env", VMap (Map.fromList [(k, VString "v") | k <- ["DOCKER_HOST", "HTTPS_PROXY", "no_proxy", "PATH", "HOME"]]))]
+      optionArgs options
         `shouldBe` ["--env", "DOCKER_HOST=v", "--env", "HOME=v", "--env", "HTTPS_PROXY=v", "--env", "PATH=v", "--env", "no_proxy=v"]
-      dockerClientEnv (Map.fromList env) `shouldBe` []
+      dockerClientEnv (Map.fromList options) `shouldBe` []
 
     -- Null is how an argument says "not given" (spec 10.2); "" is a
     -- value the caller means, and is passed on.

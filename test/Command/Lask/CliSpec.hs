@@ -190,14 +190,14 @@ spec = beforeAll findLask $ do
     -- each image is there (spec 11.4). It reports; it does not fail.
     it "lists what the lock resolves each environment to, what requires it, and whether it is present" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
-        before <- runLaskEnv lask dir extra ["envs", "list"] ""
-        resExit before `shouldBe` 0
-        resOut before `shouldContain` "#alpine:3.22.2  registry  —       main.lask: command cat  not pinned (lask sync)"
+        unsynced <- runLaskEnv lask dir extra ["envs", "list"] ""
+        resExit unsynced `shouldBe` 0
+        resOut unsynced `shouldContain` "#alpine:3.22.2  registry  —       main.lask: command cat  not pinned (lask sync)"
         _ <- runLaskEnv lask dir extra ["sync"] ""
         writeFile (state </> "calls") ""
-        after <- runLaskEnv lask dir extra ["envs", "list"] ""
-        resExit after `shouldBe` 0
-        resOut after `shouldContain` "#alpine:3.22.2  registry  sha256:aaa  main.lask: command cat  present"
+        synced <- runLaskEnv lask dir extra ["envs", "list"] ""
+        resExit synced `shouldBe` 0
+        resOut synced `shouldContain` "#alpine:3.22.2  registry  sha256:aaa  main.lask: command cat  present"
         -- Asked once whether the daemon answers, and once per image.
         cs <- calls state
         [c | c <- cs, not ("image inspect" `isPrefixOf` c)] `shouldBe` ["version --format {{.Server.Version}}"]
