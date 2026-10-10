@@ -18,13 +18,14 @@ where
 
 import Control.Monad (unless, void, when)
 import Control.Monad.State.Strict (State, evalState, get, lift, modify, put)
+import Data.Maybe (catMaybes)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Void (Void)
 import Control.Monad.Combinators.Expr (Operator (InfixL), makeExprParser)
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
+import Language.Lask.Diagnostic (Diagnostic (..), mkDiagnostic, withNote)
 import Language.Lask.ErrorCode (ErrorCode (ESyntaxUnexpectedToken), Stage (StageSyntax))
 import Language.Lask.Lexer (lexLayout)
 import Language.Lask.Lexer.Token
@@ -38,39 +39,58 @@ type P = ParsecT Void TokStream (State [Spanned Token])
 
 -- Entry points -------------------------------------------------------------
 
-parseModule :: FilePath -> Text -> Either Diagnostic Module
+-- | Parse a module, reporting a syntax error in each top-level
+-- declaration that has one (spec 14.3). A lexical error is the only
+-- one reported.
+parseModule :: FilePath -> Text -> Either [Diagnostic] Module
 parseModule file src = do
-  toks <- lexLayout file src
-  runP pModule file toks
+  toks <- either (Left . pure) Right (lexLayout file src)
+  either (Left . NE.toList) Right (runP pModule file toks)
 
 parseExpr :: FilePath -> Text -> Either Diagnostic Expr
 parseExpr file src = do
   toks <- lexLayout file src
-  runP (pExpr <* pEnd) file toks
+  either (Left . NE.head) Right (runP (pExpr <* pEnd) file toks)
 
-runP :: P a -> FilePath -> [Spanned Token] -> Either Diagnostic a
+runP :: P a -> FilePath -> [Spanned Token] -> Either (NE.NonEmpty Diagnostic) a
 runP p file toks =
   case evalState (runParserT p file (TokStream toks)) [] of
-    Left bundle -> Left (foldl (flip withNote) (bundleToDiagnostic bundle) (commandHints toks))
+    Left bundle -> Left (withHints (commandHints toks) (bundleToDiagnostics bundle))
     Right a -> Right a
+
+-- | Give each hint to the first error at or after the line it names,
+-- which is where the bracket the command took is missed; failing that,
+-- to the last error.
+withHints :: [(Int, Text)] -> NE.NonEmpty Diagnostic -> NE.NonEmpty Diagnostic
+withHints hints ds = NE.fromList (zipWith attach [0 :: Int ..] (NE.toList ds))
+  where
+    lastIx = length ds - 1
+    target l = case [i | (i, d) <- zip [0 ..] (NE.toList ds), diagLine d >= Just l] of
+      (i : _) -> i
+      [] -> lastIx
+    attach i d = foldl (flip withNote) d [h | (l, h) <- hints, target l == i]
+    diagLine d = case diagSpan d of
+      Span start _ -> Just (line start)
+      NoSpan -> Nothing
 
 -- | A command string runs to the end of its line (spec 6.6), closing
 -- brackets included, so a command written inside a call's brackets
 -- takes the call's @)@ with it, and the parse fails somewhere after,
 -- at a place that says nothing about why. When it fails, each command
 -- with a closing bracket it never opened is named.
-commandHints :: [Spanned Token] -> [Text]
+commandHints :: [Spanned Token] -> [(Int, Text)]
 commandHints toks =
-  [ "the command on line "
-      <> T.pack (show (line (spanStartPos sp)))
-      <> " runs to the end of its line, so its closing '"
-      <> T.singleton c
-      <> "' was read as part of the command; a command cannot sit inside brackets: bind it to a name on its own line first"
-  | Spanned sp (TCommand _ _ parts) <- toks,
+  [ ( l,
+      "the command on line "
+        <> T.pack (show l)
+        <> " runs to the end of its line, so its closing '"
+        <> T.singleton c
+        <> "' was read as part of the command; a command cannot sit inside brackets: bind it to a name on its own line first"
+    )
+  | Spanned (Span start _) (TCommand _ _ parts) <- toks,
+    let l = line start,
     Just c <- [unopenedCloser (T.concat [t | Chunk _ t <- parts])]
   ]
-  where
-    spanStartPos (Span start _) = start
 
 -- | The first closing bracket that no opening one before it matches,
 -- outside quotes.
@@ -95,13 +115,14 @@ unopenedCloser = go [] Nothing . T.unpack
           _ -> Just c
       | otherwise = go open Nothing cs
 
-bundleToDiagnostic :: ParseErrorBundle TokStream Void -> Diagnostic
-bundleToDiagnostic bundle =
-  let err = NE.head (bundleErrors bundle)
-      (_, posState) = reachOffset (errorOffset err) (bundlePosState bundle)
-      pos = fromSourcePos (pstateSourcePos posState)
-      msg = T.strip (T.pack (parseErrorTextPretty err))
-   in mkDiagnostic ESyntaxUnexpectedToken StageSyntax (Span pos pos) msg
+bundleToDiagnostics :: ParseErrorBundle TokStream Void -> NE.NonEmpty Diagnostic
+bundleToDiagnostics bundle = fmap toDiagnostic (bundleErrors bundle)
+  where
+    toDiagnostic err =
+      let (_, posState) = reachOffset (errorOffset err) (bundlePosState bundle)
+          pos = fromSourcePos (pstateSourcePos posState)
+          msg = T.strip (T.pack (parseErrorTextPretty err))
+       in mkDiagnostic ESyntaxUnexpectedToken StageSyntax (Span pos pos) msg
 
 -- Token primitives ----------------------------------------------------------
 
@@ -192,8 +213,7 @@ terminator = void (sym TNewline) <|> void (sym TSemi)
 
 pModule :: P Module
 pModule = do
-  skipMany terminator
-  items <- sepEndBy pTopLevel (skipSome terminator)
+  items <- catMaybes <$> declarations
   pEnd
   pure
     ( Module
@@ -207,6 +227,45 @@ pModule = do
       DFunction n _ _ _ _ -> Just n
       DTypeAlias n _ _ -> Just n
       _ -> Nothing
+
+    -- Top-level declarations, each ended by a terminator or the end of
+    -- input. One with a syntax error is reported and skipped (spec
+    -- 14.3), and parsing goes on at the next declaration.
+    declarations = do
+      skipMany terminator
+      done <- atEndOfInput
+      if done
+        then pure []
+        else do
+          item <- withRecovery skipDecl (Just <$> pTopLevel <* endOfDecl)
+          (item :) <$> declarations
+    endOfDecl = void (lookAhead terminator) <|> pEnd
+    atEndOfInput = (&&) <$> (null <$> lift get) <*> atEnd
+    skipDecl err = do
+      registerParseError err
+      skipToNextDecl
+      pure Nothing
+
+-- | Skip what is left of a declaration with a syntax error: up to the
+-- next token in column 1, which is where the next top-level
+-- declaration starts. A closing bracket there still belongs to the
+-- declaration being skipped. Inside a bracket that was never closed
+-- there are no terminators left to go by (spec 6.5), so the column is
+-- all there is. At least one token goes, so that parsing moves on.
+skipToNextDecl :: P ()
+skipToNextDecl = do
+  lift (put [])
+  TokStream ts <- getInput
+  void (takeP Nothing (rest 1 (drop 1 ts)))
+  where
+    rest :: Int -> [Spanned Token] -> Int
+    rest n (Spanned _ TNewline : next : _) | startsDecl next = n
+    rest n (next : _) | startsDecl next = n
+    rest n (_ : more) = rest (n + 1) more
+    rest n [] = n
+    startsDecl (Spanned (Span start _) t) =
+      column start == 1 && t `notElem` [TRBrace, TRParen, TRBracket]
+    startsDecl _ = False
 
 -- | One top-level declaration and whether it carries @internal@.
 -- @export@ and @internal@ are reserved words (spec 3.3), so a leading

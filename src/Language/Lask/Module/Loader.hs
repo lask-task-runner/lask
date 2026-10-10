@@ -234,7 +234,7 @@ loadProgramEnv env entryPath = do
                     NoSpan
                     (T.pack ("cannot load module: " <> path))
             Right src -> case parseModule path src of
-              Left d -> pure (Left [d])
+              Left ds -> pure (Left ds)
               Right m -> do
                 let importPaths = [p | Decl _ f <- moduleDecls m, p <- declImportPath f]
                 resolvedE <- resolveAll ctx importPaths

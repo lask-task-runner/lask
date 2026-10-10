@@ -243,7 +243,7 @@ documentDiagnostics path src = do
   pure $ case r of
     Left ds ->
       let (inProject, inModule) = partition inProjectFile ds
-       in (map errorDiagnostic inModule, map errorDiagnostic inProject)
+       in (map placed inModule, map errorDiagnostic inProject)
     Right c ->
       ( [ advisoryDiagnostic a
         | a <- cpAdvisories (compiledCore c),
@@ -256,6 +256,13 @@ documentDiagnostics path src = do
     inProjectFile d = case D.diagSpan d of
       S.Span (S.Position inFile _ _) _ -> takeFileName inFile == defaultDepsFileName
       S.NoSpan -> False
+    -- An error in a module this one imports is shown at the start of
+    -- the document, where it cannot be taken for one in this text; its
+    -- message names the file and the position.
+    placed d = case D.diagSpan d of
+      S.Span (S.Position inFile _ _) _
+        | normalise inFile /= normalise path -> errorDiagnostic d & LSP.range .~ toRange S.NoSpan
+      _ -> errorDiagnostic d
 
 -- | The filesystem path of a document URI. Imports and the
 -- environment definition file resolve relative to this path, so the

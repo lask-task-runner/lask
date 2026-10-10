@@ -15,6 +15,7 @@ module Language.Lask.Module.Resolve
     namespaceMember,
     entryPublicValues,
     buildScopes,
+    resolveProgram,
     validateProgram,
   )
 where
@@ -57,7 +58,15 @@ data GlobalScope = GlobalScope
 -- | Build per-module scopes, check binding collisions, reference
 -- validity and type-alias acyclicity. Returns all diagnostics found.
 validateProgram :: Program -> Either [Diagnostic] (Map FilePath GlobalScope)
-validateProgram prog =
+validateProgram prog = case resolveProgram prog of
+  ([], scopes) -> Right scopes
+  (ds, _) -> Left ds
+
+-- | 'validateProgram', keeping the scopes when there are diagnostics:
+-- elaboration still checks the declarations that hold none (spec
+-- 14.3).
+resolveProgram :: Program -> ([Diagnostic], Map FilePath GlobalScope)
+resolveProgram prog =
   let publics = Map.map modulePublics (progModules prog)
       scoped = scopedModules prog
       scopes = Map.fromList [(p, gs) | (p, (gs, _)) <- scoped]
@@ -68,8 +77,7 @@ validateProgram prog =
           | lm <- Map.elems (progModules prog)
           ]
       cycleDiags = aliasCycleDiags prog scopes
-      allDiags = buildDiags <> refDiags <> cycleDiags
-   in if null allDiags then Right scopes else Left allDiags
+   in (buildDiags <> refDiags <> cycleDiags, scopes)
 
 -- | Per-module scopes with the collision diagnostics discarded, so
 -- that editor tooling can still resolve names in a program that does

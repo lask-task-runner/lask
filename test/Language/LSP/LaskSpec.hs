@@ -65,6 +65,15 @@ spec = do
         `shouldReturn` [(Just DiagnosticSeverity_Error, Just (InR "E-TYPE-MISMATCH"))]
     it "shows nothing for a clean document" $
       severities "a = 1" `shouldReturn` []
+    it "shows every independent error (spec 14.3)" $
+      map (^. L.range . L.start . L.line) . fst
+        <$> documentDiagnostics "main.lask" "a(): Number = \"s\"\nb = nope\nc(): String = 1\n"
+        `shouldReturn` [0, 1, 2]
+    it "shows an error in an imported module at the start of the document" $
+      withSystemTempDirectory "lask-lsp" $ \dir -> do
+        writeFile (dir </> "lib.lask") "export a(): Number = 1\n\n\nexport b(): Number = \"s\"\n"
+        (ds, _) <- documentDiagnostics (dir </> "main.lask") "import { a } from \"./lib.lask\"\nx: String = a()\n"
+        map (^. L.range . L.start . L.line) ds `shouldBe` [0, 1]
 
   describe "quick fixes (spec 14.3)" $ do
     let uri = Uri "file:///main.lask"
