@@ -19,6 +19,7 @@ where
 
 import qualified Data.Aeson as A
 import Data.Bifunctor (first)
+import Data.Char (isDigit)
 import qualified Data.ByteString.Lazy as BL
 import Data.List (nub)
 import Data.Map.Strict (Map)
@@ -68,7 +69,8 @@ data CliArg = CliPos Text | CliKw Text Text
 
 -- | Split raw tokens after the function name into positional and
 -- keyword arguments: @--name value@, @--name=value@, and @-c value@
--- for single-character names (spec 11.2).
+-- for single-character names (spec 11.2). No identifier starts with a
+-- digit (3.2), so @-1@ is a negative number rather than a short form.
 parseCliArgs :: [Text] -> Either Text [CliArg]
 parseCliArgs = go
   where
@@ -76,7 +78,8 @@ parseCliArgs = go
     go (tok : rest)
       | Just body <- T.stripPrefix "--" tok, not (T.null body) = named body rest
       | Just body <- T.stripPrefix "-" tok,
-        T.length body == 1 =
+        T.length body == 1,
+        not (isDigit (T.head body)) =
           named body rest
       | otherwise = (CliPos tok :) <$> go rest
     named body rest = case T.breakOn "=" body of

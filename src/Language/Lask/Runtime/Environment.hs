@@ -326,10 +326,13 @@ dockerProcess opts args = case dockerClientEnv opts of
 -- | Arguments for @docker run@ of one program with its argument
 -- vector (spec 11.8): no shell is created, so the program name becomes
 -- the entrypoint and the remaining words are passed as they stand.
+-- Stdin is always attached, since the program's stdin is that of
+-- @lask cmd@ whether or not it is a terminal; a terminal is allocated
+-- only when all three streams are one.
 dockerExecArgs :: FilePath -> Text -> Map Text Value -> Bool -> Text -> [Text] -> [String]
 dockerExecArgs baseDir image opts interactive prog argv =
-  ["run", "--rm", "--pull=never"]
-    <> (if interactive then ["-i", "-t"] else [])
+  ["run", "--rm", "--pull=never", "-i"]
+    <> (if interactive then ["-t"] else [])
     <> workdirMountArgs baseDir
     <> ["--entrypoint", T.unpack prog]
     <> dockerOptArgs opts
