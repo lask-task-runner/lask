@@ -109,6 +109,18 @@ spec = beforeAll findLask $ do
         r <- runLaskEnv lask dir extra ["eval", "hi"] ""
         resExit r `shouldBe` 0
 
+    -- `echo hello | lask cmd cat` printed nothing: -i was given only
+    -- when every stream was a terminal, so a piped stdin never reached
+    -- the container (spec 11.8).
+    it "attaches stdin to a containerized cmd even when it is not a terminal" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["sync"] ""
+        r <- runLaskEnv lask dir extra ["cmd", "cat"] "hello\n"
+        resExit r `shouldBe` 0
+        runs <- filter ("run " `isPrefixOf`) <$> calls state
+        runs `shouldSatisfy` any (isInfixOf "--entrypoint cat")
+        runs `shouldSatisfy` all (\c -> " -i " `isInfixOf` c && not (" -t " `isInfixOf` c))
+
     -- A run never pulls, and keeps the daemon from pulling on its
     -- behalf (spec 10.3).
     it "runs with --pull=never" $ \lask ->
@@ -641,6 +653,18 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", src)] $ \dir -> do
         r <- runLask lask dir ["eval", "add", "1"] ""
         resExit r `shouldBe` 4
+    -- `-1` was read as the short form of a parameter named `1`, which
+    -- no identifier can be (spec 3.2), while `-12` passed as a number.
+    it "binds a negative single-digit number positionally" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "add", "-1", "-12"] ""
+        r `shouldBe` Result 0 "-13\n" ""
+    it "binds every token after -- positionally, dashes included" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "greet", "--prefix", "hi", "--", "-x"] ""
+        r `shouldBe` Result 0 "\"hi, -x\"\n" ""
+        k <- runLask lask dir ["eval", "greet", "--", "--prefix"] ""
+        k `shouldBe` Result 0 "\"hello, --prefix\"\n" ""
     -- Issue #28: the type mismatch was reported by interpolating the
     -- `Show` output of the internal failure record, so the one fact
     -- the user needs arrived wrapped in Haskell syntax. The message
@@ -1424,8 +1448,7 @@ spec = beforeAll findLask $ do
     it "passes a literal --help to the function after -- (spec 11.2)" $ \lask ->
       withProject [("main.lask", "id1(a: String): String = a\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "id1", "--", "--help"] ""
-        resOut r `shouldNotContain` "Usage:"
-        resExit r `shouldBe` 4
+        r `shouldBe` Result 0 "\"--help\"\n" ""
 
     it "reports an unknown function as a usage error (exit 4)" $ \lask ->
       withProject [("main.lask", src)] $ \dir -> do

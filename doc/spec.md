@@ -2804,7 +2804,7 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 - The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
 - `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
 - For `cmd`, no token after the command name is intercepted, `--help` included: those tokens are the invoked program's own arguments (11.8). The help of the subcommand is obtained with `lask cmd --help`, with no command name.
-- `--` after the function name ends the scan for `--help`: all following tokens are passed to the function verbatim. `--help=<value>` is likewise not intercepted and binds to the parameter `help` in the ordinary way.
+- `--` after the function name ends the scan for `--help` and for keyword arguments: every following token is passed to the function verbatim as a positional argument, including one that begins with `-`. `--help=<value>` is likewise not intercepted and binds to the parameter `help` in the ordinary way.
 
 Function-name and parameter-name mapping rules:
 
@@ -2816,7 +2816,7 @@ Function-name and parameter-name mapping rules:
 Keyword argument forms:
 
 - A keyword argument for parameter `p` is given as `--p <value>` or `--p=<value>`.
-- If the parameter name is a single character, the short form `-p <value>` may also be used.
+- If the parameter name is a single character, the short form `-p <value>` may also be used. Since no identifier begins with a digit (3.2), a token such as `-1` is never a short form: it is a positional argument (a negative number under `auto` or `json` decoding).
 - Example: for `retry(cmd: String, --n: Number = 3)`, `lask run retry "make test" -n 5` corresponds to the function call `retry("make test", n = 5)`.
 
 Binding rules:

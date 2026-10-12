@@ -135,8 +135,9 @@ cmdRunEval printResult runOpts = do
     Just found -> pure found
     Nothing -> noSuchFunction opts rawName (publicNames compiled)
 
-  cliArgs <- case parseCliArgs (dropArgSeparator (runArgs runOpts)) of
-    Right as -> pure as
+  let (optionArgs, plainArgs) = splitArgSeparator (runArgs runOpts)
+  cliArgs <- case parseCliArgs optionArgs of
+    Right as -> pure (as <> map CliPos plainArgs)
     Left e -> usageError opts e
 
   let orUsageError = either (usageError opts) pure
@@ -275,12 +276,13 @@ unawaitedDiagnostic opts traceId (site, outcome)
 helpAfterFunction :: [Text] -> Bool
 helpAfterFunction = elem "--help" . takeWhile (/= argSeparator)
 
--- | Remove the @--@ marker; everything after it is a plain argument
--- (spec 11.2).
-dropArgSeparator :: [Text] -> [Text]
-dropArgSeparator args = case break (== argSeparator) args of
-  (before, _ : after) -> before <> after
-  _ -> args
+-- | Split at the @--@ marker: the tokens before it may be keyword
+-- arguments, and everything after it is a plain positional argument
+-- (spec 11.2), so that a value such as @-x@ can still be passed.
+splitArgSeparator :: [Text] -> ([Text], [Text])
+splitArgSeparator args = case break (== argSeparator) args of
+  (before, _ : after) -> (before, after)
+  _ -> (args, [])
 
 cmdHelp :: Text -> RunOpts -> IO ()
 cmdHelp subcommand runOpts = do
