@@ -2150,7 +2150,7 @@ Error value conversion of failures caused by non-zero exit (carrying over the ex
 Stopping an abandoned command:
 
 - The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
-- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed.
+- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed. The container runs under an init process unless its environment turns that off (10.2), so the request reaches a command that is not written to handle it.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
 
@@ -2492,6 +2492,7 @@ The run options this implementation provides:
 - A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the `docker` client's command line and sets its value in the client's environment, from which docker takes it. A variable the client reads itself — a name beginning with `DOCKER_`, ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, in any case — is passed with its value on the command line instead, since setting it for the client would change which daemon it reaches or how.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written.
 - A `Bool` parameter left `false` is the daemon's own default and is not passed; nothing is inferred from its absence.
+- `init` is the exception: it is on unless set to `false`. The container runs an init process as PID 1, which passes the termination request of 8.7 on to the program; a program that is PID 1 itself has no default signal handlers and would ignore it until the grace period ran out. `init = false` runs the program as PID 1.
 
 Each profile has at least the following execution attributes.
 
@@ -2773,10 +2774,6 @@ lask cmd --help [--module <path>]
 lask secrets list [--module <path>] [<function>]
 lask secrets check [--module <path>] [<function>] [--read]
 ```
-
-Retired subcommands:
-
-- A subcommand that another replaced is answered with the replacement, as a usage error (`E-CLI-USAGE`, exit code `4`), rather than as an unknown command: `env build` and `deps sync` by `sync`, `env list` and `envs check` by `envs list`, `deps why` by `deps graph`, and `deps diff` by `deps list`. The retired option `cmd --list`, given before the command name, is answered the same way with `cmd --help`.
 
 Policy on environment specification:
 
@@ -3077,7 +3074,7 @@ Sources of help information:
 
 Rendering rules:
 
-- Parameter names are displayed as declared (3.2). The kebab-case invocation form of 11.2 remains accepted but is not displayed.
+- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
 - In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`.
 - A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
 - The function list holds the module's functions — declarations written as functions, and bindings whose value is a function — whether it declares them or re-exports them (Chapter 5). Plain value bindings are callable (11.2) and have help of their own, but are not listed.
@@ -3107,7 +3104,7 @@ build(target: String, --out_dir: String = "dist", --publish: Bool = false): Stri
 build - Build the project and publish the artifact.
 
 Usage:
-  lask run build <target> [--out_dir <String>] [--publish <Bool>]
+  lask run build <target> [--out-dir <String>] [--publish <Bool>]
 
 The build runs in the `builder` environment; the artifact is
 uploaded only when `--publish` is set.
@@ -3115,7 +3112,7 @@ uploaded only when `--publish` is set.
 Parameters:
   target : String
       Build target name.
-  --out_dir : String = "dist"
+  --out-dir : String = "dist"
       Directory the artifact is written to.
   --publish : Bool = false
       Whether to upload the artifact.
@@ -3281,7 +3278,6 @@ Rules (`--help`):
 - An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
 - The list is produced with no network access and no build, on the same terms as `envs` (11.4).
 - The option help is displayed whatever state the target module is in. When the module does not compile, its diagnostics go to stderr, the list is omitted, and the exit code is `0`.
-- `--list`, which used to report the same list, is retired: `lask cmd --list` is a CLI usage error naming `lask cmd --help` (11.1). After the command name, `--list` is an argument of the program like any other token.
 
 Execution example:
 
@@ -4262,7 +4258,7 @@ upload(src: String, dst: String) =
 
 - The result is already one word, and must not be quoted again by the caller: writing `"'#{shell_quote(v)}'"` produces a literal quotation character in the argument.
 - `shell_quote` is a pure function, and is placed here rather than among the string operations of 15.3 because its contract is about command construction.
-- Masking (12.8) matches registered values as exact substrings. Because quoting only wraps the value, a registered secret is still a substring of the quoted result and is still masked, unless the value itself contains `'`, which quoting rewrites.
+- Masking (12.8) matches registered values as exact substrings. Quoting wraps the value, so a registered secret is still a substring of the quoted result and is still masked. A value that contains `'` is rewritten by quoting, so it is also registered in its rewritten form (every `'` as `'\''`), and the quoted result is masked as well.
 
 ### 15.6 Parallel and Asynchronous Helper Functions
 

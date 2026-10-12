@@ -159,8 +159,8 @@ Completion knows your module, not just the CLI: it completes the functions the r
 
 ```bash
 $ lask run <TAB>
-build_on_docker     install             test                uninstall_completion
-doctest             install_completion  uninstall           unittest
+build-on-docker     install             test                uninstall-completion
+doctest             install-completion  uninstall           unittest
 $ lask run install --<TAB>
 --output  --env  --help
 $ lask run install --env <TAB>

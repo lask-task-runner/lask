@@ -14,7 +14,6 @@ module Command.Lask.Options
     cmdOptionsHelp,
     argSeparator,
     protectArgSeparator,
-    retiredCommand,
   )
 where
 
@@ -287,39 +286,6 @@ pEnvsCommand =
             (progDesc "List the environments, what the lock resolves them to, what requires them, and whether each image is on the Docker daemon")
         )
     )
-
--- | The spelling that replaced a retired command (spec 11.1), for the
--- arguments that invoke one. Answered before parsing, so the old
--- spelling is told where to go rather than only that it is not a
--- command.
-retiredCommand :: [String] -> Maybe (String, String)
-retiredCommand args = case args of
-  "env" : "build" : _ -> Just ("env build", "sync")
-  "env" : "list" : _ -> Just ("env list", "envs list")
-  "deps" : "sync" : _ -> Just ("deps sync", "sync")
-  "deps" : "why" : _ -> Just ("deps why", "deps graph")
-  "deps" : "diff" : _ -> Just ("deps diff", "deps list")
-  "cmd" : rest | "--list" `elem` cmdOptions rest -> Just ("cmd --list", "cmd --help")
-  "envs" : rest
-    | "--check" `elem` rest -> Just ("envs --check", "envs list")
-    | otherwise -> case dropOptions rest of
-        [] | all (`notElem` ["--help", "-h"]) rest -> Just ("envs", "envs list")
-        "check" : _ -> Just ("envs check", "envs list")
-        w : _ | w /= "list" -> Just ("envs " <> w, "envs list " <> w)
-        _ -> Nothing
-  _ -> Nothing
-  where
-    -- The options before the command name; after it, @--list@ is
-    -- the program's own argument (spec 11.8).
-    cmdOptions ws = case ws of
-      o : _ : more | o `elem` ["--module", "--format", "--trace-id"] -> cmdOptions more
-      o : more | take 1 o == "-" -> o : cmdOptions more
-      _ -> []
-    -- The old @envs@ took the common options before its function.
-    dropOptions ws = case ws of
-      o : _ : more | o `elem` ["--module", "--format", "--trace-id"] -> dropOptions more
-      o : more | take 1 o == "-" -> dropOptions more
-      _ -> ws
 
 pSecretsCommand :: Parser RootCommand
 pSecretsCommand =
