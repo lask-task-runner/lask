@@ -69,11 +69,17 @@ secretRegistry = unsafePerformIO (newIORef [])
 -- value never appears in one line. A line shorter than
 -- 'minLineLength' is not: it is a fragment rather than a credential,
 -- and a line such as @}@ would otherwise be masked wherever it occurs.
+--
+-- A value holding @'@ is also registered as @shell_quote@ writes it
+-- (spec 15.5), with each @'@ rewritten to @'\\''@: that is the form a
+-- command line carries, and the value itself is no longer a substring
+-- of it.
 registerSecret :: Text -> IO ()
 registerSecret value
   | T.null value = pure ()
-  | otherwise = atomicModifyIORef' secretRegistry (\vs -> (value : fragments <> vs, ()))
+  | otherwise = atomicModifyIORef' secretRegistry (\vs -> (value : quoted <> fragments <> vs, ()))
   where
+    quoted = [T.replace "'" "'\\''" value | T.any (== '\'') value]
     fragments
       | T.any (== '\n') value =
           filter ((>= minLineLength) . T.length) (map (T.dropWhileEnd (== '\r')) (T.lines value))

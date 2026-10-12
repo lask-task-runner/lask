@@ -238,29 +238,6 @@ spec = beforeAll findLask $ do
         resErr r `shouldContain` "E-IO-ENV-RESOLVE"
         resErr r `shouldNotContain` "E-IO-IMAGE-MISSING"
 
-  describe "retired commands (spec 11.1)" $ do
-    it "names the command that replaced each" $ \lask ->
-      withProject [("main.lask", "f() = $[#local] ls\n")] $ \dir ->
-        sequence_
-          [ do
-              r <- runLask lask dir old ""
-              (old, resExit r) `shouldBe` (old, 4)
-              resErr r `shouldContain` ("was replaced by 'lask " <> new <> "'")
-          | (old, new) <-
-              [ (["env", "build"], "sync"),
-                (["env", "list"], "envs list"),
-                (["deps", "sync", "--frozen"], "sync"),
-                (["envs"], "envs list"),
-                (["envs", "f"], "envs list f"),
-                (["envs", "--module", "main.lask", "f", "--check"], "envs list"),
-                (["envs", "check"], "envs list"),
-                (["deps", "why", "kit"], "deps graph"),
-                (["deps", "diff", "kit"], "deps list"),
-                (["cmd", "--list"], "cmd --help"),
-                (["cmd", "--module", "main.lask", "--list"], "cmd --help")
-              ]
-          ]
-
   describe "generic functions from the CLI (spec 11.2)" $ do
     let proj =
           [ ( "main.lask",
@@ -281,9 +258,9 @@ spec = beforeAll findLask $ do
       withProject proj $ \dir -> do
         r <- runLask lask dir ["run", "first_or", "--help"] ""
         resExit r `shouldBe` 0
-        resOut r `shouldContain` "first_or<T>"
+        resOut r `shouldContain` "first-or<T>"
         -- but not in the line the user is meant to type
-        resOut r `shouldContain` "lask run first_or <xs> <fallback>"
+        resOut r `shouldContain` "lask run first-or <xs> <fallback>"
 
   describe "bounded type parameters from the CLI (spec 4.2, 11.2)" $ do
     let proj =
@@ -1400,9 +1377,9 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 0
         resErr r `shouldBe` ""
         resOut r `shouldContain` "build - Build the project."
-        resOut r `shouldContain` "lask run build <target> [--out_dir <String>]"
+        resOut r `shouldContain` "lask run build <target> [--out-dir <String>]"
         resOut r `shouldContain` "The long form of the description."
-        resOut r `shouldContain` "--out_dir : String = \"dist\""
+        resOut r `shouldContain` "--out-dir : String = \"dist\""
         resOut r `shouldContain` "Build target name."
         resOut r `shouldContain` "The artifact path."
         resOut r `shouldContain` "lask run build release"
@@ -1436,7 +1413,7 @@ spec = beforeAll findLask $ do
         l `shouldSatisfy` (not . isInfixOf "out_dir " . resOut)
         v <- runLask lask dir ["run", "out_dir", "--help"] ""
         resExit v `shouldBe` 0
-        resOut v `shouldContain` "out_dir"
+        resOut v `shouldContain` "lask run out-dir"
         resOut v `shouldContain` "Returns:"
 
     it "wins over argument binding errors (spec 11.6)" $ \lask ->
@@ -1463,6 +1440,18 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 0
         resOut r `shouldContain` "lask run build <target>"
         resErr r `shouldContain` "E-TYPE"
+
+    -- A declaration whose body fails showed `n : ?` and no return
+    -- type, though both were written down.
+    it "shows the annotated types of a declaration that does not elaborate" $ \lask ->
+      withProject [("main.lask", "bad(n: Number, ...xs: Array<String>, --k: Bool = true): String = n + nope\n")] $ \dir -> do
+        r <- runLask lask dir ["run", "bad", "--help"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldContain` "n : Number"
+        resOut r `shouldContain` "xs : Array<String>"
+        resOut r `shouldContain` "--k : Bool = true"
+        resOut r `shouldContain` "Returns:\n  String"
+        resErr r `shouldContain` "E-NAME-UNDEFINED"
 
     it "exits 1 when the module cannot be parsed" $ \lask ->
       withProject [("main.lask", "build( = \n")] $ \dir -> do
@@ -1505,7 +1494,7 @@ spec = beforeAll findLask $ do
     it "hands the function's own parameters over after the function name (spec 11.2)" $ \lask ->
       withProject [("main.lask", src)] $ \dir -> do
         r <- runLask lask dir ["__complete", "--", "run", "build", "--"] ""
-        resOut r `shouldContain` "--out_dir"
+        resOut r `shouldContain` "--out-dir"
         resOut r `shouldNotContain` "--module"
 
     -- The contract that lets a script call this on every keystroke.

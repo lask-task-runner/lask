@@ -37,6 +37,13 @@ spec = before_ resetSecretRegistryForTests . after_ resetSecretRegistryForTests 
       registerSecret "42"
       maskSecrets "num=42 port=8042 v42" `shouldReturn` "num=*** port=8042 v42"
 
+    -- `$ echo #{shell_quote(tok)}` logged `$ echo 'ab'\''c123'` in the
+    -- clear: quoting rewrote the `'`, so the value was not a substring.
+    it "masks a value holding ' as shell_quote writes it" $ do
+      registerSecret "ab'c12345"
+      maskSecrets "$ echo 'ab'\\''c12345'" `shouldReturn` "$ echo '***'"
+      maskSecrets "ab'c12345" `shouldReturn` "***"
+
     it "masks a value of 8 characters or more wherever it appears" $ do
       registerSecret "hunter22"
       maskSecrets "pw=xhunter22x" `shouldReturn` "pw=x***x"

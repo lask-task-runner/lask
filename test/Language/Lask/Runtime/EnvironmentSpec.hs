@@ -107,6 +107,7 @@ spec = do
     it "builds docker run arguments with mounted workdir" $
       dockerArgs "/proj" "lask-0" "alpine:3.20" (Map.fromList [("memory", VString "4g")]) "uname -a"
         `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
+                     "--init",
                      "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -118,7 +119,7 @@ spec = do
     it "attaches stdin for a container write, so no content rides on the command line" $
       dockerShellArgs "/proj" "lask-0" "alpine:3.20" Map.empty True "cat > 'out.txt'"
         `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
-                     "-i",
+                     "-i", "--init",
                      "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -132,6 +133,7 @@ spec = do
     it "keeps a Windows drive letter in the source, not in the mount separator" $
       dockerArgs "C:\\proj" "lask-0" "alpine:3.20" Map.empty "uname -a"
         `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
+                     "--init",
                      "--mount", "type=bind,source=C:\\proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -144,6 +146,7 @@ spec = do
     it "keeps a colon inside a POSIX base directory out of the mount separator" $
       dockerArgs "/tmp/a:b" "lask-0" "alpine:3.20" Map.empty "uname -a"
         `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
+                     "--init",
                      "--mount", "type=bind,source=/tmp/a:b,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",
@@ -154,8 +157,9 @@ spec = do
   describe "container options (spec 10.2)" $ do
     let opts ps = dockerArgs "/proj" "lask-0" "alpine:3.20" (Map.fromList ps) "uname -a"
         -- Just the part between the fixed prologue (run, the name, the
-        -- mount, the default -w and the entrypoint) and the image.
-        optionArgs ps = takeWhile (/= "alpine:3.20") (drop 11 (opts ps))
+        -- init, the mount, the default -w and the entrypoint) and the
+        -- image.
+        optionArgs ps = takeWhile (/= "alpine:3.20") (drop 1 (dropWhile (/= "/bin/sh") (opts ps)))
 
     it "passes scalar options as one flag each" $
       optionArgs
@@ -212,16 +216,24 @@ spec = do
         `shouldBe` ["--env", "B", "--tmpfs", "/t"]
 
     it "says nothing for a switch left false, which is the daemon's own default" $ do
-      optionArgs [("init", VBool True), ("read_only", VBool True)]
-        `shouldBe` ["--init", "--read-only"]
-      optionArgs [("init", VBool False), ("read_only", VBool False)]
-        `shouldBe` []
+      optionArgs [("read_only", VBool True)] `shouldBe` ["--read-only"]
+      optionArgs [("read_only", VBool False)] `shouldBe` []
+
+    -- A program that is PID 1 ignored the termination request that
+    -- stops an abandoned command, so `timeout(1, ...)` around `sleep 5`
+    -- took the whole 3s grace period (spec 8.7).
+    it "runs an init process unless the environment turns it off" $ do
+      opts [] `shouldSatisfy` elem "--init"
+      opts [("init", VBool True)] `shouldSatisfy` ((== 1) . length . filter (== "--init"))
+      opts [("init", VNull)] `shouldSatisfy` elem "--init"
+      opts [("init", VBool False)] `shouldNotSatisfy` elem "--init"
 
     -- 10.5 gives an explicit working directory precedence over the
     -- default, and the daemon takes the last -w it is given.
     it "puts an explicit workdir after the mounted default so it wins" $
       opts [("workdir", VString "/work/web")]
         `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
+                     "--init",
                      "--mount", "type=bind,source=/proj,target=/work",
                      "-w", "/work",
                      "--entrypoint", "/bin/sh",

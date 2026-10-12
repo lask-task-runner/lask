@@ -75,7 +75,7 @@ import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Span (Position (..), Span (..), spanText)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Parser (parseModule)
-import Language.Lask.Utils (kebabToSnake)
+import Language.Lask.Utils (kebabToSnake, snakeToKebab)
 import System.Directory (doesDirectoryExist, getFileSize, listDirectory)
 import System.FilePath (normalise, takeDirectory, takeExtension, (</>))
 import System.IO (hSetEncoding, stdout, utf8)
@@ -390,14 +390,14 @@ positionalHint idx fn n = case declOf idx fn of
 matches :: Text -> Text -> Bool
 matches pfx name = kebabToSnake pfx `T.isPrefixOf` kebabToSnake name
 
--- | Render a candidate in the style being typed: a @-@ inside the
--- typed name means kebab-case; anything else, an empty prefix
--- included, means the name as declared (spec 11.6).
+-- | Render a candidate in the kebab-case the command line is written
+-- in (spec 11.2, 11.6). A prefix already typed with @_@ keeps the name
+-- as declared, since a shell drops a candidate that does not start
+-- with what was typed.
 renderName :: Text -> Text -> Text
 renderName pfx name
-  | "-" `T.isInfixOf` T.dropWhile (== '-') pfx =
-      T.map (\c -> if c == '_' then '-' else c) name
-  | otherwise = name
+  | "_" `T.isInfixOf` pfx = name
+  | otherwise = snakeToKebab name
 
 declOf :: CompleteIndex -> Text -> Maybe IndexDecl
 declOf idx fn = lookup (kebabToSnake fn) [(idName d, d) | d <- ciDecls idx]

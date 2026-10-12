@@ -155,7 +155,7 @@ spec = do
     it "offers the callable functions of the entry module, with their summaries" $
       describesAs ["run", ""]
         `shouldReturn` [ ("build", Just "Build the project and publish the artifact."),
-                         ("show_version", Just "Show the version."),
+                         ("show-version", Just "Show the version."),
                          ("packaged", Just "Keeps its own environment."),
                          ("login", Just "A secret default must never be read, let alone shown.")
                        ]
@@ -168,18 +168,22 @@ spec = do
       vs `shouldNotOffer` ["on_env"] -- positional Environment (spec 11.2)
 
     it "takes the functions from the module --module names" $
-      valuesFor ["run", "--module", "ci.lask", ""] `shouldReturn` ["ci_only"]
+      valuesFor ["run", "--module", "ci.lask", ""] `shouldReturn` ["ci-only"]
 
-    it "matches a kebab-case prefix and answers in kind" $ do
+    -- Candidates are in the kebab-case of the command line (spec
+    -- 11.6), except for a word already typed with `_`, which a shell
+    -- would otherwise drop the candidate for.
+    it "answers in kebab-case, keeping a prefix typed in snake_case" $ do
       valuesFor ["run", "show-"] `shouldReturn` ["show-version"]
+      valuesFor ["run", "show"] `shouldReturn` ["show-version"]
       valuesFor ["run", "show_"] `shouldReturn` ["show_version"]
       evalNames <- valuesFor ["eval", ""]
-      evalNames `shouldOffer` ["show_version"]
+      evalNames `shouldOffer` ["show-version"]
 
   describe "the boundary rule (spec 11.2)" $ do
     it "replaces lask's options with the function's parameters" $ do
       vs <- valuesFor ["run", "build", "--"]
-      vs `shouldOffer` ["--out_dir", "--publish", "--env"]
+      vs `shouldOffer` ["--out-dir", "--publish", "--env"]
       vs `shouldNotOffer` ["--module", "--format", "--arg-decode"]
 
     it "offers --help after the function name, but never -h" $ do
@@ -189,7 +193,7 @@ spec = do
 
     it "does not offer a keyword parameter twice" $ do
       vs <- valuesFor ["run", "build", "--out_dir", "dist", "--"]
-      vs `shouldNotOffer` ["--out_dir"]
+      vs `shouldNotOffer` ["--out-dir", "--out_dir"]
       vs `shouldOffer` ["--publish"]
 
     it "does not offer an Environment keyword parameter at all" $
@@ -279,7 +283,7 @@ spec = do
           ask ws = map candValue . resCandidates <$> complete (memResolver broken) ws
       ask ["run", ""] `shouldReturn` ["deploy", "teardown"]
       vs <- ask ["run", "deploy", "--"]
-      vs `shouldOffer` ["--version", "--dry_run"]
+      vs `shouldOffer` ["--version", "--dry-run"]
 
     it "still finds command words, declared and imported, in a module that does not parse" $ do
       let broken =
