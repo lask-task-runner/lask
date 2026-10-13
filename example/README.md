@@ -1,10 +1,12 @@
 # Examples
 
-Two ways in, depending on what you came for.
+Three ways in, depending on what you came for.
 
 **[01-projects/](01-projects)** — whole projects, where the language is in service of a job. Start here to see what a real `main.lask` looks like.
 
 **[02-language/](02-language)** — a tour of the language itself: one small, runnable module per topic, commented as you read it. Start here to find out how something is written.
+
+**[03-edsl/](03-edsl)** — the same programs written from Haskell, with `Language.Lask.Embed`.
 
 Everything here is checked the same way:
 
@@ -46,3 +48,11 @@ One directory per topic, in reading order. The whole of the [Quick Reference](ht
 | [14-docs-and-cli](02-language/14-docs-and-cli) | Doc comments, `@param`, `@complete`, `@hidden`, and how a signature becomes a command line |
 
 The rules behind all of it are in the [specification](../doc/spec.md).
+
+## 03-edsl
+
+Lask programs written in Haskell with `Language.Lask.Embed`, run as the `edsl-example` test suite (`stack test lask:edsl-example`).
+
+| Directory | Covers |
+| --- | --- |
+| [01-tour](03-edsl/01-tour) | Command words, plain and parallel tasks, recursion, dependent effects, keyword parameters, macros, environment variables — each next to the Lask source it corresponds to |

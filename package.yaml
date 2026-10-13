@@ -107,6 +107,6 @@ tests:
   # executed in CI without being installed as a binary.
   edsl-example:
     main: Main.hs
-    source-dirs: example/03-edsl
+    source-dirs: example/03-edsl/01-tour
     dependencies:
       - lask

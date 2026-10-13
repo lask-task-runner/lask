@@ -201,7 +201,7 @@ test-suite edsl-example
       Example
       Paths_lask
   hs-source-dirs:
-      example/03-edsl
+      example/03-edsl/01-tour
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
   build-depends:
       aeson >=2.0 && <3
