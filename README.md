@@ -57,7 +57,7 @@ The documentation is at **<https://lask-task-runner.github.io/>**, with a copy f
 - [Migrating from Make](https://lask-task-runner.github.io/guide/migration/from-make) and [from GitHub Actions](https://lask-task-runner.github.io/guide/migration/from-github-actions).
 - [The tools module](https://lask-task-runner.github.io/modules/tools/): the official module of ready-made environments, function by function.
 
-The [language specification](doc/spec.md) and the [compatibility policy](doc/compatibility.md) live in this repository, and the site shows them too.
+The [language specification](doc/spec.md) and the [compatibility policy](doc/compatibility.md) live in this repository, and the site shows them too. To work on Lask itself, see [doc/development.md](doc/development.md).
 
 ## Status
 
@@ -66,9 +66,3 @@ Lask is pre-1.0: features are `experimental` until 1.0, and breaking changes are
 ## Feedback
 
 Questions, ideas and feedback of any kind are welcome in [GitHub Discussions](https://github.com/lask-task-runner/lask/discussions). Found a bug? Please open an [issue](https://github.com/lask-task-runner/lask/issues).
-
-## Development
-
-```bash
-$ lask run test
-```
