@@ -53,7 +53,7 @@ $ dist/bin/lask eval --stdout-encode text coverage-report   # per-module coverag
 
 ## Releasing
 
-A release is version `X.Y.Z`, tagged `vX.Y.Z` on `main`. Each of the three repositories involved has a `release` task in its `main.lask`, run from a checkout on the host with git and an authenticated [gh](https://cli.github.com/). `release` asks you to type `release X.Y.Z` before it starts (see `lask.json`).
+A release is version `X.Y.Z`, tagged `vX.Y.Z` on `main`. Each of the three repositories involved has a `release` task in its `main.lask`, run from a checkout on the host with git and an authenticated [gh](https://cli.github.com/). The documentation site's `release` asks you to type `release X.Y.Z` before it starts.
 
 ### 1. Open the release pull request (this repository)
 

@@ -417,7 +417,7 @@ release_bump(version: String): String = do {
 // yet, then runs the Release workflow on main and waits for it (about an
 // hour), downloads the files into dist/release, creates the GitHub
 // release vX.Y.Z on main with them and the notes, and runs the Install
-// test workflow against it. Asks for confirmation (lask.json).
+// test workflow against it.
 //
 // @param version  Version to release, without the leading v.
 // @param notes    Markdown file holding the release notes.
