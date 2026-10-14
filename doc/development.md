@@ -53,57 +53,45 @@ $ dist/bin/lask eval --stdout-encode text coverage-report   # per-module coverag
 
 ## Releasing
 
-A release is version `X.Y.Z`, tagged `vX.Y.Z` on `main`. The steps below span this repository, [homebrew-tap](https://github.com/lask-task-runner/homebrew-tap) and the [documentation site](https://github.com/lask-task-runner/lask-task-runner.github.io).
+A release is version `X.Y.Z`, tagged `vX.Y.Z` on `main`. Each of the three repositories involved has a `release` task in its `main.lask`, run from a checkout on the host with git and an authenticated [gh](https://cli.github.com/). `release` asks you to type `release X.Y.Z` before it starts (see `lask.json`).
 
-### 1. Bump the version on `dev`
-
-Set `version: X.Y.Z` in [package.yaml](../package.yaml), run `stack build` so that `lask.cabal` follows, and commit both (`chore: bump version to X.Y.Z`). The Release workflow refuses to package a version `package.yaml` does not declare.
-
-### 2. Merge `dev` into `main`
-
-Open a pull request from `dev` to `main`, titled after the bump. Its description summarizes the release and lists the breaking changes since the previous version. Merge it once CI passes.
-
-### 3. Build the release files
-
-Run the **Release** workflow ([.github/workflows/release.yml](../.github/workflows/release.yml)) from the Actions tab, with `version` `X.Y.Z`, `check_version` on and `ref` `main`:
+### 1. Open the release pull request (this repository)
 
 ```bash
-$ gh workflow run release.yml -f version=X.Y.Z -f check_version=true -f ref=main
+$ lask run release-bump X.Y.Z
 ```
 
-It builds on Linux, macOS (Intel and Apple silicon) and Windows, and runs the `release-package` task on each, which writes the archives, a `.deb` on Linux and a `.sha256` beside each file. The `publish` job gathers them into one workflow artifact, `lask-X.Y.Z`, kept for 90 days. A full run takes about an hour.
+Switches to `dev` and pulls it, sets the version in [package.yaml](../package.yaml) and `lask.cabal`, commits `chore: bump version to X.Y.Z`, pushes `dev`, and opens the pull request from `dev` to `main`. Complete its description with the breaking changes since the previous release, and merge it once CI passes.
+
+### 2. Build, publish and test the release (this repository)
+
+Write the release notes to a file. They open with a paragraph on what the release is about, followed by sections of bullets, breaking changes first and fixes last; see [v0.8.0](https://github.com/lask-task-runner/lask/releases/tag/v0.8.0). Then:
 
 ```bash
-$ gh run download <run-id> -n lask-X.Y.Z -D dist/release
+$ lask run release X.Y.Z --notes notes.md
 ```
 
-### 4. Publish the GitHub release
+It checks that `main` declares `X.Y.Z` and that `vX.Y.Z` does not exist yet, then:
 
-Create the release `vX.Y.Z` on `main` and attach the archives and the `.deb`:
+1. runs the **Release** workflow ([release.yml](../.github/workflows/release.yml)) on `main` and waits for it, about an hour. Each platform's job builds lask and runs the `release-package` task, which writes the archives, a `.deb` on Linux and a `.sha256` beside each;
+2. downloads the files into `dist/release`;
+3. creates the GitHub release `vX.Y.Z` on `main` with the notes and the archives and `.deb`, which creates the tag;
+4. runs the **Install test** workflow ([install-test.yml](../.github/workflows/install-test.yml)) against it and waits for it. It installs the release the way the [installation page](https://lask-task-runner.github.io/guide/installation) says to on each platform and runs [example/01-projects/01-hello-world](../example/01-projects/01-hello-world).
+
+If a workflow fails, the task stops there; fix the cause and run the remaining steps by hand, as the list above gives them.
+
+### 3. Update the Homebrew formula ([homebrew-tap](https://github.com/lask-task-runner/homebrew-tap))
 
 ```bash
-$ gh release create vX.Y.Z --target main --title vX.Y.Z --notes-file notes.md \
-    dist/release/lask-vX.Y.Z-*.tar.gz dist/release/lask-vX.Y.Z-*.zip dist/release/lask-vX.Y.Z-*.deb
+$ lask run release X.Y.Z
 ```
 
-This creates the tag. The notes open with a paragraph on what the release is about, followed by sections of bullets, breaking changes first and fixes last; see [v0.8.0](https://github.com/lask-task-runner/lask/releases/tag/v0.8.0).
+Rewrites `Formula/lask.rb` for `vX.Y.Z`, with the `sha256` GitHub records for each archive, then commits and pushes `main`. Check it with `brew update && brew upgrade lask && lask version`.
 
-### 5. Update the Homebrew formula
-
-In homebrew-tap, set the three URLs in `Formula/lask.rb` to `vX.Y.Z` and each `sha256` to the one in the matching `.sha256` file (macos-arm64, macos-amd64, linux-amd64). Commit (`Update Lask formula to version X.Y.Z …`) and push to `main`, then check it:
+### 4. Release the documentation ([lask-task-runner.github.io](https://github.com/lask-task-runner/lask-task-runner.github.io))
 
 ```bash
-$ brew update && brew upgrade lask && lask version
+$ lask run release X.Y.Z X.Y+1.0
 ```
 
-### 6. Run the install test
-
-Run the **Install test** workflow ([.github/workflows/install-test.yml](../.github/workflows/install-test.yml)) with `version` `X.Y.Z`. It installs the published release the way the [installation page](https://lask-task-runner.github.io/guide/installation) says to on each platform, and runs [example/01-projects/01-hello-world](../example/01-projects/01-hello-world) with it.
-
-```bash
-$ gh workflow run install-test.yml -f version=X.Y.Z
-```
-
-### 7. Release the documentation
-
-The site keeps one copy per version, and the tag `vX.Y.Z` is what marks it released: the next deploy, at the latest the daily one, drops "(unreleased)" and sends `/` to it. Then, in the site repository, freeze the released version and start the next one, as its README describes under "When a version is released and the next one starts": update the version shown in Getting started and Running in CI, tag `docs-X.Y.Z`, and in `versions.json` point `X.Y.Z` at that tag and add the next version on top.
+Names `X.Y.Z` in Getting started and Running in CI, tags that state `docs-X.Y.Z`, points `X.Y.Z` at the tag in `versions.json` and adds the next version on top, then pushes `main` and the tag. The tag `vX.Y.Z` from step 2 is what marks the version released on the site: the next deploy, at the latest the daily one, drops "(unreleased)" and sends `/` to it.

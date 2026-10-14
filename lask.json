@@ -1,0 +1,5 @@
+{
+  "confirm": {
+    "release": {"phrase": "release #{version}"}
+  }
+}

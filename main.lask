@@ -239,8 +239,11 @@ release_archives: Map<String> = {
 }
 
 // The version package.yaml declares.
-package_version(): String = do {
-  line = find(lines(read_file("package.yaml", #local)), \(l: String) -> starts_with(l, "version:"))
+package_version(): String = declared_version(read_file("package.yaml", #local))
+
+// The version a package.yaml's text declares.
+internal declared_version(yaml: String): String = do {
+  line = find(lines(yaml), \(l: String) -> starts_with(l, "version:"))
   case (line) {
     Null -> fail(error(1, "package.yaml declares no version"))
     else -> trim(replace(line, "version:", ""))
@@ -326,4 +329,127 @@ release_package(version: String, target: String, --check_version = true, --bin_d
   }
   sums = map(files, \(f: String) -> write_checksum(f, windows = windows))
   concat_array(files, sums)
+}
+
+// ---------------------------------------------------------------------
+// Making a release
+//
+// Run from a maintainer's checkout, with git and an authenticated gh on
+// the host. A release is two runs with a review in between:
+// `release-bump` opens the pull request from dev to main, and once it is
+// merged, `release` builds, publishes and tests what main holds. The
+// steps are in doc/development.md. homebrew-tap and the documentation
+// site have release tasks of their own.
+// ---------------------------------------------------------------------
+
+internal semver_pattern = "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+
+internal require_semver(version: String) = case {
+  regex_test(version, semver_pattern) -> version
+  else -> fail(error(4, "not a version: #{version} (expected X.Y.Z, without the v)"))
+}
+
+internal require_clean() = $[#local] git diff --quiet && git diff --cached --quiet || \
+  { echo 'the working tree has uncommitted changes' >&2; exit 1; }
+
+// Rewrite the top-level `version:` line of a package.yaml or a .cabal
+// file, keeping its spacing.
+internal set_version(file: String, version: String) = do {
+  updated = map(lines(read_file(file, #local)), \(l: String) -> case {
+    starts_with(l, "version:") -> regex_replace(l, "[0-9]+\\.[0-9]+\\.[0-9]+", version)
+    else -> l
+  })
+  write_file(file, concat(join(updated, "\n"), "\n"), #local)
+}
+
+// The newest vX.Y.Z tag on origin.
+internal latest_tag(): String = do {
+  $[#local] git fetch -q --tags origin
+  tag = $[#local] git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1
+  trim(tag)
+}
+
+// Start a workflow on main and return its run id.
+//
+// `gh workflow run` does not say which run it started, so this looks
+// for a manual run of the workflow created since the dispatch.
+internal dispatch(workflow: String, fields: String): String = do {
+  since = $[#local] date -u +%Y-%m-%dT%H:%M:%SZ
+  $[#local] gh workflow run #{workflow} --ref main #{fields}
+  until(backoff_fixed(5, 24), \(id: String) -> id != "", \() -> newest_run(workflow, trim(since)))
+}
+
+internal newest_run(workflow: String, since: String): String = do {
+  id = $[#local] gh run list --workflow #{workflow} --event workflow_dispatch --limit 5 \
+    --json databaseId,createdAt --jq '[.[] | select(.createdAt >= "#{since}")] | first | .databaseId // ""'
+  trim(id)
+}
+
+// Wait for a workflow run, failing if it fails.
+internal watch(run_id: String) = $[#local] gh run watch #{run_id} --interval 60 --exit-status > /dev/null
+
+// Bump the version on dev and open the release pull request to main.
+//
+// Commits the new version to package.yaml and lask.cabal, pushes dev, and
+// opens the pull request, whose description you complete with the
+// release's breaking changes before merging it. Then run `release`.
+//
+// @param version  Version to release, without the leading v.
+// @return The pull request's URL.
+// @example lask run release-bump 0.9.0
+release_bump(version: String): String = do {
+  require_semver(version)
+  $[#local] git switch -q dev && git pull -q --ff-only origin dev
+  require_clean()
+  previous = latest_tag()
+  set_version("package.yaml", version)
+  set_version("lask.cabal", version)
+  $[#local] git commit -q -m "chore: bump version to #{version}" -- package.yaml lask.cabal
+  $[#local] git push -q origin dev
+  body = "Release v#{version}: brings the changes on `dev` since #{previous} into `main` and bumps `package.yaml` to #{version}.\n\nBreaking changes since #{previous}:\n- \n"
+  url = $[#local] gh pr create --base main --head dev --title "chore: bump version to #{version}" --body #{shell_quote(body)}
+  trim(url)
+}
+
+// Build, publish and install-test the release main holds.
+//
+// Checks that main declares the version and that its tag does not exist
+// yet, then runs the Release workflow on main and waits for it (about an
+// hour), downloads the files into dist/release, creates the GitHub
+// release vX.Y.Z on main with them and the notes, and runs the Install
+// test workflow against it. Asks for confirmation (lask.json).
+//
+// @param version  Version to release, without the leading v.
+// @param notes    Markdown file holding the release notes.
+// @return The release's URL.
+// @complete notes @file
+// @example lask run release 0.9.0 --notes notes.md
+release(version: String, --notes: String = "notes.md"): String = do {
+  require_semver(version)
+  tag = "v#{version}"
+  if (!file_exists(notes, #local)) {
+    return fail(error(4, "no release notes at #{notes}"))
+  }
+  $[#local] git fetch -q origin main
+  on_main = $[#local] git show origin/main:package.yaml
+  if (declared_version(on_main) != version) {
+    return fail(error(1, "main declares #{declared_version(on_main)}, not #{version}: merge the release pull request first"))
+  }
+  existing = $[#local] git ls-remote --tags origin refs/tags/#{tag}
+  if (trim(existing) != "") {
+    return fail(error(1, "#{tag} already exists"))
+  }
+
+  log("building #{tag} on main")
+  build = dispatch("release.yml", "-f version=#{version} -f check_version=true -f ref=main")
+  watch(build)
+  $[#local] rm -rf dist/release && gh run download #{build} -n lask-#{version} -D dist/release
+
+  log("publishing #{tag}")
+  url = $[#local] gh release create #{tag} --target main --title #{tag} --notes-file #{shell_quote(notes)} \
+    dist/release/lask-#{tag}-*.tar.gz dist/release/lask-#{tag}-*.zip dist/release/lask-#{tag}-*.deb
+
+  log("install-testing #{tag}")
+  watch(dispatch("install-test.yml", "-f version=#{version}"))
+  trim(url)
 }
