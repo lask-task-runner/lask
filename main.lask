@@ -385,6 +385,9 @@ internal newest_run(workflow: String, since: String): String = do {
   trim(id)
 }
 
+internal fetch_release_files(run_id: String, version: String) =
+  $[#local] rm -rf dist/release && gh run download #{run_id} -n lask-#{version} -D dist/release
+
 // Wait for a workflow run, failing if it fails.
 internal watch(run_id: String) = $[#local] gh run watch #{run_id} --interval 60 --exit-status > /dev/null
 
@@ -443,7 +446,9 @@ release(version: String, --notes: String = "notes.md"): String = do {
   log("building #{tag} on main")
   build = dispatch("release.yml", "-f version=#{version} -f check_version=true -f ref=main")
   watch(build)
-  $[#local] rm -rf dist/release && gh run download #{build} -n lask-#{version} -D dist/release
+  // The artifact comes from Azure storage, which has failed a download
+  // outright (v0.9.0) and answered the next attempt.
+  retry(backoff_fixed(30, 3), \() -> fetch_release_files(build, version))
 
   log("publishing #{tag}")
   url = $[#local] gh release create #{tag} --target main --title #{tag} --notes-file #{shell_quote(notes)} \
