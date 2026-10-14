@@ -200,6 +200,9 @@ spec = do
       evalsTo "f() = do {\n  a = 1\n  b = a + 1\n  a + b\n}" "f" "3"
     it "evaluates only the selected branch" $
       evalsTo "f() = if (true) { 1 } else { get({\"a\": 2}, \"missing\") }" "f" "1"
+    it "evaluates only the selected branch of a conditional (spec 6.2)" $ do
+      evalsTo "f() = true ? 1 : get({\"a\": 2}, \"missing\")" "f" "1"
+      evalsTo "f() = false ? get({\"a\": 2}, \"missing\") : 2" "f" "2"
     it "evaluates only the selected case arm (spec 6.4)" $
       evalsTo "f() = case (1) {\n  1 -> 1\n  else -> get({\"a\": 2}, \"missing\")\n}" "f" "1"
     it "stops testing heads at the first match" $

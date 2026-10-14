@@ -585,8 +585,19 @@ pRecordField = do
 
 -- Expressions ---------------------------------------------------------------------
 
+-- | An expression: a binary-operator expression, optionally the
+-- condition of @c ? a : b@ (spec 6.2). The conditional binds more
+-- loosely than every binary operator, and the branch after @:@ is a
+-- whole expression again, so it associates to the right.
 pExpr :: P Expr
-pExpr = makeExprParser pUnary operatorTable
+pExpr = do
+  c <- makeExprParser pUnary operatorTable
+  option c $ do
+    _ <- sym TQuestion
+    a <- pExpr
+    _ <- sym TColon
+    b <- pExpr
+    pure (Expr (exprSpan c <> exprSpan b) (ECond c a b))
 
 operatorTable :: [[Operator P Expr]]
 operatorTable =

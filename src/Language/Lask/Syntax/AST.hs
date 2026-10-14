@@ -221,6 +221,10 @@ data ExprF
   | -- | @else@ is mandatory in expression position; 'Nothing' only
     -- occurs for the statement-position guard form (spec 6.4/6.5).
     EIf Expr Block (Maybe Block)
+  | -- | @c ? a : b@ (spec 6.2): an 'EIf' whose branches are single
+    -- expressions. Kept apart from 'EIf' because its branches are
+    -- expression positions, where no @return@ may appear (6.5).
+    ECond Expr Expr Expr
   | EFor (Spanned Text) Expr Block
   | -- | @case (e) { p -> b ... else -> b }@ (spec 6.4). 'Nothing' as
     -- the scrutinee is the condition form, whose arm heads are @Bool@
@@ -346,6 +350,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   ENot e -> ENot (stripSpansExpr e)
   EDo b -> EDo (stripBlock b)
   EIf c t e -> EIf (stripSpansExpr c) (stripBlock t) (fmap stripBlock e)
+  ECond c a b -> ECond (stripSpansExpr c) (stripSpansExpr a) (stripSpansExpr b)
   EFor (Spanned _ x) xs b -> EFor (Spanned NoSpan x) (stripSpansExpr xs) (stripBlock b)
   ECase scrut arms -> ECase (fmap stripSpansExpr scrut) (map stripArm arms)
   ETry b c fin ->

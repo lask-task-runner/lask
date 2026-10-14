@@ -438,6 +438,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       ENot e -> checkExpr sc e
       EDo b -> checkBlock sc b
       EIf c t e -> checkExpr sc c <> checkBlock sc t <> maybe [] (checkBlock sc) e
+      ECond c a b -> checkExpr sc c <> checkExpr sc a <> checkExpr sc b
       ECase scrut arms ->
         maybe [] (checkExpr sc) scrut
           <> concat

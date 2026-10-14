@@ -1064,6 +1064,7 @@ infer ctx path locals (Expr sp f) = case f of
       )
   EIf _ _ Nothing ->
     abort (diag ESyntaxReturnPosition sp "if without else is not allowed here")
+  ECond c a b -> infer ctx path locals (condAsIf sp c a b)
   EFor (Spanned xsp x) xs body -> do
     (xsCore, xsTy) <- infer ctx path locals xs
     elemTy <- case xsTy of
@@ -1122,6 +1123,13 @@ mkThunk path sp body ty =
         lamType = TyFun [] ty
       }
 
+-- | @c ? a : b@ is @if (c) { a } else { b }@ (spec 6.2), and is
+-- typed and evaluated as that @IfExpr@ is (6.4).
+condAsIf :: Span -> Expr -> Expr -> Expr -> Expr
+condAsIf sp c a b = Expr sp (EIf c (branch a) (Just (branch b)))
+  where
+    branch e = Block (exprSpan e) [Stmt (exprSpan e) (SExpr e)]
+
 check :: Ctx -> FilePath -> Locals -> Expr -> Type -> TC Core
 check ctx path locals e@(Expr sp f) expected = case f of
   EArray es | TyArray t <- expected -> do
@@ -1133,6 +1141,7 @@ check ctx path locals e@(Expr sp f) expected = case f of
         (lam, ty, _) <- elabLambdaAgainst ctx path locals sp ps rt body expPs
         unless (conforms ctx ty expected) (mismatch sp expected ty)
         pure lam
+  ECond c a b -> check ctx path locals (condAsIf sp c a b) expected
   EIf c t (Just el) | expected /= TyAny -> do
     condCore <- check ctx path locals c TyBool
     (thenStmts, _) <- elabBlock ctx path locals t (Just expected)

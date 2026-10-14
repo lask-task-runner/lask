@@ -373,6 +373,18 @@ spec = do
       rejects "x = if (1) { 2 } else { 3 }" ETypeMismatch
     it "requires matching branch types" $
       rejects "x = if (true) { 2 } else { \"a\" }" ETypeMismatch
+    it "types a conditional as its branches (spec 6.2)" $
+      hasType "f(c: Bool) = c ? 1 : 2" "f" "Function<Bool, Number>"
+    it "requires a Bool condition in a conditional" $
+      rejects "x = 1 ? 2 : 3" ETypeMismatch
+    it "requires matching branch types in a conditional" $
+      rejects "x = true ? 2 : \"a\"" ETypeMismatch
+    it "propagates an expected union into both branches of a conditional" $
+      accepts "f(c: Bool): String | Null = c ? \"a\" : null"
+    it "lets a context-typed branch of a conditional take the other's type" $
+      hasType "f(c: Bool) = c ? fail({code: 1, message: \"x\"}) : 1" "f" "Function<Bool, Number>"
+    it "rejects return inside a branch of a conditional (spec 6.5)" $
+      rejects "f(c: Bool, d: Bool): Number = do {\n  c ? if (d) { return 1 } else { 2 } : 3\n}" ESyntaxReturnPosition
     it "types for over arrays as map" $
       hasType "f(xs: Array<String>) = for (x : xs) { concat(\"item:\", x) }" "f" "Function<Array<String>, Array<String>>"
     it "types Void-bodied for as for_each" $

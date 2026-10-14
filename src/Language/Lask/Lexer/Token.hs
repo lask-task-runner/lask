@@ -137,21 +137,25 @@ data Token
   deriving (Show, Eq, Ord)
 
 -- | Line-end tokens after which a newline continues the statement
--- (spec 6.5): @=@, @,@, @:@, @->@, any binary operator, @!@.
+-- (spec 6.5): @=@, @,@, @:@, @?@, @->@, any binary operator, @!@.
 isContinuationEnd :: Token -> Bool
 isContinuationEnd t = case t of
   TAssign -> True
   TComma -> True
   TColon -> True
+  TQuestion -> True
   TArrow -> True
   TOp _ -> True -- all binary operators and '!'
   _ -> False
 
 -- | Line-start tokens that continue the previous statement
--- (spec 6.5): binary operators, @else@, @catch@, @finally@.
+-- (spec 6.5): binary operators, the @?@ and @:@ of a conditional
+-- expression, @else@, @catch@, @finally@.
 startsContinuation :: Token -> Bool
 startsContinuation t = case t of
   TOp op -> isBinaryOp op
+  TQuestion -> True
+  TColon -> True
   TKw KElse -> True
   TKw KCatch -> True
   TKw KFinally -> True
