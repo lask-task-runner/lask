@@ -13,9 +13,9 @@
 --     suppress newlines: statements inside blocks are
 --     newline-terminated);
 --   * the previous token is a continuation token:
---     @=@, @,@, @:@, @->@, a binary operator, or @!@;
---   * the next token is a binary operator, @else@, @catch@ or
---     @finally@;
+--     @=@, @,@, @:@, @?@, @->@, a binary operator, or @!@;
+--   * the next token is a binary operator, @?@, @:@, @else@,
+--     @catch@ or @finally@;
 --   * additionally, as normalization: at start of input and end of
 --     input, right after a block @{@, right before @}@, and right
 --     after @;@ (terminators there are optional per spec 5\/6.5).

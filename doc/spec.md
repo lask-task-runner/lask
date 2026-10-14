@@ -491,7 +491,7 @@ Optional fields:
 | `a?: String \| Null` | may be absent | a `String` or null when present |
 
 - An absent key and a null value are different things and stay different: an absent optional key is not a null, and a null is not an absent key. Where the difference is observable is at the two boundaries — `cast` accepts a value whose optional keys are missing and rejects one whose required keys are (15.8), and serialization omits an absent optional field while writing an explicit `null` for a null one (13.1).
-- `?` may be written on a field name in either form, `a?: String` or `"X-Api-Key"?: String`, and nowhere else: it is not a type suffix.
+- `?` may be written on a field name in either form, `a?: String` or `"X-Api-Key"?: String`, and nowhere else in a type: it is not a type suffix. (In an expression, `?` is the conditional operator, 6.2.)
 - Reading an optional field yields `T | Null`, an absent key reading as null (6.8). In memory, then, a program sees the two cases the same way; a program that must tell them apart moves the record to a `Map<T>` with `cast` and asks `has_key` (15.4).
 
 Record field names:
@@ -558,7 +558,7 @@ Type annotations are optional, and the following type inference rules apply wher
   - When the expected type is `Map<T>`: when every value expression conforms to `T`, the literal's type is `Map<T>`. If any value does not conform, it is a type error (keys are always treated as `String`. 4.4).
   - When the expected type is `Any`: inferred as `Record<...>` in the same way as when there is no expected type.
   - Any other expected type is a type error.
-- When the expected type is a union `U1 | ... | Un`, the expression is checked against it by the conformance relation of 4.4, and an expected type is propagated into the branches of an `IfExpr` and the arms of a `CaseExpr` (6.4) unchanged. Therefore `f(): String | Null = if (c) { "x" } else { null }` is well-typed: each branch is checked against `String | Null`, and both `String` and `Null` conform to it.
+- When the expected type is a union `U1 | ... | Un`, the expression is checked against it by the conformance relation of 4.4, and an expected type is propagated into the branches of an `IfExpr` and of a conditional expression `c ? a : b` (6.2), and the arms of a `CaseExpr` (6.4), unchanged. Therefore `f(): String | Null = if (c) { "x" } else { null }` is well-typed: each branch is checked against `String | Null`, and both `String` and `Null` conform to it.
 - When a variable or function declaration has no annotation, the type of the right-hand-side expression is adopted as the declared type.
 - When a function has no return-value annotation, the type of the function body is inferred as the return type.
 - When a parameter has no annotation, `Any` is adopted.
@@ -973,7 +973,8 @@ export { rollout } from "./lib/deploy.lask"
 This chapter defines the expressions of Lask. Every unit of execution in Lask is expressed as an expression.
 
 ```ebnf
-Expression   = UnaryExpr | Expression binary_op Expression .
+Expression   = BinaryExpr [ "?" Expression ":" Expression ] .
+BinaryExpr   = UnaryExpr | BinaryExpr binary_op BinaryExpr .
 UnaryExpr    = PrimaryExpr | unary_op UnaryExpr .
 PrimaryExpr  = operand | AccessorExpr | CallExpr | DoExpr | IfExpr | CaseExpr | ForExpr | TryExpr | AsyncExpr | AwaitExpr .
 
@@ -1086,8 +1087,26 @@ Operator precedence, from highest to lowest, is as follows.
 4. Comparison operators `==` `!=` `<` `<=` `>` `>=`
 5. Logical operators `&&` `||`
 6. Pipe and composition operators `|>` `<|` `>>` `<<`
+7. Conditional operator `? :`
 
-Operators of the same precedence associate from left to right.
+Operators of the same precedence associate from left to right, except the conditional operator, which associates from right to left.
+
+The conditional operator `c ? a : b`:
+
+- `c ? a : b` is syntactic sugar for `if (c) { a } else { b }` (6.4). It is the form of `IfExpr` whose branches are single expressions, and it is typed and evaluated exactly as that `IfExpr` is: `c` must be `Bool`, the two branches must have the same type `T`, which is the type of the whole expression, an expected type is propagated into both branches unchanged (4.3), and only the selected branch is evaluated.
+- It binds more loosely than every binary operator, so the condition is a whole `BinaryExpr`: `xs |> is_empty ? 0 : 1` tests `is_empty(xs)`. Each branch is a whole `Expression`, so `c ? a || b : xs |> f` needs no parentheses.
+- It associates to the right: `a ? x : b ? y : z` is `a ? x : (b ? y : z)`, and a conditional may stand in the middle branch without parentheses, as in `a ? b ? x : y : z`. A multi-way choice with more than two conditions is usually clearer as the condition form of `case` (6.4).
+- Its branches are expressions, not statements, so a branch cannot contain `return` (6.5).
+- A newline before a line-leading `?` or `:`, and after a line-final `?` or `:`, continues the expression (6.5), so a long conditional may put each branch on its own line. This is how a branch can be a command execution expression other than the last one: a command string runs to the end of its line (6.6), so in `c ? $ echo a : $ echo b` the then branch swallows `: $ echo b`, while the three-line form below does not.
+
+```lask
+greet(--loud = false, --name = "Lask"): String = do {
+  word = loud ? "HELLO" : "hello"
+  loud
+    ? $[#local] echo "#{word}, #{name}!"
+    : $[#local] echo "#{word}, #{name}."
+}
+```
 
 The meaning of each operator is as follows.
 
@@ -1359,8 +1378,8 @@ Statement termination rules:
 - `;` is an optional separator for writing multiple statements on one line, and is not required at the end of a line (writing it there is not an error).
 - A newline that falls under any of the following is not regarded as statement termination and is treated as continuation of the statement.
   - A newline at a position where a bracket opened inside the statement (`(`, `[`, `{`) has not yet been closed
-  - A newline at a position where the token at the end of the line is a continuation token. The continuation tokens are limited to the following: `=`, `,`, `:`, `->`, binary operators (`|>`, `+`, `==`, etc.; the `binary_op` of 6.2), `!`
-  - A newline where the leading token of the next line is a binary operator (`|>`, `+`, `==`, etc.)
+  - A newline at a position where the token at the end of the line is a continuation token. The continuation tokens are limited to the following: `=`, `,`, `:`, `?`, `->`, binary operators (`|>`, `+`, `==`, etc.; the `binary_op` of 6.2), `!`
+  - A newline where the leading token of the next line is a binary operator (`|>`, `+`, `==`, etc.), or the `?` or `:` of a conditional expression (6.2)
   - A newline where the leading token of the next line is `else` (continuation after the closing `}` of the then block of an `IfExpr`). Inside a `case` block the same rule is what lets an `else` arm begin a line (6.4)
   - A newline where the leading token of the next line is `catch` or `finally` (continuation after the closing `}` of a block of a `TryExpr`)
 - `as` and `from` are neither continuation tokens nor leading tokens of continuation. A line-leading `as` or `from` does not continue the preceding statement or declaration (see the constraints on `import` declarations in Chapter 5).
@@ -1395,7 +1414,7 @@ Early return (`return`):
 - `return` may be placed only in the following positions (return-permitted positions). Violation is a syntax error (`E-SYNTAX-RETURN-POSITION`).
   - A statement position of the `do` block that is the body of a function declaration or lambda expression
   - A `GuardStmt` placed in a return-permitted position, and statement positions inside each branch block of an `IfExpr` in statement position (applied recursively)
-- Therefore, it cannot be used inside the body of `for`, inside the body of a `case` arm (arm bodies are expressions, 6.4), inside each block of `try`/`catch`/`finally`, or inside `do` blocks appearing in expression positions such as the right-hand side of a binding or an argument.
+- Therefore, it cannot be used inside the body of `for`, inside the body of a `case` arm (arm bodies are expressions, 6.4), inside each block of `try`/`catch`/`finally`, inside a branch of a conditional expression `c ? a : b` (6.2), or inside `do` blocks appearing in expression positions such as the right-hand side of a binding or an argument.
 - A `GuardStmt` (an `if` without `else`) is permitted only when the final statement of the block is a `ReturnStmt` (6.4).
 - No statement of the same block may be placed after a `ReturnStmt` (unreachable; syntax error).
 
@@ -1946,14 +1965,15 @@ The expansion order during static verification is as follows.
 1. `async e` -> `spawn(\() -> e)`
 2. `await e` -> core function application `await(e)` (normalization of the parenthesis-omitted form)
 3. Continuation-distribution transformation of `return` (including guard statements) (6.5)
-4. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`
-5. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
-6. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
-7. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
-8. Sequential-execution expansion of `do { ... }`
-9. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
-10. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
-11. Command sugar expansion of `$ cmd` / `$[env] cmd`
+4. `c ? a : b` -> `if (c) { a } else { b }` (6.2)
+5. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`
+6. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
+7. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
+8. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
+9. Sequential-execution expansion of `do { ... }`
+10. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
+11. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
+12. Command sugar expansion of `$ cmd` / `$[env] cmd`
 
 Type checking is performed on the core expressions after expansion. The meaning of the expansion result must be equivalent to that of the original syntax.
 

@@ -217,6 +217,12 @@ spec = do
         `shouldBe` Right
           [TKw KIf, TLParen, lid "a", TRParen, TLBrace, num 1, TRBrace, TKw KElse, TLBrace, num 2, TRBrace]
 
+    it "continues before and after the ? and : of a conditional" $ do
+      laid "x = c\n  ? 1\n  : 2"
+        `shouldBe` Right [lid "x", TAssign, lid "c", TQuestion, num 1, TColon, num 2]
+      laid "x = c ?\n  1 :\n  2"
+        `shouldBe` Right [lid "x", TAssign, lid "c", TQuestion, num 1, TColon, num 2]
+
     it "continues before catch and finally" $
       laid "try { a }\ncatch (e) { b }\nfinally { c }"
         `shouldBe` Right

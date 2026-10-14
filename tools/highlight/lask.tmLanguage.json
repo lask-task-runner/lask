@@ -113,6 +113,6 @@
     },
     "number": { "name": "constant.numeric.lask", "match": "\\b\\d+(\\.\\d+)?\\b" },
     "call": { "name": "entity.name.function.call.lask", "match": "\\b[a-z_][A-Za-z0-9_]*(?=\\s*\\()" },
-    "operator": { "name": "keyword.operator.lask", "match": "(->|=>|\\|>|==|!=|<=|>=|&&|\\|\\||[=+\\-*/%<>!:,.])" }
+    "operator": { "name": "keyword.operator.lask", "match": "(->|=>|\\|>|==|!=|<=|>=|&&|\\|\\||[=+\\-*/%<>!:,.?])" }
   }
 }

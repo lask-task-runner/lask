@@ -384,6 +384,25 @@ spec = do
       pExpr "a && b |> f"
         `shouldBe` Right (EBin OpPipeR (ex (EBin OpAnd (var "a") (var "b"))) (var "f"))
 
+    it "parses the conditional operator below pipes (spec 6.2)" $
+      pExpr "a |> f ? b : c"
+        `shouldBe` Right (ECond (ex (EBin OpPipeR (var "a") (var "f"))) (var "b") (var "c"))
+
+    it "parses the branches of the conditional as whole expressions" $
+      pExpr "c ? a || b : xs |> f"
+        `shouldBe` Right (ECond (var "c") (ex (EBin OpOr (var "a") (var "b"))) (ex (EBin OpPipeR (var "xs") (var "f"))))
+
+    it "associates the conditional to the right" $
+      pExpr "a ? 1 : b ? 2 : 3"
+        `shouldBe` Right (ECond (var "a") (num 1) (ex (ECond (var "b") (num 2) (num 3))))
+
+    it "parses a conditional in the then branch without parentheses" $
+      pExpr "a ? b ? 1 : 2 : 3"
+        `shouldBe` Right (ECond (var "a") (ex (ECond (var "b") (num 1) (num 2))) (num 3))
+
+    it "requires the : of a conditional" $
+      pModule "x = c ? 1" `shouldSatisfy` isLeft
+
     it "parses unary not tightest" $
       pExpr "!a && b"
         `shouldBe` Right (EBin OpAnd (ex (ENot (var "a"))) (var "b"))

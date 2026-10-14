@@ -30,6 +30,16 @@ internal stamp(target: String): String = "#{target} (#{length(target)} chars)"
 // to produce a value, and of the same type.
 parity(n: Number): String = if (mod(n, 2) == 0) { "even" } else { "odd" }
 
+// Say whether a number is positive, zero or negative.
+//
+// `c ? a : b` is `if (c) { a } else { b }` for branches that are one
+// expression each. It binds more loosely than every other operator and
+// nests to the right, so two conditions read top to bottom; for more,
+// prefer the `case` with no scrutinee below.
+//
+// @example lask eval sign -- -3
+sign(n: Number): String = n > 0 ? "positive" : n == 0 ? "zero" : "negative"
+
 // Map a shell name to its family.
 //
 // `case` over a value: the scrutinee is evaluated once, arms may list
