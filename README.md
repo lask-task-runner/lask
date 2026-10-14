@@ -11,8 +11,6 @@
   <a href="https://lask-task-runner.github.io/">▶ Watch the full 1-minute tour on the documentation site</a>
 </div>
 
-<sub>Docker is a trademark of Docker, Inc. Other names belong to their owners; their use does not imply endorsement.</sub>
-
 Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
 
 Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
