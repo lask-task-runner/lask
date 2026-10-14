@@ -3,22 +3,19 @@
 [![test](https://github.com/lask-task-runner/lask/actions/workflows/test.yml/badge.svg)](https://github.com/lask-task-runner/lask/actions/workflows/test.yml)
 [![release](https://img.shields.io/github/v/release/lask-task-runner/lask?sort=semver)](https://github.com/lask-task-runner/lask/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![docs](https://img.shields.io/badge/docs-lask--task--runner.github.io-4f46e5)](https://lask-task-runner.github.io/)
 
 <div align="center">
   <img alt="Lask in 20 seconds: write tasks in main.lask, with a typo flagged in the editor and fixed; lask run release runs each step in its own container on Docker; the same run on a laptop and on GitHub Actions, Jenkins, GitLab CI and CircleCI, on the same pinned images" src="doc/assets/lask-pv-short.gif" width="960">
   <br>
-  <a href="doc/assets/lask-pv.mp4">▶ Watch the full 1-minute tour (MP4)</a>
+  <a href="https://lask-task-runner.github.io/">▶ Watch the full 1-minute tour on the documentation site</a>
 </div>
-
-<sub>Docker is a trademark of Docker, Inc. Other names belong to their owners; their use does not imply endorsement.</sub>
 
 Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
 
 Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
 
-Lask aims to stay simple and light to use, while bringing along the parts of the heavyweight platforms that most automation needs: pinned environments, checks before anything runs, concurrency and reuse.
-
-The recording above and the excerpt below come from [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws), which builds and deploys a full AWS stack — a Python Lambda API, a React front end, RDS Postgres, Cognito, CloudFront and S3, with Playwright end-to-end tests — from a machine with none of those tools installed. For the language itself, [example/02-language](example/02-language) is a tour of the whole language, one runnable module per topic.
+The recording above and the excerpt below come from [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws), which builds and deploys a full AWS stack from a machine with none of its tools installed.
 
 <div align="center">
   <picture>
@@ -31,50 +28,16 @@ The recording above and the excerpt below come from [example/01-projects/02-weba
 
 ## Why Lask
 
-Lask makes automation *approachable*, *verifiable*, *portable*, *programmable*, *runnable* and *secure*.
+- **Approachable**: one `.lask` file is a project, in a syntax borrowed from languages you already write.
+- **Verifiable**: `lask check` resolves every name, argument and type before a single command runs, and your editor shows the same errors as you type.
+- **Portable**: every command runs in an environment you pin, such as `command { "go" } on #golang:1.22`, the same on your laptop and in CI.
+- **Programmable**: a task is a typed function, with error handling and concurrency in the language and tasks imported across projects.
+- **Runnable**: a task's signature is its command line, and its doc comment is its `--help`.
+- **Secure**: secrets are masked in the log and can come from Vault, and imports are pinned by content hash.
 
-**Approachable**. One `.lask` file in a directory is already a project: no scaffolding, no config, nothing to install but Lask and Docker. The syntax is borrowed from languages you already write — C-family braces, `try` / `catch`, `async` / `await`, TypeScript's type notation — and the whole language and CLI fit on one [Quick Reference](doc/quick-reference.md) page, short enough for you to read in ten minutes and for a coding model to hold in context.
-
-**Verifiable**. `lask check` resolves every name, argument and type before a single command runs, over the very definitions CI will execute — no second copy in YAML to drift. The same errors appear in your editor as you type, so a typo costs seconds, not a red CI log.
-
-**Portable**. An execution environment is a value: pin an image once with `command { "go" } on #golang:1.22`, and every command that names it runs there, on your laptop and in CI alike. A command that names no environment is a static error, never a silent fall back to the host.
-
-**Programmable**. A task is an ordinary function — typed keyword arguments with defaults, a return value — and control flow, error handling and concurrency belong to the language, not to shell convention. Tasks call each other inside a project, and are imported across projects, along with the environments they run in: `import command { "go" } from "tools"`. Being a DSL, it takes fewer lines than an SDK in Go or TypeScript, with no project to build around it.
-
-**Runnable**. Every piece runs on its own: a task with `lask run`, an expression in the REPL, a one-off command in its container with `lask cmd go test ./...`. A task's signature is its command line: calling `release(dry_run = true)` in Lask is the same call as `lask run release --dry-run true` from the shell. Its doc comment (`@param`, `@return`, `@example`) is the single source for both `--help` and the editor's hover, alongside the inferred return type and every image the task will need.
-
-**Secure**. Secrets stay out of the code and out of the log: a `!!` binding is masked wherever its value appears in the log, and an environment variable like `{vault://secret/aws#secret_key}` is resolved from Vault when read, so the same program runs with or without a vault. Imports are pinned by content hash in a committed lock file, and only `lask sync` touches the network. A container can be locked down with `network = "none"`, `read_only = true` or `cap_drop`. Separately, a task like `deploy` can ask for a typed confirmation before it runs; that guards against mistakes, and is not a security boundary.
-
-## Comparison
-
-Lask is a task runner, not a build system — and not a CI platform. It does not replace GitHub Actions, GitLab CI, or Jenkins; it replaces what your jobs run, so one definition executes on your laptop and inside whatever runner you already have. Your provider's YAML keeps the part it is genuinely good at — triggers, permissions, secrets — wrapped around a step that calls `lask run`. Switching providers then means rewriting that step, not your pipeline.
-
-Here is how Lask compares to the lighter tools it replaces and to the heavier one it stops short of:
-
-|                                         | Lask | make | Taskfile | Dagger |
-| --------------------------------------- | :--: | :--: | :------: | :----: |
-| Static checks before execution           | ✅ types, names, arity (`lask check`) | — | schema only | via the SDK's language |
-| Typed task arguments with defaults       | ✅ `--name: String = "World"` | — | untyped vars | ✅ in the SDK's language |
-| Execution environments as values         | ✅ `command { "go" } on #golang:1.22` | — | — | ✅ containers in the API |
-| Concurrency                              | ✅ `async` / `await` | `-j` (per-target) | `deps` run in parallel | ✅ implicit in the DAG |
-| Code reuse across projects               | ✅ hash-pinned module imports | `include` | `includes` | ✅ Git modules |
-| Incremental rebuilds                     | — | ✅ file targets | ✅ checksum / timestamp | ✅ content-addressed cache |
-| Config format                            | typed DSL | Makefile | YAML | Go / Python / TypeScript |
-| What you install                         | ✅ Lask + Docker; host tools only for what runs on `#local` | make, plus every tool a task uses | single binary, plus every tool a task uses | binary + Docker + an SDK toolchain |
-
-**When to use something else:**
-
-- If your tasks are primarily *"rebuild only what changed"* over file targets, `make` (or a real build system like Bazel) is the right tool. Lask does not track file freshness.
-- If you need artifact caching at build-system scale, or you want your pipeline written in Go or TypeScript with a full SDK behind it, Dagger goes further than Lask does — at the cost of an engine to run and an ecosystem to keep.
-
-**When Lask pays off:** tasks that take arguments, call each other, run in pinned Docker environments, or run concurrently — the point where Makefiles and YAML pipelines usually turn into untestable shell scripts. `lask check` verifies all of it before anything executes.
-
-**Moving over:** [Migrating from Make](doc/migration/from-make.md) and [Migrating from GitHub Actions](doc/migration/from-github-actions.md) take an existing Makefile or workflow across one task at a time, with both working at every step.
+Lask is a task runner, not a build system or a CI platform: it replaces what your CI jobs run, not the CI itself. [Why Lask](https://lask-task-runner.github.io/guide/why-lask) covers all of this, with a [comparison to make, Taskfile and Dagger](https://lask-task-runner.github.io/guide/why-lask#how-lask-compares).
 
 ## Install
-
-<details open>
-<summary><b>macOS</b> &middot; Homebrew</summary>
 
 ```bash
 $ brew tap lask-task-runner/tap
@@ -82,156 +45,19 @@ $ brew trust lask-task-runner/tap
 $ brew install lask
 ```
 
-</details>
+Lask also needs Docker. [Installation](https://lask-task-runner.github.io/guide/installation) covers Linux, Windows, building from source, shell completion and the VS Code extension; then [Getting started](https://lask-task-runner.github.io/guide/getting-started) takes you to a first task in about five minutes.
 
-<details>
-<summary><b>macOS / Linux</b> &middot; download the binary</summary>
+## Documentation
 
-```bash
-$ VERSION=$(curl -fsSL https://api.github.com/repos/lask-task-runner/lask/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f4)
-$ TARGET=linux-amd64 # or macos-amd64, macos-arm64
-$ curl -fsSL -o lask.tar.gz "https://github.com/lask-task-runner/lask/releases/download/${VERSION}/lask-${VERSION}-${TARGET}.tar.gz"
-$ tar -xzf lask.tar.gz
-$ sudo mv ./lask /usr/local/bin
-```
+The documentation is at **<https://lask-task-runner.github.io/>**, with a copy for each release:
 
-Uninstall with `sudo rm /usr/local/bin/lask`.
+- [Getting started](https://lask-task-runner.github.io/guide/getting-started) and [Your first real task file](https://lask-task-runner.github.io/guide/first-task-file): from installing Lask to a CI task of your own.
+- [Language guide](https://lask-task-runner.github.io/language/): the whole language, one runnable topic at a time.
+- [Quick Reference](https://lask-task-runner.github.io/reference/quick-reference): the language and the CLI on one page.
+- [Migrating from Make](https://lask-task-runner.github.io/guide/migration/from-make) and [from GitHub Actions](https://lask-task-runner.github.io/guide/migration/from-github-actions).
+- [The tools module](https://lask-task-runner.github.io/modules/tools/): the official module of ready-made environments, function by function.
 
-</details>
-
-<details>
-<summary><b>Debian / Ubuntu</b> &middot; .deb package</summary>
-
-```bash
-$ VERSION=$(curl -fsSL https://api.github.com/repos/lask-task-runner/lask/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f4)
-$ curl -fsSL -o lask.deb "https://github.com/lask-task-runner/lask/releases/download/${VERSION}/lask-${VERSION}-linux-amd64.deb"
-$ sudo dpkg -i lask.deb
-```
-
-amd64 only; on another architecture, take the tarball above. Uninstall with `sudo apt remove lask`.
-
-</details>
-
-<details>
-<summary><b>Windows</b> &middot; PowerShell</summary>
-
-```powershell
-> $version = (Invoke-RestMethod https://api.github.com/repos/lask-task-runner/lask/releases/latest).tag_name
-> Invoke-WebRequest -Uri "https://github.com/lask-task-runner/lask/releases/download/$version/lask-$version-windows-amd64.zip" -OutFile lask.zip
-> Expand-Archive -Path lask.zip -DestinationPath "$env:LOCALAPPDATA\Programs\lask" -Force
-> setx PATH "$env:PATH;$env:LOCALAPPDATA\Programs\lask"
-```
-
-Restart your terminal for the updated `PATH` to take effect. Uninstall with `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\lask"`.
-
-</details>
-
-<details>
-<summary><b>From source</b> &middot; Haskell toolchain</summary>
-
-Needs [GHCup](https://www.haskell.org/ghcup/) or `brew install haskell-stack`.
-
-```bash
-$ stack --local-bin-path /usr/local/bin/ install
-```
-
-</details>
-
-Verify with `lask version`. Lask runs containers through the `docker` command, so Docker must be installed and its daemon running (Docker Desktop on macOS and Windows, Docker Engine on Linux). Archives and packages for every platform are on the [latest release](https://github.com/lask-task-runner/lask/releases/latest); an APT repository and Chocolatey support are planned.
-
-<details>
-<summary><b>Shell completion</b> &middot; bash, zsh, fish</summary>
-
-Completion knows your module, not just the CLI: it completes the functions the repository you are standing in defines, each function's keyword parameters, and the commands it declares.
-
-```bash
-$ lask run <TAB>
-build_on_docker     install             test                uninstall_completion
-doctest             install_completion  uninstall           unittest
-$ lask run install --<TAB>
---output  --env  --help
-$ lask run install --env <TAB>
-docker  local
-$ lask cmd <TAB>
-mv  rm  stack  uname
-```
-
-**fish** — nothing else to do:
-
-```fish
-$ lask completion fish > ~/.config/fish/completions/lask.fish
-```
-
-**bash** — write the script somewhere and source it:
-
-```bash
-$ mkdir -p ~/.bash_completion.d
-$ lask completion bash > ~/.bash_completion.d/lask
-```
-
-then, in `~/.bash_profile` (macOS Terminal starts a login shell, which does not read `~/.bashrc`) or in `~/.bashrc` (Linux):
-
-```bash
-source ~/.bash_completion.d/lask
-```
-
-With the `bash-completion` package installed — most Linux distributions have it — writing the script to `~/.local/share/bash-completion/completions/lask` instead loads it on demand, with nothing added to your rc file. That directory does nothing on a system without the package, which includes a stock macOS. Note that `source <(lask completion bash)` cannot be used there either: the `source` builtin in bash 3.2, still macOS's `/bin/bash`, silently reads nothing from a process substitution.
-
-**zsh** — the completion system has to be switched on, which macOS does not do for you:
-
-```zsh
-$ mkdir -p ~/.zsh/completions
-$ lask completion zsh > ~/.zsh/completions/_lask
-```
-
-then, in `~/.zshrc`:
-
-```zsh
-fpath=(~/.zsh/completions $fpath)
-autoload -Uz compinit && compinit
-```
-
-If `compinit` already runs in your `~/.zshrc` — every framework does it for you — only the `fpath` line is new, and any directory already on `$fpath` works just as well. `compinit` caches what it found, so after adding a file, delete `~/.zcompdump*` and open a new shell. If completion does nothing and `command not found: compdef` appears when zsh starts, `compinit` has not run.
-
-The script only ever asks the binary, so it keeps working across upgrades. Completion reads your module without running it: no task, no default value, and no environment is ever evaluated to answer a `<TAB>`.
-
-</details>
-
-## Example
-
-Before a task first runs in a container, `lask sync` pulls its image and pins the digest in `lask.lock.json`; `lask run` itself never reaches the network, so every machine runs the image the lock names.
-
-Run a command in any image straight from the REPL, with nothing installed locally:
-
-```
-$ lask repl
-lask> $[#rancher/cowsay] cowsay "Lask"
-```
-
-## Editor Support
-
-`lask serve` is a language server built into the same binary. Install the [Lask extension from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ToruIkeda.vscode-lask), or search for "Lask" in VS Code.
-
-## Usage
-
-```bash
-$ lask run <function> [args...]    # execute (result not printed)
-$ lask eval <function> [args...]   # execute and print the result as JSON
-$ lask cmd <command> [args...]     # run a declared command in its declared image
-$ lask repl                        # interactive session
-
-$ lask sync [--frozen] [--prune]   # fetch dependencies, pull/build images, write the lock
-$ lask deps list | graph [name]    # the dependencies and their status / the dependency graph
-$ lask deps add <name> <source>    # add a dependency: --git <url> --rev <rev>, or --url <url>
-$ lask deps rm <name>              # remove a dependency no module imports
-$ lask envs list [fn]              # the environments, their pinned images, and whether each is present
-
-$ lask check                       # static validation
-$ lask serve                       # language server (LSP)
-$ lask version                     # print the lask version
-```
-
-The [Quick Reference](doc/quick-reference.md) covers the whole language and CLI in ten minutes; [doc/spec.md](doc/spec.md) is the full specification behind it.
+The [language specification](doc/spec.md) and the [compatibility policy](doc/compatibility.md) live in this repository, and the site shows them too. To work on Lask itself, see [doc/development.md](doc/development.md).
 
 ## Status
 
@@ -239,12 +65,4 @@ Lask is pre-1.0: features are `experimental` until 1.0, and breaking changes are
 
 ## Feedback
 
-Questions, ideas and feedback of any kind are welcome in [GitHub Discussions](https://github.com/lask-task-runner/lask/discussions): ask in [Q&A](https://github.com/lask-task-runner/lask/discussions/categories/q-a), suggest a feature in [Ideas](https://github.com/lask-task-runner/lask/discussions/categories/ideas), or share what you built in [Show and tell](https://github.com/lask-task-runner/lask/discussions/categories/show-and-tell). If something in this README or the [Quick Reference](doc/quick-reference.md) was unclear, or a task you wanted to write did not fit the language, that is worth a discussion too.
-
-Found a bug? Please open an [issue](https://github.com/lask-task-runner/lask/issues).
-
-## Development
-
-```bash
-$ lask run test
-```
+Questions, ideas and feedback of any kind are welcome in [GitHub Discussions](https://github.com/lask-task-runner/lask/discussions). Found a bug? Please open an [issue](https://github.com/lask-task-runner/lask/issues).

@@ -491,7 +491,7 @@ Optional fields:
 | `a?: String \| Null` | may be absent | a `String` or null when present |
 
 - An absent key and a null value are different things and stay different: an absent optional key is not a null, and a null is not an absent key. Where the difference is observable is at the two boundaries — `cast` accepts a value whose optional keys are missing and rejects one whose required keys are (15.8), and serialization omits an absent optional field while writing an explicit `null` for a null one (13.1).
-- `?` may be written on a field name in either form, `a?: String` or `"X-Api-Key"?: String`, and nowhere else: it is not a type suffix.
+- `?` may be written on a field name in either form, `a?: String` or `"X-Api-Key"?: String`, and nowhere else in a type: it is not a type suffix. (In an expression, `?` is the conditional operator, 6.2.)
 - Reading an optional field yields `T | Null`, an absent key reading as null (6.8). In memory, then, a program sees the two cases the same way; a program that must tell them apart moves the record to a `Map<T>` with `cast` and asks `has_key` (15.4).
 
 Record field names:
@@ -558,7 +558,7 @@ Type annotations are optional, and the following type inference rules apply wher
   - When the expected type is `Map<T>`: when every value expression conforms to `T`, the literal's type is `Map<T>`. If any value does not conform, it is a type error (keys are always treated as `String`. 4.4).
   - When the expected type is `Any`: inferred as `Record<...>` in the same way as when there is no expected type.
   - Any other expected type is a type error.
-- When the expected type is a union `U1 | ... | Un`, the expression is checked against it by the conformance relation of 4.4, and an expected type is propagated into the branches of an `IfExpr` and the arms of a `CaseExpr` (6.4) unchanged. Therefore `f(): String | Null = if (c) { "x" } else { null }` is well-typed: each branch is checked against `String | Null`, and both `String` and `Null` conform to it.
+- When the expected type is a union `U1 | ... | Un`, the expression is checked against it by the conformance relation of 4.4, and an expected type is propagated into the branches of an `IfExpr` and of a conditional expression `c ? a : b` (6.2), and the arms of a `CaseExpr` (6.4), unchanged. Therefore `f(): String | Null = if (c) { "x" } else { null }` is well-typed: each branch is checked against `String | Null`, and both `String` and `Null` conform to it.
 - When a variable or function declaration has no annotation, the type of the right-hand-side expression is adopted as the declared type.
 - When a function has no return-value annotation, the type of the function body is inferred as the return type.
 - When a parameter has no annotation, `Any` is adopted.
@@ -973,7 +973,8 @@ export { rollout } from "./lib/deploy.lask"
 This chapter defines the expressions of Lask. Every unit of execution in Lask is expressed as an expression.
 
 ```ebnf
-Expression   = UnaryExpr | Expression binary_op Expression .
+Expression   = BinaryExpr [ "?" Expression ":" Expression ] .
+BinaryExpr   = UnaryExpr | BinaryExpr binary_op BinaryExpr .
 UnaryExpr    = PrimaryExpr | unary_op UnaryExpr .
 PrimaryExpr  = operand | AccessorExpr | CallExpr | DoExpr | IfExpr | CaseExpr | ForExpr | TryExpr | AsyncExpr | AwaitExpr .
 
@@ -1086,8 +1087,26 @@ Operator precedence, from highest to lowest, is as follows.
 4. Comparison operators `==` `!=` `<` `<=` `>` `>=`
 5. Logical operators `&&` `||`
 6. Pipe and composition operators `|>` `<|` `>>` `<<`
+7. Conditional operator `? :`
 
-Operators of the same precedence associate from left to right.
+Operators of the same precedence associate from left to right, except the conditional operator, which associates from right to left.
+
+The conditional operator `c ? a : b`:
+
+- `c ? a : b` is syntactic sugar for `if (c) { a } else { b }` (6.4). It is the form of `IfExpr` whose branches are single expressions, and it is typed and evaluated exactly as that `IfExpr` is: `c` must be `Bool`, the two branches must have the same type `T`, which is the type of the whole expression, an expected type is propagated into both branches unchanged (4.3), and only the selected branch is evaluated.
+- It binds more loosely than every binary operator, so the condition is a whole `BinaryExpr`: `xs |> is_empty ? 0 : 1` tests `is_empty(xs)`. Each branch is a whole `Expression`, so `c ? a || b : xs |> f` needs no parentheses.
+- It associates to the right: `a ? x : b ? y : z` is `a ? x : (b ? y : z)`, and a conditional may stand in the middle branch without parentheses, as in `a ? b ? x : y : z`. A multi-way choice with more than two conditions is usually clearer as the condition form of `case` (6.4).
+- Its branches are expressions, not statements, so a branch cannot contain `return` (6.5).
+- A newline before a line-leading `?` or `:`, and after a line-final `?` or `:`, continues the expression (6.5), so a long conditional may put each branch on its own line. This is how a branch can be a command execution expression other than the last one: a command string runs to the end of its line (6.6), so in `c ? $ echo a : $ echo b` the then branch swallows `: $ echo b`, while the three-line form below does not.
+
+```lask
+greet(--loud = false, --name = "Lask"): String = do {
+  word = loud ? "HELLO" : "hello"
+  loud
+    ? $[#local] echo "#{word}, #{name}!"
+    : $[#local] echo "#{word}, #{name}."
+}
+```
 
 The meaning of each operator is as follows.
 
@@ -1359,8 +1378,8 @@ Statement termination rules:
 - `;` is an optional separator for writing multiple statements on one line, and is not required at the end of a line (writing it there is not an error).
 - A newline that falls under any of the following is not regarded as statement termination and is treated as continuation of the statement.
   - A newline at a position where a bracket opened inside the statement (`(`, `[`, `{`) has not yet been closed
-  - A newline at a position where the token at the end of the line is a continuation token. The continuation tokens are limited to the following: `=`, `,`, `:`, `->`, binary operators (`|>`, `+`, `==`, etc.; the `binary_op` of 6.2), `!`
-  - A newline where the leading token of the next line is a binary operator (`|>`, `+`, `==`, etc.)
+  - A newline at a position where the token at the end of the line is a continuation token. The continuation tokens are limited to the following: `=`, `,`, `:`, `?`, `->`, binary operators (`|>`, `+`, `==`, etc.; the `binary_op` of 6.2), `!`
+  - A newline where the leading token of the next line is a binary operator (`|>`, `+`, `==`, etc.), or the `?` or `:` of a conditional expression (6.2)
   - A newline where the leading token of the next line is `else` (continuation after the closing `}` of the then block of an `IfExpr`). Inside a `case` block the same rule is what lets an `else` arm begin a line (6.4)
   - A newline where the leading token of the next line is `catch` or `finally` (continuation after the closing `}` of a block of a `TryExpr`)
 - `as` and `from` are neither continuation tokens nor leading tokens of continuation. A line-leading `as` or `from` does not continue the preceding statement or declaration (see the constraints on `import` declarations in Chapter 5).
@@ -1395,7 +1414,7 @@ Early return (`return`):
 - `return` may be placed only in the following positions (return-permitted positions). Violation is a syntax error (`E-SYNTAX-RETURN-POSITION`).
   - A statement position of the `do` block that is the body of a function declaration or lambda expression
   - A `GuardStmt` placed in a return-permitted position, and statement positions inside each branch block of an `IfExpr` in statement position (applied recursively)
-- Therefore, it cannot be used inside the body of `for`, inside the body of a `case` arm (arm bodies are expressions, 6.4), inside each block of `try`/`catch`/`finally`, or inside `do` blocks appearing in expression positions such as the right-hand side of a binding or an argument.
+- Therefore, it cannot be used inside the body of `for`, inside the body of a `case` arm (arm bodies are expressions, 6.4), inside each block of `try`/`catch`/`finally`, inside a branch of a conditional expression `c ? a : b` (6.2), or inside `do` blocks appearing in expression positions such as the right-hand side of a binding or an argument.
 - A `GuardStmt` (an `if` without `else`) is permitted only when the final statement of the block is a `ReturnStmt` (6.4).
 - No statement of the same block may be placed after a `ReturnStmt` (unreachable; syntax error).
 
@@ -1946,14 +1965,15 @@ The expansion order during static verification is as follows.
 1. `async e` -> `spawn(\() -> e)`
 2. `await e` -> core function application `await(e)` (normalization of the parenthesis-omitted form)
 3. Continuation-distribution transformation of `return` (including guard statements) (6.5)
-4. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`
-5. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
-6. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
-7. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
-8. Sequential-execution expansion of `do { ... }`
-9. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
-10. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
-11. Command sugar expansion of `$ cmd` / `$[env] cmd`
+4. `c ? a : b` -> `if (c) { a } else { b }` (6.2)
+5. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`
+6. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
+7. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
+8. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
+9. Sequential-execution expansion of `do { ... }`
+10. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
+11. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
+12. Command sugar expansion of `$ cmd` / `$[env] cmd`
 
 Type checking is performed on the core expressions after expansion. The meaning of the expansion result must be equivalent to that of the original syntax.
 
@@ -2150,7 +2170,7 @@ Error value conversion of failures caused by non-zero exit (carrying over the ex
 Stopping an abandoned command:
 
 - The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
-- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed.
+- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed. The container runs under an init process unless its environment turns that off (10.2), so the request reaches a command that is not written to handle it.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
 
@@ -2492,6 +2512,7 @@ The run options this implementation provides:
 - A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the `docker` client's command line and sets its value in the client's environment, from which docker takes it. A variable the client reads itself — a name beginning with `DOCKER_`, ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, in any case — is passed with its value on the command line instead, since setting it for the client would change which daemon it reaches or how.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written.
 - A `Bool` parameter left `false` is the daemon's own default and is not passed; nothing is inferred from its absence.
+- `init` is the exception: it is on unless set to `false`. The container runs an init process as PID 1, which passes the termination request of 8.7 on to the program; a program that is PID 1 itself has no default signal handlers and would ignore it until the grace period ran out. `init = false` runs the program as PID 1.
 
 Each profile has at least the following execution attributes.
 
@@ -2774,10 +2795,6 @@ lask secrets list [--module <path>] [<function>]
 lask secrets check [--module <path>] [<function>] [--read]
 ```
 
-Retired subcommands:
-
-- A subcommand that another replaced is answered with the replacement, as a usage error (`E-CLI-USAGE`, exit code `4`), rather than as an unknown command: `env build` and `deps sync` by `sync`, `env list` and `envs check` by `envs list`, `deps why` by `deps graph`, and `deps diff` by `deps list`. The retired option `cmd --list`, given before the command name, is answered the same way with `cmd --help`.
-
 Policy on environment specification:
 
 - Specification of the execution environment is performed only via in-language environment expressions (6.7). No option (`--env` etc.) is provided for specifying or overriding the execution environment from the CLI.
@@ -2804,7 +2821,7 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 - The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
 - `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
 - For `cmd`, no token after the command name is intercepted, `--help` included: those tokens are the invoked program's own arguments (11.8). The help of the subcommand is obtained with `lask cmd --help`, with no command name.
-- `--` after the function name ends the scan for `--help`: all following tokens are passed to the function verbatim. `--help=<value>` is likewise not intercepted and binds to the parameter `help` in the ordinary way.
+- `--` after the function name ends the scan for `--help` and for keyword arguments: every following token is passed to the function verbatim as a positional argument, including one that begins with `-`. `--help=<value>` is likewise not intercepted and binds to the parameter `help` in the ordinary way.
 
 Function-name and parameter-name mapping rules:
 
@@ -2816,7 +2833,7 @@ Function-name and parameter-name mapping rules:
 Keyword argument forms:
 
 - A keyword argument for parameter `p` is given as `--p <value>` or `--p=<value>`.
-- If the parameter name is a single character, the short form `-p <value>` may also be used.
+- If the parameter name is a single character, the short form `-p <value>` may also be used. Since no identifier begins with a digit (3.2), a token such as `-1` is never a short form: it is a positional argument (a negative number under `auto` or `json` decoding).
 - Example: for `retry(cmd: String, --n: Number = 3)`, `lask run retry "make test" -n 5` corresponds to the function call `retry("make test", n = 5)`.
 
 Binding rules:
@@ -3077,7 +3094,7 @@ Sources of help information:
 
 Rendering rules:
 
-- Parameter names are displayed as declared (3.2). The kebab-case invocation form of 11.2 remains accepted but is not displayed.
+- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
 - In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`.
 - A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
 - The function list holds the module's functions — declarations written as functions, and bindings whose value is a function — whether it declares them or re-exports them (Chapter 5). Plain value bindings are callable (11.2) and have help of their own, but are not listed.
@@ -3107,7 +3124,7 @@ build(target: String, --out_dir: String = "dist", --publish: Bool = false): Stri
 build - Build the project and publish the artifact.
 
 Usage:
-  lask run build <target> [--out_dir <String>] [--publish <Bool>]
+  lask run build <target> [--out-dir <String>] [--publish <Bool>]
 
 The build runs in the `builder` environment; the artifact is
 uploaded only when `--publish` is set.
@@ -3115,7 +3132,7 @@ uploaded only when `--publish` is set.
 Parameters:
   target : String
       Build target name.
-  --out_dir : String = "dist"
+  --out-dir : String = "dist"
       Directory the artifact is written to.
   --publish : Bool = false
       Whether to upload the artifact.
@@ -3177,7 +3194,7 @@ Output destination and exit codes:
 
 - Help is written to stdout (the exception in 11.3). Diagnostics are written to stderr as usual.
 - `0`: the help was displayed.
-- `4`: the specified name is not a top-level declaration of the module. The usage and, where possible, candidate names are written to stderr as `E-CLI-USAGE`. A declaration that is not a function is not an error: a plain value binding is callable with no arguments (11.2), so its help is displayed with an empty parameter list.
+- `4`: the specified name is not a top-level declaration of the module. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`. A declaration that is not a function is not an error: a plain value binding is callable with no arguments (11.2), so its help is displayed with an empty parameter list.
 - `1`: the target module could not be parsed. Diagnostics are written to stderr and no help is displayed.
 - Static errors (14.4) do **not** prevent help display. The help is rendered from the information that is available, a type that could not be determined is displayed as `?`, the diagnostics are written to stderr, and the exit code is `0`. Help is most needed while a module is broken, so this is a deliberate exception to the rule of 14.4 that static errors stop `run` / `eval`; no function is evaluated in this case either.
 - For `lask run --help` / `lask eval --help` without a function name, the CLI option help must always be displayed with exit code `0`. If the target module cannot be loaded, the function list is omitted.
@@ -3244,7 +3261,7 @@ lask cmd --help [--module <path>]
 Name resolution rules:
 
 - `<command>` is resolved against the command words the target module has — those it declares, `internal` ones included, and those it imports (Chapter 5) — by exact text. The `-` to `_` mapping of 11.2 must not be applied: this is a program name and not a function name, so `lask cmd docker-compose up` resolves the command word `docker-compose`.
-- A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --help`.
+- A name that is not a command word is a CLI usage error (`E-CLI-USAGE`), and the diagnostic must name `lask cmd --help`. It may carry candidate command words (14.3).
 - No option for supplying or overriding the execution environment is provided (11.1, 10.4).
 
 Argument boundary rules:
@@ -3281,7 +3298,6 @@ Rules (`--help`):
 - An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
 - The list is produced with no network access and no build, on the same terms as `envs` (11.4).
 - The option help is displayed whatever state the target module is in. When the module does not compile, its diagnostics go to stderr, the list is omitted, and the exit code is `0`.
-- `--list`, which used to report the same list, is retired: `lask cmd --list` is a CLI usage error naming `lask cmd --help` (11.1). After the command name, `--list` is an argument of the program like any other token.
 
 Execution example:
 
@@ -3832,12 +3848,24 @@ An implementation must include at least the following when reporting an error.
 Additional requirements related to types and names:
 
 - For type mismatches, include `expected` and `actual`.
-- For name resolution failures, candidates or a summary of the search scope may be included.
+- For name resolution failures, candidates or a summary of the search scope may be included. Candidates are given as follows:
+  - The pool is the names of the same kind in scope where the name was written: for an undefined name, the locals, top-level declarations, imported names, builtins and namespaces; for a type, the type names and aliases; for a namespace member or a named import, the target module's public symbols; for a command word, the module's command words; for a keyword argument, the function's keyword parameters; for a record field, the record's fields; for an environment option, the image and run options. On the command line the pool is the entry module's public functions, its command words (`lask cmd`, 11.8), or the function's keyword parameters, each given as the CLI writes it (11.2): `cowsay-hello`, `--dry-run`.
+  - Names are compared ignoring case, with `-` and `_` taken as one character. The distance is the edit distance in which inserting, deleting or substituting a character, or transposing two adjacent ones, each count as one edit.
+  - A name is a candidate when its distance from the written name is at most max(1, ⌊length / 3⌋), where length is that of the written name. Candidates are sorted by distance, then by name, and at most three are given.
+  - In text output, candidates follow the other notes as one more note: `note: did you mean 'hello'?`, or `did you mean 'a', 'b' or 'c'?` for several. In JSON output they are the array `suggestions`, and the notes are the array `notes`; each is present only when not empty.
 
 Additional requirements related to commands:
 
 - The message of a failed command execution is its standard error output (6.6). When that is empty or only whitespace, as for a tool that reports on standard output, the diagnostic's `message` says instead that the command exited with its code and wrote nothing to standard error, and that its output is in the command execution log (12.3). Only the diagnostic changes: the `Error` value a program catches keeps the empty `message`.
 - A syntax error in a module where a command string holds a closing bracket that it never opened carries a note naming that command's line: the command ran to the end of its line (6.6) and took the bracket of an enclosing call with it.
+
+Additional requirements related to reporting several errors:
+
+- Independent errors are all reported; an error that only follows from another is not. A top-level declaration, a type alias, a command declaration and a command import are each checked on their own, and each reports at most its first error.
+- A declaration that uses one that failed is still checked when the failed one's annotations give all of its type: a function declaration with its return type and the type of every keyword parameter written, or a value declaration with its type written. Otherwise the declaration that uses it reports nothing. Likewise, a type that refers to a failed type alias, and a command string whose command words include one whose declaration or import failed, report nothing.
+- A declaration that holds an error of name resolution (7.1-7.3) is not type checked; the declarations that do not are.
+- A syntax error is reported for each top-level declaration that has one: parsing resumes at the next token in column 1. A module with a syntax error is not checked further. A lexical error is the only error reported for its module.
+- Diagnostics are reported in order of file and position, each once. Text output shows at most 50 errors and then the number left out; JSON output carries every one.
 
 JSON format example:
 
@@ -3850,6 +3878,23 @@ JSON format example:
   "location": {"line": 12, "column": 8},
   "expected": "Number",
   "actual": "String"
+}
+```
+
+A name resolution failure with a candidate, in text and in JSON:
+
+```text
+main.lask:2:10-2:14: E-NAME-UNDEFINED [static]: undefined name: 'helo'
+  note: did you mean 'hello'?
+```
+
+```json
+{
+  "code": "E-NAME-UNDEFINED",
+  "message": "undefined name: 'helo'",
+  "stage": "static",
+  "location": {"line": 2, "column": 10},
+  "suggestions": ["hello"]
 }
 ```
 
@@ -4233,7 +4278,7 @@ upload(src: String, dst: String) =
 
 - The result is already one word, and must not be quoted again by the caller: writing `"'#{shell_quote(v)}'"` produces a literal quotation character in the argument.
 - `shell_quote` is a pure function, and is placed here rather than among the string operations of 15.3 because its contract is about command construction.
-- Masking (12.8) matches registered values as exact substrings. Because quoting only wraps the value, a registered secret is still a substring of the quoted result and is still masked, unless the value itself contains `'`, which quoting rewrites.
+- Masking (12.8) matches registered values as exact substrings. Quoting wraps the value, so a registered secret is still a substring of the quoted result and is still masked. A value that contains `'` is rewritten by quoting, so it is also registered in its rewritten form (every `'` as `'\''`), and the quoted result is masked as well.
 
 ### 15.6 Parallel and Asynchronous Helper Functions
 

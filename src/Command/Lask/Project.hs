@@ -746,7 +746,7 @@ cmdEnvsList opts function = do
     Just fn ->
       case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
         k : _ -> pure (Just k)
-        [] -> usageError opts ("no such function: '" <> fn <> "'")
+        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
   lock <- loadLockMaybe paths
   daemon <- daemonReachable
   case daemon of

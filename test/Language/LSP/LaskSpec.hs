@@ -6,10 +6,11 @@ import Control.Lens ((^.))
 import Control.Monad (forM_, unless)
 import Data.Char (isDigit)
 import Data.List (nub, sort)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.LSP.Lask (completionAt, documentDiagnostics, hoverAt, inlayHintsIn, lexSemanticTokens, semanticTokens, uriPath)
+import Language.LSP.Lask (completionAt, documentDiagnostics, hoverAt, inlayHintsIn, lexSemanticTokens, quickFixes, semanticTokens, uriPath)
 import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.Lask (checkText)
@@ -64,6 +65,31 @@ spec = do
         `shouldReturn` [(Just DiagnosticSeverity_Error, Just (InR "E-TYPE-MISMATCH"))]
     it "shows nothing for a clean document" $
       severities "a = 1" `shouldReturn` []
+    it "shows every independent error (spec 14.3)" $
+      map (^. L.range . L.start . L.line) . fst
+        <$> documentDiagnostics "main.lask" "a(): Number = \"s\"\nb = nope\nc(): String = 1\n"
+        `shouldReturn` [0, 1, 2]
+    it "shows an error in an imported module at the start of the document" $
+      withSystemTempDirectory "lask-lsp" $ \dir -> do
+        writeFile (dir </> "lib.lask") "export a(): Number = 1\n\n\nexport b(): Number = \"s\"\n"
+        (ds, _) <- documentDiagnostics (dir </> "main.lask") "import { a } from \"./lib.lask\"\nx: String = a()\n"
+        map (^. L.range . L.start . L.line) ds `shouldBe` [0, 1]
+
+  describe "quick fixes (spec 14.3)" $ do
+    let uri = Uri "file:///main.lask"
+        fixes src = do
+          ds <- fst <$> documentDiagnostics "main.lask" src
+          pure
+            [ (a ^. L.title, [(e ^. L.range, e ^. L.newText) | Just m <- [a ^. L.edit >>= (^. L.changes)], es <- Map.elems m, e <- es])
+            | a <- quickFixes uri src ds
+            ]
+    it "replaces a misspelt name with each suggestion" $
+      fixes "hello = 1\nhelp = 2\nmain() = helo\n"
+        `shouldReturn` [ ("Change to 'hello'", [(Range (Position 2 9) (Position 2 13), "hello")]),
+                         ("Change to 'help'", [(Range (Position 2 9) (Position 2 13), "help")])
+                       ]
+    it "offers none where the range holds more than the name" $
+      fixes "hello(--dry_run: Bool = false) = 1\nmain() = hello(dry_rnu = true)\n" `shouldReturn` []
 
   describe "comments" $ do
     it "emits comment tokens for line comments" $

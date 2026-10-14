@@ -29,7 +29,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Language.Lask.Core.AST
 import Language.Lask.Deps.File (ConfirmRule (..), DepsFile (..), defaultDepsFileName)
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
+import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, suggesting)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticParams (..))
 import Language.Lask.ErrorCode (ErrorCode (EModuleConfirmTarget), Stage (StageStatic))
 import Language.Lask.Module.Loader (Program (..))
@@ -64,12 +64,11 @@ validateConfirm prog scopes core = case progProject prog of
     public = entryPublicValues prog scopes
     check (name, rule) = case lookup name public >>= \k -> Map.lookup k (cpDecls core) of
       Nothing ->
-        [ diag rule $
+        [ suggesting name (map fst public) . diag rule $
             "confirm '"
               <> name
               <> "': no public function of that name in "
               <> T.pack (progEntry prog)
-              <> nearest name (map fst public)
         ]
       Just cd -> case cdParams cd of
         Nothing
@@ -86,7 +85,7 @@ validateConfirm prog scopes core = case progProject prog of
       where
         checkCondition fn named (param, values) = case lookup param named of
           Nothing ->
-            [ diag rule $
+            [ suggesting param (map fst named) . diag rule $
                 "confirm '"
                   <> fn
                   <> "': 'when' names '"
@@ -94,7 +93,6 @@ validateConfirm prog scopes core = case progProject prog of
                   <> "', which is not a parameter of '"
                   <> fn
                   <> "'"
-                  <> nearest param (map fst named)
             ]
           Just ty ->
             [ diag rule $
@@ -229,10 +227,3 @@ jsonText :: A.Value -> Text
 jsonText v = case v of
   A.String s -> s
   other -> TE.decodeUtf8 (BL.toStrict (A.encode other))
-
-nearest :: Text -> [Text] -> Text
-nearest wanted candidates = case filter close candidates of
-  (c : _) -> "; did you mean '" <> c <> "'?"
-  [] -> ""
-  where
-    close c = c /= wanted && (T.take 3 c == T.take 3 wanted || wanted `T.isInfixOf` c || c `T.isInfixOf` wanted)

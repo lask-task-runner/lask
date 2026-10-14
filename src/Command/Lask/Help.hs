@@ -36,6 +36,7 @@ import Language.Lask.Elaborate (CoreDecl (..), StaticParams (..))
 import Language.Lask.Span (Position (..), Span (..), spanText)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..), renderType)
+import Language.Lask.Utils (snakeToKebab)
 
 data ParamKind = ParamPositional | ParamVariadic | ParamKeyword
   deriving (Show, Eq)
@@ -120,24 +121,34 @@ buildFunctionHelp path src decl mCore doc envs =
       -- A plain value binding is callable with no arguments
       -- (spec 11.2), so its own type is what the call returns.
       Just t | null (declParams decl) -> Just (renderType t)
-      _ -> Nothing
+      Just _ -> Nothing
+      -- A declaration that did not elaborate still shows the type it
+      -- was annotated with (spec 11.6: only a type that cannot be
+      -- determined is shown as `?`).
+      Nothing -> case AST.declF decl of
+        AST.DFunction _ _ _ ann _ -> AST.renderSType <$> ann
+        AST.DValue _ _ ann _ | null (declParams decl) -> AST.renderSType <$> ann
+        _ -> Nothing
 
     paramHelp p = case AST.paramF p of
-      AST.PPositional n sec _ ->
-        ParamHelp n ParamPositional (typeOf spPositional n) Nothing (isSecret sec) (docOf n)
-      AST.PVariadic n _ ->
-        ParamHelp n ParamVariadic variadicType Nothing False (docOf n)
-      AST.PKeyword n sec _ dflt ->
-        ParamHelp n ParamKeyword (typeOf spKeywords n) (defaultOf sec dflt) (isSecret sec) (docOf n)
+      AST.PPositional n sec ann ->
+        ParamHelp n ParamPositional (typeOf spPositional n ann) Nothing (isSecret sec) (docOf n)
+      AST.PVariadic n ann ->
+        ParamHelp n ParamVariadic (variadicType ann) Nothing False (docOf n)
+      AST.PKeyword n sec ann dflt ->
+        ParamHelp n ParamKeyword (typeOf spKeywords n ann) (defaultOf sec dflt) (isSecret sec) (docOf n)
 
-    typeOf field n = do
-      sp <- params
-      renderType <$> lookup n (field sp)
+    -- The elaborated type, or the annotation as written when the
+    -- declaration did not elaborate.
+    typeOf field n ann = case params of
+      Just sp -> renderType <$> lookup n (field sp)
+      Nothing -> AST.renderSType <$> ann
 
-    variadicType = do
-      sp <- params
-      (_, elemTy) <- spVariadic sp
-      pure (renderType (TyArray elemTy))
+    variadicType ann = case params of
+      Just sp -> do
+        (_, elemTy) <- spVariadic sp
+        pure (renderType (TyArray elemTy))
+      Nothing -> AST.renderSType <$> ann
 
     -- Shown as written, never evaluated (spec 11.6); a secret binding
     -- never reveals its value (spec 12.8).
@@ -161,10 +172,12 @@ declTypeParams d = case AST.declF d of
 
 -- | The declaration's name with its type parameters, for the places
 -- that describe it rather than ask for it to be typed (spec 11.6).
+-- | The name as the text form shows it: in the kebab-case the command
+-- line is written in (spec 11.2, 11.6), with any type parameters.
 declaredAs :: FunctionHelp -> Text
 declaredAs fh
-  | null (fhTypeParams fh) = fhName fh
-  | otherwise = fhName fh <> "<" <> T.intercalate ", " (fhTypeParams fh) <> ">"
+  | null (fhTypeParams fh) = snakeToKebab (fhName fh)
+  | otherwise = snakeToKebab (fhName fh) <> "<" <> T.intercalate ", " (fhTypeParams fh) <> ">"
 
 declName :: AST.Decl -> Text
 declName d = case AST.declF d of
@@ -218,12 +231,14 @@ renderHelpText subcommand fh =
 
     usageLine =
       T.unwords $
-        ["lask", subcommand, fhName fh] <> map usageParam (fhParams fh)
+        ["lask", subcommand, snakeToKebab (fhName fh)] <> map usageParam (fhParams fh)
 
     usageParam p = case phKind p of
-      ParamPositional -> "<" <> phName p <> ">"
-      ParamVariadic -> "[<" <> phName p <> "> ...]"
-      ParamKeyword -> "[--" <> phName p <> " <" <> typeText p <> ">]"
+      ParamPositional -> "<" <> cliName p <> ">"
+      ParamVariadic -> "[<" <> cliName p <> "> ...]"
+      ParamKeyword -> "[--" <> cliName p <> " <" <> typeText p <> ">]"
+
+    cliName = snakeToKebab . phName
 
     typeText p = fromMaybe "?" (phType p)
 
@@ -234,7 +249,7 @@ renderHelpText subcommand fh =
     paramLines p = paramSignature p : maybe [] (map indentDoc . T.lines) (phDoc p)
 
     paramSignature p =
-      prefix <> phName p <> " : " <> typeText p <> maybe "" (" = " <>) (phDefault p)
+      prefix <> cliName p <> " : " <> typeText p <> maybe "" (" = " <>) (phDefault p)
       where
         prefix = case phKind p of
           ParamPositional -> ""

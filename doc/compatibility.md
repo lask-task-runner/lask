@@ -18,6 +18,7 @@ Scope:
 - Dynamic semantics and execution environments (Chapters 8, 10)
 - CLI, observability, serialization, and the error system (Chapters 11, 12, 13, 14)
 - Built-in library (Chapter 15)
+- The Haskell API of the `lask` package (Chapter 10 of this document)
 
 This document prescribes backward compatibility requirements for implementations, tooling, and operational guides.
 
@@ -149,3 +150,18 @@ Error codes (specification Chapter 14):
 
 - Existing codes must not be reused in a way that breaks their meaning.
 - For compatibility, deprecation is preferred over removal.
+
+## 10. The Haskell API
+
+The `lask` package exposes every module of its library, because hpack does, but only the following are its Haskell API:
+
+- `Language.Lask.Embed`, the embedding of the language in Haskell
+- `Language.Lask.Embed.Do`, its operators for `QualifiedDo`
+- `Language.Lask.Embed.Run`, which runs and inspects an embedded program, with the runtime types it re-exports
+
+Rules:
+
+- The Haskell API is `experimental` (Chapter 4). It may change incompatibly in any release until it is declared `stable`, and the procedures of Chapters 5-9 do not apply to it.
+- Every other module, `Language.Lask.Embed.Internal` included, is internal: it may change or disappear in any release, and depending on it is unsupported.
+- An embedded program means what the same program written in the language means. A difference between the Core it reifies to and the Core the elaborator produces for that program is a defect of the embedding, not a change to the language.
+- The package is distributed from the GitHub repository, not Hackage. A project depends on it by pinning a tagged commit.

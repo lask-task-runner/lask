@@ -192,10 +192,21 @@ dockerShellArgs :: FilePath -> Text -> Text -> Map Text Value -> Bool -> Text ->
 dockerShellArgs baseDir name image opts wantStdin cmd =
   ["run", "--rm", "--pull=never", "--name", T.unpack name]
     <> (if wantStdin then ["-i"] else [])
+    <> initArgs opts
     <> workdirMountArgs baseDir
     <> ["--entrypoint", "/bin/sh"]
     <> dockerOptArgs opts
     <> [T.unpack image, "-c", T.unpack cmd]
+
+-- | An init process as PID 1, unless the environment sets @init@ to
+-- @false@ (spec 10.2). A program that is PID 1 itself gets no default
+-- signal handlers, so it would ignore the termination request that
+-- stops an abandoned command (8.7) and run out the whole grace period;
+-- the init process passes the request on.
+initArgs :: Map Text Value -> [String]
+initArgs opts = case Map.lookup "init" opts of
+  Just (VBool False) -> []
+  _ -> ["--init"]
 
 -- | Implementation-defined environment options (spec 10.2).
 --
@@ -230,7 +241,8 @@ dockerOptArgs opts = concatMap emit (Map.toAscList opts)
       "env" -> envArgs v
       "platform" -> one "--platform" v
       "hostname" -> one "--hostname" v
-      "init" -> switch "--init" v
+      -- Given by 'initArgs', since it is on unless turned off.
+      "init" -> []
       -- Confinement.
       "read_only" -> switch "--read-only" v
       "tmpfs" -> each "--tmpfs" v
@@ -326,10 +338,14 @@ dockerProcess opts args = case dockerClientEnv opts of
 -- | Arguments for @docker run@ of one program with its argument
 -- vector (spec 11.8): no shell is created, so the program name becomes
 -- the entrypoint and the remaining words are passed as they stand.
+-- Stdin is always attached, since the program's stdin is that of
+-- @lask cmd@ whether or not it is a terminal; a terminal is allocated
+-- only when all three streams are one.
 dockerExecArgs :: FilePath -> Text -> Map Text Value -> Bool -> Text -> [Text] -> [String]
 dockerExecArgs baseDir image opts interactive prog argv =
-  ["run", "--rm", "--pull=never"]
-    <> (if interactive then ["-i", "-t"] else [])
+  ["run", "--rm", "--pull=never", "-i"]
+    <> (if interactive then ["-t"] else [])
+    <> initArgs opts
     <> workdirMountArgs baseDir
     <> ["--entrypoint", T.unpack prog]
     <> dockerOptArgs opts

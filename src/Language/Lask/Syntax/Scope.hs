@@ -117,6 +117,7 @@ childExprs (Expr _ f) = case f of
   ENot e -> [e]
   EDo b -> blockExprs b
   EIf c t mElse -> c : blockExprs t <> maybe [] blockExprs mElse
+  ECond c a b -> [c, a, b]
   EFor _ xs b -> xs : blockExprs b
   ECase scrut arms -> maybeToList scrut <> concatMap armExprs arms
   ETry b mCatch mFin ->

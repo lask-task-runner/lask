@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Haskell Stack
-        uses: haskell/actions/setup@v2
+        uses: haskell-actions/setup@v2
         with:
           ghc-version: "9.4"
           enable-stack: true
@@ -36,64 +36,26 @@ jobs:
       - name: Install dependencies
         run: stack build --only-dependencies
 
+      # lask is built first so that the rest of CI is main.lask's `ci`
+      # task, run by the binary this commit produced. The copy in
+      # dist/bin is the one that runs it: `stack test --coverage`
+      # relinks the one in the install root while the task is running.
       - name: Build project
-        run: stack build
+        run: stack build --copy-bins --local-bin-path dist/bin
 
-      # Coverage is recorded, not enforced: there is no threshold yet,
-      # only a number to watch from one push to the next.
-      - name: Run tests
-        run: stack test --coverage
+      # The completion smoke test drives each shell it finds; one that
+      # is missing is skipped, not failed.
+      - name: Install shells for the completion smoke test
+        run: sudo apt-get update -qq && sudo apt-get install -y zsh fish
+
+      - name: Test
+        run: dist/bin/lask run ci
 
       - name: Summarize coverage
-        run: tools/coverage-report.sh >> "$GITHUB_STEP_SUMMARY"
+        run: dist/bin/lask eval --stdout-encode text coverage-report >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the coverage report
         uses: actions/upload-artifact@v4
         with:
           name: coverage
           path: .stack-work/install/**/hpc/
-
-      - name: Run doctests
-        run: stack exec doctest app src
-
-      # The base directory reaches `docker run` as the mount source, and
-      # it used to be pasted into `-v <source>:/work`, where every colon
-      # in it became a field separator. A Windows base directory splits
-      # at its drive letter — `C:\proj` was read as source `C`, target
-      # `\proj` and mode `/work` — and a POSIX directory whose name
-      # holds a colon splits the same way, which is what makes the
-      # regression reachable on this runner at all.
-      #
-      # EnvironmentSpec already asserts the argument vector, including
-      # the Windows case. Only the daemon can say whether it accepts
-      # what we build, so that assertion is worth this container.
-      - name: Run a containerized task from a colon-bearing directory
-        run: |
-          set -euo pipefail
-          LASK="$(stack path --local-install-root)/bin/lask"
-          WORKDIR="${RUNNER_TEMP}/colon:dir"
-          mkdir -p "${WORKDIR}"
-          cp -R example/01-projects/01-hello-world/. "${WORKDIR}/"
-          cd "${WORKDIR}"
-          # A task never pulls its image (spec 10.3): `lask sync` pulls
-          # it and pins its digest in lask.lock.json first.
-          "${LASK}" sync
-          # Capturing both streams hides them from the log, so the
-          # status is carried past the capture and the output echoed
-          # before anything is asserted on it.
-          OUTPUT=$("${LASK}" run cowsay-hello Lask 2>&1) && STATUS=0 || STATUS=$?
-          echo "${OUTPUT}"
-          test "${STATUS}" -eq 0
-          # The trace echoes the command, so a bare `Hello, Lask!`
-          # matches even on a failed run. The framed form is drawn by
-          # cowsay and appears only when the container produced it.
-          grep -q '< Hello, Lask! >' <<<"${OUTPUT}"
-
-      # The generated completion scripts are shell code, so the only
-      # place their quoting and word splitting can be checked is a
-      # shell. A shell that is missing is skipped, not failed.
-      - name: Install shells for the completion smoke test
-        run: sudo apt-get update -qq && sudo apt-get install -y zsh fish
-
-      - name: Shell completion smoke test
-        run: tools/completion-smoke.sh "$(stack path --local-install-root)/bin/lask"

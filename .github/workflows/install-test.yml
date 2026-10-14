@@ -1,8 +1,9 @@
 name: Install test
 
-# The README is the only install instruction users have, so it is worth
-# running: this workflow installs a released binary exactly the way the
-# README says to on each platform, then drives example/01-projects/01-hello-world with it.
+# The installation page (https://lask-task-runner.github.io/guide/installation)
+# is the only install instruction users have, so it is worth running: this
+# workflow installs a released binary exactly the way that page says to on
+# each platform, then drives example/01-projects/01-hello-world with it.
 # Manual trigger only — it tests a published release, not the commit.
 on:
   workflow_dispatch:
@@ -32,7 +33,7 @@ jobs:
         id: resolve
         shell: bash
         env:
-          # The README's curl is unauthenticated; the token is only here
+          # The installation page's curl is unauthenticated; the token is only here
           # because a shared runner IP hits the anonymous rate limit.
           GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
@@ -93,7 +94,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      # README § Install — "macOS / Linux · download the binary".
+      # Installation page — "macOS / Linux · download the binary".
       - name: Install lask (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -104,7 +105,7 @@ jobs:
           tar -xzf lask.tar.gz
           sudo mv ./lask /usr/local/bin
 
-      # README § Install — "Windows · PowerShell". The README's `setx`
+      # Installation page — "Windows · PowerShell". The page's `setx`
       # only reaches later terminals, which a job does not have, so the
       # same directory goes on the path the way Actions exposes it.
       - name: Install lask (Windows)
@@ -129,7 +130,7 @@ jobs:
           # leaves it to the current context in ~/.docker/config.json.
           set-host: true
 
-      # README § Install — "Verify with `lask --help`".
+      # Installation page — "Verify with `lask --help`".
       - name: Verify the installation
         shell: bash
         run: |
