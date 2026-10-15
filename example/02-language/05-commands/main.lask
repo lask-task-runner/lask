@@ -43,8 +43,9 @@ inspect(): CommandResult = $*[alpine] sh -c 'echo out; echo err 1>&2; exit 3'
 // @example lask eval probe --path /etc/os-release
 probe(--path: String = "/etc/os-release"): String = do {
   r = $* cat #{path}
-  if (r.code == 0) { return "found #{path}: #{size(lines(r.stdout))} lines" }
-  "missing #{path} (exit #{r.code})"
+  r.code == 0
+    ? "found #{path}: #{size(lines(r.stdout))} lines"
+    : "missing #{path} (exit #{r.code})"
 }
 
 // The first line of the image's /etc/os-release.

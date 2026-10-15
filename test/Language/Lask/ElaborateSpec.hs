@@ -383,8 +383,6 @@ spec = do
       accepts "f(c: Bool): String | Null = c ? \"a\" : null"
     it "lets a context-typed branch of a conditional take the other's type" $
       hasType "f(c: Bool) = c ? fail({code: 1, message: \"x\"}) : 1" "f" "Function<Bool, Number>"
-    it "rejects return inside a branch of a conditional (spec 6.5)" $
-      rejects "f(c: Bool, d: Bool): Number = do {\n  c ? if (d) { return 1 } else { 2 } : 3\n}" ESyntaxReturnPosition
     it "types for over arrays as map" $
       hasType "f(xs: Array<String>) = for (x : xs) { concat(\"item:\", x) }" "f" "Function<Array<String>, Array<String>>"
     it "types Void-bodied for as for_each" $
@@ -522,10 +520,6 @@ spec = do
         ETypeCaseDuplicate
     it "does not require a comparable scrutinee when every head is a type" $
       accepts "f(x: Map<Any> | Null): Number = case (x) {\n  Null -> 0\n  else -> 1\n}"
-    it "rejects return inside an arm body (spec 6.5)" $
-      rejects
-        "f(x: String): String = do {\n  y = case (x) {\n    \"a\" -> do { return \"e\" }\n    else -> \"z\"\n  }\n  y\n}"
-        ESyntaxReturnPosition
 
   describe "local binding annotations (spec 6.5)" $ do
     it "takes the annotation as the declared type" $
@@ -547,23 +541,29 @@ spec = do
       accepts "type Name = String\nf(): Name = do {\n  x: Name = \"a\"\n  x\n}"
       rejects "f(): Number = do {\n  x: Nope = 1\n  1\n}" ENameUndefined
 
-  describe "early return (spec 6.5)" $ do
-    it "accepts guard + return in function bodies" $
-      accepts
-        "publish(tag: String): String = do {\n  if (tag == \"\") { return \"skip\" }\n  \"released\"\n}"
-    it "requires guard blocks to end with return" $
-      rejects "f(c: Bool) = do {\n  if (c) { 1 }\n  2\n}" ESyntaxReturnPosition
-    it "accepts an empty else for a side effect under a condition" $
-      accepts "f(c: Bool) = do {\n  if (c) { log(\"x\") } else {}\n  2\n}"
-    it "rejects unreachable statements after return" $
-      rejects "f(): Number = do {\n  return 1\n  2\n}" ESyntaxReturnPosition
-    it "rejects return in for bodies" $
-      rejects "f(xs: Array<Number>) = do {\n  for (x : xs) { return x }\n  1\n}" ESyntaxReturnPosition
-    it "rejects return in expression-position do blocks" $
-      rejects "f() = do {\n  x = do { return 1 }\n  x\n}" ESyntaxReturnPosition
-    it "distributes continuations into both if branches" $
-      accepts
-        "classify(n: Number): String = do {\n  if (n > 0) { return \"pos\" } else { 0 }\n  \"non-pos\"\n}"
+  describe "if without else (spec 6.4)" $ do
+    it "types it as the block's type or Null" $
+      hasType "f(c: Bool) = if (c) { \"a\" }" "f" "Function<Bool, String | Null>"
+    it "keeps a block that already admits Null as it is" $
+      hasType "f(c: Bool, x: String | Null) = if (c) { x }" "f" "Function<Bool, String | Null, String | Null>"
+    it "types it as Void for a Void block" $
+      hasType "f(c: Bool) = if (c) { log(\"x\") }" "f" "Function<Bool, Void>"
+    it "checks the block against an expected type that admits Null" $
+      accepts "f(c: Bool): String | Null = if (c) { \"a\" }"
+    it "rejects an expected type that does not admit Null" $
+      rejects "f(c: Bool): String = if (c) { \"a\" }" ETypeMismatch
+    it "ends a Void function" $
+      accepts "f(c: Bool): Void = do {\n  log(\"a\")\n  if (c) { log(\"x\") }\n}"
+    it "lets a context-typed block stand as a statement" $
+      accepts "f(c: Bool): Number = do {\n  if (c) { fail({code: 1, message: \"x\"}) }\n  1\n}"
+    it "accepts a block of any type when the value is discarded" $
+      accepts "f(c: Bool): Number = do {\n  if (c) { \\(x: Number) -> x }\n  1\n}"
+    it "rejects a block that is not a data type where the value is used" $
+      rejects "f(c: Bool) = if (c) { \\(x: Number) -> x }" ETypeIllformed
+    it "still requires a Bool condition" $
+      rejects "f(n: Number) = if (n) { 1 }" ETypeMismatch
+    it "leaves no return to write (spec 6.5)" $
+      rejects "f(c: Bool): String = do {\n  if (c) { return \"a\" }\n  \"b\"\n}" ESyntaxUnexpectedToken
 
   describe "accessors (spec 6.8)" $ do
     it "types record field access" $
@@ -925,7 +925,7 @@ spec = do
 
     it "rejects an environment that can run a command" $
       rejects
-        "mk(): Runnable = do {\n  proxy = $[#local] cat proxy\n  return #golang:1.25{env: {\"GOPROXY\": proxy}}\n}\ncommand { \"go\" } on mk()\nv() = $ go vet"
+        "mk(): Runnable = do {\n  proxy = $[#local] cat proxy\n  #golang:1.25{env: {\"GOPROXY\": proxy}}\n}\ncommand { \"go\" } on mk()\nv() = $ go vet"
         ETypeCommandEffect
 
     it "rejects an environment that reads the standard input" $
@@ -945,7 +945,7 @@ spec = do
     -- being built: an effect, and one that must not loop.
     it "rejects an environment that dispatches a command of its own module" $
       rejects
-        "command { \"ls\" } on mk()\nmk(): Environment = do {\n  x = $ ls\n  return #alpine:3.22.2\n}"
+        "command { \"ls\" } on mk()\nmk(): Environment = do {\n  x = $ ls\n  #alpine:3.22.2\n}"
         ETypeCommandEffect
 
     it "rejects an environment that is not an Environment" $

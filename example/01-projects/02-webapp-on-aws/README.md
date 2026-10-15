@@ -61,7 +61,7 @@ type Healthcheck = Record<status: String>
 healthcheck_web(): Healthcheck = do {
   url = tf_output().website_url
   status = $ curl -s -o /dev/null -w "%{http_code}" "#{url}"
-  return { status: status }
+  { status: status }
 }
 ```
 

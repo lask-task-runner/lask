@@ -16,7 +16,6 @@ import Data.Text (Text)
 -- | @E-\<CATEGORY\>-\<DETAIL\>@ codes (spec 14.2, 14.4-14.6).
 data ErrorCode
   = ESyntaxUnexpectedToken
-  | ESyntaxReturnPosition
   | ESyntaxCaseElse
   | ENameUndefined
   | ENameDuplicate
@@ -89,7 +88,6 @@ data Stage
 codeText :: ErrorCode -> Text
 codeText c = case c of
   ESyntaxUnexpectedToken -> "E-SYNTAX-UNEXPECTED-TOKEN"
-  ESyntaxReturnPosition -> "E-SYNTAX-RETURN-POSITION"
   ESyntaxCaseElse -> "E-SYNTAX-CASE-ELSE"
   ENameUndefined -> "E-NAME-UNDEFINED"
   ENameDuplicate -> "E-NAME-DUPLICATE"

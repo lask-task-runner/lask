@@ -66,8 +66,6 @@ localsAt path (Module ds _ _) pos = nub (concat (reverse (concatMap goDecl ds)))
     goStmt sf = case sf of
       SBind _ _ _ e -> goExpr e
       SExpr e -> goExpr e
-      SReturn e -> goExpr e
-      SGuard c b -> goExpr c <> goBlock b
 
 -- | The dotted name of the callee of the innermost call whose
 -- argument list the position sits in, e.g. @["tf", "init"]@.
@@ -143,8 +141,6 @@ blockExprs (Block _ ss) = concatMap stmtExprs ss
     stmtExprs (Stmt _ sf) = case sf of
       SBind _ _ _ e -> [e]
       SExpr e -> [e]
-      SReturn e -> [e]
-      SGuard c b -> c : blockExprs b
 
 partExprs :: [TextPart] -> [Expr]
 partExprs ps = [e | TPInterp e <- ps]

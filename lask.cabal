@@ -52,7 +52,6 @@ library
       Language.Lask.Deps.File
       Language.Lask.Deps.Hash
       Language.Lask.Deps.Lock
-      Language.Lask.Desugar.Return
       Language.Lask.Diagnostic
       Language.Lask.Doc
       Language.Lask.Elaborate

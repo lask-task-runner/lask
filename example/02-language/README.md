@@ -49,7 +49,7 @@ The thing to take away: a keyword parameter must have a default and is bound onl
 
 ## 03-control-flow
 
-**Pure.** `do` blocks, `if` as an expression, the guard `return`, all three forms of `case`, and `for`.
+**Pure.** `do` blocks, `if` as an expression with or without `else`, `c ? a : b`, all three forms of `case`, and `for`.
 
 ```bash
 lask eval plan-release --dry-run true

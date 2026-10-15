@@ -218,8 +218,9 @@ data ExprF
   | EBin Op Expr Expr
   | ENot Expr
   | EDo Block
-  | -- | @else@ is mandatory in expression position; 'Nothing' only
-    -- occurs for the statement-position guard form (spec 6.4/6.5).
+  | -- | 'Nothing' is an @if@ without @else@, whose value is @null@
+    -- (or nothing, for a @Void@ block) when the condition is false
+    -- (spec 6.4).
     EIf Expr Block (Maybe Block)
   | -- | @c ? a : b@ (spec 6.2): an 'EIf' whose branches are single
     -- expressions. Kept apart from 'EIf' because its branches are
@@ -283,9 +284,6 @@ data StmtF
   = -- | @name[!!] [: Type] = expr@
     SBind Text Secrecy (Maybe SType) Expr
   | SExpr Expr
-  | SReturn Expr
-  | -- | @if (cond) { ... }@ without @else@ in statement position.
-    SGuard Expr Block
   deriving (Show, Eq)
 
 -- Span stripping (test helpers) -------------------------------------------
@@ -379,5 +377,3 @@ stripStmt :: Stmt -> Stmt
 stripStmt (Stmt _ f) = Stmt NoSpan $ case f of
   SBind n sec t e -> SBind n sec (fmap stripSpansType t) (stripSpansExpr e)
   SExpr e -> SExpr (stripSpansExpr e)
-  SReturn e -> SReturn (stripSpansExpr e)
-  SGuard c b -> SGuard (stripSpansExpr c) (stripBlock b)
