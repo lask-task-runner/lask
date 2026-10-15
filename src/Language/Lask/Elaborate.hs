@@ -1412,11 +1412,23 @@ checkObject ctx path locals sp kvs expected = case expected of
   TyAny -> do
     (c, _) <- infer ctx path locals (Expr sp (EObject kvs))
     pure c
+  -- A union with exactly one member an object literal can be checked
+  -- against directs the literal at that member; otherwise the literal
+  -- is inferred and has to conform to the union (spec 4.3).
+  TyUnion members
+    | [m] <- filter objectTarget members -> checkObject ctx path locals sp kvs m
+    | otherwise -> do
+        (c, t) <- infer ctx path locals (Expr sp (EObject kvs))
+        unless (conforms ctx t expected) (mismatch sp expected t)
+        pure c
   other ->
     abort . withExpectedActual (renderType other) "object literal" $
       diag ETypeMismatch sp "an object literal cannot have this expected type"
   where
     renderKeys ks = "{" <> T.intercalate ", " (Set.toList ks) <> "}"
+    objectTarget (TyRecord _) = True
+    objectTarget (TyMap _) = True
+    objectTarget _ = False
 
 -- Accessors -------------------------------------------------------------------------
 
