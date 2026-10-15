@@ -13,7 +13,7 @@ command { "node", "npm", "npx" } on node
 // Playwright image, so the native packages npm installs (Next's SWC
 // compiler) load in both.
 node_image = #node:24.21.0-bookworm-slim
-quiet: Map<String> = {"NEXT_TELEMETRY_DISABLED": "1"}
+quiet: Map<String> = { "NEXT_TELEMETRY_DISABLED": "1" }
 
 node = tools.node(image = node_image, extra_env = quiet)
 
@@ -24,13 +24,13 @@ internal dev_server(port: Number): Runnable =
 // The tag is the @playwright/test version in package.json: the image
 // carries that release's browsers, and no other.
 playwright_image = #mcr.microsoft.com/playwright:v1.63.0-noble
-playwright = tools.playwright(image = playwright_image, extra_env = merge(quiet, {"CI": "1"}))
+playwright = tools.playwright(image = playwright_image, extra_env = merge(quiet, { "CI": "1" }))
 
 // Playwright's UI mode, published to the host. tools.playwright takes no
 // ports, so this gives the same image the run options it would have set:
 // an init process, a larger /dev/shm, and no browser downloads.
 internal playwright_ui(port: Number): Runnable = runnable(playwright_image,
-  env = merge(quiet, {"PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"}),
+  env = merge(quiet, { "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1" }),
   init = true,
   shm_size = "1g",
   publish = ["127.0.0.1:#{port}:9323"]

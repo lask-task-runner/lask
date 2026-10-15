@@ -54,7 +54,7 @@ known_targets(): Array<String> = deploy.targets
 //
 // @example lask run ship --version 1.4.0
 ship(--version: String = "1.4.0"): Array<String> =
-  for (t : deploy.targets) { deploy.rollout(t, version = version) }
+  for (t: deploy.targets) { deploy.rollout(t, version = version) }
 
 // Announce a release, with the imported `echo`.
 //
