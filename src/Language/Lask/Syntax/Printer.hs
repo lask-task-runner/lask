@@ -612,7 +612,7 @@ exprBody flat a b f = case f of
     list "[" "]" False open TRBracket (map exprItem es)
   EObject kvs -> do
     open <- tokFrom TLBrace a
-    list "{" "}" False open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) (entry ksp v) | (Spanned ksp _, v) <- kvs]
+    list "{" "}" True open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) (entry ksp v) | (Spanned ksp _, v) <- kvs]
   ELambda ps rt body -> do
     open <- tokFrom TLParen a
     dps <- params open ps

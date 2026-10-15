@@ -18,7 +18,7 @@ alpine = #alpine:3.22.2
 //
 // @return One line per input line, numbered.
 numbered(): Array<String> =
-  for (e : enumerate(lines(stdin))) { "#{e.index + 1}: #{e.value}" }
+  for (e: enumerate(lines(stdin))) { "#{e.index + 1}: #{e.value}" }
 
 type Service = Record<name: String, port: Number>
 

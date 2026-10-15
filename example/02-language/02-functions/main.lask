@@ -27,9 +27,12 @@ greet(name: String, --prefix: String = "hello"): String =
 // @param version  The tag to apply.
 // @param names    Every remaining argument.
 // @example lask eval tag-all v1 web api worker
-tag_all(version: String, ...names: Array<String>, --registry: String = "ghcr.io"):
-  Array<String> =
-    map(names, \(n: String) -> "#{registry}/#{n}:#{version}")
+tag_all(
+  version: String,
+  ...names: Array<String>,
+  --registry: String = "ghcr.io"
+): Array<String> =
+  map(names, \(n: String) -> "#{registry}/#{n}:#{version}")
 
 // Declaration order is enforced: positional, then variadic, then
 // keyword. The CLI maps `-` to `_`, so `tag_all` is `lask eval tag-all`.

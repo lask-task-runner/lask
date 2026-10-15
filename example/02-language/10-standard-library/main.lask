@@ -52,7 +52,7 @@ version_parts(line: String): Array<String> = do {
 // Splitting, padding and the rest of the text work a task needs.
 table(): Array<String> = do {
   rows = [{ key: "region", value: "eu-west-1" }, { key: "stage", value: "prod" }]
-  for (r : rows) { concat(pad_end(r.key, 8, " "), r.value) }
+  for (r: rows) { concat(pad_end(r.key, 8, " "), r.value) }
 }
 
 // Arrays are traversed with `map`, `filter` and `reduce`.
@@ -92,7 +92,7 @@ map_work(): Record<count: Number, listed: Array<String>, stage: String, extended
   extended = merge(settings, { "tier": "gold" })
   {
     count: size(keys(settings)),
-    listed: for (e : entries(settings)) { "#{e.key}=#{e.value}" },
+    listed: for (e: entries(settings)) { "#{e.key}=#{e.value}" },
     stage: get_or(settings, "stage", "dev"),
     extended: keys(extended)
   }
@@ -103,7 +103,7 @@ reshape(): Record<pairs: Array<String>, flat: Array<Number>> = do {
   names = ["api", "web"]
   ports = [8080, 443]
   {
-    pairs: for (p : zip(names, ports)) { "#{p.first}:#{p.second}" },
+    pairs: for (p: zip(names, ports)) { "#{p.first}:#{p.second}" },
     flat: flatten([[1, 2], [3], []])
   }
 }
@@ -116,7 +116,7 @@ summary(): Record<
 > = {
   numbers: numbers(),
   services: pipeline(),
-  settings: for (e : entries(settings)) { "#{e.key}=#{e.value}" }
+  settings: for (e: entries(settings)) { "#{e.key}=#{e.value}" }
 }
 
 // Write one line to the log.

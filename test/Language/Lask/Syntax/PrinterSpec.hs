@@ -33,17 +33,17 @@ spec = do
       ]
         `formatsTo` [ "f(x: String, --y: Number = 1): String = x",
                       "z = [1, 2, 3]",
-                      "r: Record<a: String, b?: Number> = {a: \"x\", \"b-c\": 2}"
+                      "r: Record<a: String, b?: Number> = { a: \"x\", \"b-c\": 2 }"
                     ]
 
-    it "pads the braces of imports and command words, and of nothing else" $
+    it "pads the braces of record literals, imports and command words, and not of annotation options" $
       [ "import {a,b as c} from \"./lib\"",
         "command {\"go\"} on #golang:1.25{env:{}}",
-        "o = { k: 1 }"
+        "o = {k:1}"
       ]
         `formatsTo` [ "import { a, b as c } from \"./lib\"",
                       "command { \"go\" } on #golang:1.25{env: {}}",
-                      "o = {k: 1}"
+                      "o = { k: 1 }"
                     ]
 
     it "keeps the export and internal markers" $
