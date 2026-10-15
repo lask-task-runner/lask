@@ -8,7 +8,6 @@ module Language.Lask.EmbedSpec (spec) where
 
 import Control.Exception (try)
 import Control.Monad (forM_)
-import Control.Monad.State.Strict (State, evalState, gets, modify)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (sort)
 import Data.Map.Strict (Map)
@@ -17,6 +16,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Core.AST
+import Language.Lask.Core.Compare (normalise)
 import Language.Lask.Core.Pretty (renderDecl)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), elaborateProgram)
 import Language.Lask.Embed
@@ -25,7 +25,6 @@ import Language.Lask.Embed.Internal (programModule)
 import Language.Lask.Embed.Run
 import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
-import Language.Lask.Span (Span (..))
 import Test.Hspec hiding (parallel)
 
 -- One program, twice: as .lask source and in the embedding --------------------
@@ -154,67 +153,6 @@ elaborated = do
     Left ds -> fail ("main.lask does not elaborate: " <> show ds)
 
 -- Comparison up to spans and bound names ------------------------------------------
-
--- | Spans and module paths erased, anonymous lambdas unnamed, and
--- locals renamed in binding order. Parameter names are kept: they are
--- part of a declaration's interface.
-normalise :: Core -> Core
-normalise c0 = evalState (norm Map.empty c0) (0 :: Int)
-  where
-    norm env (Core _ f) = Core NoSpan <$> case f of
-      CVar (LocalRef n) -> pure (CVar (LocalRef (Map.findWithDefault n n env)))
-      CVar (TopRef _ n) -> pure (CVar (TopRef "" n))
-      CLam lam -> do
-        let named = not ("<" `T.isPrefixOf` lamName lam)
-        ps <- if named then pure (lamPositional lam) else mapM (const freshName) (lamPositional lam)
-        let env' = Map.union (Map.fromList (zip (lamPositional lam) ps)) env
-        kws <- mapM (\(k, d) -> (,) k <$> norm env' d) (lamKeywords lam)
-        b <- norm env' (lamBody lam)
-        pure
-          ( CLam
-              lam
-                { lamName = if named then lamName lam else "<lambda>",
-                  lamModule = "",
-                  lamPositional = ps,
-                  lamKeywords = kws,
-                  lamBody = b
-                }
-          )
-      CDo ss -> CDo <$> stmts env ss
-      CEnv k args -> CEnv k <$> mapM (\(n, a) -> (,) n <$> norm env a) args
-      _ -> rebuild env f
-    stmts _ [] = pure []
-    stmts env (CSExpr e : rest) = (:) <$> (CSExpr <$> norm env e) <*> stmts env rest
-    stmts env (CSBind n e : rest) = do
-      e' <- norm env e
-      n' <- freshName
-      (CSBind n' e' :) <$> stmts (Map.insert n n' env) rest
-    freshName :: State Int Text
-    freshName = do
-      i <- gets id
-      modify (+ 1)
-      pure ("v" <> T.pack (show i))
-    -- Every other node: normalise the children in place.
-    rebuild env f = case f of
-      CStr ps -> CStr <$> mapM (part env) ps
-      CArray es -> CArray <$> mapM (norm env) es
-      CMapLit kvs -> CMapLit <$> mapM (\(k, v) -> (,) k <$> norm env v) kvs
-      CRecordLit kvs -> CRecordLit <$> mapM (\(k, v) -> (,) k <$> norm env v) kvs
-      CApp fn pos kws -> CApp <$> norm env fn <*> mapM (norm env) pos <*> mapM (\(k, v) -> (,) k <$> norm env v) kws
-      CDot e n -> (`CDot` n) <$> norm env e
-      CIndex k a b -> CIndex k <$> norm env a <*> norm env b
-      CIf a b e -> CIf <$> norm env a <*> norm env b <*> norm env e
-      CAnd a b -> CAnd <$> norm env a <*> norm env b
-      COr a b -> COr <$> norm env a <*> norm env b
-      CNot a -> CNot <$> norm env a
-      CBin op a b -> CBin op <$> norm env a <*> norm env b
-      CAwait a -> CAwait <$> norm env a
-      CRunnable e args -> CRunnable <$> norm env e <*> mapM (\(n, a) -> (,) n <$> norm env a) args
-      CCast a t -> (`CCast` t) <$> norm env a
-      CIsType a t -> (`CIsType` t) <$> norm env a
-      other -> pure other
-    part env (CPExpr e) = CPExpr <$> norm env e
-    part _ p = pure p
 
 declsByName :: CoreProgram -> Map Text CoreDecl
 declsByName cp = Map.fromList [(n, cd) | ((_, n), cd) <- Map.toList (cpDecls cp)]

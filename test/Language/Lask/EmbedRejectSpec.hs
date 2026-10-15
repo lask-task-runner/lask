@@ -20,6 +20,14 @@ go = command "go" (image "golang:1.22")
 fact :: Task '["n" ::: 'TNumber] 'TNumber
 fact = task "fact" $ \n -> if_ (n ==. 0) 1 (n * call fact (n - 1))
 
+-- | 'rejected' for a generic declaration.
+rejectedG :: Generic vs ps r -> [String] -> Expectation
+rejectedG g fragments = evaluate forced `shouldThrow` \(TypeError m) -> all (`isInfixOf` m) fragments
+  where
+    forced = case assemble [export g] of
+      Left errs -> length (show errs)
+      Right p -> length (show (progCore p))
+
 -- | Reifying the task raises the deferred type error, whose message
 -- must mention each of @fragments@.
 rejected :: Task ps r -> [String] -> Expectation
@@ -56,33 +64,80 @@ voidElements = task "void_elements" $ \_ -> 1
 voidKeyword :: Task '[] 'TNumber
 voidKeyword = taskWith "void_keyword" $ const 1 <$> kw "x" done
 
-voidField :: Task '["r" ::: 'TRecord '[ '("a", 'TVoid)]] 'TNumber
+voidField :: Task '["r" ::: Rec '["a" := 'TVoid]] 'TNumber
 voidField = task "void_field" $ \_ -> 1
 
 mappedToVoid :: Task '[] ('TArray 'TVoid)
 mappedToVoid = task "mapped_to_void" $ mapE (lines_ "a") (const done)
 
+-- First phase ----------------------------------------------------------------
+
+type C = 'TVar "T" 'BComparable
+
+same :: Generic '[ '("T", 'BComparable)] '["a" ::: C, "b" ::: C] 'TBool
+same = generic "same" $ \a b -> a ==. b
+
+notConforming :: Task '[] 'TNumber
+notConforming = task "not_conforming" $ widen @'TNumber ("x" :: E v 'TString)
+
+unrelatedEquality :: Task '[] 'TBool
+unrelatedEquality = task "unrelated_equality" $ ("a" :: E v 'TString) ==. (1 :: E v 'TNumber)
+
+boundViolated :: Task '["x" ::: 'TAny] 'TBool
+boundViolated = task "bound_violated" $ \x -> call (inst same) x x
+
+type U = 'TVar "U" 'BNone
+
+castToParameter :: Generic '[ '("U", 'BNone)] '["x" ::: 'TAny] U
+castToParameter = generic "cast_to_parameter" $ \x -> cast @U x
+
+rigid :: Generic '[ '("U", 'BNone)] '["x" ::: U] 'TString
+rigid = generic "rigid" $ \x -> x <> "a"
+
+type Opt = Rec '["a" := 'TNumber, "b" :? 'TString]
+
+missingField :: Task '[] Opt
+missingField = task "missing_field" $ recordAs @Opt RNil
+
+wrongFieldType :: Task '[] Opt
+wrongFieldType = task "wrong_field_type" $ recordAs @Opt (fld @"a" "one" :& RNil)
+
 spec :: Spec
 spec = describe "Language.Lask.Embed rejects at compile time" $ do
   it "an argument of the wrong type (E-TYPE-MISMATCH)" $
-    rejected wrongArgument ["IsString", "(E v TNumber)"]
+    rejected wrongArgument ["Couldn't match type", "TNumber", "TString"]
   it "a missing argument (E-TYPE-ARITY)" $
     rejected missingArgument ["Couldn't match type"]
   it "interpolating an array (E-TYPE-BOUND)" $
-    rejected notStringifiable ["Stringify (TArray TString)"]
+    rejected notStringifiable ["Array<String> cannot be interpolated"]
   it "a field the record does not have (E-TYPE-ACCESS)" $
     rejected noSuchField ["the record has no field \"cod\""]
   it "ordering strings, which Lask orders only as numbers" $
-    rejected orderedStrings ["IsString", "(E v TNumber)"]
+    rejected orderedStrings ["Couldn't match type", "TNumber", "TString"]
   it "comparing Void" $
-    rejected comparedVoid ["Comparable TVoid"]
+    rejected comparedVoid ["Void is not comparable"]
   it "a Void parameter (E-TYPE-ILLFORMED)" $
     rejected voidParameter ["Void is not a data type"]
   it "an array of Void (E-TYPE-ILLFORMED)" $
-    rejected voidElements ["Void is not a data type"]
+    rejected voidElements ["Array<Void> is not a data type"]
   it "a Void keyword parameter (E-TYPE-ILLFORMED)" $
     rejected voidKeyword ["Void is not a data type"]
   it "a record field of type Void (E-TYPE-ILLFORMED)" $
-    rejected voidField ["Void is not a data type"]
+    rejected voidField ["Record<a: Void> is not a data type"]
   it "a loop collecting Void (E-TYPE-ILLFORMED)" $
     rejected mappedToVoid ["Void is not a data type"]
+  it "a value where a type it does not conform to is wanted (E-TYPE-MISMATCH)" $
+    rejected notConforming ["String does not conform to Number"]
+  it "== on types neither of which conforms to the other (E-TYPE-MISMATCH)" $
+    rejected unrelatedEquality ["== compares String with Number"]
+  it "an instantiation outside the parameter's bound (E-TYPE-BOUND)" $
+    rejected boundViolated ["Any does not satisfy the bound of T"]
+  it "cast to a type parameter (E-TYPE-ILLFORMED)" $
+    rejectedG castToParameter ["cast cannot target U"]
+  it "using a type parameter as a concrete type: it is opaque in its body (E-TYPE-MISMATCH)" $
+    rejectedG rigid ["Couldn't match type", "TVar"]
+  it "a record literal missing a required field (E-TYPE-MISMATCH)" $
+    rejected missingField ["the record literal does not fit Record<a: Number, b?: String>"]
+  it "a record literal with a field of the wrong type (E-TYPE-MISMATCH)" $
+    rejected wrongFieldType ["the record literal does not fit Record<a: Number, b?: String>"]
+

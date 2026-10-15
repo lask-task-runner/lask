@@ -1,3 +1,5 @@
+{-# LANGUAGE ExplicitNamespaces #-}
+
 -- | An embedding of Lask in Haskell (#91).
 --
 -- __Experimental.__ This module, "Language.Lask.Embed.Do" and
@@ -59,12 +61,36 @@
 --   CLI resolves. A Haskell function over t'E' is a macro: it is
 --   inlined, has no name, and cannot recurse on a run-time value.
 --
--- * Haskell types check what they check cheaply: arity, positional
---   argument and result types, record fields, which types can be
---   compared or interpolated, and that @Void@ is only returned. The rest
---   is checked by 'assemble': one declaration per name, keyword
---   arguments the callee declares at their types, one environment per
---   command word, and names Lask can write.
+-- * Haskell types check the types of chapter 4, computed at the type
+--   level ("Language.Lask.Embed.Type"): unions in canonical form, so
+--   @'TString :| 'TNull@ and @'TNull :| 'TString@ are one type; records
+--   with optional fields; conformance, which Lask applies implicitly and
+--   the embedding asks for with 'widen'; what is comparable, data,
+--   stringifiable; and type parameters with their bounds. The rest is
+--   checked by 'assemble': one declaration per name, keyword arguments
+--   the callee declares at their types, one environment per command
+--   word, names Lask can write, type parameters that do not escape
+--   their declaration, and finally Core.Lint ("Language.Lask.Core.Lint").
+--
+-- Literals take their type from where they are used. A value of a type
+-- that conforms to the one wanted is passed with 'widen', as in
+-- @call isNull (widen \"x\")@ for a @String | Null@ parameter.
+--
+-- A declaration with type parameters is a 'generic', checked once at the
+-- parameters themselves, which are opaque in its body, and called
+-- through 'inst', which checks the bound:
+--
+-- > -- first_or<T>(xs: Array<T>, fallback: T): T
+-- > type T = 'TVar "T" 'BNone
+-- > firstOr :: Generic '[ '("T", 'BNone)] '["xs" ::: 'TArray T, "fallback" ::: T] T
+-- > firstOr = generic "first_or" $ \xs fallback -> if_ (isEmpty xs) fallback (at xs 0)
+-- >
+-- > headName :: Task '[] 'TString
+-- > headName = task "head_name" $ call (inst firstOr) (list ["lask"]) "none"
+--
+-- The instantiation is inferred from the arguments, except where a
+-- parameter appears only inside a union; there it is given with @\@@:
+-- @inst \@'TString keep@.
 --
 -- Why not an applicative or selective functor, which would track
 -- effects statically by construction? Because Lask is monadic: a
@@ -78,9 +104,10 @@
 -- static: keyword parameters (t'Kw') and parallel composition (t'Par').
 --
 -- Scope. This is a second front end to Core, not yet the one the parser
--- is built on. It covers a subset of the language: no unions, optional
--- record fields, @Any@, @Map@, @null@, @case@, @try@, environment
--- values, run options, modules or polymorphic declarations. A program
+-- is built on. It covers the types of chapter 4 and the expressions of
+-- the first phase of the plan on #91; not yet @case@, lambdas and
+-- function values, @try@, @async@, most built-ins, environment values,
+-- run options, or modules. A program
 -- runs with hooks you write, which decide how a command runs (see
 -- "Language.Lask.Embed.Run"); the hooks the lask CLI uses, with pinned
 -- images and command logs, are not available to it, and the CLI does
@@ -91,15 +118,35 @@
 module Language.Lask.Embed
   ( -- * Types
     Ty (..),
+    Field (..),
+    Bound (..),
     Param (..),
+    type (:|),
+    Rec,
     CommandResult,
+    Error,
     E,
     Fn,
     KnownTy (..),
     KnownParams,
-    Comparable,
+    KnownVars,
+    FieldOf,
+    OrNull,
+    Subst,
+    SubstParams,
+
+    -- ** Predicates
+    Conforms,
     DataTy,
+    WF,
+    Comparable,
+    Orderable,
     Stringify,
+    Satisfies,
+    EqTypes,
+    WhenTy,
+    Concrete,
+    FitsRecord,
 
     -- * Declarations
     Task,
@@ -110,6 +157,14 @@ module Language.Lask.Embed
     callWith,
     KwArg,
     (.=),
+    ValueDecl,
+    value,
+    ref,
+    Generic,
+    generic,
+    inst,
+    inst2,
+    Declared,
 
     -- * Keyword parameters
     Kw,
@@ -135,8 +190,15 @@ module Language.Lask.Embed
     -- ** Literals
     true,
     false,
+    null_,
     done,
     str,
+    list,
+    mapOf,
+
+    -- ** Conformance and narrowing
+    widen,
+    cast,
 
     -- ** Operators
     (==.),
@@ -149,11 +211,20 @@ module Language.Lask.Embed
     (||.),
     not_,
 
-    -- ** Records
+    -- ** Records, arrays and maps
+    record,
+    recordAs,
+    Fields (..),
+    FieldVal,
+    fld,
     field,
+    at,
+    atKey,
 
     -- ** Control
     if_,
+    when_,
+    whenDo,
     forEach,
     mapE,
 
@@ -161,6 +232,8 @@ module Language.Lask.Embed
     lines_,
     trim,
     getEnvOr,
+    isEmpty,
+    getOr,
 
     -- * Programs
     Export,

@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -17,10 +18,9 @@
 -- notice. See "Language.Lask.Embed" for the design.
 module Language.Lask.Embed.Internal
   ( -- * Types
-    Ty (..),
-    Param (..),
+    module Language.Lask.Embed.Type,
     CommandResult,
-    KnownTy (..),
+    Error,
     E,
     Fn,
     KnownParams,
@@ -32,6 +32,15 @@ module Language.Lask.Embed.Internal
     doc,
     call,
     callWith,
+    ValueDecl,
+    value,
+    ref,
+    Generic,
+    generic,
+    inst,
+    inst2,
+    KnownVars,
+    Declared (..),
     KwArg,
     (.=),
 
@@ -57,12 +66,21 @@ module Language.Lask.Embed.Internal
     -- * Expressions
     true,
     false,
+    null_,
     done,
-    Stringify,
     str,
+    widen,
+    cast,
+    list,
+    mapOf,
+    Fields (..),
+    FieldVal,
+    fld,
+    record,
+    recordAs,
     field,
-    Comparable,
-    DataTy,
+    at,
+    atKey,
     (==.),
     (/=.),
     (<.),
@@ -73,11 +91,17 @@ module Language.Lask.Embed.Internal
     (||.),
     not_,
     if_,
+    when_,
+    whenDo,
     forEach,
     mapE,
     lines_,
     trim,
     getEnvOr,
+
+    -- * Built-ins (Phase 1)
+    isEmpty,
+    getOr,
 
     -- * Programs
     Export,
@@ -111,129 +135,23 @@ import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Stack (CallStack, HasCallStack, SrcLoc (..), callStack, getCallStack)
-import GHC.TypeError (Unsatisfiable, unsatisfiable)
-import GHC.TypeLits (ErrorMessage (..), KnownSymbol, Symbol, TypeError, symbolVal)
+import GHC.TypeLits (KnownSymbol, Symbol, symbolVal)
 import Language.Lask.Core.AST
+import Language.Lask.Core.Lint (lintProgram)
 import Language.Lask.Core.Pretty (renderCore)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
+import Language.Lask.Embed.Type
 import Language.Lask.Lexer.Token (keywordFromText)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Types as LT
 
 -- Types ----------------------------------------------------------------------
 
--- | The Lask types the embedding covers (spec 4.1), used promoted.
--- Unions, optional record fields and @Any@ are not covered yet.
-data Ty
-  = TNumber
-  | TString
-  | TBool
-  | TVoid
-  | TArray Ty
-  | -- | Fields by name, all required.
-    TRecord [(Symbol, Ty)]
-
--- | A positional parameter, as in @fact(n: Number)@:
--- @'[\"n\" ::: 'TNumber]@.
-data Param = Symbol ::: Ty
-
-infix 6 :::
-
 -- | The built-in alias @CommandResult@ (spec 6.6).
-type CommandResult = 'TRecord '[ '("code", 'TNumber), '("stdout", 'TString), '("stderr", 'TString)]
+type CommandResult = Rec '["code" := 'TNumber, "stdout" := 'TString, "stderr" := 'TString]
 
--- | The Lask type a promoted 'Ty' stands for.
-class KnownTy (t :: Ty) where
-  tyOf :: LT.Type
-
-instance KnownTy 'TNumber where tyOf = LT.TyNumber
-
-instance KnownTy 'TString where tyOf = LT.TyString
-
-instance KnownTy 'TBool where tyOf = LT.TyBool
-
-instance KnownTy 'TVoid where tyOf = LT.TyVoid
-
-instance (KnownTy t) => KnownTy ('TArray t) where tyOf = LT.TyArray (tyOf @t)
-
-instance (KnownFields fs) => KnownTy ('TRecord fs) where
-  tyOf = LT.TyRecord (Map.fromList [(n, LT.requiredField t) | (n, t) <- fieldsOf @fs])
-
-class KnownFields (fs :: [(Symbol, Ty)]) where
-  fieldsOf :: [(Text, LT.Type)]
-
-instance KnownFields '[] where fieldsOf = []
-
-instance (KnownSymbol n, KnownTy t, KnownFields fs) => KnownFields ('(n, t) ': fs) where
-  fieldsOf = (T.pack (symbolVal (Proxy @n)), tyOf @t) : fieldsOf @fs
-
-type family Lookup (f :: Symbol) (fs :: [(Symbol, Ty)]) :: Ty where
-  Lookup f ('(f, t) ': _) = t
-  Lookup f (_ ': fs) = Lookup f fs
-  Lookup f '[] = TypeError ('Text "the record has no field " ':<>: 'ShowType f)
-
--- The predicates below each have one method, which the operations that
--- require them force: a program compiled with -fdefer-type-errors then
--- fails where it breaks the rule, which is how the tests check them.
-
--- | Types whose values @==@ compares (spec 6.2).
-class Comparable (t :: Ty) where
-  comparable :: ()
-
-instance Comparable 'TNumber where comparable = ()
-
-instance Comparable 'TString where comparable = ()
-
-instance Comparable 'TBool where comparable = ()
-
-instance (Comparable t) => Comparable ('TArray t) where comparable = comparable @t
-
-instance (ComparableFields fs) => Comparable ('TRecord fs) where comparable = comparableFields @fs
-
-class ComparableFields (fs :: [(Symbol, Ty)]) where
-  comparableFields :: ()
-
-instance ComparableFields '[] where comparableFields = ()
-
-instance (Comparable t, ComparableFields fs) => ComparableFields ('(n, t) ': fs) where
-  comparableFields = comparable @t `seq` comparableFields @fs
-
--- | Data types (spec 4.2): everything but @Void@, which only a function
--- may return. Array elements, record fields, parameters and keyword
--- parameters must be data.
-class DataTy (t :: Ty) where
-  dataTy :: ()
-
-instance DataTy 'TNumber where dataTy = ()
-
-instance DataTy 'TString where dataTy = ()
-
-instance DataTy 'TBool where dataTy = ()
-
-instance (DataTy t) => DataTy ('TArray t) where dataTy = dataTy @t
-
-instance (DataFields fs) => DataTy ('TRecord fs) where dataTy = dataFields @fs
-
-instance (Unsatisfiable ('Text "Void is not a data type: only a task may return it")) => DataTy 'TVoid where
-  dataTy = unsatisfiable
-
-class DataFields (fs :: [(Symbol, Ty)]) where
-  dataFields :: ()
-
-instance DataFields '[] where dataFields = ()
-
-instance (DataTy t, DataFields fs) => DataFields ('(n, t) ': fs) where
-  dataFields = dataTy @t `seq` dataFields @fs
-
--- | Types interpolation accepts (spec 6.6, @E-TYPE-BOUND@).
-class Stringify (t :: Ty) where
-  stringify :: ()
-
-instance Stringify 'TString where stringify = ()
-
-instance Stringify 'TNumber where stringify = ()
-
-instance Stringify 'TBool where stringify = ()
+-- | The built-in alias @Error@ (spec 6.9).
+type Error = Rec '["code" := 'TNumber, "message" := 'TString]
 
 -- Terms ----------------------------------------------------------------------
 
@@ -241,7 +159,7 @@ instance Stringify 'TBool where stringify = ()
 -- binder, building it from its reified children; the smart
 -- constructors below fix how many children each node has.
 data Tm v
-  = TVar v
+  = TmVar v
   | TNode Span ([Core] -> CoreF) [Tm v]
   | -- | A reference to a declaration: a name in Core, and an edge of
     -- the call graph for 'assemble'.
@@ -308,19 +226,21 @@ callSpan cs = case getCallStack cs of
 
 -- Literals and operators ---------------------------------------------------------
 
-instance Num (E v 'TNumber) where
+-- Literals take their type from where they are used: @1@ is a Number
+-- wherever a Number is wanted, and unifies a type nothing else fixes.
+instance (t ~ 'TNumber) => Num (E v t) where
   fromInteger n = leaf NoSpan (CNumber (fromInteger n))
   E a + E b = node2 NoSpan (CBin PAdd) a b
   E a - E b = node2 NoSpan (CBin PSub) a b
   E a * E b = node2 NoSpan (CBin PMul) a b
   abs (E a) = builtin NoSpan "abs" [a]
   -- The argument is bound once: it may run commands.
-  signum (E x) = E (TLet NoSpan x (unE . sign . E . TVar))
+  signum (E x) = E (TLet NoSpan x (unE . sign . E . TmVar))
     where
       sign :: E v 'TNumber -> E v 'TNumber
       sign n = if_ (n >. 0) 1 (if_ (n <. 0) (-1) 0)
 
-instance Fractional (E v 'TNumber) where
+instance (t ~ 'TNumber) => Fractional (E v t) where
   -- A literal is kept exactly, as the parser keeps it. Only a rational
   -- with a repeating decimal, which Scientific cannot hold, is rounded
   -- to the nearest Double.
@@ -329,12 +249,12 @@ instance Fractional (E v 'TNumber) where
     _ -> fromFloatDigits (fromRational r :: Double)
   E a / E b = node2 NoSpan (CBin PDiv) a b
 
-instance IsString (E v 'TString) where
+instance (t ~ 'TString) => IsString (E v t) where
   fromString = leaf NoSpan . CStrLit . T.pack
 
 -- | Concatenation is interpolation: @a <> b@ lowers to the one @CStr@
 -- that @\"#{a}#{b}\"@ does.
-instance Semigroup (E v 'TString) where
+instance (t ~ 'TString) => Semigroup (E v t) where
   E a <> E b = node2 NoSpan (\x y -> interpolation (parts x <> parts y)) a b
     where
       parts c = case coreF c of
@@ -342,7 +262,7 @@ instance Semigroup (E v 'TString) where
         CStr ps -> ps
         _ -> [CPExpr c]
 
-instance Monoid (E v 'TString) where
+instance (t ~ 'TString) => Monoid (E v t) where
   mempty = ""
 
 -- | A string literal stays a literal; anything else is an
@@ -371,15 +291,80 @@ false = leaf NoSpan (CBool False)
 str :: forall t v. (Stringify t) => E v t -> E v 'TString
 str (E a) = stringify @t `seq` node1 NoSpan (\x -> CStr [CPExpr x]) a
 
--- | @r.name@.
-field :: forall f fs v. (KnownSymbol f) => E v ('TRecord fs) -> E v (Lookup f fs)
+-- | @r.name@, or @r[\"X-Api-Key\"]@ (spec 6.8). An optional field reads
+-- as @T | Null@.
+field :: forall f t v. (KnownSymbol f) => E v t -> E v (FieldOf f t)
 field (E r) = node1 NoSpan (\x -> CDot x (T.pack (symbolVal (Proxy @f)))) r
 
--- | @==@ and @!=@: structural equality of two values of one comparable
--- type.
-(==.), (/=.) :: forall t v. (Comparable t) => E v t -> E v t -> E v 'TBool
-E a ==. E b = comparable @t `seq` node2 NoSpan (CBin PEq) a b
-E a /=. E b = comparable @t `seq` node2 NoSpan (CBin PNe) a b
+-- | @xs[i]@: fails at run time when @i@ is out of range (spec 6.8).
+at :: E v ('TArray t) -> E v 'TNumber -> E v t
+at (E xs) (E i) = node2 NoSpan (CIndex IdxArray) xs i
+
+-- | @m[k]@: fails at run time when the key is missing (spec 6.8).
+atKey :: E v ('TMap t) -> E v 'TString -> E v t
+atKey (E m) (E k) = node2 NoSpan (CIndex IdxMap) m k
+
+-- | @==@ and @!=@ (spec 6.2): both operands comparable, and one
+-- conforming to the other.
+(==.), (/=.) :: forall a b v. (EqTypes a b) => E v a -> E v b -> E v 'TBool
+E a ==. E b = eqTypes @a @b `seq` node2 NoSpan (CBin PEq) a b
+E a /=. E b = eqTypes @a @b `seq` node2 NoSpan (CBin PNe) a b
+
+-- | @null@.
+null_ :: E v 'TNull
+null_ = leaf NoSpan CNull
+
+-- | Use a value where a type it conforms to is wanted (spec 4.4). Lask
+-- does this implicitly, and the Core is the same: nothing.
+widen :: forall b a v. (Conforms a b) => E v a -> E v b
+widen (E x) = conforms @a @b `seq` E x
+
+-- | @cast(e)@ at the type @t@ (spec 15.8): checked at run time, failing
+-- when the value is of another kind.
+cast :: forall t a v. (KnownTy t, DataTy t, Concrete t) => E v a -> E v t
+cast (E x) = dataTy @t `seq` concrete @t `seq` node1 NoSpan (\c -> CCast c (tyOf @t)) x
+
+-- | An array literal of element type @t@ (spec 4.3). Elements of a type
+-- that conforms to @t@ are given with 'widen'.
+list :: forall t v. (DataTy t) => [E v t] -> E v ('TArray t)
+list es = dataTy @t `seq` E (TNode NoSpan CArray (map unE es))
+
+-- | A map literal, @{\"k\": v}@ at @Map<T>@ (spec 4.3).
+mapOf :: forall t v. (DataTy t) => [(Text, E v t)] -> E v ('TMap t)
+mapOf kvs = dataTy @t `seq` E (TNode NoSpan (CMapLit . zip (map fst kvs)) (map (unE . snd) kvs))
+
+-- | One field of a record literal: @fld \@\"name\" e@.
+newtype FieldVal v (k :: Symbol) (t :: Ty) = FieldVal (Tm v)
+
+-- | The field @k@ of a record literal, with its value.
+fld :: forall k t v. E v t -> FieldVal v k t
+fld (E e) = FieldVal e
+
+-- | The fields of a record literal, in the order written.
+data Fields v (kvs :: [(Symbol, Ty)]) where
+  RNil :: Fields v '[]
+  (:&) :: (KnownSymbol k) => FieldVal v k t -> Fields v kvs -> Fields v ('(k, t) ': kvs)
+
+infixr 5 :&
+
+fieldList :: Fields v kvs -> [(Text, Tm v)]
+fieldList RNil = []
+fieldList ((fv :: FieldVal v k t) :& rest) = case fv of
+  FieldVal e -> (T.pack (symbolVal (Proxy @k)), e) : fieldList rest
+
+recordTm :: Fields v kvs -> Tm v
+recordTm fs = let kvs = fieldList fs in TNode NoSpan (CRecordLit . zip (map fst kvs)) (map snd kvs)
+
+-- | A record literal with no expected type: every field it gives is
+-- required, at the type of its value (spec 4.3).
+record :: Fields v kvs -> E v (Rec (Required kvs))
+record = E . recordTm
+
+-- | A record literal checked against the record type @r@ (spec 4.3): it
+-- may leave out optional fields, and give a value of any type that
+-- conforms to its field's.
+recordAs :: forall r kvs v. (FitsRecord r kvs) => Fields v kvs -> E v r
+recordAs fs = fitsRecord @r @kvs `seq` E (recordTm fs)
 
 -- | The ordering operators, which Lask defines on @Number@ only (spec
 -- 6.2).
@@ -413,8 +398,25 @@ if_ (E c) (E t) (E e) = node3 sp CIf c (TBlock sp t) (TBlock sp e)
   where
     sp = callSpan callStack
 
+-- | @if (c) { t }@ as an expression (spec 6.4): @T | Null@, null when the
+-- condition is false, or Void for a Void block.
+when_ :: forall t v. (KnownTy t, WhenTy t, HasCallStack) => E v 'TBool -> E v t -> E v (OrNull t)
+when_ (E c) (E t) = whenTy @t `seq` node2 sp (\x y -> CIf x y (Core sp (otherwise' (tyOf @t)))) c (TBlock sp t)
+  where
+    sp = callSpan callStack
+    otherwise' ty = if ty == LT.TyVoid then CDo [] else CNull
+
+-- | @if (c) { t }@ as a statement whose value is discarded (spec 6.4): the
+-- block may have any type. Only for statement position in an @L.do@
+-- block, where its own type is not used.
+whenDo :: forall t v. (KnownTy t, HasCallStack) => E v 'TBool -> E v t -> E v 'TVoid
+whenDo (E c) (E t) = node2 sp (\x y -> CIf x y (Core sp (otherwise' (tyOf @t)))) c (TBlock sp t)
+  where
+    sp = callSpan callStack
+    otherwise' ty = if ty == LT.TyVoid then CDo [] else CNull
+
 lambda1 :: forall a b v. (KnownTy a, KnownTy b) => Span -> (E v a -> E v b) -> Tm v
-lambda1 sp f = TLam sp (LT.TyFun [tyOf @a] (tyOf @b)) 1 (\xs -> TBlock sp (unE (f (E (TVar (only xs))))))
+lambda1 sp f = TLam sp (LT.TyFun [tyOf @a] (tyOf @b)) 1 (\xs -> TBlock sp (unE (f (E (TmVar (only xs))))))
   where
     only [x] = x
     only _ = arity
@@ -442,6 +444,14 @@ lines_ (E s) = builtin NoSpan "lines" [s]
 trim :: E v 'TString -> E v 'TString
 trim (E s) = builtin NoSpan "trim" [s]
 
+-- | @is_empty(xs)@.
+isEmpty :: E v ('TArray t) -> E v 'TBool
+isEmpty (E xs) = builtin NoSpan "is_empty" [xs]
+
+-- | @get_or(m, key, fallback)@: the value at a key, or the fallback.
+getOr :: E v ('TMap t) -> E v 'TString -> E v t -> E v t
+getOr (E m) (E k) (E d) = builtin NoSpan "get_or" [m, k, d]
+
 -- | @get_env_or(name, default)@. A literal name is what @lask secrets@
 -- reports a task as reading (spec 11.10).
 getEnvOr :: E v 'TString -> E v 'TString -> E v 'TString
@@ -451,7 +461,7 @@ getEnvOr (E n) (E d) = builtin NoSpan "get_env_or" [n, d]
 
 -- | @x = e@ followed by the rest of a @do@ block.
 bindE :: Span -> E v a -> (E v a -> E v b) -> E v b
-bindE sp (E e) k = E (TBind sp e (unE . k . E . TVar))
+bindE sp (E e) k = E (TBind sp e (unE . k . E . TmVar))
 
 -- | A statement run for its effects, followed by the rest of a @do@
 -- block.
@@ -465,7 +475,7 @@ newtype Env = Env Core
 
 -- | A registry image, @#golang:1.22@.
 image :: (HasCallStack) => Text -> Env
-image ref = Env (Core sp (CEnv "docker" [("image", Core sp (CStrLit ref))]))
+image reference = Env (Core sp (CEnv "docker" [("image", Core sp (CStrLit reference))]))
   where
     sp = callSpan callStack
 
@@ -491,7 +501,7 @@ run :: (HasCallStack) => Command -> E v 'TString -> E v 'TString
 run c args = E (TLet sp (unE (rawRun sp c args)) check)
   where
     sp = callSpan callStack
-    check r = unE (node1 sp (\rv -> CIf (cond rv) (dot rv "stdout") (failCall rv)) (TVar r))
+    check r = unE (node1 sp (\rv -> CIf (cond rv) (dot rv "stdout") (failCall rv)) (TmVar r))
     dot rv f = Core sp (CDot rv f)
     cond rv = Core sp (CBin PEq (dot rv "code") (Core sp (CNumber 0)))
     failCall rv =
@@ -544,7 +554,7 @@ parallel (Par jobs k) = E (spawnAll jobs [])
         spawnAll js (hs <> [h])
     spawnAll [] hs = awaitAll hs []
     awaitAll (h : hs) as =
-      TBind sp (unE (node1 sp CAwait (TVar h))) $ \a -> awaitAll hs (as <> [TVar a])
+      TBind sp (unE (node1 sp CAwait (TmVar h))) $ \a -> awaitAll hs (as <> [TmVar a])
     awaitAll [] as = unE (k as)
 
 -- Keyword parameters ----------------------------------------------------------------
@@ -593,7 +603,7 @@ instance KnownParams '[] where
 
 instance (KnownSymbol n, KnownTy t, DataTy t, KnownParams ps) => KnownParams ((n ::: t) ': ps) where
   paramsOf = dataTy @t `seq` (T.pack (symbolVal (Proxy @n)), tyOf @t) : paramsOf @ps
-  applyVars (x : xs) f = applyVars @ps xs (f (E (TVar x)))
+  applyVars (x : xs) f = applyVars @ps xs (f (E (TmVar x)))
   applyVars [] _ = arity
   collect k = \(E a) -> collect @ps (\as -> k (a : as))
 
@@ -642,6 +652,73 @@ taskWith name def = Task (reifyDecl @ps @r (callSpan callStack) name def)
 -- | The summary @--help@ shows.
 doc :: Text -> Task ps r -> Task ps r
 doc d (Task decl) = Task decl {declDoc = Just d}
+
+-- | A top-level value (spec 5), evaluated once, the first time it is
+-- referenced: @port: Number = 8080@.
+newtype ValueDecl (t :: Ty) = ValueDecl Decl
+
+-- | Declare a value: its name, and its expression.
+value :: forall t. (KnownTy t, DataTy t, HasCallStack) => Text -> (forall v. E v t) -> ValueDecl t
+value name e = dataTy @t `seq` ValueDecl (reifyValue @t (callSpan callStack) name e)
+
+-- | A reference to a value or to a task, as an expression.
+ref :: (HasCallStack) => ValueDecl t -> E v t
+ref (ValueDecl d) = E (TRef (callSpan callStack) d)
+
+-- | A declaration with type parameters (spec 4.2), each with its bound:
+--
+-- > -- first_or<T>(xs: Array<T>, fallback: T): T
+-- > type T = 'TVar "T" 'BNone
+-- > firstOr :: Generic '[ '("T", 'BNone)] '["xs" ::: 'TArray T, "fallback" ::: T] T
+-- > firstOr = generic "first_or" $ \xs fallback -> if_ (isEmpty xs) fallback (at xs 0)
+--
+-- The body is checked once, at the type parameters themselves: inside
+-- it a @T@ is opaque, and has what its bound gives it and nothing else
+-- (spec 4.4). It is reified once.
+newtype Generic (vs :: [(Symbol, Bound)]) (ps :: [Param]) (r :: Ty) = Generic Decl
+
+-- | Declare a generic: its name, and its body, a curried function of
+-- its positional parameters at the type parameters.
+generic :: forall vs ps r. (KnownVars vs, KnownParams ps, KnownTy r, HasCallStack) => Text -> (forall v. Fn v ps r) -> Generic vs ps r
+generic name body = Generic d {declCore = (declCore d) {cdTypeVars = map fst vars, cdBounds = Map.fromList [(n, b) | (n, Just b) <- vars]}}
+  where
+    vars = varsOf @vs
+    d = reifyDecl @ps @r (callSpan callStack) name def
+    def :: forall v. Kw v (Fn v ps r)
+    def = pure (body @v)
+
+-- | A generic declaration at an instantiation of its one parameter. The
+-- instantiation must satisfy the parameter's bound (@E-TYPE-BOUND@), and
+-- is usually inferred from the arguments of the call.
+inst :: forall t n b ps r. (Satisfies n b t) => Generic '[ '(n, b)] ps r -> Task (SubstParams n t ps) (Subst n t r)
+inst (Generic d) = satisfies @n @b @t `seq` Task d
+
+-- | 'inst' for two parameters.
+inst2 ::
+  forall t1 t2 n1 b1 n2 b2 ps r.
+  (Satisfies n1 b1 t1, Satisfies n2 b2 t2) =>
+  Generic '[ '(n1, b1), '(n2, b2)] ps r ->
+  Task (SubstParamsL '[ '(n1, t1), '(n2, t2)] ps) (SubstL '[ '(n1, t1), '(n2, t2)] r)
+inst2 (Generic d) = satisfies @n1 @b1 @t1 `seq` satisfies @n2 @b2 @t2 `seq` Task d
+
+-- | The type parameters of a generic declaration, and their bounds.
+class KnownVars (vs :: [(Symbol, Bound)]) where
+  varsOf :: [(Text, Maybe LT.Bound)]
+
+instance KnownVars '[] where varsOf = []
+
+instance (KnownSymbol n, KnownBound b, KnownVars vs) => KnownVars ('(n, b) ': vs) where
+  varsOf = (T.pack (symbolVal (Proxy @n)), boundOf @b) : varsOf @vs
+
+-- | Anything that is a declaration: a task, a value, a generic.
+class Declared d where
+  declOf :: d -> Decl
+
+instance Declared (Task ps r) where declOf (Task d) = d
+
+instance Declared (ValueDecl t) where declOf (ValueDecl d) = d
+
+instance Declared (Generic vs ps r) where declOf (Generic d) = d
 
 -- | A call: a reference to the callee's name, never a copy of its body.
 call :: forall ps r v. (KnownParams ps, HasCallStack) => Task ps r -> Fn v ps r
@@ -697,7 +774,7 @@ fresh = do
 
 reifyTm :: Tm Text -> State R Core
 reifyTm tm = case tm of
-  TVar n -> pure (Core NoSpan (CVar (LocalRef n)))
+  TmVar n -> pure (Core NoSpan (CVar (LocalRef n)))
   TNode sp f ts -> Core sp . f <$> mapM reifyTm ts
   TRef sp d -> do
     modify (\r -> r {rDeps = d : rDeps r})
@@ -758,7 +835,7 @@ reifyDecl sp name def =
       NoSpan -> programModule
     Kw specs build = def @Text
     pos = paramsOf @ps
-    body = applyVars @ps @Text @r (map fst pos) (build [TVar (ksName s) | s <- specs])
+    body = applyVars @ps @Text @r (map fst pos) (build [TmVar (ksName s) | s <- specs])
     ((kwCores, bodyCore), st) = flip runState (R 0 [] [] [] file) $ do
       ks <- forM specs $ \s -> (,) (ksName s) <$> reifyTm (ksDefault s)
       b <- reifyTm (unE body)
@@ -775,6 +852,32 @@ reifyDecl sp name def =
           cdBounds = Map.empty
         }
 
+reifyValue :: forall t. (KnownTy t) => Span -> Text -> (forall v. E v t) -> Decl
+reifyValue sp name e =
+  Decl
+    { declKey = (programModule, name),
+      declDoc = Nothing,
+      declCore =
+        CoreDecl
+          { cdModule = programModule,
+            cdName = name,
+            cdTypeVars = [],
+            cdType = tyOf @t,
+            cdCore = core,
+            cdParams = Nothing,
+            cdBounds = Map.empty
+          },
+      declKeywords = [],
+      declDeps = reverse (rDeps st),
+      declCommands = rCmds st,
+      declKeywordUses = rKwUses st
+    }
+  where
+    file = case sp of
+      Span p _ -> fileName p
+      NoSpan -> programModule
+    (core, st) = runState (reifyTm (unE (e @Text))) (R 0 [] [] [] file)
+
 -- Programs ----------------------------------------------------------------------------
 
 -- | The module key every declaration of a program shares. A program is
@@ -787,12 +890,12 @@ programModule = "main"
 data Export = Export Bool Decl
 
 -- | Reachable from the CLI and listed in help.
-export :: Task ps r -> Export
-export (Task d) = Export True d
+export :: (Declared d) => d -> Export
+export = Export True . declOf
 
--- | Reachable only through other tasks, like Lask's @internal@.
-internal :: Task ps r -> Export
-internal (Task d) = Export False d
+-- | Reachable only through other declarations, like Lask's @internal@.
+internal :: (Declared d) => d -> Export
+internal = Export False . declOf
 
 -- | A program 'assemble' accepted: its Core, and every declaration its
 -- exports reach.
@@ -807,8 +910,12 @@ data Program = Program
 -- visited set so that recursion terminates, and check what the Haskell
 -- types do not.
 assemble :: [Export] -> Either [Text] Program
-assemble exports = case nameErrors <> dupErrors <> docErrors <> kwErrors <> commandErrors of
-  [] -> Right (Program core documented exported)
+assemble exports = case nameErrors <> dupErrors <> docErrors <> kwErrors <> commandErrors <> varErrors of
+  -- Core.Lint is the backstop: it runs on what the checks above let
+  -- through, so a problem they report is reported once.
+  [] -> case lintProgram core of
+    [] -> Right (Program core documented exported)
+    problems -> Left problems
   errs -> Left errs
   where
     roots = [d | Export _ d <- exports]
@@ -891,6 +998,22 @@ assemble exports = case nameErrors <> dupErrors <> docErrors <> kwErrors <> comm
             Just target <- [Map.lookup (programModule, callee) byKey],
             let declared = declKeywords target
         ]
+
+    -- A type parameter is in scope only in the declaration that binds
+    -- it (spec 4.2), so one in any other declaration's types escaped
+    -- from a generic body: instantiated at the parameter itself, outside.
+    varErrors =
+      [ "'" <> snd (declKey d) <> "' mentions the type parameter " <> v <> ", which it does not declare"
+        | d <- decls,
+          let cd = declCore d,
+          v <- nub (concatMap LT.typeVars (cdType cd : typesIn (cdCore cd))),
+          v `notElem` cdTypeVars cd
+      ]
+    typesIn c =
+      [t | CLam lam <- map coreF (universe c), t <- [lamType lam]]
+        <> [t | CCast _ t <- map coreF (universe c)]
+        <> [t | CIsType _ t <- map coreF (universe c)]
+    universe c = c : concatMap universe (coreChildren c)
 
     -- A command word names one environment (spec ch. 5).
     commandErrors =
