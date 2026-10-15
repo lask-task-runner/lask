@@ -222,14 +222,12 @@ spec = do
       evalsTo "f(n: Number) = case {\n  n >= 500 -> \"error\"\n  n >= 400 -> \"warn\"\n  else -> \"info\"\n}\ng() = f(404)" "g" "\"warn\""
     it "maps for expressions in order" $
       evalsTo "f() = for (x : [1, 2, 3]) { x * 2 }" "f" "[2,4,6]"
-    it "evaluates early returns" $
+    it "evaluates an if without else to null when its condition is false (spec 6.4)" $ do
+      evalsTo "f() = if (false) { 1 }" "f" "null"
+      evalsTo "f() = if (true) { 1 }" "f" "1"
+    it "continues past an if without else whose condition is false" $
       evalsTo
-        "p(tag: String): String = do {\n  if (tag == \"\") { return \"skip\" }\n  \"released\"\n}\nf() = p(\"\")"
-        "f"
-        "\"skip\""
-    it "continues past a guard whose condition is false" $
-      evalsTo
-        "p(tag: String): String = do {\n  if (tag == \"\") { return \"skip\" }\n  \"released\"\n}\nf() = p(\"v1\")"
+        "p(tag: String): String = do {\n  if (tag == \"\") { fail({code: 2, message: \"no tag\"}) }\n  \"released\"\n}\nf() = p(\"v1\")"
         "f"
         "\"released\""
 

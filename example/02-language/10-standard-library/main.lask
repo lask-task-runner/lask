@@ -46,8 +46,7 @@ slug(raw: String): String =
 // @example lask eval version-parts v1.4.0
 version_parts(line: String): Array<String> = do {
   m = regex_match(line, '^v(\d+)\.(\d+)\.(\d+)$')
-  if (is_empty(m)) { return [] }
-  drop(m, 1)
+  is_empty(m) ? [] : drop(m, 1)
 }
 
 // Splitting, padding and the rest of the text work a task needs.

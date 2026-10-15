@@ -86,7 +86,7 @@ If a workflow fails, the task stops there; fix the cause and run the remaining s
 $ lask run release X.Y.Z
 ```
 
-Rewrites `Formula/lask.rb` for `vX.Y.Z`, with the `sha256` GitHub records for each archive, then commits and pushes `main`. Check it with `brew update && brew upgrade lask && lask version`.
+Rewrites `Formula/lask.rb` for `vX.Y.Z` and adds `Formula/lask@X.Y.Z.rb`, keg-only, for installing that version on its own, both with the `sha256` GitHub records for each archive, then commits and pushes `main`. Check it with `brew update && brew upgrade lask && lask version`.
 
 ### 4. Release the documentation ([lask-task-runner.github.io](https://github.com/lask-task-runner/lask-task-runner.github.io))
 

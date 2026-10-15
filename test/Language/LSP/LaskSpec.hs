@@ -389,8 +389,8 @@ spec = do
       map (^. L.label) items `shouldMatchList` ["x", "y"]
       [i ^. L.detail | i <- items, i ^. L.label == "y"] `shouldBe` [Just "String"]
     it "offers the fields of a command result" $ do
-      let src = "f() = do {\n  r = $*[#local] echo hi\n  return r.\n}"
-      ls <- labels "test.lask" src 2 11
+      let src = "f() = do {\n  r = $*[#local] echo hi\n  r.\n}"
+      ls <- labels "test.lask" src 2 4
       ls `shouldMatchList` ["code", "stderr", "stdout"]
     it "offers nothing for a receiver it cannot resolve" $ do
       ls <- labels "test.lask" "b = zzz." 0 8
@@ -502,7 +502,7 @@ corpora =
       ["inc", "total"]
     ),
     ( "a do block",
-      "run() = do {\n  a = 1\n  b = a + 1\n  return b\n}\n",
+      "run() = do {\n  a = 1\n  b = a + 1\n  b\n}\n",
       ["run"]
     ),
     ( "a module with a syntax error",

@@ -169,7 +169,7 @@ jobs:
           # A task never pulls its image (spec 10.3): `lask sync` pulls
           # it and pins its digest in lask.lock.json first.
           lask sync
-          lask envs check
+          lask envs list
           # Both streams are captured, so neither reaches the log on its
           # own: the status has to be carried past the capture and the
           # output echoed before it is asserted on, or a failure here

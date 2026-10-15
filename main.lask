@@ -51,7 +51,7 @@ doctest(--env: String = "docker") = $[envs[env]] stack install --test && stack e
 test(--env: String = "docker") = do {
   t1 = async unittest(env = env)
   t2 = async doctest(env = env)
-  return {
+  {
     unittest: await t1,
     doctest: await t2
   }
@@ -202,7 +202,7 @@ smoke_colon_dir(--dir = path_join([get_env_or("RUNNER_TEMP", "/tmp"), "colon:dir
   // ran. The framed form is drawn by cowsay and appears only when the
   // container produced it.
   if (!contains(out, "< Hello, Lask! >")) {
-    return fail(error(1, "cowsay-hello did not draw its greeting"))
+    fail(error(1, "cowsay-hello did not draw its greeting"))
   }
   out
 }
@@ -314,10 +314,10 @@ internal package_deb(version: String, bin_dir: String, name: String): String = d
 // @example lask run release-package 0.8.0 linux-amd64
 release_package(version: String, target: String, --check_version = true, --bin_dir = "dist/bin"): Array<String> = do {
   if (!has_key(release_archives, target)) {
-    return fail(error(4, "unknown target: #{target}"))
+    fail(error(4, "unknown target: #{target}"))
   }
   if (check_version && package_version() != version) {
-    return fail(error(1, "package.yaml declares #{package_version()}, not #{version}"))
+    fail(error(1, "package.yaml declares #{package_version()}, not #{version}"))
   }
   name = "lask-v#{version}-#{target}"
   windows = release_archives[target] == "zip"
@@ -385,6 +385,9 @@ internal newest_run(workflow: String, since: String): String = do {
   trim(id)
 }
 
+internal fetch_release_files(run_id: String, version: String) =
+  $[#local] rm -rf dist/release && gh run download #{run_id} -n lask-#{version} -D dist/release
+
 // Wait for a workflow run, failing if it fails.
 internal watch(run_id: String) = $[#local] gh run watch #{run_id} --interval 60 --exit-status > /dev/null
 
@@ -428,22 +431,24 @@ release(version: String, --notes: String = "notes.md"): String = do {
   require_semver(version)
   tag = "v#{version}"
   if (!file_exists(notes, #local)) {
-    return fail(error(4, "no release notes at #{notes}"))
+    fail(error(4, "no release notes at #{notes}"))
   }
   $[#local] git fetch -q origin main
   on_main = $[#local] git show origin/main:package.yaml
   if (declared_version(on_main) != version) {
-    return fail(error(1, "main declares #{declared_version(on_main)}, not #{version}: merge the release pull request first"))
+    fail(error(1, "main declares #{declared_version(on_main)}, not #{version}: merge the release pull request first"))
   }
   existing = $[#local] git ls-remote --tags origin refs/tags/#{tag}
   if (trim(existing) != "") {
-    return fail(error(1, "#{tag} already exists"))
+    fail(error(1, "#{tag} already exists"))
   }
 
   log("building #{tag} on main")
   build = dispatch("release.yml", "-f version=#{version} -f check_version=true -f ref=main")
   watch(build)
-  $[#local] rm -rf dist/release && gh run download #{build} -n lask-#{version} -D dist/release
+  // The artifact comes from Azure storage, which has failed a download
+  // outright (v0.9.0) and answered the next attempt.
+  retry(backoff_fixed(30, 3), \() -> fetch_release_files(build, version))
 
   log("publishing #{tag}")
   url = $[#local] gh release create #{tag} --target main --title #{tag} --notes-file #{shell_quote(notes)} \

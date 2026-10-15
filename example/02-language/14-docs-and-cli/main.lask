@@ -31,8 +31,9 @@ publish(--tag: String = "latest", --dry_run: Bool = false): String = do {
   // the task name as well as in every parameter name. `@param` is
   // matched after that mapping, so `dry_run` and `dry-run` name the
   // same parameter.
-  if (dry_run) { return "would publish app:#{tag}" }
-  "published app:#{tag} (#{get_or(known_tags, tag, "unknown tag")})"
+  dry_run
+    ? "would publish app:#{tag}"
+    : "published app:#{tag} (#{get_or(known_tags, tag, "unknown tag")})"
 }
 
 // Show the tags this module knows about.

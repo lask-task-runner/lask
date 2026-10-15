@@ -35,7 +35,6 @@ import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Sig
 import Language.Lask.Core.AST
 import Language.Lask.Diagnostic
-import Language.Lask.Desugar.Return (transformFunctionBody)
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer.Token (CmdStream (..), Op (..), Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..), collapseDots)
@@ -912,8 +911,7 @@ tryAliasBody ctx key@(defPath, defName) = do
 -- Lambdas and parameters ----------------------------------------------------------
 
 -- | Elaborate a lambda or function declaration: computes static
--- parameter info, transforms early returns in the body, and infers or
--- checks the return type.
+-- parameter info, and infers or checks the return type.
 elabLambda ::
   Ctx ->
   FilePath ->
@@ -927,9 +925,7 @@ elabLambda ::
 elabLambda ctx path locals sp mName ps retAnn body = do
   (params, kwDefaults, bodyLocals, secretParams) <- elabParams ctx path locals ps
   retTy <- traverse (typeFromS ctx path) retAnn
-  -- Wrapped after the early-return transform so the rebindings sit in
-  -- a plain, return-free block (spec 6.10 desugaring).
-  body' <- wrapSecretParams secretParams <$> either abort pure (transformFunctionBody body)
+  let body' = wrapSecretParams secretParams body
   (bodyCore, bodyTy) <- case retTy of
     Just t -> (,) <$> check ctx path bodyLocals body' t <*> pure t
     Nothing -> infer ctx path bodyLocals body'
@@ -1062,8 +1058,7 @@ infer ctx path locals (Expr sp f) = case f of
       ( Core sp (CIf condCore (Core (blockSpan t) (CDo thenStmts)) (Core (blockSpan el) (CDo elseStmts))),
         ty
       )
-  EIf _ _ Nothing ->
-    abort (diag ESyntaxReturnPosition sp "if without else is not allowed here")
+  EIf c t Nothing -> elabIfNoElse ctx path locals sp c t Nothing False
   ECond c a b -> infer ctx path locals (condAsIf sp c a b)
   EFor (Spanned xsp x) xs body -> do
     (xsCore, xsTy) <- infer ctx path locals xs
@@ -1123,6 +1118,45 @@ mkThunk path sp body ty =
         lamType = TyFun [] ty
       }
 
+-- | @if (c) { t }@ without @else@ (spec 6.4). When the condition is
+-- false its value is @null@, so it is @T | Null@ for a block of type
+-- @T@; a @Void@ block makes it @Void@, as an empty @else@ would. With
+-- an expected type the block is checked against it, and @Null@ must
+-- conform to it too. A statement whose value is discarded (the last
+-- argument) may have a block of any type.
+elabIfNoElse :: Ctx -> FilePath -> Locals -> Span -> Expr -> Block -> Maybe Type -> Bool -> TC (Core, Type)
+elabIfNoElse ctx path locals sp c t mExpected discarded = do
+  condCore <- check ctx path locals c TyBool
+  (thenStmts, thenTy) <- case mExpected of
+    Just TyVoid -> elabBlock ctx path locals t (Just TyVoid)
+    Just e -> do
+      unless (conforms ctx TyNull e) $
+        abort . diag ETypeMismatch sp $
+          "an if without else is null when its condition is false, and Null does not conform to "
+            <> renderType e
+            <> "; add an else block"
+      elabBlock ctx path locals t (Just e)
+    Nothing -> do
+      r <- tryTC (elabBlock ctx path locals t Nothing)
+      case r of
+        Right ok -> pure ok
+        -- A block typed by its context, such as fail(e), has none
+        -- here; it is checked as the Void an empty else would give it.
+        Left err -> either (const (abort err)) pure =<< tryTC (elabBlock ctx path locals t (Just TyVoid))
+  let thenCore = Core (blockSpan t) (CDo thenStmts)
+      orElse ty elseF = pure (Core sp (CIf condCore thenCore (Core sp elseF)), ty)
+  case mExpected of
+    Just e -> orElse e (if e == TyVoid then CDo [] else CNull)
+    Nothing
+      | thenTy == TyVoid -> orElse TyVoid (CDo [])
+      | discarded -> orElse thenTy CNull
+      | dataType thenTy -> orElse (mkUnion thenTy [TyNull]) CNull
+      | otherwise ->
+          abort . diag ETypeIllformed sp $
+            "an if without else has the type "
+              <> renderType thenTy
+              <> " | Null, which is not a type: only a data type can be a member of a union; add an else block"
+
 -- | @c ? a : b@ is @if (c) { a } else { b }@ (spec 6.2), and is
 -- typed and evaluated as that @IfExpr@ is (6.4).
 condAsIf :: Span -> Expr -> Expr -> Expr -> Expr
@@ -1142,6 +1176,7 @@ check ctx path locals e@(Expr sp f) expected = case f of
         unless (conforms ctx ty expected) (mismatch sp expected ty)
         pure lam
   ECond c a b -> check ctx path locals (condAsIf sp c a b) expected
+  EIf c t Nothing | expected /= TyAny -> fst <$> elabIfNoElse ctx path locals sp c t (Just expected) False
   EIf c t (Just el) | expected /= TyAny -> do
     condCore <- check ctx path locals c TyBool
     (thenStmts, _) <- elabBlock ctx path locals t (Just expected)
@@ -1538,8 +1573,6 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
       SExpr e -> do
         (c, t) <- inferOrCheck locals e
         pure ([CSExpr c], t)
-      SReturn _ -> returnErr
-      SGuard _ _ -> returnErr
     go locals (Stmt ssp f : rest) = case f of
       SBind n sec ann e -> do
         (c, t) <- elabBind locals ssp n sec ann e (infer ctx path locals e)
@@ -1551,15 +1584,17 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
             "'" <> n <> "' holds " <> handlesOf t <> " that nothing refers to, so " <> neverAwaited t
         pure (CSBind n c : cs, ty)
       SExpr e -> do
-        (c, t) <- infer ctx path locals e
+        (c, t) <- case e of
+          -- Its value is discarded, so an if without else is not
+          -- held to having a type that can be unioned with Null.
+          Expr isp (EIf cond thenB Nothing) -> elabIfNoElse ctx path locals isp cond thenB Nothing True
+          _ -> infer ctx path locals e
         -- Only the last statement gives the block its value (6.5).
         when (holdsHandles t) $
           advise WAsyncUnused (exprSpan e) $
             "this statement discards " <> handlesOf t <> ", so " <> neverAwaited t
         (cs, ty) <- go locals rest
         pure (CSExpr c : cs, ty)
-      SReturn _ -> returnErr
-      SGuard _ _ -> returnErr
 
     -- An annotation is the expected type for the right-hand side and
     -- the declared type of the binding (spec 4.3, 6.5); without one,
@@ -1582,9 +1617,6 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
         c <- check ctx path locals e t
         pure (c, t)
       Nothing -> infer ctx path locals e
-
-    returnErr =
-      abort (diag ESyntaxReturnPosition bsp "return is not allowed in this position")
 
     -- The value of an @async@ (6.3), or an array of them, as @for@
     -- over an @async@ body produces.

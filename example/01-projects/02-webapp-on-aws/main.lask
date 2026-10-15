@@ -179,7 +179,7 @@ type Healthcheck = Record<status: String>
 healthcheck_api(): Healthcheck = do {
   url = tf_output().api_url
   status = $ curl -s -o /dev/null -w "%{http_code}" "#{url}"
-  return { status: status }
+  { status: status }
 }
 
 // Same as healthcheck_api, but for the frontend: it's a static site with
@@ -187,5 +187,5 @@ healthcheck_api(): Healthcheck = do {
 healthcheck_web(): Healthcheck = do {
   url = tf_output().website_url
   status = $ curl -s -o /dev/null -w "%{http_code}" "#{url}"
-  return { status: status }
+  { status: status }
 }

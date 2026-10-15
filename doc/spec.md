@@ -335,6 +335,7 @@ Reserved words:
 
 - The following words are reserved words and must not be used as identifiers.
 - `import`, `export`, `internal`, `from`, `as`, `type`, `command`, `do`, `async`, `await`, `if`, `else`, `case`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
+- `return` is reserved but begins no construct: Lask has no return statement (6.5). It is kept so that a program written as in another language is told what to write instead, by a syntax error (`E-SYNTAX-UNEXPECTED-TOKEN`) rather than an undefined name.
 - `on` is not a reserved word. It is a contextual keyword recognized only within a command declaration (Chapter 5), directly after the closing brace of its command words, where no other token may appear; it remains usable as an identifier elsewhere. Because the position is lexical, an editor can show `on` as a keyword there without elaborating the module.
 - `stdin` is not a reserved word but is a reserved identifier (9.3), and must not be declared or rebound in user code.
 
@@ -1096,7 +1097,6 @@ The conditional operator `c ? a : b`:
 - `c ? a : b` is syntactic sugar for `if (c) { a } else { b }` (6.4). It is the form of `IfExpr` whose branches are single expressions, and it is typed and evaluated exactly as that `IfExpr` is: `c` must be `Bool`, the two branches must have the same type `T`, which is the type of the whole expression, an expected type is propagated into both branches unchanged (4.3), and only the selected branch is evaluated.
 - It binds more loosely than every binary operator, so the condition is a whole `BinaryExpr`: `xs |> is_empty ? 0 : 1` tests `is_empty(xs)`. Each branch is a whole `Expression`, so `c ? a || b : xs |> f` needs no parentheses.
 - It associates to the right: `a ? x : b ? y : z` is `a ? x : (b ? y : z)`, and a conditional may stand in the middle branch without parentheses, as in `a ? b ? x : y : z`. A multi-way choice with more than two conditions is usually clearer as the condition form of `case` (6.4).
-- Its branches are expressions, not statements, so a branch cannot contain `return` (6.5).
 - A newline before a line-leading `?` or `:`, and after a line-final `?` or `:`, continues the expression (6.5), so a long conditional may put each branch on its own line. This is how a branch can be a command execution expression other than the last one: a command string runs to the end of its line (6.6), so in `c ? $ echo a : $ echo b` the then branch swallows `: $ echo b`, while the three-line form below does not.
 
 ```lask
@@ -1185,7 +1185,7 @@ The execution environment may choose the concurrency mechanism for `async` (thre
 ### 6.4 Control Structures
 
 ```ebnf
-IfExpr       = "if" "(" Expression ")" Block "else" Block .
+IfExpr       = "if" "(" Expression ")" Block [ "else" Block ] .
 CaseExpr     = "case" [ "(" Expression ")" ] "{" { CaseArm arm_end } "}" .
 CaseArm      = ( CaseHeads | TypeHeads | "else" ) "->" Expression .
 CaseHeads    = Expression { "," Expression } .
@@ -1227,6 +1227,7 @@ Definitions as functions:
 Desugaring rules:
 
 - `if (c) { ... } else { ... }` is syntactic sugar for `choose(c, \() -> do { ... }, \() -> do { ... })`.
+- `if (c) { ... }` without `else` is syntactic sugar for `if (c) { ... } else { null }`, except when the type of its block is `Void`, where it is `if (c) { ... } else {}`.
 - `for (x : xs) { ... }` is syntactic sugar for `map(xs, \(x) -> do { ... })`. However, when the type of the body block is `Void` (including an empty block), it is syntactic sugar for `for_each(xs, \(x) -> do { ... })` (`Array<Void>` is not constructed; 4.4).
 - For iteration for side effects where the result array is unnecessary, either make the body of type `Void` or use `for_each` directly.
 - `case (e) { p -> b; R }` is syntactic sugar for `do { s = e; choose(s == p, \() -> b, \() -> C) }`, where `s` is a fresh name that no source program can write (it therefore captures nothing and shadows nothing) and `C` is the expansion of the remaining arms `R`. Because the scrutinee is bound once, it is evaluated exactly once however many arms are tested.
@@ -1247,7 +1248,10 @@ Typing rules:
 - `reduce` is typed as `Function<Array<T>, U, Function<U, T, U>, U>`.
 - `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because conformance of function types is limited to identity (4.4), in order to accept bodies of arbitrary return type through instantiation).
 - An `IfExpr` is well-typed only when the condition expression is `Bool` and the types of the two branch blocks are the same `T`, and the type of the whole expression is `T`.
-- An `if` without `else` is not an expression. It appears solely as the `return` guard statement (the `GuardStmt` of 6.5), only in statement position.
+- An `if` without `else` is well-typed when the condition expression is `Bool` and its block has a type `T`. Its type is `T | Null`, reduced to canonical form (4.2): when the condition is false its value is `null`. A `T` that already admits `Null`, or is `Any`, is unchanged by this. When `T` is `Void` — a block run for its effect — the type is `Void`, as with an empty `else`.
+- With an expected type `E` (4.3), the block is checked against `E`, and `Null` must also conform to `E`, unless `E` is `Void`. So `f(c: Bool): String | Null = if (c) { "x" }` is well-typed and `f(c: Bool): String = if (c) { "x" }` is a type error (`E-TYPE-MISMATCH`), whose remedy is an `else`.
+- Without an expected type, a block whose type is given only by its context, such as `fail(e)` (15.7), is checked as `Void`, the type an empty `else` would give it. `if (bad) { fail(e) }` therefore stands as a statement that stops the function when `bad` holds.
+- `T | Null` must be a type, so `T` must be a data type (4.2) when the value is used; a block of a function type or of `AsyncHandle<T>` is `E-TYPE-ILLFORMED`, and wants an `else`. A statement that is not the last of its block discards its value (6.5), and there the block may have any type.
 - A `CaseExpr` with a scrutinee is well-typed only when every value head's type conforms (4.4) to the type `S` of the scrutinee, and, when the expression has at least one value head, `S` is a comparable type (6.2). These are exactly the rules of `==`, because the expansion of a value head is a chain of `==`. A scrutinee of type `Any` is therefore a type error in a `case` having any value head, because `Any` is not comparable: dispatch on its type with type heads (below), or move to a concrete type with `cast` (15.8) first.
 - A type head is well-typed only when `S` is a union and the head is one of its members, or when `S` is `Any` and the head is a type `cast` may target (a data type; 4.2, 15.8). `E-TYPE-MISMATCH` for a head that is not a member of the union, and `E-TYPE-ILLFORMED` for a head that is not a data type. Dispatching on the type of a value of any other type decides nothing statically — the answer is already known — so it is rejected rather than being allowed as dead code.
 - The two admissible scrutinees are exactly the two types whose runtime kind is not settled statically. `Any` admits every data type as a head, because nothing is known about it; a union admits only its own members, because everything else is known not to occur.
@@ -1283,7 +1287,7 @@ port(): Number = do {
 
 Evaluation rules:
 
-- An `IfExpr` first evaluates only the condition expression, and evaluates only the then block if true, or only the else block if false (following `choose` of 8.5).
+- An `IfExpr` first evaluates only the condition expression, and evaluates only the then block if true, or only the else block if false (following `choose` of 8.5). Without an `else` block, a false condition gives `null`, or nothing when the block is `Void`.
 - A `ForExpr` evaluates the target collection, then traverses the elements from left to right, applies the body block, and aggregates the results into an array in the same order (following `map` of 8.5).
 - A `CaseExpr` with a scrutinee evaluates the scrutinee exactly once, before any arm head. It then tests the heads in order, top to bottom and left to right within an arm, and stops at the first head that selects: a value head selects when it is equal to the scrutinee, and a type head selects when the scrutinee passes the runtime type check for that type. The remaining heads are not evaluated or tested, and only the body of the selected arm is evaluated. When no head selects, the body of the `else` arm is evaluated.
 - A type head is tested and never evaluated: it is a type, not an expression, so it can neither fail nor have an effect.
@@ -1353,11 +1357,9 @@ summarize(): String = do {
 
 ```ebnf
 DoExpr     = "do" Block .
-DoStmt     = ( BindStmt | ExprStmt | ReturnStmt | GuardStmt ) stmt_end .
+DoStmt     = ( BindStmt | ExprStmt ) stmt_end .
 BindStmt   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 ExprStmt   = Expression .
-ReturnStmt = "return" Expression .
-GuardStmt  = "if" "(" Expression ")" Block .
 stmt_end   = newline | ";" .
 ```
 
@@ -1408,29 +1410,11 @@ Sequential execution sugar:
 - `do { stmt1; stmt2; ...; expr; }` is syntactic sugar for sequential execution that evaluates each statement in order and returns the value of the final expression.
 - Bindings inside `do` become visible in order and can be referenced by subsequent statements.
 
-Early return (`return`):
+No early return:
 
-- `return e` is a statement that skips evaluation of the remainder of the body of the innermost enclosing function (function declaration or lambda expression) and makes `e` the result of that function.
-- `return` may be placed only in the following positions (return-permitted positions). Violation is a syntax error (`E-SYNTAX-RETURN-POSITION`).
-  - A statement position of the `do` block that is the body of a function declaration or lambda expression
-  - A `GuardStmt` placed in a return-permitted position, and statement positions inside each branch block of an `IfExpr` in statement position (applied recursively)
-- Therefore, it cannot be used inside the body of `for`, inside the body of a `case` arm (arm bodies are expressions, 6.4), inside each block of `try`/`catch`/`finally`, inside a branch of a conditional expression `c ? a : b` (6.2), or inside `do` blocks appearing in expression positions such as the right-hand side of a binding or an argument.
-- A `GuardStmt` (an `if` without `else`) is permitted only when the final statement of the block is a `ReturnStmt` (6.4).
-- No statement of the same block may be placed after a `ReturnStmt` (unreachable; syntax error).
-
-Continuation-distribution transformation (normalization):
-
-`return` is normalized to an expression using `choose` by the following transformation. `C...` denotes the subsequent statements (the continuation) of the same block.
-
-- `do { A...; return e }` is equivalent to `do { A...; e }`.
-- `do { A...; if (c) { B...; return e }; C... }` is transformed into `do { A...; choose(c, \() -> do { B...; e }, \() -> do { C... }) }`.
-- When a branch of an `if (c) { X... } else { Y... }` in statement position contains `return`, the subsequent statements `C...` are injected into both branches and the transformation is applied likewise (a branch ending in `return` discards the continuation; a branch not so ending has the continuation appended at its end).
-- The transformation is applied recursively from the innermost block. No `return` remains in the transformed expression.
-
-Typing rules (early return):
-
-- The expression `e` of every `return e` and the final value of the function body must conform to the same type `T` (the return type of the function). The existing typing rules on the expression after the continuation-distribution transformation (the branch type agreement of 6.4) guarantee this. Where `T` is a union, that is what lets one `return` give a `String` and another `null` in a function returning `String | Null`: each is checked against `T` (4.3), and neither has to have the other's type.
-- If a `GuardStmt` is placed as the final statement of a function body, the continuation is empty, so it is a type error except when the return type is `Void`.
+- Lask has no `return` statement. The value of a function is the value of its body, and the value of a block is that of its last statement, so a function leaves only at its end. Writing `return` is a syntax error (`E-SYNTAX-UNEXPECTED-TOKEN`; 3.3).
+- A choice between values is written as one: `if (c) { a } else { b }`, `c ? a : b` (6.2), or `case` (6.4), with the rest of the function in the branch that continues it.
+- A condition under which a function must stop is a failure: `if (bad) { fail(e) }` (6.4, 15.7) stops it, and the statements after it run only when `bad` does not hold.
 
 Typing rules:
 
@@ -1478,10 +1462,14 @@ labels(xs: Array<String>) = do {
 }
 
 publish(tag: String): String = do {
-  if (tag == "") { return "skip: no tag" }
+  if (tag == "") { fail(error(2, "no tag")) }
   r = $*[#local] ./release.sh #{tag}
-  if (r.code != 0) { return r.stderr }
-  "released"
+  r.code != 0 ? r.stderr : "released"
+}
+
+notify(--verbose = false) = do {
+  if (verbose) { log("notifying") }
+  $[#local] ./notify.sh
 }
 ```
 
@@ -1964,16 +1952,15 @@ The expansion order during static verification is as follows.
 
 1. `async e` -> `spawn(\() -> e)`
 2. `await e` -> core function application `await(e)` (normalization of the parenthesis-omitted form)
-3. Continuation-distribution transformation of `return` (including guard statements) (6.5)
-4. `c ? a : b` -> `if (c) { a } else { b }` (6.2)
-5. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`
-6. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
-7. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
-8. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
-9. Sequential-execution expansion of `do { ... }`
-10. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
-11. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
-12. Command sugar expansion of `$ cmd` / `$[env] cmd`
+3. `c ? a : b` -> `if (c) { a } else { b }` (6.2)
+4. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`; without `else`, the false branch is `\() -> null`, or `\() -> do {}` for a `Void` block (6.4)
+5. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
+6. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
+7. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
+8. Sequential-execution expansion of `do { ... }`
+9. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
+10. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
+11. Command sugar expansion of `$ cmd` / `$[env] cmd`
 
 Type checking is performed on the core expressions after expansion. The meaning of the expansion result must be equivalent to that of the original syntax.
 
@@ -3778,7 +3765,6 @@ Naming rules:
 Representative codes:
 
 - `E-SYNTAX-UNEXPECTED-TOKEN`
-- `E-SYNTAX-RETURN-POSITION`
 - `E-SYNTAX-CASE-ELSE`
 - `E-NAME-UNDEFINED`
 - `E-NAME-DUPLICATE`

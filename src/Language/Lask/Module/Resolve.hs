@@ -491,8 +491,6 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
               <> [coreDiag sp n | isUnbindableName n]
               <> go (Set.insert n layer : rest0) rest
           SExpr e -> checkExpr sc e <> go sc rest
-          SReturn e -> checkExpr sc e <> go sc rest
-          SGuard c b -> checkExpr sc c <> checkBlock sc b <> go sc rest
         go [] _ = [] -- unreachable: block scope always pushed
 
 -- Type alias cycle detection (spec 4.2) --------------------------------------
