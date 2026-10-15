@@ -36,7 +36,6 @@ build_with_retry(): String = try {
 internal attempt(--fail_first: Bool = false): String = do {
   if (fail_first) {
     $[alpine] sh -c 'echo "no space left" 1>&2; exit 2'
-    return "unreachable"
   }
   "built"
 }

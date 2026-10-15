@@ -521,27 +521,24 @@ spec = do
     it "parses empty do blocks" $
       pExpr "do {}" `shouldBe` Right (EDo (block []))
 
-    it "parses return statements" $
-      pExpr "do { return 1 }" `shouldBe` Right (EDo (block [SReturn (num 1)]))
-
-    it "parses guard statements (if without else)" $
-      pExpr "do { if (c) { return 1 }; 2 }"
-        `shouldBe` Right
-          ( EDo
-              ( block
-                  [ SGuard (var "c") (block [SReturn (num 1)]),
-                    SExpr (num 2)
-                  ]
-              )
-          )
+    it "parses an if without else as an expression statement" $
+      pExpr "do { if (c) { 1 }; 2 }"
+        `shouldBe` Right (EDo (block [SExpr (ex (EIf (var "c") (block [SExpr (num 1)]) Nothing)), SExpr (num 2)]))
 
     it "parses statement-position if-else as an expression statement" $
       pExpr "do { if (c) { 1 } else { 2 } }"
         `shouldBe` Right
           (EDo (block [SExpr (ex (EIf (var "c") (block [SExpr (num 1)]) (Just (block [SExpr (num 2)]))))]))
 
-    it "requires else for if in expression position" $
-      pModule "x = if (c) { 1 }" `shouldSatisfy` isLeft
+    it "parses an if without else in expression position" $
+      pModule "x = if (c) { 1 }" `shouldSatisfy` isRight
+
+    it "keeps an else arm after an if without else in a case arm" $
+      pExpr "case (x) {\n  1 -> if (c) { 2 }\n  else -> 3\n}"
+        `shouldBe` Right (ECase (Just (var "x")) [carm [num 1] (ex (EIf (var "c") (block [SExpr (num 2)]) Nothing)), celse (num 3)])
+
+    it "rejects return, which Lask does not have" $
+      pExpr "do { return 1 }" `shouldSatisfy` isLeft
 
     it "parses if-else chains applied in larger expressions" $
       pExpr "do { if (c) { 1 } else { 2 } |> f }" `shouldSatisfy` isRight
@@ -646,10 +643,9 @@ spec = do
     it "parses a multi-line procedural function (16.5 style)" $
       pModule
         ( "publish(tag: String): String = do {\n"
-            <> "  if (tag == \"\") { return \"skip: no tag\" }\n"
+            <> "  if (tag == \"\") { fail(error(2, \"no tag\")) }\n"
             <> "  r = $*[#local] ./release.sh #{tag}\n"
-            <> "  if (r.code != 0) { return r.stderr }\n"
-            <> "  \"released\"\n"
+            <> "  r.code != 0 ? r.stderr : \"released\"\n"
             <> "}"
         )
         `shouldSatisfy` isRight

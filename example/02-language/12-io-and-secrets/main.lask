@@ -38,8 +38,7 @@ service_line(): String = do {
 // @example printf 'api\nweb\n' | lask eval longest-name
 longest_name(): String = do {
   names = filter(lines(stdin), \(l: String) -> l != "")
-  if (is_empty(names)) { return "(nothing on stdin)" }
-  last(sort_by(names, length))
+  is_empty(names) ? "(nothing on stdin)" : last(sort_by(names, length))
 }
 
 // Report what this run sees of its environment.

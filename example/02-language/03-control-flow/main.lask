@@ -15,20 +15,33 @@
 // @example lask eval plan-release --dry-run true
 plan_release(--dry_run: Bool = false, --version: String = "1.0.0"): String = do {
   target = "app:#{version}"
-  // `if` without `else` is not an expression. It exists in exactly one
-  // place: a guard whose body ends in `return`.
-  if (dry_run) { return "would release #{target}" }
-  note = stamp(target)
-  "released #{note}"
+  // There is no `return`: the value of a block is its last statement,
+  // so the other way out is the `else` block.
+  if (dry_run) { "would release #{target}" } else {
+    note = stamp(target)
+    "released #{note}"
+  }
 }
 
 internal stamp(target: String): String = "#{target} (#{length(target)} chars)"
 
 // Say whether a number is even or odd.
 //
-// As an expression, `if` always needs its `else` — both branches have
-// to produce a value, and of the same type.
+// With `else`, both branches produce a value, of the same type, and
+// that is the type of the `if`.
 parity(n: Number): String = if (mod(n, 2) == 0) { "even" } else { "odd" }
+
+// Name the tag a release would push, if it pushes one.
+//
+// Without `else`, an `if` is `null` when its condition is false, so its
+// type is that of its block or `Null`. A block run for its effect, of
+// type `Void`, leaves the `if` `Void`, as an empty `else` would.
+//
+// @example lask eval release-tag --publish true
+release_tag(--publish: Bool = false, --version: String = "1.0.0"): String | Null = do {
+  if (publish) { log("tagging v#{version}") }
+  if (publish) { "v#{version}" }
+}
 
 // Say whether a number is positive, zero or negative.
 //

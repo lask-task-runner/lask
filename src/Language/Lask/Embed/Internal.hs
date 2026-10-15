@@ -405,7 +405,9 @@ not_ :: E v 'TBool -> E v 'TBool
 not_ (E a) = node1 NoSpan CNot a
 
 -- | @if (c) { t } else { e }@: only the selected branch is evaluated.
--- Lask has no @if@ without @else@, and neither does the embedding.
+-- The embedding has no @Null@ type to give an @if@ without @else@, so
+-- it always takes both branches; for an effect under a condition, the
+-- else branch is 'done'.
 if_ :: (HasCallStack) => E v 'TBool -> E v t -> E v t -> E v t
 if_ (E c) (E t) (E e) = node3 sp CIf c (TBlock sp t) (TBlock sp e)
   where

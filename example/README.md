@@ -34,7 +34,7 @@ One directory per topic, in reading order. The whole of the [Quick Reference](ht
 | --- | --- |
 | [01-values-and-types](02-language/01-values-and-types) | Bindings, annotations, type aliases, records, maps, unions, optional fields, generics, `cast` |
 | [02-functions](02-language/02-functions) | Positional, variadic and keyword parameters, lambdas, higher-order functions, `\|>` and `>>` |
-| [03-control-flow](02-language/03-control-flow) | `do`, `if`, guard `return`, all three forms of `case`, `for` |
+| [03-control-flow](02-language/03-control-flow) | `do`, `if` with and without `else`, `c ? a : b`, all three forms of `case`, `for` |
 | [04-environments](02-language/04-environments) | `#local`, tags, digests, run options and `runnable`, a Dockerfile recipe, environments as values |
 | [05-commands](02-language/05-commands) | `$`, `$1`, `$2`, `$*`, interpolation, dispatch, `run`, `shell_quote` |
 | [06-concurrency](02-language/06-concurrency) | `async` / `await`, `spawn`, `all`, `race` |

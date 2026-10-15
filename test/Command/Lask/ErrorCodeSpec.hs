@@ -36,8 +36,6 @@ trigger :: ErrorCode -> Trigger
 trigger c = case c of
   -- Syntax and static errors (spec 14.4) stop before evaluation.
   ESyntaxUnexpectedToken -> check "x = = 1\n"
-  ESyntaxReturnPosition ->
-    check "f(x: String): String = do {\n  y = case (x) {\n    \"a\" -> do { return \"e\" }\n    else -> \"z\"\n  }\n  y\n}\n"
   ESyntaxCaseElse -> check "f(x: String) = case (x) {\n  \"a\" -> 1\n}\n"
   ENameUndefined -> check "x = nope\n"
   ENameDuplicate -> check "a = 1\na = 2\n"

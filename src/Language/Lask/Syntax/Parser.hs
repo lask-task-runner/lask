@@ -18,7 +18,7 @@ where
 
 import Control.Monad (unless, void, when)
 import Control.Monad.State.Strict (State, evalState, get, lift, modify, put)
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -805,17 +805,9 @@ pDoExpr = do
   b <- pBlock
   pure (Expr (s <> blockSpan b) (EDo b))
 
--- | @if@ in expression position: @else@ is mandatory (spec 6.4). The
--- statement parser handles the guard form separately.
+-- | @if@, with or without @else@ (spec 6.4).
 pIfExpr :: P Expr
 pIfExpr = do
-  (s, c, thenB, elseB) <- pIfHead
-  case elseB of
-    Just eb -> pure (Expr (s <> blockSpan eb) (EIf c thenB (Just eb)))
-    Nothing -> fail "if expression requires an else block"
-
-pIfHead :: P (Span, Expr, Block, Maybe Block)
-pIfHead = do
   s <- kw KIf
   _ <- sym TLParen
   c <- pExpr
@@ -825,7 +817,7 @@ pIfHead = do
   -- continue this `if` (spec 6.4); anything else commits to a block,
   -- so a parse error inside it is reported where it occurs.
   elseB <- optional (try (kw KElse <* notFollowedBy (sym TArrow)) *> pBlock)
-  pure (s, c, thenB, elseB)
+  pure (Expr (s <> blockSpan (fromMaybe thenB elseB)) (EIf c thenB elseB))
 
 -- | @case@ (spec 6.4). The scrutinee is optional: without it the arm
 -- heads are conditions rather than values to compare against.
@@ -910,13 +902,15 @@ pBlock = do
 pStmt :: P Stmt
 pStmt =
   choice
-    [ do
-        s <- kw KReturn
-        e <- pExpr
-        pure (Stmt (s <> exprSpan e) (SReturn e)),
+    [ -- @return@ stays reserved so that a program written as in
+      -- another language is told what to write instead (spec 6.5).
+      do
+        o <- getOffset
+        _ <- kw KReturn
+        parseError . FancyError o . Set.singleton $
+          ErrorFail "Lask has no return: the value of a block is its last statement; choose between values with if/else, case, or c ? a : b",
       try pBindStmt,
-      try ((\e -> Stmt (exprSpan e) (SExpr e)) <$> pExpr),
-      pGuardStmt
+      (\e -> Stmt (exprSpan e) (SExpr e)) <$> pExpr
     ]
 
 -- | A binding, optionally annotated, in the same shape as a
@@ -930,12 +924,3 @@ pBindStmt = do
   _ <- sym TAssign
   e <- pExpr
   pure (Stmt (sp <> exprSpan e) (SBind n sec ann e))
-
--- | Statement-position @if@ without @else@ (spec 6.5 GuardStmt). Only
--- reached when the expression parser failed, i.e. there is no @else@.
-pGuardStmt :: P Stmt
-pGuardStmt = do
-  (s, c, thenB, elseB) <- pIfHead
-  case elseB of
-    Just eb -> pure (Stmt (s <> blockSpan eb) (SExpr (Expr (s <> blockSpan eb) (EIf c thenB (Just eb)))))
-    Nothing -> pure (Stmt (s <> blockSpan thenB) (SGuard c thenB))
