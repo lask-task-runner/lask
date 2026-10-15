@@ -225,6 +225,7 @@ module Language.Lask.Embed
     if_,
     when_,
     whenDo,
+    Stmt,
     forEach,
     mapE,
 

@@ -58,6 +58,8 @@ module Language.Lask.Embed.Type
     IsWF,
     WF,
     wf,
+    WFResult,
+    wfResult,
     IsComparable,
     Comparable,
     comparable,
@@ -70,6 +72,10 @@ module Language.Lask.Embed.Type
 
     -- * Records
     FieldOf,
+    HasField,
+    hasField,
+    UniqueKeys,
+    uniqueKeys,
     Required,
     FitsRecord,
     fitsRecord,
@@ -84,6 +90,8 @@ module Language.Lask.Embed.Type
     concrete,
 
     -- * Type parameters
+    GenericVars,
+    genericVars,
     Subst,
     SubstParams,
     SubstL,
@@ -186,10 +194,11 @@ instance (KnownTy t) => KnownTy ('TAsync t) where tyOf = LT.TyAsync (tyOf @t)
 instance (KnownTys ps, KnownTy r) => KnownTy ('TFun ps r) where
   tyOf = LT.TyFun (tysOf @ps) (tyOf @r)
 
+-- A union is reflected as it is, not rebuilt through mkUnion: the
+-- canonical form is GHC's to compute (':|'), and the property test holds
+-- it to mkUnion's. A union not in canonical form is not a data type.
 instance (KnownTys ts) => KnownTy ('TUnion ts) where
-  tyOf = case tysOf @ts of
-    t : rest -> LT.mkUnion t rest
-    [] -> LT.TyAny
+  tyOf = LT.TyUnion (tysOf @ts)
 
 instance (KnownSymbol n) => KnownTy ('TVar n b) where
   tyOf = LT.TyVar (T.pack (symbolVal (Proxy @n)))
@@ -365,6 +374,7 @@ type family InsertAll (xs :: [Ty]) (acc :: [Ty]) :: [Ty] where
   InsertAll (x ': xs) acc = InsertAll xs (Insert x acc)
 
 type family Close (ts :: [Ty]) :: Ty where
+  Close '[] = 'TAny
   Close ('TAny ': _) = 'TAny
   Close '[t] = t
   Close ts = 'TUnion ts
@@ -435,7 +445,20 @@ fitsRecord = holds @(Fits r kvs) @(FitsMsg r kvs)
 
 type family Fits (r :: Ty) (kvs :: [(Symbol, Ty)]) :: Bool where
   Fits ('TRecord fs) kvs = And (GivenFit fs kvs) (RequiredGiven fs kvs)
+  -- Against a union, the literal is checked against its one record or
+  -- map member, when it has exactly one and that is a record (4.3).
+  Fits ('TUnion ts) kvs = FitsOne (ObjectMembers ts) kvs
   Fits _ _ = 'False
+
+type family FitsOne (ms :: [Ty]) (kvs :: [(Symbol, Ty)]) :: Bool where
+  FitsOne '[ 'TRecord fs] kvs = Fits ('TRecord fs) kvs
+  FitsOne _ _ = 'False
+
+type family ObjectMembers (ts :: [Ty]) :: [Ty] where
+  ObjectMembers '[] = '[]
+  ObjectMembers ('TRecord fs ': ts) = 'TRecord fs ': ObjectMembers ts
+  ObjectMembers ('TMap e ': ts) = 'TMap e ': ObjectMembers ts
+  ObjectMembers (_ ': ts) = ObjectMembers ts
 
 type family GivenFit (fs :: [Field]) (kvs :: [(Symbol, Ty)]) :: Bool where
   GivenFit _ '[] = 'True
@@ -513,6 +536,32 @@ type family AnyFieldVar (fs :: [Field]) :: Bool where
   AnyFieldVar '[] = 'False
   AnyFieldVar (f ': fs) = Or (HasVar (FieldType f)) (AnyFieldVar fs)
 
+-- | A record literal gives each key once (@E-TYPE-FIELD-DUPLICATE@).
+type UniqueKeys kvs = Holds (NoDupKeys kvs) ('Text "the record literal gives a field twice")
+
+-- | Force the evidence of 'UniqueKeys'.
+uniqueKeys :: forall kvs. (UniqueKeys kvs) => ()
+uniqueKeys = holds @(NoDupKeys kvs) @('Text "the record literal gives a field twice")
+
+type family NoDupKeys (kvs :: [(Symbol, Ty)]) :: Bool where
+  NoDupKeys '[] = 'True
+  NoDupKeys ('(k, _) ': kvs) = And (Not (HasKey k kvs)) (NoDupKeys kvs)
+
+-- | The record type @t@ has the field @n@ (@E-TYPE-ACCESS@).
+type HasField n t = Holds (FieldExists n t) ('Text "the record has no field " ':<>: 'ShowType n ':<>: 'Text ": " ':<>: 'Text (Render t))
+
+-- | Force the evidence of 'HasField'.
+hasField :: forall n t. (HasField n t) => ()
+hasField = holds @(FieldExists n t) @('Text "the record has no field " ':<>: 'ShowType n ':<>: 'Text ": " ':<>: 'Text (Render t))
+
+type family FieldExists (n :: Symbol) (t :: Ty) :: Bool where
+  FieldExists n ('TRecord fs) = IsJust (FindField n fs)
+  FieldExists _ _ = 'False
+
+type family IsJust (m :: Maybe k) :: Bool where
+  IsJust ('Just _) = 'True
+  IsJust 'Nothing = 'False
+
 -- | The type of an @if@ without @else@ (spec 6.4): @T | Null@, or Void
 -- for a Void block.
 type family OrNull (t :: Ty) :: Ty where
@@ -528,10 +577,16 @@ type family Conf (a :: Ty) (b :: Ty) :: Bool where
   Conf a a = 'True
   Conf _ 'TAny = 'True
   Conf ('TUnion as) b = AllConf as b
-  Conf a ('TUnion bs) = AnyConf a bs
+  -- As conformsUnder: a type parameter with a type bound conforms to a
+  -- union its bound conforms to, when it is not itself a member.
+  Conf a ('TUnion bs) = Or (AnyConf a bs) (ConfBound a ('TUnion bs))
   Conf ('TVar _ ('BType u)) b = Conf u b
   Conf 'TEnv 'TRunnable = 'True
   Conf _ _ = 'False
+
+type family ConfBound (a :: Ty) (b :: Ty) :: Bool where
+  ConfBound ('TVar _ ('BType u)) b = Conf u b
+  ConfBound _ _ = 'False
 
 type family AllConf (as :: [Ty]) (b :: Ty) :: Bool where
   AllConf '[] _ = 'True
@@ -569,8 +624,8 @@ type family IsData (t :: Ty) :: Bool where
   IsData ('TAsync _) = 'False
   IsData ('TArray e) = IsData e
   IsData ('TMap e) = IsData e
-  IsData ('TRecord fs) = AllFields IsDataF fs
-  IsData ('TUnion ts) = AllTys IsDataT ts
+  IsData ('TRecord fs) = And (SortedFields fs) (AllFields IsDataF fs)
+  IsData ('TUnion ts) = And (CanonicalUnion ts) (AllTys IsDataT ts)
   IsData _ = 'True
 
 -- | @t@ is a data type ('IsData').
@@ -589,10 +644,10 @@ type family WFAt (voidOk :: Bool) (t :: Ty) :: Bool where
   WFAt v 'TVoid = v
   WFAt _ ('TArray e) = WFAt 'False e
   WFAt _ ('TMap e) = WFAt 'False e
-  WFAt _ ('TRecord fs) = AllFields WFF fs
+  WFAt _ ('TRecord fs) = And (SortedFields fs) (AllFields WFF fs)
   WFAt _ ('TAsync e) = WFAt 'True e
   WFAt _ ('TFun ps r) = And (AllTys WFT ps) (WFAt 'True r)
-  WFAt _ ('TUnion ts) = And (AllTys IsDataT ts) (AllTys WFT ts)
+  WFAt _ ('TUnion ts) = And (CanonicalUnion ts) (And (AllTys IsDataT ts) (AllTys WFT ts))
   WFAt _ _ = 'True
 
 -- | @t@ is well-formed where Void is not allowed ('IsWF').
@@ -601,6 +656,30 @@ type WF t = Holds (IsWF t) ('Text (Render t) ':<>: 'Text " is not well-formed he
 -- | Force the evidence of 'WF'.
 wf :: forall t. (WF t) => ()
 wf = holds @(IsWF t) @('Text (Render t) ':<>: 'Text " is not well-formed here: Void is only a result")
+
+-- | A union written with the raw constructor is a type only in canonical
+-- form: at least two members, flattened, deduplicated, ordered, and
+-- without Any. ':|' always builds it so.
+type family CanonicalUnion (ts :: [Ty]) :: Bool where
+  CanonicalUnion ts = Equal (Canon ts) ('TUnion ts)
+
+-- | A record written with the raw constructor is a type only with its
+-- fields sorted by name, each name once. 'Rec' always builds it so.
+type family SortedFields (fs :: [Field]) :: Bool where
+  SortedFields '[] = 'True
+  SortedFields '[_] = 'True
+  SortedFields (f ': g ': fs) = And (IsLT (CmpSymbol (FieldKey f) (FieldKey g))) (SortedFields (g ': fs))
+
+type family Equal (a :: k) (b :: k) :: Bool where
+  Equal a a = 'True
+  Equal _ _ = 'False
+
+-- | A task's result: well-formed, Void allowed.
+type WFResult t = Holds (WFAt 'True t) ('Text (Render t) ':<>: 'Text " is not a well-formed type")
+
+-- | Force the evidence of 'WFResult'.
+wfResult :: forall t. (WFResult t) => ()
+wfResult = holds @(WFAt 'True t) @('Text (Render t) ':<>: 'Text " is not a well-formed type")
 
 -- | Comparable types (spec 6.2), as Language.Lask.Types.comparableWith.
 type family IsComparable (t :: Ty) :: Bool where
@@ -739,6 +818,65 @@ type family SubstFields (s :: [(Symbol, Ty)]) (fs :: [Field]) :: [Field] where
 type family SubstParamsL (s :: [(Symbol, Ty)]) (ps :: [Param]) :: [Param] where
   SubstParamsL _ '[] = '[]
   SubstParamsL s ((k '::: u) ': ps) = (k '::: SubstL s u) ': SubstParamsL s ps
+
+-- | A generic's type parameters are declared once each, and every type
+-- parameter its signature mentions is one of them, with the bound it
+-- was declared with (spec 4.2).
+type GenericVars vs ps r =
+  Holds
+    (And (Distinct vs) (AllDeclared (Append (ParamVars ps) (VarsOf r)) vs))
+    ('Text "the signature's type parameters must be declared, once each, with the bounds they carry")
+
+-- | Force the evidence of 'GenericVars'.
+genericVars :: forall vs ps r. (GenericVars vs ps r) => ()
+genericVars =
+  holds
+    @(And (Distinct vs) (AllDeclared (Append (ParamVars ps) (VarsOf r)) vs))
+    @('Text "the signature's type parameters must be declared, once each, with the bounds they carry")
+
+type family VarsOf (t :: Ty) :: [(Symbol, Bound)] where
+  VarsOf ('TVar n b) = '[ '(n, b)]
+  VarsOf ('TArray e) = VarsOf e
+  VarsOf ('TMap e) = VarsOf e
+  VarsOf ('TAsync e) = VarsOf e
+  VarsOf ('TRecord fs) = FieldVars fs
+  VarsOf ('TUnion ts) = TysVars ts
+  VarsOf ('TFun ps r) = Append (TysVars ps) (VarsOf r)
+  VarsOf _ = '[]
+
+type family TysVars (ts :: [Ty]) :: [(Symbol, Bound)] where
+  TysVars '[] = '[]
+  TysVars (t ': ts) = Append (VarsOf t) (TysVars ts)
+
+type family FieldVars (fs :: [Field]) :: [(Symbol, Bound)] where
+  FieldVars '[] = '[]
+  FieldVars (f ': fs) = Append (VarsOf (FieldType f)) (FieldVars fs)
+
+type family ParamVars (ps :: [Param]) :: [(Symbol, Bound)] where
+  ParamVars '[] = '[]
+  ParamVars ((_ '::: t) ': ps) = Append (VarsOf t) (ParamVars ps)
+
+type family Append (xs :: [k]) (ys :: [k]) :: [k] where
+  Append '[] ys = ys
+  Append (x ': xs) ys = x ': Append xs ys
+
+type family AllDeclared (xs :: [(Symbol, Bound)]) (vs :: [(Symbol, Bound)]) :: Bool where
+  AllDeclared '[] _ = 'True
+  AllDeclared (x ': xs) vs = And (ElemOf x vs) (AllDeclared xs vs)
+
+type family ElemOf (x :: k) (xs :: [k]) :: Bool where
+  ElemOf _ '[] = 'False
+  ElemOf x (x ': _) = 'True
+  ElemOf x (_ ': xs) = ElemOf x xs
+
+type family Distinct (vs :: [(Symbol, Bound)]) :: Bool where
+  Distinct '[] = 'True
+  Distinct ('(n, _) ': vs) = And (Not (NameIn n vs)) (Distinct vs)
+
+type family NameIn (n :: Symbol) (vs :: [(Symbol, Bound)]) :: Bool where
+  NameIn _ '[] = 'False
+  NameIn n ('(n, _) ': _) = 'True
+  NameIn n (_ ': vs) = NameIn n vs
 
 -- | An instantiation satisfies the bound of the parameter (spec 4.4,
 -- @E-TYPE-BOUND@).

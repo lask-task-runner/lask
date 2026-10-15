@@ -102,6 +102,30 @@ missingField = task "missing_field" $ recordAs @Opt RNil
 wrongFieldType :: Task '[] Opt
 wrongFieldType = task "wrong_field_type" $ recordAs @Opt (fld @"a" "one" :& RNil)
 
+-- Holes found in review of the first phase ---------------------------------------
+
+emptyUnion :: Task '["s" ::: 'TString] 'TString
+emptyUnion = task "empty_union" $ \s -> widen @'TString (cast @('TUnion '[]) s)
+
+duplicateRecordType :: Task '["s" ::: 'TAny] 'TNumber
+duplicateRecordType = task "duplicate_record_type" $ \s -> field @"a" (cast @('TRecord '["a" := 'TNumber, "a" := 'TString]) s)
+
+-- The signature says comparable, the declaration says no bound.
+boundNotDeclared :: Generic '[ '("T", 'BNone)] '["a" ::: C, "b" ::: C] 'TBool
+boundNotDeclared = generic "bound_not_declared" $ \a b -> a ==. b
+
+twiceDeclared :: Generic '[ '("U", 'BNone), '("U", 'BOrderable)] '["x" ::: U] U
+twiceDeclared = generic "twice_declared" $ \x -> x
+
+duplicateKeyUnderAny :: Task '[] 'TAny
+duplicateKeyUnderAny = task "duplicate_key_under_any" $ widen @'TAny (record (fld @"a" 1 :& fld @"a" "x" :& RNil))
+
+missingFieldUnderAny :: Task '["o" ::: Opt] 'TAny
+missingFieldUnderAny = task "missing_field_under_any" $ \o -> widen @'TAny (field @"c" o)
+
+whenDoLast :: Task '["c" ::: 'TBool] 'TVoid
+whenDoLast = task "when_do_last" $ \c -> whenDo c (1 :: E v 'TNumber)
+
 spec :: Spec
 spec = describe "Language.Lask.Embed rejects at compile time" $ do
   it "an argument of the wrong type (E-TYPE-MISMATCH)" $
@@ -125,7 +149,7 @@ spec = describe "Language.Lask.Embed rejects at compile time" $ do
   it "a record field of type Void (E-TYPE-ILLFORMED)" $
     rejected voidField ["Record<a: Void> is not a data type"]
   it "a loop collecting Void (E-TYPE-ILLFORMED)" $
-    rejected mappedToVoid ["Void is not a data type"]
+    rejected mappedToVoid ["Array<Void> is not a well-formed type"]
   it "a value where a type it does not conform to is wanted (E-TYPE-MISMATCH)" $
     rejected notConforming ["String does not conform to Number"]
   it "== on types neither of which conforms to the other (E-TYPE-MISMATCH)" $
@@ -140,4 +164,18 @@ spec = describe "Language.Lask.Embed rejects at compile time" $ do
     rejected missingField ["the record literal does not fit Record<a: Number, b?: String>"]
   it "a record literal with a field of the wrong type (E-TYPE-MISMATCH)" $
     rejected wrongFieldType ["the record literal does not fit Record<a: Number, b?: String>"]
+  it "a union not in canonical form, built with the raw constructor (E-TYPE-ILLFORMED)" $
+    rejected emptyUnion ["is not a data type"]
+  it "a record type with a field twice, built with the raw constructor (E-TYPE-FIELD-DUPLICATE)" $
+    rejected duplicateRecordType ["is not a data type"]
+  it "a type parameter used with a bound it was not declared with (E-TYPE-BOUND)" $
+    rejectedG boundNotDeclared ["must be declared, once each, with the bounds they carry"]
+  it "a type parameter declared twice (E-NAME-DUPLICATE)" $
+    rejectedG twiceDeclared ["must be declared, once each, with the bounds they carry"]
+  it "a record literal with a key twice, even where nothing reads its type (E-TYPE-FIELD-DUPLICATE)" $
+    rejected duplicateKeyUnderAny ["the record literal gives a field twice"]
+  it "a field the record does not have, even where nothing reads its type (E-TYPE-ACCESS)" $
+    rejected missingFieldUnderAny ["the record has no field \"c\""]
+  it "whenDo as a block's value: only a statement before the last discards one (E-TYPE-MISMATCH)" $
+    rejected whenDoLast ["Couldn't match", "Stmt"]
 

@@ -65,7 +65,15 @@ source =
       "",
       "pair<A, B>(a: A, b: B): Record<first: A, second: B> = { first: a, second: b }",
       "",
-      "a_pair(): Record<first: Number, second: String> = pair(1, \"x\")"
+      "a_pair(): Record<first: Number, second: String> = pair(1, \"x\")",
+      "",
+      "bounded<U: Number | String>(x: U): Number | String | Null = x",
+      "",
+      "opt_or_null(): Record<a: Number, b?: String> | Null = { a: 1 }",
+      "",
+      "each(c: Bool, xs: Array<Number>): Void = if (c) { for (x : xs) { } }",
+      "",
+      "same_rec(a: Record<a: Number>, b: Record<a: Number>): Bool = a == b"
     ]
 
 type Opt = Rec '["a" := 'TNumber, "b" :? 'TString]
@@ -138,6 +146,23 @@ pair = generic "pair" $ \a b -> record (fld @"first" a :& fld @"second" b :& RNi
 aPair :: Task '[] (Rec '["first" := 'TNumber, "second" := 'TString])
 aPair = task "a_pair" $ call (inst2 pair) 1 "x"
 
+type U = 'TVar "U" ('BType ('TNumber :| 'TString))
+
+-- A type parameter conforms to a union its type bound conforms to.
+bounded :: Generic '[ '("U", 'BType ('TNumber :| 'TString))] '["x" ::: U] ('TNumber :| 'TString :| 'TNull)
+bounded = generic "bounded" $ \x -> widen x
+
+-- A record literal against a union with one record member.
+optOrNull :: Task '[] (Opt :| 'TNull)
+optOrNull = task "opt_or_null" $ recordAs @(Opt :| 'TNull) (fld @"a" 1 :& RNil)
+
+-- An if without else of a Void block, around a loop with an empty body.
+each :: Task '["c" ::: 'TBool, "xs" ::: 'TArray 'TNumber] 'TVoid
+each = task "each" $ \c xs -> when_ c (forEach xs (const done))
+
+sameRec :: Task '["a" ::: Rec '["a" := 'TNumber], "b" ::: Rec '["a" := 'TNumber]] 'TBool
+sameRec = task "same_rec" $ \a b -> a ==. b
+
 embedded :: Either [Text] Program
 embedded =
   assemble
@@ -153,7 +178,11 @@ embedded =
       export nums,
       export wrapOne,
       export keepX,
-      export aPair
+      export aPair,
+      export bounded,
+      export optOrNull,
+      export each,
+      export sameRec
     ]
 
 elaborated :: IO CoreProgram
@@ -175,7 +204,7 @@ spec = describe "Language.Lask.Embed, first phase" $ do
     prog <- either (fail . T.unpack . T.unlines) pure embedded
     let source' = Map.fromList [(n, cd) | ((_, n), cd) <- Map.toList (cpDecls cp)]
         mine = Map.elems (cpDecls (progCore prog))
-    length mine `shouldBe` 18
+    length mine `shouldBe` 22
     forM_ mine $ \e -> case Map.lookup (cdName e) source' of
       Nothing -> expectationFailure ("not in the source: " <> T.unpack (cdName e))
       Just s -> case sameDecl e s of

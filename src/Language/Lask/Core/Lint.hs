@@ -12,7 +12,9 @@
 -- * every built-in reference names a built-in;
 -- * a call to a declaration gives as many positional arguments as it
 --   declares, and only keywords it declares, each once;
--- * a call to a built-in gives as many arguments as its scheme takes.
+-- * a call to a built-in gives as many arguments as its scheme takes;
+-- * a keyword default refers only to the parameters before it;
+-- * a record or map literal gives each key once.
 --
 -- Types are checked by the front ends; Core does not yet carry the
 -- types a bottom-up type check would need.
@@ -54,11 +56,21 @@ lintDecl cp cd = map ((cdName cd <> ": ") <>) (nub (go Set.empty (cdCore cd)))
         | known n -> []
         | otherwise -> ["the built-in " <> n <> " does not exist"]
       CLam lam ->
-        let inner = Set.fromList (lamPositional lam <> maybe [] pure (lamVariadic lam) <> map fst (lamKeywords lam)) <> scope
-         in concatMap (go inner . snd) (lamKeywords lam) <> go inner (lamBody lam)
+        let params = Set.fromList (lamPositional lam <> maybe [] pure (lamVariadic lam)) <> scope
+            -- A keyword default sees the parameters before it (spec 8.3).
+            defaults = zipWith (\earlier (_, d) -> go (Set.fromList earlier <> params) d) (inits' (map fst (lamKeywords lam))) (lamKeywords lam)
+            inner = Set.fromList (map fst (lamKeywords lam)) <> params
+         in concat defaults <> go inner (lamBody lam)
+      CRecordLit kvs -> duplicateKeys kvs <> concatMap (go scope . snd) kvs
+      CMapLit kvs -> duplicateKeys kvs <> concatMap (go scope . snd) kvs
       CDo stmts -> block scope stmts
       CApp fn pos kws -> callProblems fn (length pos) (map fst kws) <> go scope fn <> concatMap (go scope) (pos <> map snd kws)
       _ -> concatMap (go scope) (coreChildren c)
+
+    duplicateKeys kvs = ["the literal gives the key " <> k <> " twice" | k <- nub (map fst kvs), length (filter ((== k) . fst) kvs) > 1]
+
+    -- The keywords before each one.
+    inits' xs = [take i xs | i <- [0 .. length xs - 1]]
 
     block _ [] = []
     block scope (CSExpr e : rest) = go scope e <> block scope rest

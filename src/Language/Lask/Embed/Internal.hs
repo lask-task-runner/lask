@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -114,6 +115,8 @@ module Language.Lask.Embed.Internal
     programModule,
 
     -- * For "Language.Lask.Embed.Do"
+    Stmt,
+    Statement,
     bindE,
     thenE,
     callSpan,
@@ -293,8 +296,8 @@ str (E a) = stringify @t `seq` node1 NoSpan (\x -> CStr [CPExpr x]) a
 
 -- | @r.name@, or @r[\"X-Api-Key\"]@ (spec 6.8). An optional field reads
 -- as @T | Null@.
-field :: forall f t v. (KnownSymbol f) => E v t -> E v (FieldOf f t)
-field (E r) = node1 NoSpan (\x -> CDot x (T.pack (symbolVal (Proxy @f)))) r
+field :: forall f t v. (KnownSymbol f, HasField f t) => E v t -> E v (FieldOf f t)
+field (E r) = hasField @f @t `seq` node1 NoSpan (\x -> CDot x (T.pack (symbolVal (Proxy @f)))) r
 
 -- | @xs[i]@: fails at run time when @i@ is out of range (spec 6.8).
 at :: E v ('TArray t) -> E v 'TNumber -> E v t
@@ -357,14 +360,14 @@ recordTm fs = let kvs = fieldList fs in TNode NoSpan (CRecordLit . zip (map fst 
 
 -- | A record literal with no expected type: every field it gives is
 -- required, at the type of its value (spec 4.3).
-record :: Fields v kvs -> E v (Rec (Required kvs))
-record = E . recordTm
+record :: forall kvs v. (UniqueKeys kvs) => Fields v kvs -> E v (Rec (Required kvs))
+record fs = uniqueKeys @kvs `seq` E (recordTm fs)
 
 -- | A record literal checked against the record type @r@ (spec 4.3): it
 -- may leave out optional fields, and give a value of any type that
 -- conforms to its field's.
-recordAs :: forall r kvs v. (FitsRecord r kvs) => Fields v kvs -> E v r
-recordAs fs = fitsRecord @r @kvs `seq` E (recordTm fs)
+recordAs :: forall r kvs v. (UniqueKeys kvs, FitsRecord r kvs) => Fields v kvs -> E v r
+recordAs fs = uniqueKeys @kvs `seq` fitsRecord @r @kvs `seq` E (recordTm fs)
 
 -- | The ordering operators, which Lask defines on @Number@ only (spec
 -- 6.2).
@@ -407,10 +410,11 @@ when_ (E c) (E t) = whenTy @t `seq` node2 sp (\x y -> CIf x y (Core sp (otherwis
     otherwise' ty = if ty == LT.TyVoid then CDo [] else CNull
 
 -- | @if (c) { t }@ as a statement whose value is discarded (spec 6.4): the
--- block may have any type. Only for statement position in an @L.do@
--- block, where its own type is not used.
-whenDo :: forall t v. (KnownTy t, HasCallStack) => E v 'TBool -> E v t -> E v 'TVoid
-whenDo (E c) (E t) = node2 sp (\x y -> CIf x y (Core sp (otherwise' (tyOf @t)))) c (TBlock sp t)
+-- block may have any type. It is a 'Stmt', which an @L.do@ block takes
+-- before its last statement and nowhere else, as Lask discards a value
+-- only there.
+whenDo :: forall t v. (KnownTy t, HasCallStack) => E v 'TBool -> E v t -> Stmt v
+whenDo (E c) (E t) = Stmt . unE $ node2 sp (\x y -> CIf x y (Core sp (otherwise' (tyOf @t)))) c (TBlock sp t)
   where
     sp = callSpan callStack
     otherwise' ty = if ty == LT.TyVoid then CDo [] else CNull
@@ -465,8 +469,21 @@ bindE sp (E e) k = E (TBind sp e (unE . k . E . TmVar))
 
 -- | A statement run for its effects, followed by the rest of a @do@
 -- block.
-thenE :: Span -> E v a -> E v b -> E v b
-thenE sp (E a) (E b) = E (TSeq sp a b)
+thenE :: (Statement x v) => Span -> x -> E v b -> E v b
+thenE sp a (E b) = E (TSeq sp (stmtTm a) b)
+
+-- | A statement that only an @L.do@ block takes, before its last
+-- statement: it has no value to give.
+newtype Stmt v = Stmt (Tm v)
+
+-- | What can stand before the last statement of an @L.do@ block: an
+-- expression, whose value is discarded, or a 'Stmt'.
+class Statement x v | x -> v where
+  stmtTm :: x -> Tm v
+
+instance Statement (E v a) v where stmtTm = unE
+
+instance Statement (Stmt v) v where stmtTm (Stmt t) = t
 
 -- Environments and commands ---------------------------------------------------------
 
@@ -634,8 +651,8 @@ newtype Task (ps :: [Param]) (r :: Ty) = Task Decl
 --
 -- > fact :: Task '["n" ::: 'TNumber] 'TNumber
 -- > fact = task "fact" $ \n -> if_ (n ==. 0) 1 (n * call fact (n - 1))
-task :: forall ps r. (KnownParams ps, KnownTy r, HasCallStack) => Text -> (forall v. Fn v ps r) -> Task ps r
-task name body = Task (reifyDecl @ps @r (callSpan callStack) name def)
+task :: forall ps r. (KnownParams ps, KnownTy r, WFResult r, HasCallStack) => Text -> (forall v. Fn v ps r) -> Task ps r
+task name body = wfResult @r `seq` Task (reifyDecl @ps @r (callSpan callStack) name def)
   where
     def :: forall v. Kw v (Fn v ps r)
     def = pure (body @v)
@@ -646,8 +663,8 @@ task name body = Task (reifyDecl @ps @r (callSpan callStack) name def)
 -- > release :: Task '["target" ::: 'TString] 'TString
 -- > release = taskWith "release" $ body <$> kw "dry_run" true
 -- >   where body dryRun target = ...
-taskWith :: forall ps r. (KnownParams ps, KnownTy r, HasCallStack) => Text -> (forall v. Kw v (Fn v ps r)) -> Task ps r
-taskWith name def = Task (reifyDecl @ps @r (callSpan callStack) name def)
+taskWith :: forall ps r. (KnownParams ps, KnownTy r, WFResult r, HasCallStack) => Text -> (forall v. Kw v (Fn v ps r)) -> Task ps r
+taskWith name def = wfResult @r `seq` Task (reifyDecl @ps @r (callSpan callStack) name def)
 
 -- | The summary @--help@ shows.
 doc :: Text -> Task ps r -> Task ps r
@@ -679,8 +696,8 @@ newtype Generic (vs :: [(Symbol, Bound)]) (ps :: [Param]) (r :: Ty) = Generic De
 
 -- | Declare a generic: its name, and its body, a curried function of
 -- its positional parameters at the type parameters.
-generic :: forall vs ps r. (KnownVars vs, KnownParams ps, KnownTy r, HasCallStack) => Text -> (forall v. Fn v ps r) -> Generic vs ps r
-generic name body = Generic d {declCore = (declCore d) {cdTypeVars = map fst vars, cdBounds = Map.fromList [(n, b) | (n, Just b) <- vars]}}
+generic :: forall vs ps r. (KnownVars vs, KnownParams ps, KnownTy r, WFResult r, GenericVars vs ps r, HasCallStack) => Text -> (forall v. Fn v ps r) -> Generic vs ps r
+generic name body = wfResult @r `seq` genericVars @vs @ps @r `seq` Generic d {declCore = (declCore d) {cdTypeVars = map fst vars, cdBounds = Map.fromList [(n, b) | (n, Just b) <- vars]}}
   where
     vars = varsOf @vs
     d = reifyDecl @ps @r (callSpan callStack) name def
@@ -786,7 +803,12 @@ reifyTm tm = case tm of
     pure (Core sp (CLam (Lam (lambdaName sp) file xs Nothing [] b ty)))
   TBind sp _ _ -> Core sp . CDo <$> reifyStmts tm
   TSeq sp _ _ -> Core sp . CDo <$> reifyStmts tm
-  TBlock sp t -> Core sp . CDo <$> reifyStmts t
+  TBlock sp t -> Core sp . CDo . emptied <$> reifyStmts t
+    where
+      -- A block that is just 'done' is the empty block @{ }@, as Lask
+      -- writes it: no statements, rather than one empty block.
+      emptied [CSExpr (Core _ (CDo []))] = []
+      emptied stmts = stmts
   TLet sp e k -> do
     x <- fresh
     e' <- reifyTm e
