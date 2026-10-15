@@ -11,6 +11,7 @@ import Command.Lask.ArgCodec
 import Command.Lask.Common
 import Command.Lask.Project (cmdDepsAdd, cmdDepsGraph, cmdDepsList, cmdDepsRm, cmdEnvsList, cmdSync)
 import Command.Lask.Complete (completionScript)
+import Command.Lask.Fmt (cmdFmt)
 import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, readsStdin)
 import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
@@ -70,6 +71,7 @@ runRootCommand :: RootCommand -> IO ()
 runRootCommand cmd = case cmd of
   CmdServe -> LSP.serve >> pure ()
   CmdCheck opts -> cmdCheck opts
+  CmdFmt fmtOpts -> cmdFmt fmtOpts
   CmdRun runOpts -> cmdRunEval False runOpts
   CmdEval runOpts -> cmdRunEval True runOpts
   CmdRepl opts -> cmdRepl opts

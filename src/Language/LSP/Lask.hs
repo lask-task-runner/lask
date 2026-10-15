@@ -22,6 +22,7 @@ module Language.LSP.Lask
     completionAt,
     documentDiagnostics,
     quickFixes,
+    formattingEdits,
   )
 where
 
@@ -66,6 +67,7 @@ import qualified Language.Lask.Lexer.Token as Tok
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics, namespaceMember)
 import qualified Language.Lask.Syntax.AST as AST
+import Language.Lask.Syntax.Printer (formatSource)
 import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
 import Language.Lask.Types (Type (..), renderBound, renderType)
 import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
@@ -207,6 +209,12 @@ handle logger =
         responder . Right . LSP.InL $ case mdoc of
           Nothing -> []
           Just file -> map LSP.InR (quickFixes uri (virtualFileText file) diags),
+      requestHandler LSP.SMethod_TextDocumentFormatting $ \req responder -> do
+        let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
+        mdoc <- getVirtualFile (LSP.toNormalizedUri uri)
+        responder . Right . LSP.InL $ case mdoc of
+          Nothing -> []
+          Just file -> formattingEdits (uriPath uri) (virtualFileText file),
       notificationHandler LSP.SMethod_WorkspaceDidChangeConfiguration $ \_ -> pure (),
       notificationHandler LSP.SMethod_TextDocumentDidClose $ \_ -> pure ()
     ]
@@ -268,6 +276,23 @@ documentDiagnostics path src = do
 -- environment definition file resolve relative to this path, so the
 -- @file://@ scheme must be stripped; the raw URI text is only a
 -- fallback for non-file schemes.
+-- | The edit that formats a document (spec 11.11): the whole text
+-- replaced, or nothing when it is formatted already or does not parse,
+-- whose diagnostics the editor shows anyway.
+formattingEdits :: FilePath -> Text -> [LSP.TextEdit]
+formattingEdits path src = case formatSource path src of
+  Right out | out /= src -> [LSP.TextEdit whole out]
+  _ -> []
+  where
+    ls = T.splitOn "\n" src
+    -- Positions count UTF-16 code units.
+    width :: Text -> Int
+    width = sum . map (\c -> if fromEnum c > 0xFFFF then 2 else 1) . T.unpack
+    whole =
+      LSP.Range
+        (LSP.Position 0 0)
+        (LSP.Position (fromIntegral (length ls - 1)) (fromIntegral (width (last ls))))
+
 uriPath :: Uri -> FilePath
 uriPath uri = maybe (T.unpack (getUri uri)) id (uriToFilePath uri)
 
