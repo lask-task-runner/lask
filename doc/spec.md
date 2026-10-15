@@ -86,6 +86,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [11.8 Command Invocation (`cmd`)](#118-command-invocation-cmd)
     - [11.9 Interactive Session (`repl`)](#119-interactive-session-repl)
     - [11.10 Secret References (`secrets`)](#1110-secret-references-secrets)
+    - [11.11 Formatting (`fmt`)](#1111-formatting-fmt)
   - [12. Observability](#12-observability)
     - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
     - [12.2 Execution Log](#122-execution-log)
@@ -558,6 +559,7 @@ Type annotations are optional, and the following type inference rules apply wher
   - When the expected type is `Record<...>`: the literal must give every required field, may give any of the optional fields (4.2), and must give nothing else (key identity follows the field name rules of 4.2); each value expression must conform to the corresponding field type. A missing required key, an extra key and type nonconformance are type errors. A key written as `b?: String` may be omitted, and when written must hold a `String` -- `{b: null}` is a type error unless the field is `b?: String | Null`.
   - When the expected type is `Map<T>`: when every value expression conforms to `T`, the literal's type is `Map<T>`. If any value does not conform, it is a type error (keys are always treated as `String`. 4.4).
   - When the expected type is `Any`: inferred as `Record<...>` in the same way as when there is no expected type.
+  - When the expected type is a union: if exactly one of its members is a `Record<...>` or a `Map<T>`, the literal is checked against that member by the rules above, so `f(): Record<a: Number, b?: String> | Null = {a: 1}` is well-typed. Otherwise the literal is inferred as when there is no expected type, and the inferred type must conform to the union (4.4).
   - Any other expected type is a type error.
 - When the expected type is a union `U1 | ... | Un`, the expression is checked against it by the conformance relation of 4.4, and an expected type is propagated into the branches of an `IfExpr` and of a conditional expression `c ? a : b` (6.2), and the arms of a `CaseExpr` (6.4), unchanged. Therefore `f(): String | Null = if (c) { "x" } else { null }` is well-typed: each branch is checked against `String | Null`, and both `String` and `Null` conform to it.
 - When a variable or function declaration has no annotation, the type of the right-hand-side expression is adopted as the declared type.
@@ -2742,6 +2744,7 @@ Set up the project:
 Develop:
 
 - `check`: returns static validation results.
+- `fmt`: formats the project's `.lask` files in a single style, or checks that they are formatted (11.11).
 - `serve`: provides editor integration (Language Server Protocol) functionality.
 - `completion`: prints the shell completion script.
 - `version`: prints the version.
@@ -2765,6 +2768,8 @@ Minimal syntax per subcommand:
 ```text
 lask serve [--stdio | --tcp --port <n>]
 lask check [--module <path>]
+lask fmt [--module <path>] [--check] [<path> ...]
+lask fmt --stdin [--check]
 lask run [--module <path>] <function> [args ...]
 lask eval [--module <path>] <function> [args ...]
 lask run [--module <path>] [<function>] --help
@@ -3391,6 +3396,60 @@ vault  https://vault.example.com
   auth       ok  approle, ttl 1h, policies [default, deploy]
   AWS_ACCESS_KEY_ID  vault://aws/creds/deploy#access_key  ok  readable (value not read)
   SSL_KEY            vault://secret/cert?version=3#key    NG  E-IO-SECRET-NOT-FOUND: vault: 'secret/cert?version=3': version 3 does not exist or was deleted (latest 2)
+```
+
+### 11.11 Formatting (`fmt`)
+
+`fmt` rewrites `.lask` source in a single style without changing the program it denotes.
+
+```text
+lask fmt [--module <path>] [--check] [<path> ...]
+lask fmt --stdin [--check]
+```
+
+Targets:
+
+- Each `<path>` is a file, or a directory whose `.lask` files are formatted, recursively. Without one, the target is the directory of the entry module (`--module`, default `main.lask` in the execution directory): the whole project.
+- A directory whose name begins with `.` is not entered — among them `.lask`, where external dependencies are cached (11.5) — and neither is a symbolic link to a directory.
+- With `--stdin`, standard input is formatted to standard output instead, and no `<path>` may be given.
+
+What changes, and what does not:
+
+- Spacing is normalized: one space around binary operators, `=` and `->`, after `,` and `:`, and none inside brackets, except the braces of an import list or a command word list (`import { a, b } from "lib"`, `command { "go" } on #golang:1.25`).
+- Indentation is two spaces per level. `else`, `catch` and `finally` follow the closing brace of the block before them on its line.
+- Each statement, declaration and `case` arm is on a line of its own. A block or a `case` whose content the source writes on the line of its braces keeps it there.
+- Line breaks inside an expression stay where the source has them, and only there: between the items of a bracketed list, before its closing bracket, and around a binary operator, `?`, `:`, `=` and `->`. No line is broken or joined for its length. A continuation line that begins with an operator is indented one level, unless the expression starts a line of its own, whose indentation it then keeps:
+
+  ```lask
+  greet(name: String): String =
+    "  hello, #{name}  "
+    |> trim
+  ```
+
+- The `->` of `case` arms that the source writes in one column stay in one column.
+- Comments are kept, each with the declaration, statement, `case` arm or list item it stands above or beside, so a documentation comment (3.1) stays directly above its declaration. A comment that ends a line keeps the space the source puts before it, so a column of such comments stays aligned. An item with a comment in any other place is kept exactly as written.
+- Runs of blank lines become one blank line; a blank line is never added.
+- Literals keep their spelling (raw or interpreted strings, escapes, number digits). Command expressions (6.6) are kept exactly as written, since their text is the command. Parentheses are kept.
+- Formatting is idempotent: formatting a formatted file changes nothing.
+
+Rules:
+
+- A file with a syntax error is left as it is, and its diagnostics are reported as `check` reports them (14.3). The other files are still formatted.
+- Before a file is written, the result is checked to lex to the same tokens and comments, and to parse to the same module, as the source. A result that fails this check is a defect of the implementation: the file is left as it is and the failure is reported.
+- The files that were changed (with `--check`, the files that are not formatted) are listed on stdout, one per line, or as a JSON array of paths with `--format json`.
+- It exits `0` when nothing failed; with `--check`, only when every file is formatted already. A file that does not parse, or is not formatted under `--check`, exits `1`; a file that cannot be read or written exits `3` (14.8); a `<path>` that does not exist is a CLI usage error and exits `4`.
+
+Example:
+
+```text
+$ lask fmt --check
+lib/deploy.lask
+main.lask
+$ lask fmt
+lib/deploy.lask
+main.lask
+$ lask fmt --check
+$
 ```
 
 ## 12. Observability

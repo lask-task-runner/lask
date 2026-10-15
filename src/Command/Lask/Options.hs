@@ -8,6 +8,7 @@ module Command.Lask.Options
     EnvsOpts (..),
     SecretsOpts (..),
     CmdOpts (..),
+    FmtOpts (..),
     DepsAddSource (..),
     pRootCommand,
     runOptionsHelp,
@@ -71,9 +72,22 @@ data CmdOpts = CmdOpts
     cmdArgs :: [Text]
   }
 
+-- | @lask fmt@ (spec 11.11).
+data FmtOpts = FmtOpts
+  { fmtCommon :: CommonOpts,
+    -- | @--check@: report the files that are not formatted, and change
+    -- none.
+    fmtCheck :: Bool,
+    -- | @--stdin@: format standard input to standard output.
+    fmtStdin :: Bool,
+    -- | Files and directories; none means the project's directory.
+    fmtPaths :: [FilePath]
+  }
+
 data RootCommand
   = CmdServe
   | CmdCheck CommonOpts
+  | CmdFmt FmtOpts
   | CmdRun RunOpts
   | CmdEval RunOpts
   | CmdRepl CommonOpts
@@ -167,6 +181,14 @@ pRunOpts =
     <*> optional (T.pack <$> argument str (metavar "FUNCTION"))
     <*> many (T.pack <$> argument str (metavar "ARGS..."))
 
+pFmtOpts :: Parser FmtOpts
+pFmtOpts =
+  FmtOpts
+    <$> pCommon
+    <*> switch (long "check" <> help "List the files that are not formatted, and change none")
+    <*> switch (long "stdin" <> help "Format standard input to standard output")
+    <*> many (argument str (metavar "PATH..." <> help "Files and directories to format (default: the module's directory)"))
+
 pEnvsOpts :: Parser EnvsOpts
 pEnvsOpts =
   EnvsOpts
@@ -231,6 +253,7 @@ pRootCommand =
     <|> subparser
       ( commandGroup "Develop:"
           <> command "check" (withHelp (CmdCheck <$> pCommon) (progDesc "Statically validate the module"))
+          <> command "fmt" (withHelp (CmdFmt <$> pFmtOpts) (progDesc "Format the project's .lask files"))
           <> command "serve" (withHelp (pure CmdServe) (progDesc "Start the language server"))
           <> command
             "completion"

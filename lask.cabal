@@ -29,6 +29,7 @@ library
       Command.Lask.DepUse
       Command.Lask.Entry
       Command.Lask.Envs
+      Command.Lask.Fmt
       Command.Lask.Help
       Command.Lask.Images
       Command.Lask.Options
@@ -87,6 +88,7 @@ library
       Language.Lask.Syntax.AST
       Language.Lask.Syntax.CommandWords
       Language.Lask.Syntax.Parser
+      Language.Lask.Syntax.Printer
       Language.Lask.Syntax.Scope
       Language.Lask.Syntax.TokenStream
       Language.Lask.Types
@@ -283,6 +285,7 @@ test-suite lask-test
       Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
+      Language.Lask.Syntax.PrinterSpec
       Language.LaskSpec
       Language.LSP.LaskSpec
       Paths_lask

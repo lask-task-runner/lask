@@ -491,7 +491,7 @@ data Opt = Opt
   }
   deriving (Show, Eq)
 
-data PosSpec = PosFunction | PosCommandWord | PosDepName | PosShell | PosFree
+data PosSpec = PosFunction | PosCommandWord | PosDepName | PosShell | PosFree | PosPath PathKind
   deriving (Show, Eq)
 
 -- | What a subcommand does with the tokens after its positional.
@@ -567,6 +567,10 @@ rootCommands =
     Cmd "secrets" "List and check secret references" secretsSubs [helpOpt] [] NoBoundary,
     -- Develop.
     plain "check" "Statically validate the module" commonOpts,
+    (plain "fmt" "Format the project's .lask files" (commonOpts <> fmtOpts))
+      { -- Any number of files and directories.
+        cmdPos = repeat (PosPath (PathSuffix ".lask"))
+      },
     plain "serve" "Start the language server" [],
     (plain "completion" "Print the shell completion script" []) {cmdPos = [PosShell]},
     plain "version" "Print the lask version" []
@@ -603,6 +607,11 @@ rootCommands =
           "How to encode the eval result",
         Opt "help" (Just 'h') Nothing "Show the help of FUNCTION, or list the module's functions" [] [],
         switchOpt "confirm" "Approve the confirmation lask.json asks for"
+      ]
+
+    fmtOpts =
+      [ switchOpt "check" "List the files that are not formatted, and change none",
+        switchOpt "stdin" "Format standard input to standard output"
       ]
 
     depsSubs =
@@ -830,6 +839,7 @@ atCursor st cur = case stFn st of
             Just PosDepName -> PDepName (stModule st) cur
             Just PosShell -> PShellName cur
             Just PosFree -> PFree
+            Just (PosPath kind) -> POptValue (VPath kind) cur ""
             Nothing -> PNothing
 
 -- The index --------------------------------------------------------------------

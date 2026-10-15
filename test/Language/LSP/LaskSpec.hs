@@ -10,7 +10,7 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.LSP.Lask (completionAt, documentDiagnostics, hoverAt, inlayHintsIn, lexSemanticTokens, quickFixes, semanticTokens, uriPath)
+import Language.LSP.Lask (completionAt, documentDiagnostics, formattingEdits, hoverAt, inlayHintsIn, lexSemanticTokens, quickFixes, semanticTokens, uriPath)
 import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.Lask (checkText)
@@ -55,6 +55,14 @@ hintsFor path src = do
 
 spec :: Spec
 spec = do
+  describe "document formatting (spec 11.11)" $ do
+    it "replaces the whole document with its formatted text" $
+      formattingEdits "main.lask" "a  =  1\nb = \"\233\128512\""
+        `shouldBe` [TextEdit (Range (Position 0 0) (Position 1 9)) "a = 1\nb = \"\233\128512\"\n"]
+    it "changes nothing in a formatted document, or one that does not parse" $ do
+      formattingEdits "main.lask" "a = 1\n" `shouldBe` []
+      formattingEdits "main.lask" "a = \n" `shouldBe` []
+
   describe "document diagnostics (spec 14.2)" $ do
     let severities src = map (\d -> (d ^. L.severity, d ^. L.code)) . fst <$> documentDiagnostics "main.lask" src
     it "shows an advisory of a valid document as a warning" $
