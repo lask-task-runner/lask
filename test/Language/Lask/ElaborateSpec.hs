@@ -5,7 +5,9 @@ module Language.Lask.ElaborateSpec (spec) where
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Language.Lask.Diagnostic (Advisory (..), Diagnostic, diagCode)
+import Language.Lask.Core.Lint (lintProgram)
 import Language.Lask.Elaborate
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader (loadProgramWith)
@@ -27,7 +29,11 @@ elabProgram files = do
       Left ds -> Left (codes ds)
       Right scopes -> case elaborateProgram prog scopes of
         Left ds -> Left (codes ds)
-        Right cp -> Right cp
+        -- Every program the elaborator accepts here must also pass
+        -- Core.Lint, which the EDSL shares (#91).
+        Right cp -> case lintProgram cp of
+          [] -> Right cp
+          problems -> error ("Core.Lint: " <> T.unpack (T.unlines problems))
   where
     reader p = pure (maybe (Left "not found") Right (lookup p files))
     codes :: [Diagnostic] -> [ErrorCode]
