@@ -90,7 +90,7 @@ compare(prompt: String, ...models: Array<String>): Array<Record<model: String, a
 //
 // @param model  Pulled first if it is missing, so it is ready to pick.
 serve(--model: String = default_model) = do {
-  if (!contains_array(models(), model)) { pull(model = model) } else { "" }
+  if (!contains_array(models(), model)) { pull(model = model) }
   log("open http://localhost:3000 (the first start takes a minute)")
   $[webui] bash /app/backend/start.sh
 }

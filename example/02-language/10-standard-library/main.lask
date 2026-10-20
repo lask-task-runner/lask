@@ -69,7 +69,7 @@ pipeline(): Array<String> = do {
 
 // Folding to a single value.
 longest(xs: Array<String>): String =
-  reduce(xs, "", \(acc: String, x: String) -> if (length(x) > length(acc)) { x } else { acc })
+  reduce(xs, "", \(acc: String, x: String) -> length(x) > length(acc) ? x : acc)
 
 // Absence is reported two ways on purpose: a function that returns a
 // position says `-1`, one that returns a value says `Null`.

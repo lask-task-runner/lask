@@ -53,10 +53,10 @@ build() = $ npm run build
 //
 // @param grep  Run only the tests whose title matches.
 // @example lask run test-e2e --grep health
-test_e2e(--grep: String = "") = case {
-  grep == "" -> $[playwright] npx playwright test
-  else -> $[playwright] npx playwright test --grep #{shell_quote(grep)}
-}
+test_e2e(--grep: String = "") =
+  grep == ""
+    ? $[playwright] npx playwright test
+    : $[playwright] npx playwright test --grep #{shell_quote(grep)}
 
 // Watch the browser tests run, in Playwright's UI mode, until you stop it.
 //

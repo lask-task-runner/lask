@@ -76,7 +76,7 @@ check_file(path: String): String = "would check #{path}"
 // @param name    Who to greet.
 // @param loudly  Shout it.
 greet(name: String, --loudly: Bool = false): String =
-  if (loudly) { to_upper("hello, #{name}") } else { "hello, #{name}" }
+  loudly ? to_upper("hello, #{name}") : "hello, #{name}"
 
 // Return something structured, to show the output encodings.
 //
