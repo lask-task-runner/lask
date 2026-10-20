@@ -45,14 +45,20 @@ jobs:
 
       # The macOS images from 20261013 carry Command Line Tools 27, whose
       # SDK lists the arm64e.x1 architecture, which the linker of the
-      # default Xcode 26 cannot read. Link against that Xcode's own SDK.
+      # default Xcode 26 cannot read. GHC's bindist links against the
+      # Command Line Tools' MacOSX.sdk by path whatever SDKROOT says, so
+      # that link is pointed at the default Xcode's own SDK, and the build
+      # uses that Xcode's tools.
       - name: Use the default Xcode's SDK
         if: runner.os == 'macOS'
         shell: bash
         run: |
           developer_dir=/Applications/Xcode.app/Contents/Developer
+          sdk=$(DEVELOPER_DIR=$developer_dir xcrun --sdk macosx --show-sdk-path)
+          sudo ln -sfn "$sdk" /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+          ls -l /Library/Developer/CommandLineTools/SDKs
           echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
-          echo "SDKROOT=$(DEVELOPER_DIR=$developer_dir xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+          echo "SDKROOT=$sdk" >> "$GITHUB_ENV"
 
       - name: Setup Haskell Stack
         uses: haskell-actions/setup@v2
