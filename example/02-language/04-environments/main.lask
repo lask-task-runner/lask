@@ -35,7 +35,7 @@ small = #alpine:3.22.2{memory: "256m", cpus: 1}
 // arguments — literals here, but they may be computed like any other.
 // Variable names are not `lower_id`, so they are written as strings.
 sealed = #alpine:3.22.2{
-  env: {"LANG": "C.UTF-8"},
+  env: { "LANG": "C.UTF-8" },
   network: "none",
   read_only: true,
   tmpfs: ["/tmp"],
@@ -54,7 +54,7 @@ built = #./Dockerfile(context = ".")
 // either way it is a head someone wrote. runnable() takes an
 // Environment, so the options are given once, here.
 alpine_shell(--image: Environment = #alpine:3.22.2): Runnable =
-  runnable(image, env = {"PS1": "lask$ "}, read_only = true)
+  runnable(image, env = { "PS1": "lask$ " }, read_only = true)
 
 command { "uname" } on host
 command { "jq" } on built

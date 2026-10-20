@@ -41,7 +41,7 @@ The cross-compilation target belongs to the environment, not the command. `build
 
 ```lask
 build(os: String, arch: String, --version: String = "dev"): String = do {
-  ext = if (os == "windows") { ".exe" } else { "" }
+  ext = os == "windows" ? ".exe" : ""
   out = "dist/hello_#{version}_#{os}_#{arch}#{ext}"
   target = tools.go(goos = os, goarch = arch, cgo_enabled = "0", cache_dir = go_cache)
   $[target] go build -trimpath -ldflags "-s -w -X main.version=#{version}" -o #{out} ./cmd/hello

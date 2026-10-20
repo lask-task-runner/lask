@@ -961,6 +961,56 @@ spec = beforeAll findLask $ do
         resExit j `shouldBe` 1
         resOut j `shouldContain` "\"notes\":["
 
+  describe "fmt (spec 11.11)" $ do
+    let messy = "a  =  1\nb = [1,2]\n"
+        tidy = "a = 1\nb = [1, 2]\n"
+        project =
+          [ ("main.lask", messy),
+            ("lib/util.lask", messy),
+            ("ok.lask", tidy),
+            (".lask/deps/x/main.lask", messy),
+            ("notes.txt", messy)
+          ]
+    it "formats every .lask file of the project in place, and lists those it changed" $ \lask ->
+      withProject project $ \dir -> do
+        r <- runLask lask dir ["fmt"] ""
+        r `shouldBe` Result 0 "lib/util.lask\nmain.lask\n" ""
+        mapM_ (\f -> readFile (dir </> f) `shouldReturn` tidy) ["main.lask", "lib/util.lask", "ok.lask"]
+        -- The dependency cache and other files are not the project's
+        -- sources.
+        readFile (dir </> ".lask/deps/x/main.lask") `shouldReturn` messy
+        readFile (dir </> "notes.txt") `shouldReturn` messy
+        again <- runLask lask dir ["fmt"] ""
+        again `shouldBe` Result 0 "" ""
+    it "--check lists the files that are not formatted, changes none, and exits 1" $ \lask ->
+      withProject project $ \dir -> do
+        r <- runLask lask dir ["fmt", "--check", "--format", "json"] ""
+        r `shouldBe` Result 1 "[\"lib/util.lask\",\"main.lask\"]\n" ""
+        readFile (dir </> "main.lask") `shouldReturn` messy
+        clean <- runLask lask dir ["fmt", "--check", "ok.lask"] ""
+        clean `shouldBe` Result 0 "" ""
+    it "formats the files and directories it is given" $ \lask ->
+      withProject project $ \dir -> do
+        r <- runLask lask dir ["fmt", "lib"] ""
+        r `shouldBe` Result 0 "lib/util.lask\n" ""
+        readFile (dir </> "main.lask") `shouldReturn` messy
+        missing <- runLask lask dir ["fmt", "nope.lask"] ""
+        resExit missing `shouldBe` 4
+    it "--stdin formats standard input to standard output" $ \lask ->
+      withProject [] $ \dir -> do
+        r <- runLask lask dir ["fmt", "--stdin"] messy
+        r `shouldBe` Result 0 tidy ""
+        c <- runLask lask dir ["fmt", "--stdin", "--check"] messy
+        resExit c `shouldBe` 1
+    it "leaves a file with a syntax error as it is, reports it and exits 1" $ \lask ->
+      withProject [("main.lask", "a = \n"), ("b.lask", messy)] $ \dir -> do
+        r <- runLask lask dir ["fmt"] ""
+        resExit r `shouldBe` 1
+        resOut r `shouldBe` "b.lask\n"
+        resErr r `shouldContain` "main.lask:"
+        resErr r `shouldContain` "E-SYNTAX-UNEXPECTED-TOKEN"
+        readFile (dir </> "main.lask") `shouldReturn` "a = \n"
+
   describe "did you mean, on the command line (spec 11.2, 14.3)" $ do
     let src = "command { \"python\" } on #local\ncowsay_hello(--dry_run: Bool = false): Bool = dry_run\n"
     it "suggests a function in its CLI form" $ \lask ->
@@ -1555,6 +1605,7 @@ spec = beforeAll findLask $ do
           | path <-
               [ ["serve"],
                 ["check"],
+                ["fmt"],
                 ["run"],
                 ["eval"],
                 ["repl"],

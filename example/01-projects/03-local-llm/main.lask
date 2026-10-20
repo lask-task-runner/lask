@@ -24,7 +24,7 @@ ollama_offline = #ollama/ollama:0.12.5{volumes: [models_volume], network: "none"
 webui = #ghcr.io/open-webui/open-webui:v0.6.34-ollama{
   volumes: [models_volume, "lask-open-webui:/app/backend/data"],
   publish: ["127.0.0.1:3000:8080"],
-  env: {"WEBUI_AUTH": "False"}
+  env: { "WEBUI_AUTH": "False" }
 }
 
 // Small enough for a laptop without a GPU.
@@ -90,7 +90,7 @@ compare(prompt: String, ...models: Array<String>): Array<Record<model: String, a
 //
 // @param model  Pulled first if it is missing, so it is ready to pick.
 serve(--model: String = default_model) = do {
-  if (!contains_array(models(), model)) { pull(model = model) } else { "" }
+  if (!contains_array(models(), model)) { pull(model = model) }
   log("open http://localhost:3000 (the first start takes a minute)")
   $[webui] bash /app/backend/start.sh
 }

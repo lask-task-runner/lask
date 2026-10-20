@@ -5,7 +5,9 @@ module Language.Lask.ElaborateSpec (spec) where
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Language.Lask.Diagnostic (Advisory (..), Diagnostic, diagCode)
+import Language.Lask.Core.Lint (lintProgram)
 import Language.Lask.Elaborate
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader (loadProgramWith)
@@ -27,7 +29,11 @@ elabProgram files = do
       Left ds -> Left (codes ds)
       Right scopes -> case elaborateProgram prog scopes of
         Left ds -> Left (codes ds)
-        Right cp -> Right cp
+        -- Every program the elaborator accepts here must also pass
+        -- Core.Lint, which the EDSL shares (#91).
+        Right cp -> case lintProgram cp of
+          [] -> Right cp
+          problems -> error ("Core.Lint: " <> T.unpack (T.unlines problems))
   where
     reader p = pure (maybe (Left "not found") Right (lookup p files))
     codes :: [Diagnostic] -> [ErrorCode]
@@ -404,6 +410,15 @@ spec = do
       rejects "f(xs: Array<String>): Array<String | Null> = xs" ETypeMismatch
     it "checks a literal element-wise against a union element type" $
       accepts "xs: Array<String | Null> = [\"a\", null]"
+    it "checks an object literal against the one record or map member of a union (spec 4.3)" $ do
+      accepts "f(): Record<a: Number, b?: String> | Null = {a: 1}"
+      accepts "f(): Map<Number> | Null = {a: 1, b: 2}"
+      accepts "type A = Record<x: Number, y: String>\nf(c: Bool): A | Null = do {\n  if (c) {\n    { x: 5, y: \"hello\" }\n  }\n}"
+      rejects "f(): Record<a: Number> | Null = {a: \"x\"}" ETypeMismatch
+      rejects "f(): Record<a: Number> | Null = {a: 1, b: 2}" ETypeMismatch
+    it "infers an object literal against a union with no single object member" $ do
+      accepts "f(): Record<a: Number> | Record<b: String> = {b: \"x\"}"
+      rejects "f(): String | Null = {a: 1}" ETypeMismatch
     it "propagates an expected union into both branches of an if (spec 4.3)" $
       accepts "f(c: Bool): String | Null = if (c) { \"a\" } else { null }"
     it "still refuses to infer a union from differing branches" $

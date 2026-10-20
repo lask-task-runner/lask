@@ -109,7 +109,7 @@ as_number(v: Any): Number = cast(v)
 // only to itself and `Any` — so the body may move a `T` around but not
 // compare or interpolate one. It is never written at a call site.
 first_or<T>(xs: Array<T>, fallback: T): T =
-  if (is_empty(xs)) { fallback } else { xs[0] }
+  is_empty(xs) ? fallback : xs[0]
 
 // Instantiate `first_or` at Number.
 //

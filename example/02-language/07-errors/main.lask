@@ -21,13 +21,11 @@ build_with_retry(): String = try {
   attempt(fail_first = true)
 } catch (e) {
   // e: Error = {code: Number, message: String}
-  if (e.code == 2) {
-    log("retrying after #{trim(e.message)}")
-    attempt(fail_first = false)
-  } else {
-    // Not ours: re-raise it unchanged.
-    fail(e)
-  }
+  // Not ours: re-raise it unchanged. An `if` without `else` around
+  // `fail` stops here, and only the disk-full case goes on.
+  if (e.code != 2) { fail(e) }
+  log("retrying after #{trim(e.message)}")
+  attempt(fail_first = false)
 } finally {
   // Runs exactly once, whichever path was taken. Its value is discarded.
   log("cleaning up")

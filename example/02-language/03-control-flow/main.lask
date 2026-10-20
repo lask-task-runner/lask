@@ -96,7 +96,7 @@ render(v: Number | String | Null): String = case (v) {
 // It iterates arrays only.
 //
 // @return One label per status code.
-checklist(): Array<String> = for (s : [200, 302, 404, 500]) {
+checklist(): Array<String> = for (s: [200, 302, 404, 500]) {
   "#{s} -> #{classify(s)}"
 }
 
@@ -105,7 +105,7 @@ checklist(): Array<String> = for (s : [200, 302, 404, 500]) {
 // Counting is `range`, and an index comes from `enumerate` — `for`
 // itself has no numeric or indexed form.
 numbered(xs: Array<String>): Array<String> =
-  for (e : enumerate(xs)) { "#{e.index + 1}. #{e.value}" }
+  for (e: enumerate(xs)) { "#{e.index + 1}. #{e.value}" }
 
 // Number the build steps.
 steps(): Array<String> = numbered(["build", "test", "deploy"])
@@ -114,7 +114,7 @@ steps(): Array<String> = numbered(["build", "test", "deploy"])
 settings: Map<String> = { "region": "eu-west-1", "stage": "prod" }
 
 // Write every setting as `key=value`.
-dump(): Array<String> = for (e : entries(settings)) { "#{e.key}=#{e.value}" }
+dump(): Array<String> = for (e: entries(settings)) { "#{e.key}=#{e.value}" }
 
 // Classify a code and say what to do about it.
 //

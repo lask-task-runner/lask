@@ -26,16 +26,16 @@ cosign_image = #./tools/cosign.Dockerfile
 
 // cosign with the password of cosign.key; `!!` keeps it out of the logs.
 internal cosign_with(password!!: String): Runnable =
-  runnable(cosign_image, env = {"COSIGN_PASSWORD": password})
+  runnable(cosign_image, env = { "COSIGN_PASSWORD": password })
 
 type Platform = Record<os: String, arch: String>
 
 // Every platform a release is built for.
 platforms: Array<Platform> = [
-  {os: "linux", arch: "amd64"},
-  {os: "linux", arch: "arm64"},
-  {os: "darwin", arch: "arm64"},
-  {os: "windows", arch: "amd64"}
+  { os: "linux", arch: "amd64" },
+  { os: "linux", arch: "arm64" },
+  { os: "darwin", arch: "arm64" },
+  { os: "windows", arch: "amd64" }
 ]
 
 // Vet and test the module.
@@ -58,7 +58,7 @@ test() = do {
 // @return The path of the binary, under dist/.
 // @example lask eval build linux arm64 --version v1.0.0
 build(os: String, arch: String, --version: String = "dev"): String = do {
-  ext = if (os == "windows") { ".exe" } else { "" }
+  ext = os == "windows" ? ".exe" : ""
   out = "dist/hello_#{version}_#{os}_#{arch}#{ext}"
   target = tools.go(goos = os, goarch = arch, cgo_enabled = "0", cache_dir = go_cache)
   $[target] go build -trimpath -ldflags "-s -w -X main.version=#{version}" -o #{out} ./cmd/hello

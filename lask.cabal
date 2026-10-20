@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           lask
-version:        0.10.0
+version:        0.11.0
 description:    Please see the README on GitHub at <https://github.com/lask-task-runner/lask#readme>
 homepage:       https://github.com/lask-task-runner/lask#readme
 bug-reports:    https://github.com/lask-task-runner/lask/issues
@@ -29,6 +29,7 @@ library
       Command.Lask.DepUse
       Command.Lask.Entry
       Command.Lask.Envs
+      Command.Lask.Fmt
       Command.Lask.Help
       Command.Lask.Images
       Command.Lask.Options
@@ -46,6 +47,8 @@ library
       Language.Lask.Builtins.Sig
       Language.Lask.Confirm
       Language.Lask.Core.AST
+      Language.Lask.Core.Compare
+      Language.Lask.Core.Lint
       Language.Lask.Core.Pretty
       Language.Lask.Deps.Cache
       Language.Lask.Deps.Fetch
@@ -59,6 +62,7 @@ library
       Language.Lask.Embed.Do
       Language.Lask.Embed.Internal
       Language.Lask.Embed.Run
+      Language.Lask.Embed.Type
       Language.Lask.ErrorCode
       Language.Lask.Lexer
       Language.Lask.Lexer.Layout
@@ -87,6 +91,7 @@ library
       Language.Lask.Syntax.AST
       Language.Lask.Syntax.CommandWords
       Language.Lask.Syntax.Parser
+      Language.Lask.Syntax.Printer
       Language.Lask.Syntax.Scope
       Language.Lask.Syntax.TokenStream
       Language.Lask.Types
@@ -264,11 +269,16 @@ test-suite lask-test
       Language.Lask.Builtins.PathSpec
       Language.Lask.Builtins.RegexSpec
       Language.Lask.ConfirmSpec
+      Language.Lask.Core.LintSpec
       Language.Lask.Deps.DepsSpec
       Language.Lask.DocSpec
       Language.Lask.ElaborateSpec
+      Language.Lask.Embed.Twin.ValuesAndTypes
+      Language.Lask.Embed.TypeSpec
+      Language.Lask.EmbedPhase1Spec
       Language.Lask.EmbedRejectSpec
       Language.Lask.EmbedSpec
+      Language.Lask.EmbedTwinSpec
       Language.Lask.LexerSpec
       Language.Lask.Module.LoaderSpec
       Language.Lask.Module.ResolveSpec
@@ -283,6 +293,7 @@ test-suite lask-test
       Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
+      Language.Lask.Syntax.PrinterSpec
       Language.LaskSpec
       Language.LSP.LaskSpec
       Paths_lask

@@ -63,10 +63,10 @@ build() = $ npm run build
 The browser tests name their environment explicitly, since `npx` is declared on Node. Playwright starts `npm run start` itself ([playwright.config.js](playwright.config.js)), inside the same container as the browsers, so the test is a single command:
 
 ```lask
-test_e2e(--grep: String = "") = case {
-  grep == "" -> $[playwright] npx playwright test
-  else -> $[playwright] npx playwright test --grep #{shell_quote(grep)}
-}
+test_e2e(--grep: String = "") =
+  grep == ""
+    ? $[playwright] npx playwright test
+    : $[playwright] npx playwright test --grep #{shell_quote(grep)}
 ```
 
 `ci` composes them. Lint and build don't depend on each other, so they run at the same time, in two containers:

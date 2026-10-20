@@ -59,11 +59,9 @@ write_report(): Void = do {
 // `file_exists` returns false instead of failing when part of the path
 // is missing, so no prior check of the directory is needed.
 read_report(): String =
-  if (file_exists(report_path, #local)) {
-    read_file(report_path, #local)
-  } else {
-    "(run `lask run write-report` first)"
-  }
+  file_exists(report_path, #local)
+    ? read_file(report_path, #local)
+    : "(run `lask run write-report` first)"
 
 // List what is there.
 //
@@ -72,7 +70,7 @@ read_report(): String =
 // on every machine, instead of whatever order the filesystem happened
 // to hand back.
 inventory(): Record<entries: Array<String>, lask_files: Array<String>> = {
-  entries: if (file_exists(work_dir, #local)) { list_dir(work_dir, #local) } else { [] },
+  entries: file_exists(work_dir, #local) ? list_dir(work_dir, #local) : [],
   lask_files: glob("*.lask", #local)
 }
 

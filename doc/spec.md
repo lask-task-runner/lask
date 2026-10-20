@@ -86,6 +86,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [11.8 Command Invocation (`cmd`)](#118-command-invocation-cmd)
     - [11.9 Interactive Session (`repl`)](#119-interactive-session-repl)
     - [11.10 Secret References (`secrets`)](#1110-secret-references-secrets)
+    - [11.11 Formatting (`fmt`)](#1111-formatting-fmt)
   - [12. Observability](#12-observability)
     - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
     - [12.2 Execution Log](#122-execution-log)
@@ -558,6 +559,7 @@ Type annotations are optional, and the following type inference rules apply wher
   - When the expected type is `Record<...>`: the literal must give every required field, may give any of the optional fields (4.2), and must give nothing else (key identity follows the field name rules of 4.2); each value expression must conform to the corresponding field type. A missing required key, an extra key and type nonconformance are type errors. A key written as `b?: String` may be omitted, and when written must hold a `String` -- `{b: null}` is a type error unless the field is `b?: String | Null`.
   - When the expected type is `Map<T>`: when every value expression conforms to `T`, the literal's type is `Map<T>`. If any value does not conform, it is a type error (keys are always treated as `String`. 4.4).
   - When the expected type is `Any`: inferred as `Record<...>` in the same way as when there is no expected type.
+  - When the expected type is a union: if exactly one of its members is a `Record<...>` or a `Map<T>`, the literal is checked against that member by the rules above, so `f(): Record<a: Number, b?: String> | Null = {a: 1}` is well-typed. Otherwise the literal is inferred as when there is no expected type, and the inferred type must conform to the union (4.4).
   - Any other expected type is a type error.
 - When the expected type is a union `U1 | ... | Un`, the expression is checked against it by the conformance relation of 4.4, and an expected type is propagated into the branches of an `IfExpr` and of a conditional expression `c ? a : b` (6.2), and the arms of a `CaseExpr` (6.4), unchanged. Therefore `f(): String | Null = if (c) { "x" } else { null }` is well-typed: each branch is checked against `String | Null`, and both `String` and `Null` conform to it.
 - When a variable or function declaration has no annotation, the type of the right-hand-side expression is adopted as the declared type.
@@ -741,7 +743,7 @@ Command declarations:
 
 ```lask
 node = #node:20.20.2-alpine3.23
-go(--proxy: String = ""): Runnable = #golang:1.25{env: {"GOPROXY": proxy}}
+go(--proxy: String = ""): Runnable = #golang:1.25{env: { "GOPROXY": proxy }}
 
 command { "go", "gofmt" } on go(proxy = "direct")
 command { "node", "npm", "npx" } on node
@@ -1228,7 +1230,7 @@ Desugaring rules:
 
 - `if (c) { ... } else { ... }` is syntactic sugar for `choose(c, \() -> do { ... }, \() -> do { ... })`.
 - `if (c) { ... }` without `else` is syntactic sugar for `if (c) { ... } else { null }`, except when the type of its block is `Void`, where it is `if (c) { ... } else {}`.
-- `for (x : xs) { ... }` is syntactic sugar for `map(xs, \(x) -> do { ... })`. However, when the type of the body block is `Void` (including an empty block), it is syntactic sugar for `for_each(xs, \(x) -> do { ... })` (`Array<Void>` is not constructed; 4.4).
+- `for (x: xs) { ... }` is syntactic sugar for `map(xs, \(x) -> do { ... })`. However, when the type of the body block is `Void` (including an empty block), it is syntactic sugar for `for_each(xs, \(x) -> do { ... })` (`Array<Void>` is not constructed; 4.4).
 - For iteration for side effects where the result array is unnecessary, either make the body of type `Void` or use `for_each` directly.
 - `case (e) { p -> b; R }` is syntactic sugar for `do { s = e; choose(s == p, \() -> b, \() -> C) }`, where `s` is a fresh name that no source program can write (it therefore captures nothing and shadows nothing) and `C` is the expansion of the remaining arms `R`. Because the scrutinee is bound once, it is evaluated exactly once however many arms are tested.
 - A type head expands the same way, with the condition being the runtime type test of `s` against the head type rather than an equality: `case (e) { M -> b; R }` is `do { s = e; choose(<s is M>, \() -> b, \() -> C) }`. The test `<s is M>` is the runtime type check of `cast` at target `M` (15.8) used as a predicate, without its conversion and without its failure.
@@ -1435,7 +1437,7 @@ Scoping rules:
 
 - An identifier introduced by a `BindStmt` inside a `do` block is in effect within the same block after that statement.
 - Bindings inside a block of `if` / `for` and inside the body of a `case` arm (6.4) do not leak outside it. The name the normalization of a `case` scrutinee binds is fresh and cannot be referenced by any expression written in the source (6.4).
-- The iteration variable `x` of `for (x : xs)` is in effect only inside the body block.
+- The iteration variable `x` of `for (x: xs)` is in effect only inside the body block.
 
 Examples:
 
@@ -1456,7 +1458,7 @@ classify(n: Number) = do {
 }
 
 labels(xs: Array<String>) = do {
-  for (x : xs) {
+  for (x: xs) {
     concat("item:", x)
   }
 }
@@ -1635,14 +1637,14 @@ Examples:
 ```lask
 e1 = #local
 e2 = #alpine:3.20
-e3 = #alpine:3.20{memory: "4g", env: {"TOKEN": get_env("TOKEN")}}
+e3 = #alpine:3.20{memory: "4g", env: { "TOKEN": get_env("TOKEN") }}
 e4 = #ubuntu@sha256:9cee2b382fe2412cd77d5d437d15a93da8de373813621f2e4d406e3df0cf0e7c
-e5 = #./infra/Dockerfile(context = ".", build_args = {"GO_VERSION": "1.25"})
+e5 = #./infra/Dockerfile(context = ".", build_args = { "GO_VERSION": "1.25" })
 e6 = #node:24.21.0-alpine3.24(platform = "linux/amd64"){memory: "2g"}
 
 // A function that lets its caller choose the image, and says how to run it.
 python(--image: Environment = #python:3.12.14-alpine3.24, --index_url: String | Null = null): Runnable =
-  runnable(image, env = {"PYTHONUNBUFFERED": "1", "PIP_INDEX_URL": index_url})
+  runnable(image, env = { "PYTHONUNBUFFERED": "1", "PIP_INDEX_URL": index_url })
 
 e7 = python(image = #python:3.13.2-alpine3.24)
 
@@ -1687,16 +1689,16 @@ Evaluation rules:
 Examples:
 
 ```lask
-user = {name: "alice", age: 20}
+user = { name: "alice", age: 20 }
 userName = user.name
 
 xs = [10, 20, 30]
 first = xs[0]
 
-envMap: Map<String> = {"APP_ENV": "prod"}
+envMap: Map<String> = { "APP_ENV": "prod" }
 appEnv = envMap["APP_ENV"]
 
-hdrs = {"X-Api-Key": "secret"}
+hdrs = { "X-Api-Key": "secret" }
 apiKey = hdrs["X-Api-Key"]
 ```
 
@@ -1874,7 +1876,7 @@ Scope rules:
 - Bindings inside `if` / `for` / `try` blocks, and inside the body of a `case` arm, do not leak outward.
 - The name that the normalization of a `case` scrutinee (6.4) binds is fresh: it is visible to no expression written in the source, and shadows nothing.
 - When a `case` narrows a scrutinee written as a plain local name (6.4), the narrowed name is a binding of the arm body. It shadows the outer binding of the same name within that body only, and the outer binding is unaffected in every other arm and after the expression. This is ordinary shadowing under the rules below, not a rebinding in the same scope.
-- The `x` in `for (x : xs)` is valid only within the iteration body.
+- The `x` in `for (x: xs)` is valid only within the iteration body.
 - The `e` in `catch (e)` is valid only within the `catch` block.
 
 Shadowing rules:
@@ -1955,7 +1957,7 @@ The expansion order during static verification is as follows.
 3. `c ? a : b` -> `if (c) { a } else { b }` (6.2)
 4. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`; without `else`, the false branch is `\() -> null`, or `\() -> do {}` for a `Void` block (6.4)
 5. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
-6. `for (x : xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
+6. `for (x: xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
 7. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
 8. Sequential-execution expansion of `do { ... }`
 9. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
@@ -2352,8 +2354,8 @@ Example:
 normalize() = do {
   text = stdin
   text
-    |> trim
-    |> to_lower
+  |> trim
+  |> to_lower
 }
 
 fanout(xs: Array<String>) =
@@ -2379,7 +2381,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 
 ```lask
 aws(key_id: String, secret: String) =
-  #amazon/aws-cli:2.31.9{env: {"AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret}}
+  #amazon/aws-cli:2.31.9{env: { "AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret }}
 
 deploy(
   --key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
@@ -2742,6 +2744,7 @@ Set up the project:
 Develop:
 
 - `check`: returns static validation results.
+- `fmt`: formats the project's `.lask` files in a single style, or checks that they are formatted (11.11).
 - `serve`: provides editor integration (Language Server Protocol) functionality.
 - `completion`: prints the shell completion script.
 - `version`: prints the version.
@@ -2765,6 +2768,8 @@ Minimal syntax per subcommand:
 ```text
 lask serve [--stdio | --tcp --port <n>]
 lask check [--module <path>]
+lask fmt [--module <path>] [--check] [<path> ...]
+lask fmt --stdin [--check]
 lask run [--module <path>] <function> [args ...]
 lask eval [--module <path>] <function> [args ...]
 lask run [--module <path>] [<function>] --help
@@ -3391,6 +3396,60 @@ vault  https://vault.example.com
   auth       ok  approle, ttl 1h, policies [default, deploy]
   AWS_ACCESS_KEY_ID  vault://aws/creds/deploy#access_key  ok  readable (value not read)
   SSL_KEY            vault://secret/cert?version=3#key    NG  E-IO-SECRET-NOT-FOUND: vault: 'secret/cert?version=3': version 3 does not exist or was deleted (latest 2)
+```
+
+### 11.11 Formatting (`fmt`)
+
+`fmt` rewrites `.lask` source in a single style without changing the program it denotes.
+
+```text
+lask fmt [--module <path>] [--check] [<path> ...]
+lask fmt --stdin [--check]
+```
+
+Targets:
+
+- Each `<path>` is a file, or a directory whose `.lask` files are formatted, recursively. Without one, the target is the directory of the entry module (`--module`, default `main.lask` in the execution directory): the whole project.
+- A directory whose name begins with `.` is not entered — among them `.lask`, where external dependencies are cached (11.5) — and neither is a symbolic link to a directory.
+- With `--stdin`, standard input is formatted to standard output instead, and no `<path>` may be given.
+
+What changes, and what does not:
+
+- Spacing is normalized: one space around binary operators, `=` and `->`, after `,` and `:`, and none inside brackets, except the braces of a record literal, an import list or a command word list, which take one space inside unless they are empty (`{ "a": 1 }`, `import { a, b } from "lib"`, `command { "go" } on #golang:1.25`).
+- Indentation is two spaces per level. `else`, `catch` and `finally` follow the closing brace of the block before them on its line.
+- Each statement, declaration and `case` arm is on a line of its own. A block or a `case` whose content the source writes on the line of its braces keeps it there.
+- Line breaks inside an expression stay where the source has them, and only there: between the items of a bracketed list, before its closing bracket, and around a binary operator, `?`, `:`, `=` and `->`. No line is broken or joined for its length. A continuation line that begins with an operator is indented one level, unless the expression starts a line of its own, whose indentation it then keeps:
+
+  ```lask
+  greet(name: String): String =
+    "  hello, #{name}  "
+    |> trim
+  ```
+
+- The `->` of `case` arms that the source writes in one column stay in one column.
+- Comments are kept, each with the declaration, statement, `case` arm or list item it stands above or beside, so a documentation comment (3.1) stays directly above its declaration. A comment that ends a line keeps the space the source puts before it, so a column of such comments stays aligned. An item with a comment in any other place is kept exactly as written.
+- Runs of blank lines become one blank line; a blank line is never added.
+- Literals keep their spelling (raw or interpreted strings, escapes, number digits). Command expressions (6.6) are kept exactly as written, since their text is the command. Parentheses are kept.
+- Formatting is idempotent: formatting a formatted file changes nothing.
+
+Rules:
+
+- A file with a syntax error is left as it is, and its diagnostics are reported as `check` reports them (14.3). The other files are still formatted.
+- Before a file is written, the result is checked to lex to the same tokens and comments, and to parse to the same module, as the source. A result that fails this check is a defect of the implementation: the file is left as it is and the failure is reported.
+- The files that were changed (with `--check`, the files that are not formatted) are listed on stdout, one per line, or as a JSON array of paths with `--format json`.
+- It exits `0` when nothing failed; with `--check`, only when every file is formatted already. A file that does not parse, or is not formatted under `--check`, exits `1`; a file that cannot be read or written exits `3` (14.8); a `<path>` that does not exist is a CLI usage error and exits `4`.
+
+Example:
+
+```text
+$ lask fmt --check
+lib/deploy.lask
+main.lask
+$ lask fmt
+lib/deploy.lask
+main.lask
+$ lask fmt --check
+$
 ```
 
 ## 12. Observability
@@ -4249,7 +4308,7 @@ Runnables:
 
 ```lask
 python(--image: Environment = #python:3.12.14-alpine3.24, --user: String | Null = null): Runnable =
-  runnable(image, user = user, env = {"PYTHONUNBUFFERED": "1"})
+  runnable(image, user = user, env = { "PYTHONUNBUFFERED": "1" })
 ```
 
 Quoting:
@@ -4732,17 +4791,17 @@ firstLabel(xs: Array<String>): String =
   labels(xs)[0]
 
 user: Record<name: String, age: Number> =
-  {name: "alice", age: 20}
+  { name: "alice", age: 20 }
 
 userName(): String = user.name
 
 cfg: Record<env: Environment, retries: Number> =
-  {env: #alpine:3.20, retries: 3}
+  { env: #alpine:3.20, retries: 3 }
 
 retryCount(): Number = cfg.retries
 
 envMap: Map<String> =
-  {"APP_ENV": "prod", "REGION": "ap-northeast-1"}
+  { "APP_ENV": "prod", "REGION": "ap-northeast-1" }
 
 appEnv(): String = envMap["APP_ENV"]
 
@@ -4792,7 +4851,7 @@ buildAndTest(env: Environment): String = do {
     "skip"
   }
 
-  lines = for (x : ["lint", "unit", "e2e"]) {
+  lines = for (x: ["lint", "unit", "e2e"]) {
     concat("phase:", x)
   }
 
