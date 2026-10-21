@@ -7,5 +7,5 @@ hello(--name = "World") = "Hello, #{name}!"
 // Calls hello, then runs cowsay in its container.
 cowsay_hello(name: String) = do {
   message = hello(name = name)
-  $ cowsay #{shell_quote(message)}
+  $ cowsay #{message}
 }

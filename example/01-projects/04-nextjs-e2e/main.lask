@@ -56,7 +56,7 @@ build() = $ npm run build
 test_e2e(--grep: String = "") =
   grep == ""
     ? $[playwright] npx playwright test
-    : $[playwright] npx playwright test --grep #{shell_quote(grep)}
+    : $[playwright] npx playwright test --grep #{grep}
 
 // Watch the browser tests run, in Playwright's UI mode, until you stop it.
 //

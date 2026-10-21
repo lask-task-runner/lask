@@ -66,7 +66,7 @@ The browser tests name their environment explicitly, since `npx` is declared on 
 test_e2e(--grep: String = "") =
   grep == ""
     ? $[playwright] npx playwright test
-    : $[playwright] npx playwright test --grep #{shell_quote(grep)}
+    : $[playwright] npx playwright test --grep #{grep}
 ```
 
 `ci` composes them. Lint and build don't depend on each other, so they run at the same time, in two containers:

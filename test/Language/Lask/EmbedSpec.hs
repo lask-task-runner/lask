@@ -252,15 +252,15 @@ spec = do
       (_, ran) <- runScripted embedded "test_each" [] []
       ran
         `shouldBe` [ ("alpine/git:2.45.2", "git diff --name-only origin/main"),
-                     ("golang:1.22", "go test -count=1 a"),
-                     ("golang:1.22", "go test -count=1 b")
+                     ("golang:1.22", "go test -count=1 'a'"),
+                     ("golang:1.22", "go test -count=1 'b'")
                    ]
 
     it "takes keyword defaults, and keyword arguments at a call" $ do
       (dry, _) <- runScripted embedded "release" [VString "prod"] []
       either (Left . lfError) Right dry `shouldBe` Right (VString "would publish v1.4.0 to prod")
       (_, ran) <- runScripted embedded "ship" [] []
-      map snd ran `shouldBe` ["git describe --tags --abbrev=0", "go run ./cmd/publish --tag v1.4.0 --target prod"]
+      map snd ran `shouldBe` ["git describe --tags --abbrev=0", "go run ./cmd/publish --tag 'v1.4.0' --target 'prod'"]
 
     it "binds the argument of signum once" $ do
       let probing = task "probing" $ signum (L.do { _ <- run go "version"; 0 - 3 }) :: Task '[] 'TNumber

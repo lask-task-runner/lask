@@ -233,6 +233,7 @@ module Language.Lask.Embed
     lines_,
     trim,
     getEnvOr,
+    raw,
     isEmpty,
     getOr,
 

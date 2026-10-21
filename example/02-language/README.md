@@ -74,7 +74,7 @@ The thing to take away: an environment is a value. A command that names none is 
 
 ## 05-commands
 
-**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation, `shell_quote`, `run`, and the `command ... on ...` declarations that dispatch a bare `$`.
+**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation and its escaping, `raw`, `run`, and the `command ... on ...` declarations that dispatch a bare `$`.
 
 ```bash
 lask sync

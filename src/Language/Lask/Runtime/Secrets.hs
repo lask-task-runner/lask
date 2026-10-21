@@ -36,11 +36,12 @@ import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
 import Data.Char (isAlphaNum)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (sortOn)
+import Data.List (nub, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
+import Language.Lask.Builtins.Shell (ShellQuoting (..), shellEscape)
 import Language.Lask.Runtime.Value (EnvValue (..), LaskFailure (..), Value (..))
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -70,16 +71,16 @@ secretRegistry = unsafePerformIO (newIORef [])
 -- 'minLineLength' is not: it is a fragment rather than a credential,
 -- and a line such as @}@ would otherwise be masked wherever it occurs.
 --
--- A value holding @'@ is also registered as @shell_quote@ writes it
--- (spec 15.5), with each @'@ rewritten to @'\\''@: that is the form a
--- command line carries, and the value itself is no longer a substring
--- of it.
+-- A value is also registered as each escaping of a command string
+-- hole (spec 6.6) and @shell_quote@ (15.5) writes it, where that
+-- differs from the value: that is the form a command line carries, and
+-- the value itself is no longer a substring of it.
 registerSecret :: Text -> IO ()
 registerSecret value
   | T.null value = pure ()
   | otherwise = atomicModifyIORef' secretRegistry (\vs -> (value : quoted <> fragments <> vs, ()))
   where
-    quoted = [T.replace "'" "'\\''" value | T.any (== '\'') value]
+    quoted = nub [e | e <- map (`shellEscape` value) [QuoteSingle, QuoteDouble], e /= value]
     fragments
       | T.any (== '\n') value =
           filter ((>= minLineLength) . T.length) (map (T.dropWhileEnd (== '\r')) (T.lines value))

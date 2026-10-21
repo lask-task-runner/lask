@@ -36,7 +36,7 @@ One directory per topic, in reading order. The whole of the [Quick Reference](ht
 | [02-functions](02-language/02-functions) | Positional, variadic and keyword parameters, lambdas, higher-order functions, `\|>` and `>>` |
 | [03-control-flow](02-language/03-control-flow) | `do`, `if` with and without `else`, `c ? a : b`, all three forms of `case`, `for` |
 | [04-environments](02-language/04-environments) | `#local`, tags, digests, run options and `runnable`, a Dockerfile recipe, environments as values |
-| [05-commands](02-language/05-commands) | `$`, `$1`, `$2`, `$*`, interpolation, dispatch, `run`, `shell_quote` |
+| [05-commands](02-language/05-commands) | `$`, `$1`, `$2`, `$*`, interpolation and its escaping, `raw`, dispatch, `run` |
 | [06-concurrency](02-language/06-concurrency) | `async` / `await`, `spawn`, `all`, `race` |
 | [07-errors](02-language/07-errors) | `try` / `catch` / `finally`, `fail`, `error`, `recover`, exit codes |
 | [08-modules](02-language/08-modules) | Named and namespace imports, `internal`, re-export, per-module command declarations |

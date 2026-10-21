@@ -99,6 +99,7 @@ module Language.Lask.Embed.Internal
     lines_,
     trim,
     getEnvOr,
+    raw,
 
     -- * Built-ins (Phase 1)
     isEmpty,
@@ -139,6 +140,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Stack (CallStack, HasCallStack, SrcLoc (..), callStack, getCallStack)
 import GHC.TypeLits (KnownSymbol, Symbol, symbolVal)
+import Language.Lask.Builtins.Shell (escapeCommand)
 import Language.Lask.Core.AST
 import Language.Lask.Core.Lint (lintProgram)
 import Language.Lask.Core.Pretty (renderCore)
@@ -461,6 +463,12 @@ getOr (E m) (E k) (E d) = builtin NoSpan "get_or" [m, k, d]
 getEnvOr :: E v 'TString -> E v 'TString -> E v 'TString
 getEnvOr (E n) (E d) = builtin NoSpan "get_env_or" [n, d]
 
+-- | @raw(s)@: in the arguments of 'run', 'runAll' and the like, @s@
+-- is given to the shell as it is rather than escaped (spec 6.6). Never
+-- give it a value from outside the program.
+raw :: E v 'TString -> E v 'TString
+raw (E s) = builtin NoSpan "raw" [s]
+
 -- Binding ------------------------------------------------------------------------
 
 -- | @x = e@ followed by the rest of a @do@ block.
@@ -531,10 +539,11 @@ run c args = E (TLet sp (unE (rawRun sp c args)) check)
 rawRun :: Span -> Command -> E v 'TString -> E v CommandResult
 rawRun sp c (E args) =
   E . TNote (NoteCommand c) . unE $
-    node1 sp (\s -> CApp (Core sp (CVar (BuiltinRef "run"))) [cmdEnv c, Core sp (commandString s)] []) args
+    node1 sp (\s -> CApp (Core sp (CVar (BuiltinRef "run"))) [cmdEnv c, escapeCommand (Core sp (commandString s))] []) args
   where
     -- The word, then the arguments after a space; @run go ""@ is the
-    -- command @go@, as @$ go@ is.
+    -- command @go@, as @$ go@ is. What is not literal text is escaped
+    -- as a hole of @$ go ...@ is (spec 6.6).
     commandString s = case coreF s of
       CStrLit "" -> CStrLit (cmdWord c)
       CStrLit t -> CStrLit (cmdWord c <> " " <> t)

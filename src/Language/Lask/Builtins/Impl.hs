@@ -38,6 +38,7 @@ import qualified Data.Vector as V
 import Data.Word (Word8)
 import Language.Lask.Builtins.Format (decodeFormat, encodeFormat)
 import qualified Language.Lask.Builtins.Path as P
+import Language.Lask.Builtins.Shell (shellEscape, shellEscapeBuiltins, shellQuote)
 import qualified Language.Lask.Builtins.Regex as Re
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.ExecLog (LogSink)
@@ -277,10 +278,11 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
             ("stdout", VString out),
             ("stderr", VString err)
           ]
-  -- 6.6 does not escape an interpolated value, so a value that may
-  -- carry a metacharacter has to be quoted before it is substituted.
-  ("shell_quote", [VString v]) ->
-    pure (VString ("'" <> T.replace "'" "'\\''" v <> "'"))
+  ("shell_quote", [VString v]) -> pure (VString (shellQuote v))
+  -- A hole of a command string marked as substituted as it is (6.6).
+  ("raw", [VString v]) -> pure (VString v)
+  -- The escaping 6.6 gives every other hole, for the quoting it is in.
+  (n, [VString v]) | Just q <- lookup n shellEscapeBuiltins -> pure (VString (shellEscape q v))
   -- 15.6 parallel/async ------------------------------------------------------
   ("spawn", [f]) -> do
     -- Started inside the timeout bodies it runs in, so that it is
