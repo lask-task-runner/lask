@@ -34,6 +34,7 @@ import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar)
 import Language.Lask.Obs.ExecLog (textLogSink)
 import Language.Lask.Deps.Lock (LockFile (..), defaultLockFileName, loadLockFile)
+import Language.Lask.Runtime.Container (resolveBackend)
 import Language.Lask.Runtime.Environment (mkCommandRunner, mkFileRunner)
 import Language.Lask.Runtime.Image (lockPins, unlockedPins)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
@@ -218,8 +219,9 @@ evalSession modulePath source = do
       -- as written, the daemon pulling it if it has to.
       lock <- either (const Nothing) id <$> loadLockFile (baseDir </> defaultLockFileName)
       let pins = unlockedPins (lockPins (maybe mempty lockImages lock))
-      runner <- mkCommandRunner pins baseDir (textCommandLog writeErr)
-      fileRunner <- mkFileRunner pins baseDir
+      backend <- resolveBackend
+      runner <- mkCommandRunner backend pins baseDir (textCommandLog writeErr)
+      fileRunner <- mkFileRunner backend pins baseDir
       secrets <- newSecretResolver
       ctx <- mkRtCtx core "" (RtHooks runner fileRunner (textLogSink writeErr) noAsyncTracker (readEnvVar secrets))
       result <- try (topValue ctx (cpEntry core, resultName))

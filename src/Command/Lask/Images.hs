@@ -29,6 +29,7 @@ import qualified Data.Text as T
 import Language.Lask.Deps.Lock
 import Language.Lask.Elaborate (CoreProgram (..), Key)
 import Language.Lask.ErrorCode (ErrorCode (..), codeText)
+import Language.Lask.Runtime.Container (ContainerBackend)
 import Language.Lask.Runtime.Image
 import System.FilePath ((</>))
 
@@ -99,7 +100,7 @@ pinnedOf baseDir images row = case irSource row of
 
 -- | Whether the pinned image is on the daemon. Read only: nothing is
 -- pulled or built.
-isPresent :: Text -> IO Bool
+isPresent :: ContainerBackend -> Text -> IO Bool
 isPresent = imageExists
 
 -- | How materializing one image ended.
@@ -130,8 +131,8 @@ data Materialized = Materialized
 -- what is written, and the digest it resolved to is recorded. An image
 -- already on the daemon is not fetched again, nor a recipe rebuilt:
 -- both are content-addressed (11.7).
-materialize :: Progress -> CoreProgram -> Map Text LockImage -> IO (Map Text LockImage, [Materialized])
-materialize pg core prior = do
+materialize :: ContainerBackend -> Progress -> CoreProgram -> Map Text LockImage -> IO (Map Text LockImage, [Materialized])
+materialize backend pg core prior = do
   let rows = imageRows core Nothing
       total = length rows
   section pg ("Images (" <> T.pack (show total) <> ")")
@@ -172,7 +173,7 @@ materialize pg core prior = do
       case pinnedE of
         Left (code, msg) -> done it row Nothing (Failed (codeText code <> ": " <> msg)) before
         Right (digest, image, outcome) -> do
-          rest <- mapM (\p -> (,) p <$> pullImage (update it) (Just p) image) [p | Just p <- others]
+          rest <- mapM (\p -> (,) p <$> pullImage backend (update it) (Just p) image) [p | Just p <- others]
           case [(p, e) | (p, Left e) <- rest] of
             (p, e) : _ -> done it row Nothing (Failed (codeText EIoImageMissing <> ": " <> p <> ": " <> e)) before
             [] ->
@@ -185,23 +186,23 @@ materialize pg core prior = do
     pin it ref platform known = case known of
       Just digest -> do
         let image = pinnedRef ref digest
-        present <- if platform == Nothing then imageExists image else pure False
-        fetched <- if present then pure (Right ()) else pullImage (update it) platform image
+        present <- if platform == Nothing then imageExists backend image else pure False
+        fetched <- if present then pure (Right ()) else pullImage backend (update it) platform image
         case fetched of
           Left e -> pure (Left (EIoImageMissing, e))
           Right () -> do
-            actual <- registryDigest image
+            actual <- registryDigest backend image
             pure $ case actual of
               Right got
                 | got == digest -> Right (digest, image, if present then AlreadyPresent else Pulled)
                 | otherwise -> Left (EIoImageDigest, "pinned to " <> digest <> ", but the image carries " <> got)
               Left e -> Left (EIoImageDigest, e)
       Nothing -> do
-        fetched <- pullImage (update it) platform ref
+        fetched <- pullImage backend (update it) platform ref
         case fetched of
           Left e -> pure (Left (EIoImageMissing, e))
           Right () -> do
-            actual <- registryDigest ref
+            actual <- registryDigest backend ref
             case actual of
               Left e -> pure (Left (EIoImageDigest, e))
               Right digest -> do
@@ -212,7 +213,7 @@ materialize pg core prior = do
                 -- would otherwise lose it the moment the tag is
                 -- pulled again and moves.
                 let image = pinnedRef ref digest
-                named <- pullImage (update it) platform image
+                named <- pullImage backend (update it) platform image
                 pure $ case named of
                   Left e -> Left (EIoImageMissing, e)
                   Right () -> Right (digest, image, Pulled)
@@ -226,9 +227,9 @@ materialize pg core prior = do
           it <- start pg "image" (Just counter) (shortPath (irHead row)) "building"
           done it row Nothing (Failed (codeText EIoImageMissing <> ": " <> e)) before
         Right tag -> do
-          present <- imageExists tag
+          present <- imageExists backend tag
           it <- start pg "image" (Just counter) (shortPath (irHead row)) (if present then "checking" else "building")
-          built <- if present then pure (Right ()) else buildRecipe (update it) baseDir r tag
+          built <- if present then pure (Right ()) else buildRecipe backend (update it) baseDir r tag
           case built of
             Left e -> done it row Nothing (Failed (codeText EIoImageMissing <> ": " <> e)) before
             Right () ->

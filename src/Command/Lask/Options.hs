@@ -306,7 +306,7 @@ pEnvsCommand =
         "list"
         ( info
             (CmdEnvsList <$> pEnvsOpts)
-            (progDesc "List the environments, what the lock resolves them to, what requires them, and whether each image is on the Docker daemon")
+            (progDesc "List the environments, what the lock resolves them to, what requires them, and whether each image is on the container engine")
         )
     )
 

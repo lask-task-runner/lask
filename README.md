@@ -45,7 +45,7 @@ $ brew trust lask-task-runner/tap
 $ brew install lask
 ```
 
-Lask also needs Docker. [Installation](https://lask-task-runner.github.io/guide/installation) covers Linux, Windows, building from source, shell completion and the VS Code extension; then [Getting started](https://lask-task-runner.github.io/guide/getting-started) takes you to a first task in about five minutes.
+Lask also needs a container engine: Docker, Podman or nerdctl (containerd). [Installation](https://lask-task-runner.github.io/guide/installation) covers Linux, Windows, building from source, shell completion and the VS Code extension; then [Getting started](https://lask-task-runner.github.io/guide/getting-started) takes you to a first task in about five minutes.
 
 ## Documentation
 

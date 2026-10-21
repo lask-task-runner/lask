@@ -48,6 +48,7 @@ import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
 import Command.Lask.Images (loadPins)
+import Language.Lask.Runtime.Container (ContainerBackend, resolveBackend)
 import Language.Lask.Runtime.Image (ImagePins, Recipe (..), imageExists, recipeSource, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
@@ -186,8 +187,9 @@ cmdRunEval printResult runOpts = do
   -- Images resolve through the lock, and are never pulled or built
   -- here (spec 10.3, 10.4).
   pins <- loadPins core
-  runner <- mkCommandRunner pins baseDir cmdLogSink
-  fileRunner <- mkFileRunner pins baseDir
+  backend <- resolveBackend
+  runner <- mkCommandRunner backend pins baseDir cmdLogSink
+  fileRunner <- mkFileRunner backend pins baseDir
   let -- `log` (spec 15.12) writes execution log lines to stderr,
       -- through the same serialized writer as the command logs.
       logSink
@@ -601,7 +603,8 @@ cmdCmd cmdOpts
                   | optJsonFormat opts = jsonCommandLog traceId writeErr
                   | otherwise = textCommandLog writeErr
             pins <- loadPins core
-            r <- runDeclaredCommand pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
+            backend <- resolveBackend
+            r <- runDeclaredCommand backend pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
             case r of
               -- Failures before the program starts keep the existing
               -- classification (spec 11.8); the program's own exit code
@@ -668,14 +671,15 @@ commandRowsText rows =
 commandRows :: CoreProgram -> Map.Map Text Core -> IO [CommandRow]
 commandRows core table = do
   pins <- loadPins core
-  mapM (row pins) (Map.toList table)
+  backend <- resolveBackend
+  mapM (row backend pins) (Map.toList table)
   where
-    row pins (name, envCore) = do
+    row backend pins (name, envCore) = do
       r <- evalCommandEnv readEnvVarUnresolved core envCore
       case r >>= resolveEnv of
         Left lf -> pure (name, "?", "<" <> failureMessage lf <> ">", False)
         Right resolved -> do
-          present <- imagePresent pins (cpBaseDir core) resolved
+          present <- imagePresent backend pins (cpBaseDir core) resolved
           let (kind, target) = describeResolved resolved
           pure (name, kind, target, present)
 
@@ -686,13 +690,13 @@ commandRows core table = do
 
 -- | Whether the image a command needs is on the target daemon. No
 -- network access and no build (spec 11.8, 10.3).
-imagePresent :: ImagePins -> FilePath -> ResolvedEnv -> IO Bool
-imagePresent pins baseDir resolved = case resolved of
+imagePresent :: ContainerBackend -> ImagePins -> FilePath -> ResolvedEnv -> IO Bool
+imagePresent backend pins baseDir resolved = case resolved of
   ResolvedLocal -> pure True
-  ResolvedDocker ref _ -> either (const False) (const True) <$> resolveRegistry pins ref
+  ResolvedDocker ref _ -> either (const False) (const True) <$> resolveRegistry backend pins ref
   ResolvedRecipe r _ -> do
     tagE <- recipeTag baseDir r
-    either (const (pure False)) imageExists tagE
+    either (const (pure False)) (imageExists backend) tagE
 
 -- | Evaluate a command's environment (spec 11.8). The environment of a
 -- command declaration can reach no effect (ch. 5), so nothing here can

@@ -64,7 +64,7 @@ The thing to take away: every `case` needs an `else`, last, always — exhaustiv
 **Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits and other container options, an image built from the local `Dockerfile`, and environments held in a `Map<Environment>` and chosen at run time.
 
 ```bash
-lask envs list               # every image, and whether each is on the Docker daemon
+lask envs list               # every image, and whether each is on the container engine
 lask sync
 lask eval tool-versions
 lask eval uname-in --env built

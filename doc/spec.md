@@ -75,6 +75,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [10.7 Permission Boundary](#107-permission-boundary)
     - [10.8 Responsibilities for Absorbing Environment Differences](#108-responsibilities-for-absorbing-environment-differences)
     - [10.9 Command Dispatch](#109-command-dispatch)
+    - [10.10 Container Engine](#1010-container-engine)
   - [11. CLI Specification](#11-cli-specification)
     - [11.1 Subcommands](#111-subcommands)
     - [11.2 Function Invocation](#112-function-invocation)
@@ -203,7 +204,7 @@ This section defines the principal terms used in this specification.
 - Command word: The name of a program that a command declaration registers, together with the environment that provides it (Chapter 5). A module has the command words it declares and those it imports.
 - Dispatch: Choosing the execution environment of a command written without `[env]` by matching the programs its command string runs against the module's command words (10.9).
 - Secret binding: A binding whose name is marked `!!`, whose value is masked wherever it appears in what the implementation writes to stderr (6.10, 12.8).
-- Materialization: Making an image the program requires present on the Docker daemon, by pulling a registry reference or building a recipe, and recording the result in the lock file (10.3). Only `sync` materializes images (11.7).
+- Materialization: Making an image the program requires present on the container engine (10.10), by pulling a registry reference or building a recipe, and recording the result in the lock file (10.3). Only `sync` materializes images (11.7).
 
 ## 2. Notation
 
@@ -2510,7 +2511,10 @@ The run options this implementation provides:
 - An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing. This is how an argument says "not given" — a function that builds a runnable passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
 - `workdir` is the explicit working directory 10.5 gives precedence over the default.
 - `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
-- A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the `docker` client's command line and sets its value in the client's environment, from which docker takes it. A variable the client reads itself — a name beginning with `DOCKER_`, ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, in any case — is passed with its value on the command line instead, since setting it for the client would change which daemon it reaches or how.
+- A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the engine client's command line (10.10) and sets its value in the client's environment, from which the client takes it. A variable the client reads itself is passed with its value on the command line instead, since setting it for the client would change which engine it reaches or how. In any case, that is a name ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, and, by engine:
+  - `docker`: a name beginning with `DOCKER_`.
+  - `podman`: a name beginning with `CONTAINER_`, `CONTAINERS_`, `PODMAN_`, `BUILDAH_` or `XDG_`, or `TMPDIR` or `REGISTRY_AUTH_FILE`.
+  - `nerdctl`: a name beginning with `CONTAINERD_`, `NERDCTL_`, `BUILDKIT_`, `CNI_` or `XDG_`, or `TMPDIR`.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written.
 - A `Bool` parameter left `false` is the daemon's own default and is not passed; nothing is inferred from its absence.
 - `init` is the exception: it is on unless set to `false`. The container runs an init process as PID 1, which passes the termination request of 8.7 on to the program; a program that is PID 1 itself has no default signal handlers and would ignore it until the grace period ran out. `init = false` runs the program as PID 1.
@@ -2576,7 +2580,7 @@ Resolution rules:
 Failure rules:
 
 - Invalid heads and options are static errors (`E-TYPE-ENV-CONSTRUCT`) and do not occur in the runtime resolution of this section. The only means of specifying an execution environment is the in-language environment expression (no means of supplying an execution environment from the CLI is provided; 11.1).
-- Absence of the execution infrastructure (Docker daemon absent, image not materialized, etc.) is a pre-execution error.
+- Absence of the execution infrastructure (container engine unreachable, image not materialized, etc.) is a pre-execution error.
 - Resolution failure must be classified as an external I/O or runtime error in Chapter 14.
 
 Determinism:
@@ -2730,6 +2734,27 @@ Examples, given `command { "go" } on #golang:1.25`, `command { "node", "npm", "n
 | `env FOO=1 go test` | `env` | nothing |
 | `#{bin} -chdir=infra init` | none (undeterminable) | nothing |
 | `ls dist && npm publish` | `ls`, `npm` | `E-TYPE-COMMAND-CONFLICT` |
+
+### 10.10 Container Engine
+
+A container environment runs on a container engine: the store that holds the images of 10.3 and runs the containers of 10.5.
+
+Selection:
+
+- The engines an implementation drives are listed below. The process environment variable `LASK_CONTAINER_ENGINE` selects one by name (`LASK_CONTAINER_ENGINE=podman`), in any case.
+- When `LASK_CONTAINER_ENGINE` is unset or empty, the engine is the first of `docker`, `podman` and `nerdctl` whose client is found on `PATH`, and `docker` when none is.
+- A value that names no engine is not a static error. A program that runs nothing in a container runs; anything that needs the engine fails with `E-IO-ENV-RESOLVE`, whose diagnostic quotes the value and lists the engines.
+- The selection is a property of the machine, not of the program: a project file does not name an engine, and the same program and lock file run on any of them. A pinned digest names the same image on every engine (10.3).
+
+Engines:
+
+- This implementation drives an engine through its Docker-compatible client, run as a subprocess: `docker` (Docker Engine), `podman` (Podman, rootful or rootless), and `nerdctl` (containerd, with BuildKit for recipes). The client is found on `PATH` under the engine's name.
+- Each operation of 10.3 to 10.5 means the same on every engine. Where the clients differ, the implementation absorbs the difference (10.8):
+  - Whether the engine can be reached is asked of the engine, not of the client: `docker version` for Docker, and the engine's information for the others.
+  - A registry reference is read as Docker reads it, a name with no registry being on Docker Hub. Podman resolves such a name through its own configuration, which may name other registries or none, so it is pulled by its Docker Hub name.
+  - A failure of the engine itself — the container never ran — is `E-IO-ENV-RESOLVE`, and never taken for the exit code of the command (8.7). Docker and Podman report it with exit code 125; nerdctl with exit code 1 and a fatal log line, which is what tells it apart.
+  - The variables of the `env` option are given to the client by name, as 10.2 requires, except those the client reads itself (10.2), which differ by engine.
+- A client that runs the engine elsewhere and does not pass its own environment on — such as a nerdctl that runs inside a virtual machine on macOS — cannot receive a variable by name, and a value of `env` given that way does not reach the container. Such a client is outside what this implementation supports for `env`.
 
 ## 11. CLI Specification
 
@@ -2956,7 +2981,7 @@ lask envs list provision
 
 ### 11.4 Environment List (`envs`)
 
-`envs list` enumerates the execution environments used by tasks and reports, for each, what the lock file resolves it to, what requires it, and whether its image is on the Docker daemon.
+`envs list` enumerates the execution environments used by tasks and reports, for each, what the lock file resolves it to, what requires it, and whether its image is on the container engine.
 
 Syntax:
 
@@ -2981,7 +3006,7 @@ Columns:
 
 Rules:
 
-- The Docker daemon is asked once whether it can be reached, and then whether each pinned image is present. Nothing is pulled or built, and no command runs in any environment.
+- The container engine is asked once whether it can be reached, and then whether each pinned image is present. Nothing is pulled or built, and no command runs in any environment.
 - When the daemon cannot be reached, a warning on stderr says so and why, and every `docker` status is `?`.
 - `envs list` reports; it does not fail. A missing or unpinned image, or a daemon that cannot be reached, is a status, and the exit code is `0`.
 - After the table, one line counts the environments by kind and by status.
@@ -3055,7 +3080,7 @@ Rules (`rm`):
 
 - `rm` removes a direct dependency: its entry in `lask.json`, its lock entry and those of the dependencies under it, the cache entries no remaining lock entry uses, and the lock entries of the images the program no longer requires (10.3; the program is read again to find them). It reaches no network.
 - A dependency a `.lask` file of the project still imports is not removed: the imports are listed, and it is a usage error. A transitive dependency is not removed either: the dependency that declares it is named.
-- Images on the Docker daemon are not removed, since the daemon may serve other projects; the ones no longer required are named.
+- Images on the container engine are not removed, since the engine may serve other projects; the ones no longer required are named.
 - The cache is cleaned only when it is the project's own (`.lask/deps`), not one `LASK_CACHE_DIR` names, which other projects may share.
 
 Output and exit codes:
@@ -3242,7 +3267,7 @@ Progress and the summary:
 - While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
 - On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--format json` each of these is a JSON Lines event.
 - When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--format json` the summary is one object, `modules` and `images`.
-- The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the Docker daemon.
+- The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the container engine.
 
 Exit codes:
 
@@ -4018,7 +4043,7 @@ External I/O errors occur at boundaries external to the language.
 Representative examples:
 
 - `E-IO-STDIN-READ`: stdin read failure
-- `E-IO-ENV-RESOLVE`: execution environment resolution failure, including a Docker daemon that cannot be reached (10.4)
+- `E-IO-ENV-RESOLVE`: execution environment resolution failure, including a container engine that cannot be reached or cannot run the container (10.4, 10.10)
 - `E-IO-IMAGE-MISSING`: a required container image has not been materialized (10.3)
 - `E-IO-IMAGE-DIGEST`: a pulled image's digest does not match the pinned digest (10.3)
 - `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
@@ -4958,9 +4983,9 @@ Expected behavior:
 - `lask run hello`: executes the function and exits with exit code `0` without outputting the evaluation result to stdout.
 - `lask eval greet alice`: outputs `"hello, alice"` to stdout (the default `json` display).
 - `lask run greet alice --prefix hi`: executes with the positional argument `alice` and the keyword argument `--prefix hi` bound. The evaluation result is not output.
-- `build`: executes the build inside a container (the evaluation result is not output). If a connection to the Docker daemon cannot be made, a pre-execution error occurs (`E-IO-ENV-RESOLVE`) and it exits with exit code `3`.
+- `build`: executes the build inside a container (the evaluation result is not output). If the container engine cannot be reached, a pre-execution error occurs (`E-IO-ENV-RESOLVE`) and it exits with exit code `3`.
 - `provision`: executes commands in a container built from the declared recipe. If the image has not been materialized, an `E-IO-IMAGE-MISSING` diagnostic is output to stderr and it exits with exit code `3`.
-- `lask envs list provision`: lists the environments `provision` uses, what the lock resolves each to, and whether each image is on the Docker daemon. Exit code `0` whatever their status (11.4).
+- `lask envs list provision`: lists the environments `provision` uses, what the lock resolves each to, and whether each image is on the container engine. Exit code `0` whatever their status (11.4).
 
 ### 16.8 Execution Event Example
 

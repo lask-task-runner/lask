@@ -61,3 +61,31 @@ jobs:
         with:
           name: coverage
           path: .stack-work/install/**/hpc/
+
+      # The same examples on the other engines lask drives (spec 10.10),
+      # with the binary this commit produced. Podman is on the runner
+      # already, rootless; catatonit is the init process it runs for
+      # `--init`.
+      - name: Set up podman
+        run: sudo apt-get install -y podman catatonit
+
+      - name: Smoke test on podman
+        run: dist/bin/lask run smoke-engine podman --lask dist/bin/lask
+
+      # nerdctl drives the containerd that Docker runs on, with BuildKit
+      # from the same bundle for recipes. It runs as root, so the client
+      # is a wrapper that runs it with sudo, keeping the environment a
+      # variable passed by name is read from.
+      - name: Set up nerdctl
+        run: |
+          curl -fsSL https://github.com/containerd/nerdctl/releases/download/v2.4.1/nerdctl-full-2.4.1-linux-amd64.tar.gz \
+            | sudo tar -xz -C /usr/local
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now buildkit
+          mkdir -p "$RUNNER_TEMP/nerdctl-bin"
+          printf '#!/bin/sh\nexec sudo -E /usr/local/bin/nerdctl "$@"\n' > "$RUNNER_TEMP/nerdctl-bin/nerdctl"
+          chmod +x "$RUNNER_TEMP/nerdctl-bin/nerdctl"
+          echo "$RUNNER_TEMP/nerdctl-bin" >> "$GITHUB_PATH"
+
+      - name: Smoke test on nerdctl
+        run: dist/bin/lask run smoke-engine nerdctl --lask dist/bin/lask
