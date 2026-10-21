@@ -90,7 +90,7 @@ greet(name: String, --loudly: Bool = false): String =
 // @example lask eval --stdout-encode pretty-json matrix
 matrix(): Array<Record<name: String, image: String>> = [
   { name: "api", image: "python:3.12.14-alpine3.24" },
-  { name: "web", image: "node:20.20.2-alpine3.23" }
+  { name: "web", image: "node:24.22.1-alpine3.24" }
 ]
 
 // Scale the service, to show how arguments are decoded.
