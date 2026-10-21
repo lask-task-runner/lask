@@ -205,6 +205,21 @@ smoke_colon_dir(--dir = path_join([get_env_or("RUNNER_TEMP", "/tmp"), "colon:dir
   out
 }
 
+// Drive lask on one container engine: pull and pin, build a recipe,
+// run with run options, read and write files, pass a variable by name,
+// and stop an abandoned container (spec 10.10).
+//
+// Not part of `ci`, which needs only Docker: CI runs it once for each
+// of podman and nerdctl.
+//
+// @param engine  docker, podman or nerdctl.
+// @param lask    The lask binary to drive.
+// @complete engine docker podman nerdctl
+// @complete lask @file
+// @example lask run smoke-engine podman
+smoke_engine(engine: String, --lask = built_lask()): String =
+  $[#local] tools/engine-smoke.sh #{engine} #{lask}
+
 // Drive the generated completion scripts through bash, zsh and fish.
 //
 // The scripts are shell code, so the only place their quoting and word
