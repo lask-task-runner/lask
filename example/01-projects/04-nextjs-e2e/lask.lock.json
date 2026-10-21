@@ -10,10 +10,10 @@
             "kind": "registry",
             "ref": "node:24.21.0-alpine3.24"
         },
-        "#node:24.21.0-bookworm-slim": {
-            "digest": "sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20",
+        "#node:24.22.1-bookworm-slim": {
+            "digest": "sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d",
             "kind": "registry",
-            "ref": "node:24.21.0-bookworm-slim"
+            "ref": "node:24.22.1-bookworm-slim"
         }
     },
     "lock_version": 1,
