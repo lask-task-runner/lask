@@ -19,8 +19,10 @@ jobs:
       - name: Setup Haskell Stack
         uses: haskell-actions/setup@v2
         with:
-          ghc-version: "9.4"
+          # Stack alone: it installs the GHC the snapshot in stack.yaml
+          # names, so a global GHC would only be one more to download.
           enable-stack: true
+          stack-no-global: true
           stack-version: "latest"
 
       - name: Cache Stack dependencies
