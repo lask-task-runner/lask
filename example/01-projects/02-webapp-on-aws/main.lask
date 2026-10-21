@@ -11,7 +11,7 @@ aws_secret_access_key = mark_secret(get_env("AWS_SECRET_ACCESS_KEY"))
 aws_region = get_env("AWS_DEFAULT_REGION")
 
 python = tools.python(image = #python:3.12.14-alpine3.24)
-node = tools.node(image = #node:20.20.2-alpine3.23)
+node = tools.node(image = #node:24.22.1-alpine3.24)
 aws = tools.aws(
   image = #amazon/aws-cli:2.36.41,
   access_key_id = aws_access_key_id,

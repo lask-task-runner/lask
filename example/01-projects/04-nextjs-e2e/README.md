@@ -41,7 +41,7 @@ Everything lives in [main.lask](main.lask). The two environments come from [lask
 ```lask
 command { "node", "npm", "npx" } on node
 
-node_image = #node:24.21.0-bookworm-slim
+node_image = #node:24.22.1-bookworm-slim
 node = tools.node(image = node_image, extra_env = quiet)
 
 playwright = tools.playwright(

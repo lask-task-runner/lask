@@ -33,13 +33,13 @@ import qualified Language.Lask.Embed.Do as L
 -- Command words -----------------------------------------------------------------
 --
 --   command { "go" }      on #golang:1.22
---   command { "npm" }     on #node:20
+--   command { "npm" }     on #node:24
 --   command { "git" }     on #alpine/git:2.45.2
 --   command { "kubectl" } on #bitnami/kubectl:1.30
 
 go, npm, git, kubectl :: Command
 go = command "go" (image "golang:1.22")
-npm = command "npm" (image "node:20")
+npm = command "npm" (image "node:24")
 git = command "git" (image "alpine/git:2.45.2")
 kubectl = command "kubectl" (image "bitnami/kubectl:1.30")
 
@@ -101,7 +101,7 @@ fact = task "fact" $ \n ->
 --
 -- Which commands run depends on what an earlier command printed, which an
 -- applicative could not express. The term is still static: `envs` lists
--- node:20 and alpine/git for lint_changed without running anything.
+-- node:24 and alpine/git for lint_changed without running anything.
 
 changed :: Task '[] ('TArray 'TString)
 changed = task "changed" $ L.do

@@ -22,7 +22,7 @@ Execution environments are values, so they're declared once at the top of the fi
 
 ```lask
 python = tools.python(image = #python:3.12.14-alpine3.24)
-node = tools.node(image = #node:20.20.2-alpine3.23)
+node = tools.node(image = #node:24.22.1-alpine3.24)
 playwright = tools.playwright(image = #mcr.microsoft.com/playwright:v1.62.1-jammy)
 ```
 
