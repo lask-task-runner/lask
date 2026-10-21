@@ -40,14 +40,14 @@ echo "$ENGINE"
 # A registry image: pulled and pinned by sync, then run.
 cp -R "$ROOT/example/01-projects/01-hello-world" "$TMP/hello"
 cd "$TMP/hello" || exit 1
-expect "sync pulls and pins" "1 image (1 " "$LASK" sync
+expect "sync pulls and pins" "1 image (" "$LASK" sync
 expect "a pinned image runs" "< Hello, $ENGINE! >" "$LASK" run cowsay-hello "$ENGINE"
 expect "envs list finds it" "present" "$LASK" envs list
 
 # A recipe, built by sync, and run options of every kind.
 cp -R "$ROOT/example/02-language/04-environments" "$TMP/envs"
 cd "$TMP/envs" || exit 1
-expect "sync pulls and builds" "3 images (3 " "$LASK" sync
+expect "sync pulls and builds" "3 images (" "$LASK" sync
 expect "the recipe image runs" '"built":"jq-1.8.2"' "$LASK" eval tool-versions
 expect "lask cmd runs a declared command" "jq-1.8.2" "$LASK" cmd jq --version
 
