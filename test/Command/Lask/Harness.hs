@@ -1,6 +1,6 @@
 -- | Shared plumbing for tests that drive the built @lask@ binary as a
 -- black box: locating it, laying out a throwaway project, running it,
--- and standing in for the docker CLI.
+-- and standing in for a container engine's client.
 module Command.Lask.Harness
   ( findLask,
     Result (..),
@@ -11,6 +11,7 @@ module Command.Lask.Harness
     fakeDocker,
     calls,
     withFakeDocker,
+    withFakeEngine,
     git,
     gitOut,
   )
@@ -105,14 +106,21 @@ withProject files action =
       files
     action dir
 
--- | A stand-in for the docker CLI, for tests of image pinning that must
--- not need a daemon. Its state is files under @$FAKE_DOCKER_STATE@:
+-- | A stand-in for a container engine's client — docker, podman or
+-- nerdctl, which take the same arguments — for tests that must not need
+-- an engine. Its state is files under @$FAKE_DOCKER_STATE@:
 -- @registry/<ref>@ holds the digest a tag resolves to upstream,
 -- @present/<name>@ an image on the daemon with its repository digests,
 -- @calls@ every invocation, and @env@ each variable a @run@ named by
 -- @--env NAME@ with the value the client's environment gave it. A file
 -- @daemon-down@ makes it answer as a client that reaches no daemon: every
--- command fails.
+-- command fails. A file @run-fails@ makes a @run@ write its contents to
+-- stderr and exit with the code in @run-exit@.
+--
+-- A reference pulled by its Docker Hub name, as podman is made to pull
+-- one, is also found by its short name, as podman's store finds it.
+-- An image inspected with @--mode=native@ is answered as nerdctl
+-- answers it.
 fakeDocker :: String
 fakeDocker =
   unlines
@@ -125,19 +133,26 @@ fakeDocker =
       "[ -f \"$S/daemon-down\" ] && { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }",
       "case \"$1\" in",
       "  version) echo 27.0.0 ;;",
+      "  info) echo amd64 ;;",
       "  pull)",
       "    for a in \"$@\"; do ref=\"$a\"; done",
+      "    short=$(printf '%s' \"$ref\" | sed -e 's#^docker.io/library/##' -e 's#^docker.io/##')",
       "    case \"$ref\" in",
       "      *@*) digest=\"${ref#*@}\" ;;",
-      "      *) [ -f \"$S/registry/$(key \"$ref\")\" ] || { echo \"manifest unknown: $ref\" >&2; exit 1; }",
-      "         digest=$(cat \"$S/registry/$(key \"$ref\")\") ;;",
+      "      *) [ -f \"$S/registry/$(key \"$short\")\" ] || { echo \"manifest unknown: $ref\" >&2; exit 1; }",
+      "         digest=$(cat \"$S/registry/$(key \"$short\")\") ;;",
       "    esac",
       "    name=\"$(repo \"$ref\")@$digest\"",
-      "    printf '[\"%s\"]' \"$name\" > \"$S/present/$(key \"$ref\")\"",
-      "    printf '[\"%s\"]' \"$name\" > \"$S/present/$(key \"$name\")\"",
+      "    for r in \"$ref\" \"$short\" \"$name\" \"$(repo \"$short\")@$digest\"; do printf '[\"%s\"]' \"$name\" > \"$S/present/$(key \"$r\")\"; done",
       "    echo \"$name\" ;;",
       "  image)",
-      "    ref=\"$5\"; [ \"$3\" = \"--format\" ] || ref=\"$3\"",
+      "    for a in \"$@\"; do ref=\"$a\"; done",
+      -- nerdctl's own form: a line per image, @<name> <digest>@, and
+      -- nothing for a reference that names none.
+      "    if [ \"$3\" = --mode=native ]; then",
+      "      f=\"$S/present/$(key \"$ref\")\"; [ -f \"$f\" ] || exit 0",
+      "      { tr -d '[]\"' < \"$f\" | tr ',' '\\n'; echo; } | while read -r e; do [ -n \"$e\" ] && echo \"$e ${e#*@}\"; done; exit 0",
+      "    fi",
       "    f=\"$S/present/$(key \"$ref\")\"",
       "    [ -f \"$f\" ] || { echo \"Error: No such image: $ref\" >&2; exit 1; }",
       "    [ \"$3\" = \"--format\" ] && cat \"$f\"; exit 0 ;;",
@@ -146,6 +161,7 @@ fakeDocker =
       -- A variable named by `--env NAME` is taken from the client's
       -- environment, as docker takes it; @env@ records what it found.
       "  run) prev=''",
+      "    [ -f \"$S/run-fails\" ] && { cat \"$S/run-fails\" >&2; exit \"$(cat \"$S/run-exit\")\"; }",
       "    for a in \"$@\"; do",
       "      if [ \"$prev\" = --env ]; then case \"$a\" in *=*) ;; *) eval \"v=\\${$a-UNSET}\"; echo \"$a=$v\" >> \"$S/env\" ;; esac; fi",
       "      prev=\"$a\"",
@@ -164,14 +180,19 @@ calls state = lines <$> readFile (state </> "calls")
 -- @alpine:3.22.2@ resolving to @sha256:aaa@. The action receives the
 -- state directory and the extra environment to run lask with.
 withFakeDocker :: (FilePath -> [(String, String)] -> IO a) -> IO a
-withFakeDocker action =
-  withSystemTempDirectory "fake-docker" $ \root -> do
+withFakeDocker = withFakeEngine "docker"
+
+-- | As 'withFakeDocker', with the fake standing in for the client of
+-- the engine named, and @LASK_CONTAINER_ENGINE@ selecting it.
+withFakeEngine :: String -> (FilePath -> [(String, String)] -> IO a) -> IO a
+withFakeEngine engine action =
+  withSystemTempDirectory "fake-engine" $ \root -> do
     let bin = root </> "bin"
         state = root </> "state"
     createDirectoryIfMissing True bin
     createDirectoryIfMissing True (state </> "registry")
-    writeFile (bin </> "docker") fakeDocker
-    _ <- readProcess "chmod" ["+x", bin </> "docker"] ""
+    writeFile (bin </> engine) fakeDocker
+    _ <- readProcess "chmod" ["+x", bin </> engine] ""
     writeFile (state </> "registry" </> "alpine_3.22.2") "sha256:aaa"
     path <- maybe "" id . lookup "PATH" <$> getEnvironment
-    action state [("PATH", bin <> ":" <> path), ("FAKE_DOCKER_STATE", state)]
+    action state [("PATH", bin <> ":" <> path), ("FAKE_DOCKER_STATE", state), ("LASK_CONTAINER_ENGINE", engine)]

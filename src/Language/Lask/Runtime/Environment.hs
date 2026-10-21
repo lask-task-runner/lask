@@ -5,8 +5,8 @@
 -- An 'EnvValue' is resolved to a concrete runtime configuration just
 -- before command launch (10.4): @env@ entries substitute their
 -- definition from the environment file; @docker@\/@local@ are used
--- directly. Commands run via the host shell, the @docker@ CLI, or the
--- @ssh@ CLI (10.9; implementation choice permitted by the spec).
+-- directly. Commands run via the host shell, or in a container through
+-- the container engine's client (10.10; "Language.Lask.Runtime.Container").
 --
 -- Child process stdout\/stderr are relayed line by line, in real
 -- time, to the injected 'CommandLogSink' while also being captured
@@ -20,9 +20,6 @@ module Language.Lask.Runtime.Environment
     runLoggedProcess,
     runDeclaredCommand,
     envLogInfo,
-    dockerArgs,
-    dockerShellArgs,
-    dockerClientEnv,
   )
 where
 
@@ -55,8 +52,6 @@ import System.IO.Error
     isPermissionError,
   )
 import qualified Data.Map.Strict as Map
-import Data.Scientific (formatScientific, isInteger)
-import qualified Data.Scientific as Sci
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -66,9 +61,9 @@ import Data.Time.Clock (getCurrentTime)
 import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner)
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
+import Language.Lask.Runtime.Container (ContainerBackend (..), RunSpec (..), engineName)
 import Language.Lask.Runtime.ProcessStop
   ( newContainerName,
-    stopContainer,
     stopGraceSeconds,
     stopProcessTree,
     withStoppableProcess,
@@ -76,11 +71,10 @@ import Language.Lask.Runtime.ProcessStop
 import Language.Lask.Runtime.Secrets (maskSecrets, maskSecretsJson)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (valueToJson)
-import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hClose, hIsTerminalDevice, stderr, stdin, stdout)
 import System.Process
-  ( CreateProcess (cwd, delegate_ctlc, env, std_err, std_in, std_out),
+  ( CreateProcess (cwd, delegate_ctlc, std_err, std_in, std_out),
     ProcessHandle,
     StdStream (CreatePipe, Inherit),
     createProcess,
@@ -150,208 +144,6 @@ envLogInfo _ resolved = (summary, json)
       ResolvedRecipe r opts -> EnvValue "docker" (Map.insert "dockerfile" (VString (rcDockerfile r)) opts)
     json = valueToJson (VEnv resolvedEnvValue)
 
--- | The path the base directory is mounted at inside the container.
-containerWorkdir :: String
-containerWorkdir = "/work"
-
--- | Mount the base directory as the container working directory
--- (spec 10.5).
---
--- @--mount@ rather than @-v@, because @-v@ packs source, target and
--- mode into one colon-separated field. A Windows base directory such
--- as @C:\\proj@ is then read as source @C@, target @\\proj@ and mode
--- @\/work@, and the daemon rejects it with @invalid mode: \/work@; a
--- POSIX directory whose name contains a colon breaks the same way.
--- @--mount@ names each part, so the separator never has to be guessed
--- — which is what 10.5 asks for when it requires implementations to
--- absorb path separator differences.
---
--- Two consequences are deliberate. @--mount@ refuses a source that
--- does not exist where @-v@ would silently create it, which is the
--- better failure for a base directory. And its fields are split on
--- commas, so a base directory containing one is still out of reach;
--- that is rarer than a drive letter, which every Windows path has.
-workdirMountArgs :: FilePath -> [String]
-workdirMountArgs baseDir =
-  [ "--mount",
-    "type=bind,source=" <> baseDir <> ",target=" <> containerWorkdir,
-    "-w",
-    containerWorkdir
-  ]
-
--- | Arguments for @docker run@ (spec 10.5: base directory mounted as
--- the working directory inside the container). The container is named,
--- so that it can be stopped if the command is abandoned (8.7).
-dockerArgs :: FilePath -> Text -> Text -> Map Text Value -> Text -> [String]
-dockerArgs baseDir name image opts = dockerShellArgs baseDir name image opts False
-
--- | As 'dockerArgs', with @-i@ when the shell is to be fed on stdin
--- (the filesystem runner writes a file that way, so no file content
--- has to fit on a command line).
-dockerShellArgs :: FilePath -> Text -> Text -> Map Text Value -> Bool -> Text -> [String]
-dockerShellArgs baseDir name image opts wantStdin cmd =
-  ["run", "--rm", "--pull=never", "--name", T.unpack name]
-    <> (if wantStdin then ["-i"] else [])
-    <> initArgs opts
-    <> workdirMountArgs baseDir
-    <> ["--entrypoint", "/bin/sh"]
-    <> dockerOptArgs opts
-    <> [T.unpack image, "-c", T.unpack cmd]
-
--- | An init process as PID 1, unless the environment sets @init@ to
--- @false@ (spec 10.2). A program that is PID 1 itself gets no default
--- signal handlers, so it would ignore the termination request that
--- stops an abandoned command (8.7) and run out the whole grace period;
--- the init process passes the request on.
-initArgs :: Map Text Value -> [String]
-initArgs opts = case Map.lookup "init" opts of
-  Just (VBool False) -> []
-  _ -> ["--init"]
-
--- | Implementation-defined environment options (spec 10.2).
---
--- Options are emitted in name order, so one environment value always
--- produces the same argument vector however its arguments were
--- written. @workdir@ is emitted here rather than in
--- 'workdirMountArgs', which is why it overrides the default @-w@: the
--- later @-w@ is the one the daemon takes, and 10.5 gives an explicit
--- working directory precedence over the default.
---
--- The image reference, the recipe and its build arguments are not run
--- options and are consumed before this point.
-dockerOptArgs :: Map Text Value -> [String]
-dockerOptArgs opts = concatMap emit (Map.toAscList opts)
-  where
-    emit (k, v) = case k of
-      -- Resource limits.
-      "memory" -> one "--memory" v
-      "memory_swap" -> one "--memory-swap" v
-      "memory_reservation" -> one "--memory-reservation" v
-      "cpus" -> one "--cpus" v
-      "cpu_shares" -> one "--cpu-shares" v
-      "cpuset_cpus" -> one "--cpuset-cpus" v
-      "cpuset_mems" -> one "--cpuset-mems" v
-      "pids_limit" -> one "--pids-limit" v
-      "shm_size" -> one "--shm-size" v
-      "blkio_weight" -> one "--blkio-weight" v
-      "ulimits" -> each "--ulimit" v
-      -- Execution context.
-      "workdir" -> one "-w" v
-      "user" -> one "--user" v
-      "env" -> envArgs v
-      "platform" -> one "--platform" v
-      "hostname" -> one "--hostname" v
-      -- Given by 'initArgs', since it is on unless turned off.
-      "init" -> []
-      -- Confinement.
-      "read_only" -> switch "--read-only" v
-      "tmpfs" -> each "--tmpfs" v
-      "cap_drop" -> each "--cap-drop" v
-      -- Network.
-      "network" -> one "--network" v
-      "dns" -> each "--dns" v
-      "dns_search" -> each "--dns-search" v
-      "add_hosts" -> pairs ":" "--add-host" v
-      "publish" -> each "--publish" v
-      -- Host filesystem.
-      "volumes" -> each "--volume" v
-      _ -> []
-
-    one flag v = maybe [] (\t -> [flag, T.unpack t]) (scalar v)
-
-    each flag v = case v of
-      VArray xs -> concat [[flag, T.unpack t] | Just t <- map scalar (V.toList xs)]
-      _ -> []
-
-    pairs sep flag v = case v of
-      VMap m -> concat [[flag, T.unpack (k <> sep <> t)] | (k, Just t) <- entries m]
-      _ -> []
-      where
-        entries m = [(k, scalar x) | (k, x) <- Map.toAscList m]
-
-    -- A variable the docker client is given (see 'dockerClientEnv') is
-    -- only named here, so its value never reaches the process list.
-    envArgs v = case v of
-      VMap m ->
-        concat
-          [ ["--env", T.unpack (if passedByName k then k else k <> "=" <> t)]
-          | (k, Just t) <- [(k, scalar x) | (k, x) <- Map.toAscList m]
-          ]
-      _ -> []
-
-    -- A false switch is the daemon's default, so it is left unsaid
-    -- rather than passed as @--flag=false@.
-    switch flag v = case v of
-      VBool True -> [flag]
-      _ -> []
-
-    scalar = optionScalar
-
--- | An option value as the text its flag takes; 'Nothing' for null,
--- which leaves the option out (spec 10.2).
-optionScalar :: Value -> Maybe Text
-optionScalar v = case v of
-  VString t -> Just t
-  VNumber n -> Just (T.pack (formatNum n))
-  VBool b -> Just (if b then "true" else "false")
-  _ -> Nothing
-  where
-    formatNum n
-      | isInteger n = formatScientific Sci.Fixed (Just 0) n
-      | otherwise = formatScientific Sci.Fixed Nothing n
-
--- | The variables of the @env@ option that reach the container through
--- the environment of the @docker@ client rather than its command line
--- (spec 10.2). A command line is visible to every user of the host
--- through the process list, and @env@ is where a program passes a
--- credential to a container, so @--env NAME@ is given with the value
--- set in the client's environment, from which docker takes it.
-dockerClientEnv :: Map Text Value -> [(String, String)]
-dockerClientEnv opts = case Map.lookup "env" opts of
-  Just (VMap m) -> [(T.unpack k, T.unpack t) | (k, x) <- Map.toAscList m, passedByName k, Just t <- [optionScalar x]]
-  _ -> []
-
--- | Whether a variable is passed by name. Not one the docker client
--- itself reads — which daemon it talks to, through which proxy, with
--- which configuration — since setting it in the client's environment
--- would change what the client does; nor a name docker could not take
--- as one, containing @=@. Those stay on the command line, as before.
-passedByName :: Text -> Bool
-passedByName k =
-  not (T.null k)
-    && not (T.any (== '=') k)
-    && not ("DOCKER_" `T.isPrefixOf` upper || "_PROXY" `T.isSuffixOf` upper)
-    && upper `notElem` ["PATH", "HOME", "SSH_AUTH_SOCK"]
-  where
-    upper = T.toUpper k
-
--- | Launch the @docker@ client with these arguments, giving it the
--- variables 'dockerClientEnv' names on top of lask's own environment.
-dockerProcess :: Map Text Value -> [String] -> IO CreateProcess
-dockerProcess opts args = case dockerClientEnv opts of
-  [] -> pure (proc "docker" args)
-  extra -> do
-    inherited <- getEnvironment
-    let names = map fst extra
-    pure (proc "docker" args) {env = Just (extra <> [kv | kv@(k, _) <- inherited, k `notElem` names])}
-
--- | Arguments for @docker run@ of one program with its argument
--- vector (spec 11.8): no shell is created, so the program name becomes
--- the entrypoint and the remaining words are passed as they stand.
--- Stdin is always attached, since the program's stdin is that of
--- @lask cmd@ whether or not it is a terminal; a terminal is allocated
--- only when all three streams are one.
-dockerExecArgs :: FilePath -> Text -> Map Text Value -> Bool -> Text -> [Text] -> [String]
-dockerExecArgs baseDir image opts interactive prog argv =
-  ["run", "--rm", "--pull=never", "-i"]
-    <> (if interactive then ["-t"] else [])
-    <> initArgs opts
-    <> workdirMountArgs baseDir
-    <> ["--entrypoint", T.unpack prog]
-    <> dockerOptArgs opts
-    <> [T.unpack image]
-    <> map T.unpack argv
-
 -- | Run one declared command with its argument vector (spec 11.8).
 --
 -- Unlike a command execution expression this creates no shell, so an
@@ -366,6 +158,7 @@ dockerExecArgs baseDir image opts interactive prog argv =
 -- relayed as the command execution log (12.3). The start and exit
 -- lines are written either way.
 runDeclaredCommand ::
+  ContainerBackend ->
   ImagePins ->
   FilePath ->
   CommandLogSink ->
@@ -377,7 +170,7 @@ runDeclaredCommand ::
   -- | Its arguments, each preserved as one word.
   [Text] ->
   IO (Either LaskFailure Int)
-runDeclaredCommand pins baseDir0 sink forceRelay envValue prog argv = do
+runDeclaredCommand backend pins baseDir0 sink forceRelay envValue prog argv = do
   baseDir <- makeAbsolute baseDir0
   tty <- allTerminals
   let interactive = tty && not forceRelay
@@ -393,12 +186,30 @@ runDeclaredCommand pins baseDir0 sink forceRelay envValue prog argv = do
         ResolvedLocal ->
           launch ((proc (T.unpack prog) (map T.unpack argv)) {cwd = Just baseDir})
         _ -> do
-          img <- materializedImage pins baseDir resolved
+          img <- materializedImage backend pins baseDir resolved
           case img of
             Left failure -> pure (Left failure)
             Right Nothing -> pure (Left (ioFailure EIoEnvResolve "internal: a container environment resolved to the host"))
+            -- No shell is created, so the program name becomes the
+            -- entrypoint and the remaining words are passed as they
+            -- stand. Stdin is always attached, since the program's
+            -- stdin is that of @lask cmd@ whether or not it is a
+            -- terminal; a terminal is allocated only when all three
+            -- streams are one.
             Right (Just (image, opts)) ->
-              launch =<< dockerProcess opts (dockerExecArgs baseDir image opts interactive prog argv)
+              launch
+                =<< cbRunProcess
+                  backend
+                  RunSpec
+                    { runBaseDir = baseDir,
+                      runName = Nothing,
+                      runImage = image,
+                      runOptions = opts,
+                      runStdin = True,
+                      runTty = interactive,
+                      runEntrypoint = prog,
+                      runCommand = argv
+                    }
   where
     allTerminals =
       and <$> mapM hIsTerminalDevice [stdin, stdout, stderr]
@@ -469,8 +280,8 @@ runAttachedProcess sink summary envJson0 rendered interactive cp = do
 -- (spec 12.3). Allocated in IO: it carries the execution-number
 -- counter, unique within the top-level execution even across
 -- concurrent commands (12.3).
-mkCommandRunner :: ImagePins -> FilePath -> CommandLogSink -> IO CommandRunner
-mkCommandRunner pins baseDir0 sink = do
+mkCommandRunner :: ContainerBackend -> ImagePins -> FilePath -> CommandLogSink -> IO CommandRunner
+mkCommandRunner backend pins baseDir0 sink = do
   -- The base directory is mounted into containers (spec 10.5), and a
   -- bind mount requires an absolute path.
   baseDir <- makeAbsolute baseDir0
@@ -481,24 +292,41 @@ mkCommandRunner pins baseDir0 sink = do
       Right resolved -> do
         execNo <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
         let (summary, envJson) = envLogInfo envValue resolved
-            run infraCode container cp infraExit = do
-              r <- try (runLoggedProcess sink summary envJson execNo cmd container cp)
+            run stopC cp engineFailure = do
+              r <- try (runLoggedProcess sink summary envJson execNo cmd stopC cp)
               pure $ case r of
                 Left e ->
-                  Left (ioFailure infraCode ("cannot launch command: " <> T.pack (show (e :: IOException))))
+                  Left (ioFailure EIoEnvResolve ("cannot launch command: " <> T.pack (show (e :: IOException))))
                 Right (code, out, errOut)
-                  | Just code == infraExit -> Left (ioFailure infraCode (T.strip errOut))
+                  | Just msg <- engineFailure code errOut -> Left (ioFailure EIoEnvResolve msg)
                   | otherwise -> Right (code, out, errOut)
-        img <- materializedImage pins baseDir resolved
+        img <- materializedImage backend pins baseDir resolved
         case img of
           Left failure -> pure (Left failure)
           Right Nothing ->
-            run EIoEnvResolve Nothing ((shell (T.unpack cmd)) {cwd = Just baseDir}) Nothing
+            run (pure ()) ((shell (T.unpack cmd)) {cwd = Just baseDir}) (\_ _ -> Nothing)
           Right (Just (image, opts)) -> do
             name <- newContainerName
-            -- docker exit code 125 = daemon/run infrastructure error.
-            cp <- dockerProcess opts (dockerArgs baseDir name image opts cmd)
-            run EIoEnvResolve (Just name) cp (Just 125)
+            cp <- cbRunProcess backend (shellRun baseDir name image opts False cmd)
+            run (cbStop backend stopGraceSeconds name) cp (cbRunFailure backend)
+
+-- | A container run of a command string through @/bin/sh@, named so
+-- that it can be stopped if the command is abandoned (8.7); with stdin
+-- kept open when the shell is to be fed on it (the filesystem runner
+-- writes a file that way, so no file content has to fit on a command
+-- line).
+shellRun :: FilePath -> Text -> Text -> Map Text Value -> Bool -> Text -> RunSpec
+shellRun baseDir name image opts wantStdin cmd =
+  RunSpec
+    { runBaseDir = baseDir,
+      runName = Just name,
+      runImage = image,
+      runOptions = opts,
+      runStdin = wantStdin,
+      runTty = False,
+      runEntrypoint = "/bin/sh",
+      runCommand = ["-c", cmd]
+    }
 
 -- | The image a resolved environment runs in, or 'Nothing' for the
 -- local one (spec 10.4). A registry reference resolves to the image the
@@ -506,24 +334,25 @@ mkCommandRunner pins baseDir0 sink = do
 -- pulled or built here (10.3): an image that is not on the daemon is a
 -- failure that names the command that materializes it.
 materializedImage ::
+  ContainerBackend ->
   ImagePins ->
   FilePath ->
   ResolvedEnv ->
   IO (Either LaskFailure (Maybe (Text, Map Text Value)))
-materializedImage pins baseDir resolved = case resolved of
+materializedImage backend pins baseDir resolved = case resolved of
   ResolvedLocal -> pure (Right Nothing)
-  ResolvedDocker ref opts -> fmap (\image -> Just (image, opts)) <$> resolveRegistry pins ref
+  ResolvedDocker ref opts -> fmap (\image -> Just (image, opts)) <$> resolveRegistry backend pins ref
   ResolvedRecipe r opts -> do
     let df = rcDockerfile r
     tagE <- recipeTag baseDir r
     case tagE of
       Left e -> pure (Left (ioFailure EIoImageMissing e))
       Right tag -> do
-        ok <- imageExists tag
+        ok <- imageExists backend tag
         if not ok
           then
             Left
-              <$> absentImage ("image for recipe '" <> df <> "' is not materialized; run 'lask sync'")
+              <$> absentImage backend ("image for recipe '" <> df <> "' is not materialized; run 'lask sync'")
           else pure (Right (Just (tag, opts)))
 
 -- | Run a process, relaying its output line by line to the command
@@ -541,11 +370,11 @@ runLoggedProcess ::
   Int ->
   -- | Command string (rendered on the start line).
   Text ->
-  -- | The name of the container the process runs, if it runs one.
-  Maybe Text ->
+  -- | Stop the container the process runs, if it runs one.
+  IO () ->
   CreateProcess ->
   IO (Int, Text, Text)
-runLoggedProcess sink summary envJson0 execNo cmd container cp = do
+runLoggedProcess sink summary envJson0 execNo cmd stopC cp = do
   -- Masked against the registry as it stands now (spec 12.8), before
   -- the command runs and before any sink can retain the log record.
   maskedCmd <- maskSecrets cmd
@@ -553,7 +382,7 @@ runLoggedProcess sink summary envJson0 execNo cmd container cp = do
         -- A process already reaped exited on its own, and its exit
         -- line may already be written.
         running <- getPid ph
-        stopProcess container ph
+        stopProcess stopC ph
         mapM_ (const (emit maskedCmd ClKilled)) running
   withStoppableProcess
     cp {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
@@ -616,14 +445,14 @@ runLoggedProcess sink summary envJson0 execNo cmd container cp = do
 -- No command execution log is emitted (15.11): nothing here is a
 -- command execution expression, and a read is not something the user
 -- wrote a command for.
-mkFileRunner :: ImagePins -> FilePath -> IO FileRunner
-mkFileRunner pins baseDir0 = do
+mkFileRunner :: ContainerBackend -> ImagePins -> FilePath -> IO FileRunner
+mkFileRunner backend pins baseDir0 = do
   baseDir <- makeAbsolute baseDir0
   pure $ \envValue op ->
     case resolveEnv envValue of
       Left failure -> pure (Left failure)
       Right resolved -> do
-        img <- materializedImage pins baseDir resolved
+        img <- materializedImage backend pins baseDir resolved
         -- The environment belongs in the diagnostic (spec 15.11): a
         -- path that is absent in a container is often present on the
         -- host, and the message has to say which filesystem was read.
@@ -631,7 +460,7 @@ mkFileRunner pins baseDir0 = do
         case img of
           Left failure -> pure (Left failure)
           Right Nothing -> localFileOp summary baseDir op
-          Right (Just (image, opts)) -> containerFileOp summary baseDir image opts op
+          Right (Just (image, opts)) -> containerFileOp backend summary baseDir image opts op
 
 -- | Resolve a path written by the program against the base directory
 -- (spec 10.5). An absolute path is taken as it stands.
@@ -720,13 +549,14 @@ walkTree root = go ""
 -- working directory, so a relative path means the same thing it does
 -- for a command in the same environment (spec 10.5).
 containerFileOp ::
+  ContainerBackend ->
   Text ->
   FilePath ->
   Text ->
   Map Text Value ->
   FileOp ->
   IO (Either LaskFailure Value)
-containerFileOp summary baseDir image opts op = case op of
+containerFileOp backend summary baseDir image opts op = case op of
   FileRead p ->
     interpret p (shCmd ["cat", "--", shQuote p]) Nothing $ \_ out ->
       case TE.decodeUtf8' out of
@@ -761,14 +591,13 @@ containerFileOp summary baseDir image opts op = case op of
   where
     run cmd mStdin = do
       name <- newContainerName
-      let args = dockerShellArgs baseDir name image opts (mStdin /= Nothing) cmd
-      cp <- dockerProcess opts args
-      r <- try (runQuietProcess (Just name) cp mStdin)
+      cp <- cbRunProcess backend (shellRun baseDir name image opts (mStdin /= Nothing) cmd)
+      r <- try (runQuietProcess (cbStop backend stopGraceSeconds name) cp mStdin)
       pure $ case r of
         Left e ->
-          Left (ioFailure EIoEnvResolve ("cannot launch docker: " <> T.pack (show (e :: IOException))))
-        -- docker exit code 125 = daemon/run infrastructure error.
-        Right (125, _, err) -> Left (ioFailure EIoEnvResolve (T.strip err))
+          Left (ioFailure EIoEnvResolve ("cannot launch " <> engineName (cbEngine backend) <> ": " <> T.pack (show (e :: IOException))))
+        Right (code, _, err)
+          | Just msg <- cbRunFailure backend code err -> Left (ioFailure EIoEnvResolve msg)
         Right ok -> Right ok
 
     -- Run, and turn a non-zero exit into E-IO-FS carrying the
@@ -792,11 +621,11 @@ containerFileOp summary baseDir image opts op = case op of
 -- stdout as bytes so the caller decides how to decode it. Like
 -- 'runLoggedProcess', it stops the process, and the named container,
 -- when the run is abandoned (spec 8.7).
-runQuietProcess :: Maybe Text -> CreateProcess -> Maybe Text -> IO (Int, BS.ByteString, Text)
-runQuietProcess container cp mStdin =
+runQuietProcess :: IO () -> CreateProcess -> Maybe Text -> IO (Int, BS.ByteString, Text)
+runQuietProcess stopC cp mStdin =
   withStoppableProcess
     cp {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
-    (stopProcess container)
+    (stopProcess stopC)
     $ \(mIn, mOut, mErr, ph) -> do
       -- Feeding stdin runs alongside the reads: a child that writes
       -- while it is still being written to would otherwise deadlock.
@@ -817,11 +646,11 @@ runQuietProcess container cp mStdin =
     readAll (Just h) = BS.hGetContents h
 
 -- | Stop an abandoned command (spec 8.7): its container through the
--- daemon first, which also ends the @docker run@ client, then the
+-- engine first, which also ends the client that runs it, then the
 -- process tree on the host.
-stopProcess :: Maybe Text -> ProcessHandle -> IO ()
-stopProcess container ph = do
-  mapM_ (stopContainer stopGraceSeconds) container
+stopProcess :: IO () -> ProcessHandle -> IO ()
+stopProcess stopC ph = do
+  stopC
   stopProcessTree stopGraceSeconds ph
 
 -- | Quote one value as a single POSIX shell word.

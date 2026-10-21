@@ -647,7 +647,7 @@ rootCommands =
       ]
 
     envsSubs =
-      [ (plain "list" "List the environments, what the lock resolves them to, what requires them, and whether each image is on the Docker daemon" commonOpts)
+      [ (plain "list" "List the environments, what the lock resolves them to, what requires them, and whether each image is on the container engine" commonOpts)
           { cmdPos = [PosFunction]
           }
       ]
