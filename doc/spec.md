@@ -1513,8 +1513,8 @@ Desugaring rules:
 
 - `$2[env] cmd` is syntactic sugar for the expression above with its success branch replaced by `r.stderr`.
 - A form written without an environment specification (`$ cmd`, `$1 cmd`, `$2 cmd`, `$* cmd`) expands identically, with the environment supplied by dispatch (10.9) over the command string. When dispatch selects no environment the expression is a static error (`E-TYPE-COMMAND-NOENV`); there is no fallback.
-- Only core functions (normalization to `run`, `fail`, and `choose`) and a record literal appear in the expanded forms, so the behavior can never be changed by user definitions.
-- `#{e}` inside a `shell_string` is evaluated first as string interpolation, and the post-interpolation string is passed as the command body.
+- Only core functions (normalization to `run`, `fail`, and `choose`), a record literal and the internal escaping of the holes (Escaping, below) appear in the expanded forms, so the behavior can never be changed by user definitions.
+- `#{e}` inside a `shell_string` is evaluated first as string interpolation, and the post-interpolation string is passed as the command body. The value of each hole is escaped before it is substituted (Escaping, below).
 
 Lexical rules:
 
@@ -1528,6 +1528,18 @@ Lexical rules:
 - All tokens on the same line after a command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. To process it inside an expression, first bind it and then use it, or call `run` directly.
 
 Here `run` is a core function and must not be directly declared or overridden by user code (15.5).
+
+Escaping:
+
+- A hole substitutes its value as text: the shell expands what is substituted to exactly the stringified value (6.2), and never parses it as shell source. Which escaping that takes depends on the shell quoting the hole is written in, determined from the literal text of the command string before it with the POSIX rules for backslash, `'...'` and `"..."` (a `\` outside single quotes escapes the next character):
+  - Outside quotes, the value is substituted as one shell word, as `shell_quote` writes it (15.5): `$ cp #{src} dist/` copies the file `src` names, whatever characters it holds.
+  - Inside `"..."`, each `\`, `"`, `$` and `` ` `` of the value is preceded by `\`: `$ echo "hello, #{name}"` prints the name.
+  - Inside `'...'`, each `'` of the value is written `'\''`: `$ sh -c 'grep -q "^#{name}:" /etc/passwd'`.
+- A hole in `$(...)` or backquotes is escaped for the quoting in force where the substitution is written; the shell's own reparsing of the substitution is not followed.
+- A hole written as a call of the builtin `raw` (15.5), `#{raw(e)}`, is substituted without escaping, so the shell parses the value: `$ go build #{raw(flags)}` passes each flag in `flags` as a word of its own. A call of any other function named `raw`, such as a local binding that shadows it, is escaped as any other hole is.
+- The escaping is POSIX shell escaping. The shell of a `local` environment on Windows is `cmd.exe` (10.2), which does not read it; a command meant for it writes its holes with `raw` and quotes them itself.
+- Only holes of a command execution expression are escaped. A string passed to `run` (15.5) is a command line as it is, so a value interpolated into it is quoted with `shell_quote` where it needs to be.
+- The escaping is part of the desugaring: it is written with internal builtins that no program can name, so user definitions cannot change it.
 
 Environment specification rules:
 
@@ -4291,6 +4303,7 @@ The built-in library provides at least the following functions.
 - `run`: `Function<Runnable, String, CommandResult>`
 - `runnable`: `Function<Environment, Runnable>`, with the run options of 10.2 as keyword parameters
 - `shell_quote`: `Function<String, String>`
+- `raw`: `Function<String, String>`
 
 Contract:
 
@@ -4314,16 +4327,16 @@ python(--image: Environment = #python:3.12.14-alpine3.24, --user: String | Null 
 Quoting:
 
 - `shell_quote(s)` returns a single POSIX shell word that expands to exactly `s`: the value wrapped in single quotes, with every embedded `'` rewritten as `'\''`.
-- A command execution expression substitutes an interpolation hole into the command string without escaping it (6.6), and the result is handed to a shell. A value that may contain whitespace, a quotation character, or any other shell metacharacter must therefore pass through `shell_quote` before it is interpolated, or the command it forms is not the command the author wrote.
+- A hole of a command execution expression is already escaped (6.6), so it needs no `shell_quote`; one there quotes the value twice, and the argument carries literal quotation characters. `shell_quote` is for a command line built as a string, such as one passed to `run` or to `sh -c`:
 
 ```lask
-upload(src: String, dst: String) =
-  $[#local] aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}
+upload(env: Runnable, src: String, dst: String): CommandResult =
+  run(env, "aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}")
 ```
 
-- The result is already one word, and must not be quoted again by the caller: writing `"'#{shell_quote(v)}'"` produces a literal quotation character in the argument.
-- `shell_quote` is a pure function, and is placed here rather than among the string operations of 15.3 because its contract is about command construction.
-- Masking (12.8) matches registered values as exact substrings. Quoting wraps the value, so a registered secret is still a substring of the quoted result and is still masked. A value that contains `'` is rewritten by quoting, so it is also registered in its rewritten form (every `'` as `'\''`), and the quoted result is masked as well.
+- `raw(s)` returns `s`. Its only effect is on a hole of a command execution expression written as `#{raw(e)}`, which is substituted without escaping (6.6). Because the shell then parses the value, a value from outside the program (an argument, a file, a command's output) must not reach `raw`: it would run what it contains.
+- `shell_quote` and `raw` are pure functions, and are placed here rather than among the string operations of 15.3 because their contracts are about command construction.
+- Masking (12.8) matches registered values as exact substrings. Escaping a value rewrites the characters it escapes, so a registered secret is also registered in each form the escaping of 6.6 and `shell_quote` write it (every `'` as `'\''`; every `\`, `"`, `$` and `` ` `` preceded by `\`), and the command line that carries it is masked as well.
 
 ### 15.6 Parallel and Asynchronous Helper Functions
 
@@ -4421,7 +4434,7 @@ Evaluation of `until(delays, done, body)`:
 ```lask
 // The HTTP status of url, without failing on an error status.
 status(url: String): CommandResult =
-  $*[#local] curl -s -o /dev/null -w '%{http_code}' #{shell_quote(url)}
+  $*[#local] curl -s -o /dev/null -w '%{http_code}' #{url}
 
 // Poll every 5 seconds, 100 times at most, and give up after 10 minutes in any case.
 wait_ready(url: String): CommandResult =

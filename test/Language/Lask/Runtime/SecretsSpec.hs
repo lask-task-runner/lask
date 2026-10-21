@@ -37,12 +37,16 @@ spec = before_ resetSecretRegistryForTests . after_ resetSecretRegistryForTests 
       registerSecret "42"
       maskSecrets "num=42 port=8042 v42" `shouldReturn` "num=*** port=8042 v42"
 
-    -- `$ echo #{shell_quote(tok)}` logged `$ echo 'ab'\''c123'` in the
-    -- clear: quoting rewrote the `'`, so the value was not a substring.
+    -- `$ echo #{tok}` would log `$ echo 'ab'\''c123'` in the clear:
+    -- quoting rewrites the `'`, so the value is not a substring.
     it "masks a value holding ' as shell_quote writes it" $ do
       registerSecret "ab'c12345"
       maskSecrets "$ echo 'ab'\\''c12345'" `shouldReturn` "$ echo '***'"
       maskSecrets "ab'c12345" `shouldReturn` "***"
+
+    it "masks a value as a hole inside double quotes escapes it (spec 6.6)" $ do
+      registerSecret "p$ss\"word1"
+      maskSecrets "$ echo \"token=p\\$ss\\\"word1\"" `shouldReturn` "$ echo \"token=***\""
 
     it "masks a value of 8 characters or more wherever it appears" $ do
       registerSecret "hunter22"

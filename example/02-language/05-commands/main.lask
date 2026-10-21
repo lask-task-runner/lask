@@ -84,11 +84,24 @@ greeting(--name: String = "Lask"): String = do {
 
 // Pass text through the shell as a single word.
 //
-// An interpolated value is a value, not shell source. When it has to
-// survive the shell as a single word, quote it with `shell_quote`.
-echo_raw(--text: String = "a b; rm -rf /"): String =
-  $[alpine] echo #{shell_quote(text)}
+// An interpolated value is a value, not shell source: the hole is
+// escaped for the quotes it sits in (6.6), so `text` reaches `echo` as
+// one word, `;` and all, and inside "..." or '...' it stays text too.
+echo_text(--text: String = "a b; rm -rf /"): String =
+  $[alpine] echo #{text}
   |> trim
+
+// Pass flags through the shell as words of their own.
+//
+// `#{raw(flags)}` is the one hole the shell parses: each flag in
+// `flags` becomes its own word. Never give `raw` a value from outside
+// the program, such as a CLI argument — the shell would run what it
+// contains.
+list_root(): String = do {
+  flags = "-1 -a"
+  $[alpine] ls #{raw(flags)} /
+  |> trim
+}
 
 // Count lines with a command assembled at run time.
 //

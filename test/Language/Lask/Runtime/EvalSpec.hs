@@ -295,8 +295,15 @@ spec = do
         "g(): Number = do {\n  r = $*[#local] boom\n  r.code\n}\nf() = g()"
         "f"
         "7"
-    it "interpolates into command strings" $
-      evalsTo "n = \"world\"\nf() = $[#local] echo hello #{n}" "f" "\"hello world\\n\""
+    it "interpolates into command strings as one quoted word" $
+      evalsTo "n = \"world\"\nf() = $[#local] echo hello #{n}" "f" "\"hello 'world'\\n\""
+    it "escapes a hole for the quotes it is written in (spec 6.6)" $ do
+      evalsTo "n = \"$x\"\nf() = $[#local] echo \"a #{n}\"" "f" "\"\\\"a \\\\$x\\\"\\n\""
+      evalsTo "n = \"$x\"\nf() = $[#local] echo 'a #{n}'" "f" "\"'a $x'\\n\""
+    it "substitutes a raw hole as it is" $
+      evalsTo "n = \"-v -x\"\nf() = $[#local] echo #{raw(n)}" "f" "\"-v -x\\n\""
+    it "escapes a hole whose raw is not the builtin" $
+      evalsTo "f() = do {\n  raw = \\(s: String) -> s\n  $[#local] echo #{raw(\"a b\")}\n}" "f" "\"'a b'\\n\""
     it "propagates infrastructure failures" $
       failsWith "f() = $[#local] unreachable" "f" EIoEnvResolve
 

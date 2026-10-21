@@ -24,6 +24,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (foldM, unless, when)
 import Control.Monad.State.Strict (StateT (runStateT), get, gets, lift, modify, put)
 import Data.Maybe (isJust, isNothing, listToMaybe)
+import Data.Bifunctor (first)
 import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -32,6 +33,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Builtins.Names (effectfulBuiltinNames)
+import Language.Lask.Builtins.Shell (escapeCommand)
 import Language.Lask.Builtins.Sig
 import Language.Lask.Core.AST
 import Language.Lask.Diagnostic
@@ -1989,7 +1991,7 @@ elabCommand ::
   [TextPart] ->
   TC (Core, Type)
 elabCommand ctx path locals sp stream mEnv parts = do
-  (cmdCore, _) <- elabString ctx path locals sp parts
+  (cmdCore, _) <- first escapeCommand <$> elabString ctx path locals sp parts
   (envCore, shownEnv, viaWords) <- case mEnv of
     Just envExpr -> do
       (c, t) <- infer ctx path locals envExpr
