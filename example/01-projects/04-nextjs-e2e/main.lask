@@ -12,7 +12,7 @@ command { "node", "npm", "npx" } on node
 // One Node image for every npm step. It is Debian-based, like the
 // Playwright image, so the native packages npm installs (Next's SWC
 // compiler) load in both.
-node_image = #node:24.21.0-bookworm-slim
+node_image = #node:24.22.1-bookworm-slim
 quiet: Map<String> = { "NEXT_TELEMETRY_DISABLED": "1" }
 
 node = tools.node(image = node_image, extra_env = quiet)

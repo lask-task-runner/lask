@@ -5,24 +5,24 @@
             "kind": "registry",
             "ref": "mcr.microsoft.com/playwright:v1.63.0-noble"
         },
-        "#node:24.21.0-alpine3.24": {
-            "digest": "sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1",
+        "#node:24.22.1-alpine3.24": {
+            "digest": "sha256:6a1c190e17215d844926b0677f4bf87273ff7d5e54db06d3b5b5863ab0b09a3d",
             "kind": "registry",
-            "ref": "node:24.21.0-alpine3.24"
+            "ref": "node:24.22.1-alpine3.24"
         },
-        "#node:24.21.0-bookworm-slim": {
-            "digest": "sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20",
+        "#node:24.22.1-bookworm-slim": {
+            "digest": "sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d",
             "kind": "registry",
-            "ref": "node:24.21.0-bookworm-slim"
+            "ref": "node:24.22.1-bookworm-slim"
         }
     },
     "lock_version": 1,
     "modules": {
         "tools": {
             "git": "https://github.com/lask-task-runner/lask-module-tools.git",
-            "hash": "sha256-318a7ce20f1a382f8f41beebf94ce5d9228407cf4a319efaa886f27cddde59b0",
-            "requested": "v0.3.2",
-            "rev": "3f0eac28afa8c1cd9cbbf5724545a38e37e8cfba"
+            "hash": "sha256-5e8cb0df8a92b384f66f8813bcba203f012052c53c50ec2707f31ca9b6519c7d",
+            "requested": "v0.3.3",
+            "rev": "1c31f8f0d24a5b09e18f253b19a46929530dfa93"
         }
     }
 }
