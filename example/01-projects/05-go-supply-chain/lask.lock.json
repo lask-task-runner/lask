@@ -1,12 +1,12 @@
 {
     "images": {
-        "#.lask/deps/sha256-318a7ce20f1a382f8f41beebf94ce5d9228407cf4a319efaa886f27cddde59b0/lib/images/anchore/Dockerfile": {
+        "#.lask/deps/sha256-5e8cb0df8a92b384f66f8813bcba203f012052c53c50ec2707f31ca9b6519c7d/lib/images/anchore/Dockerfile": {
             "kind": "recipe",
-            "tag": "lask/2523d0ebb8d6cb45e2ac0b1a9770d6cb0da0a26497ad37c33ff440108c1d7eb4"
+            "tag": "lask/7a1f2061b294569a54c314d5a72a327db8822141d765384f416bdd7240c86964"
         },
-        "#.lask/deps/sha256-318a7ce20f1a382f8f41beebf94ce5d9228407cf4a319efaa886f27cddde59b0/lib/images/unix/Dockerfile": {
+        "#.lask/deps/sha256-5e8cb0df8a92b384f66f8813bcba203f012052c53c50ec2707f31ca9b6519c7d/lib/images/unix/Dockerfile": {
             "kind": "recipe",
-            "tag": "lask/57ebd398869e5d49ce15341a38a70f7f21d486e515200653a556c7b0b9f6152a"
+            "tag": "lask/133a691536fa1509ce6da54c4d8ca009de1609560969a3285ecc59d179bbe76c"
         },
         "#golang:1.27.1-trixie": {
             "digest": "sha256:8f58fd67ea075142d947a60e0caa4317746a55118d312f027793d382c7741734",
@@ -22,9 +22,9 @@
     "modules": {
         "tools": {
             "git": "https://github.com/lask-task-runner/lask-module-tools.git",
-            "hash": "sha256-318a7ce20f1a382f8f41beebf94ce5d9228407cf4a319efaa886f27cddde59b0",
-            "requested": "v0.3.2",
-            "rev": "3f0eac28afa8c1cd9cbbf5724545a38e37e8cfba"
+            "hash": "sha256-5e8cb0df8a92b384f66f8813bcba203f012052c53c50ec2707f31ca9b6519c7d",
+            "requested": "v0.3.3",
+            "rev": "1c31f8f0d24a5b09e18f253b19a46929530dfa93"
         }
     }
 }
