@@ -28,6 +28,7 @@ data ErrorCode
   | ETypeCommandEffect
   | ETypeCommandName
   | ETypeCommandDuplicate
+  | ETypeCommandSyntax
   | ETypeEnvConstruct
   | ETypeAccess
   | ETypeFieldDuplicate
@@ -100,6 +101,7 @@ codeText c = case c of
   ETypeCommandEffect -> "E-TYPE-COMMAND-EFFECT"
   ETypeCommandName -> "E-TYPE-COMMAND-NAME"
   ETypeCommandDuplicate -> "E-TYPE-COMMAND-DUPLICATE"
+  ETypeCommandSyntax -> "E-TYPE-COMMAND-SYNTAX"
   ETypeEnvConstruct -> "E-TYPE-ENV-CONSTRUCT"
   ETypeAccess -> "E-TYPE-ACCESS"
   ETypeFieldDuplicate -> "E-TYPE-FIELD-DUPLICATE"

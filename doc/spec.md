@@ -1542,6 +1542,27 @@ Escaping:
 - Only holes of a command execution expression are escaped. A string passed to `run` (15.5) is a command line as it is, so a value interpolated into it is quoted with `shell_quote` where it needs to be.
 - The escaping is part of the desugaring: it is written with internal builtins that no program can name, so user definitions cannot change it.
 
+Shell syntax:
+
+- A command string must be well formed as POSIX shell syntax, as far as it can be read from the text alone. A violation is a static error (`E-TYPE-COMMAND-SYNTAX`), reported whether the environment is specified or selected by dispatch (10.9), and before dispatch is attempted. The check exists so that a command that every POSIX shell would reject is rejected where it is written, not when it runs.
+- The string is read before interpolation, after the lexical normalization above. Quoting follows the POSIX rules for `\`, `'...'` and `"..."`; a command substitution `$(...)` or `` `...` `` is read by the same rules as a script of its own; a parameter expansion `${...}` and an arithmetic expansion `$((...))` are read to their closing brackets and their content is not read; a word beginning with `#` begins a comment that runs to the end of its line. A hole is one opaque part of the word it is written in: escaped (Escaping, above), it can never act as an operator or a quote.
+- Reading stops at the first construct whose meaning depends on the shell dialect or on a value, and nothing after it is checked:
+  - a hole written as a call of `raw`, which the shell parses;
+  - a reserved word in command position: `if`, `then`, `else`, `elif`, `fi`, `do`, `done`, `case`, `esac`, `while`, `until`, `for`, `{`, `}`, `!`, `[[`, `]]`, `function`, `select`, `time`, `coproc`;
+  - a here-document (`<<`), process substitution (`<(` or `>(`), `|&`, and ANSI-C quoting `$'...'`;
+  - a `(` that does not begin a command, as in a function definition `f()` or an array assignment `a=(...)`;
+  - a hole inside a comment, which may hold a newline that ends it.
+- Before that point, each of the following is an error:
+  - a quoted region, command substitution, parameter expansion, arithmetic expansion or group that is not closed before the end of the string;
+  - a `)` that closes nothing;
+  - an operator (`&&`, `||`, `|`, `;`, `&`) with no command before it, including two operators in a row; `;;`, which ends a clause of a `case` command and is read only after `case`, which stops reading;
+  - `&&`, `||` or `|` with no command after it. A newline may come between the operator and the command;
+  - a redirection operator (`<`, `>`, `>>`, `<&`, `>&`, `<>`, `>|`) with no word after it;
+  - a group `( )` that contains no command.
+- A command consisting only of assignments or redirections is a command, as in the shell: `FOO=1` and `> out.txt` are well formed. A trailing `;` or `&` ends a list and is well formed.
+- The check is not made where the environment may be the `local` environment of a Windows host, whose shell is `cmd.exe` (10.2): on such a host it is made only when the environment is known from the text to be a container environment, written as a container environment expression directly or through top-level bindings.
+- Examples: `$[#local] make &&`, `$[#local] cat >`, `$[#local] echo "unterminated` and `$[#local] | grep x` are `E-TYPE-COMMAND-SYNTAX`. `$[#local] for f in *.go; do gofmt -l $f; done`, `$[#local] echo #{raw(flags)} &&` and `$[#local] echo hi # it's` are not, because reading stops at `for`, at the `raw` hole, and at the comment.
+
 Environment specification rules:
 
 - `Environment` is a basic type defined in 4.1, and the responsibilities of execution environments are defined in Chapter 10.
@@ -2000,6 +2021,7 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-COMMAND-EFFECT`: the environment of a command declaration can reach an effect (Chapter 5)
 - `E-TYPE-COMMAND-NAME`: a command declaration names a program that could never be recognized in a command string (Chapter 5)
 - `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5)
+- `E-TYPE-COMMAND-SYNTAX`: a command string is not well formed as POSIX shell syntax (6.6)
 - `E-TYPE-ENV-CONSTRUCT`: invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree; 6.7, 10.2, 10.3, 15.5)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
@@ -2690,7 +2712,7 @@ Regions and segmentation:
 - **Quoted regions.** A `'` opens a region ending at the next `'`; a `"` opens a region ending at the next unescaped `"`. A character preceded by `\` is literal. Nothing inside a quoted region is a separator or opens a region.
 - **Nested regions.** A command substitution `$(` to its matching `)`, a backquoted substitution `` ` `` to the next `` ` ``, and a grouping `(` to its matching `)` each open a nested region. Its content is segmented by these same rules and contributes its own command words; in the enclosing text the region occupies part of one word.
 - **Separators.** Outside quoted and nested regions, `&&`, `||`, `|`, `;`, `&`, and a newline are separators, matched longest-first. The text between two separators, before the first, or after the last, is a **segment**.
-- If a quoted or nested region is not closed before the end of the string, the command string is not analysable: dispatch selects nothing, and the diagnostic must state that the string could not be segmented rather than that no command was declared.
+- If a quoted or nested region is not closed before the end of the string, the command string is not analysable: dispatch selects nothing, and the diagnostic must state that the string could not be segmented rather than that no command was declared. Such a string is usually already `E-TYPE-COMMAND-SYNTAX` (6.6), which is reported first; dispatch reaches it only where the shell syntax check does not, as with a quotation character in a comment.
 
 Words and command words:
 
@@ -3873,6 +3895,7 @@ Representative codes:
 - `E-TYPE-COMMAND-EFFECT`
 - `E-TYPE-COMMAND-NAME`
 - `E-TYPE-COMMAND-DUPLICATE`
+- `E-TYPE-COMMAND-SYNTAX`
 - `E-TYPE-ENV-CONSTRUCT`
 - `E-TYPE-ACCESS`
 - `E-TYPE-FIELD-DUPLICATE`
@@ -3997,6 +4020,7 @@ Minimum targets:
 - `E-TYPE-COMMAND-EFFECT`
 - `E-TYPE-COMMAND-NAME`
 - `E-TYPE-COMMAND-DUPLICATE`
+- `E-TYPE-COMMAND-SYNTAX`
 - `E-TYPE-ENV-CONSTRUCT`
 - `E-TYPE-ACCESS`
 - `E-TYPE-FIELD-DUPLICATE`

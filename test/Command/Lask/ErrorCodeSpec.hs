@@ -49,6 +49,7 @@ trigger c = case c of
   ETypeCommandEffect -> check "command { \"go\" } on #golang:1.25{env: {\"IN\": stdin}}\nv() = $ go vet\n"
   ETypeCommandName -> check "command { \"my prog\" } on #local\nv() = $ ls\n"
   ETypeCommandDuplicate -> check "command { \"go\" } on #local\ncommand { \"go\" } on #golang:1.25\n"
+  ETypeCommandSyntax -> check "v() = $[#local] make &&\n"
   ETypeEnvConstruct -> check "e = #local(memory = \"1g\")\n"
   ETypeAccess -> check "u = {name: \"a\"}\nn = u.nope\n"
   ETypeFieldDuplicate -> check "r = {a: 1, a: 2}\n"

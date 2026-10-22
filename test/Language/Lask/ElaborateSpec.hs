@@ -883,7 +883,7 @@ spec = do
       rejects "command { \"go\" } on #golang:1.25\nbin = \"go\"\nv() = $ #{bin} test" ETypeCommandNoEnv
 
     it "rejects a command string that could not be segmented" $
-      rejects "command { \"go\" } on #golang:1.25\nv() = $ go test \"unterminated" ETypeCommandNoEnv
+      rejects "command { \"go\" } on #golang:1.25\nv() = $ go test # it's" ETypeCommandNoEnv
 
     it "rejects two different environments in one command string" $
       rejects
@@ -999,6 +999,29 @@ spec = do
 
     it "rejects a duplicate command word" $
       rejects "command { \"go\", \"go\" } on #golang:1.25\nv() = $ go test" ETypeCommandDuplicate
+
+  describe "shell syntax of a command string (spec 6.6)" $ do
+    it "rejects a region left open, whatever gives the environment" $ do
+      rejects "v() = $[#local] echo \"unterminated" ETypeCommandSyntax
+      rejects "command { \"go\" } on #golang:1.25\nv() = $ go test \"unterminated" ETypeCommandSyntax
+
+    it "rejects an operator with no command on one side" $ do
+      rejects "v() = $[#local] make &&" ETypeCommandSyntax
+      rejects "v() = $[#local] | grep x" ETypeCommandSyntax
+      rejects "v() = $[#local] a ;; b" ETypeCommandSyntax
+
+    it "rejects a redirection with no target, an unmatched ')' and an empty group" $ do
+      rejects "v() = $[#local] cat >" ETypeCommandSyntax
+      rejects "v() = $[#local] echo a)" ETypeCommandSyntax
+      rejects "v() = $[#local] ( )" ETypeCommandSyntax
+
+    it "accepts what it cannot read past" $ do
+      accepts "v() = $[#local] for f in a b; do echo $f; done"
+      accepts "v() = $[#local] case x in a) echo a;; esac"
+      accepts "flags = \"&&\"\nv() = $[#local] echo #{raw(flags)}"
+
+    it "accepts an escaped hole as one word" $
+      accepts "f = \"&&\"\nv() = $[#local] echo #{f}"
 
   describe "misc" $ do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"

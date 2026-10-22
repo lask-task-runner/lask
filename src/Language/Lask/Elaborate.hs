@@ -44,10 +44,12 @@ import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTar
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), commandWords, validCommandName)
+import Language.Lask.Syntax.Shell (ShellReading (..), readShell)
 import Language.Lask.Deps.Cache (inCache)
 import Language.Lask.Runtime.Image (recipeSource)
 import Language.Lask.Types
 import System.FilePath (isAbsolute, joinPath, normalise, splitDirectories, takeDirectory, (</>))
+import qualified System.Info
 
 -- Program-level results ------------------------------------------------------
 
@@ -1992,6 +1994,11 @@ elabCommand ::
   TC (Core, Type)
 elabCommand ctx path locals sp stream mEnv parts = do
   (cmdCore, _) <- first escapeCommand <$> elabString ctx path locals sp parts
+  -- The shell syntax is checked before dispatch (6.6), whose own
+  -- reading cannot segment a string with an open region. Only on
+  -- Windows does it wait for the environment, which may be cmd.exe.
+  let reading = readShell parts
+  unless hostIsWindows (checkShellSyntax sp reading)
   (envCore, shownEnv, viaWords) <- case mEnv of
     Just envExpr -> do
       (c, t) <- infer ctx path locals envExpr
@@ -2002,6 +2009,9 @@ elabCommand ctx path locals sp stream mEnv parts = do
     Nothing -> do
       (c, ws) <- dispatchEnv ctx path sp parts
       pure (c, Just (renderEnvCore c), ws)
+  when hostIsWindows $ do
+    container <- runsInContainer ctx envCore
+    when container (checkShellSyntax sp reading)
   recordCommandUse sp shownEnv viaWords
   let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run"))) [envCore, cmdCore] [])
   case stream of
@@ -2026,6 +2036,34 @@ elabCommand ctx path locals sp stream mEnv parts = do
           -- tagged E-RUNTIME-COMMAND-NONZERO for diagnostics (14.5).
           failCall = Core sp (CApp (Core sp (CVar (BuiltinRef "%commandFail"))) [errRecord] [])
        in Core sp (CDo [CSBind r call, CSExpr (Core sp (CIf cond okBranch failCall))])
+
+-- | The local environment of a Windows host runs a command string with
+-- cmd.exe (10.2), which does not read POSIX shell syntax.
+hostIsWindows :: Bool
+hostIsWindows = System.Info.os == "mingw32"
+
+-- | A command string must be well formed as POSIX shell syntax, as far
+-- as its reading goes (6.6).
+checkShellSyntax :: Span -> ShellReading -> TC ()
+checkShellSyntax sp reading = case srProblem reading of
+  Nothing -> pure ()
+  Just (psp, why) ->
+    abort . diag ETypeCommandSyntax (if psp == NoSpan then sp else psp) $
+      "this command is not valid shell syntax: " <> why
+
+-- | Whether an environment is known from the text to be a container
+-- one, through the bindings that name it.
+runsInContainer :: Ctx -> Core -> TC Bool
+runsInContainer ctx = go Set.empty
+  where
+    go seen c = case coreF c of
+      CEnv kind _ -> pure (kind /= "local")
+      CRunnable base _ -> go seen base
+      CVar (TopRef p n)
+        | not (Set.member (p, n) seen) -> do
+            cd <- demandDecl ctx (p, n)
+            go (Set.insert (p, n) seen) (cdCore cd)
+      _ -> pure False
 
 -- Command declarations and dispatch (spec ch. 5, 10.9) -----------------------
 
