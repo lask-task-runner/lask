@@ -298,8 +298,17 @@ cmdSync opts frozen prune = do
         exitWith (ExitFailure 1)
     let core = compiledCore compiled
     backend <- resolveBackend
-    (images, mats) <- materialize backend pg core (lockImages baseLock)
+    (materialized, mats) <- materialize backend pg core (lockImages baseLock)
+    (images, probes) <- probeCommands backend core mats (lockImages baseLock) materialized
     let updated = baseLock {lockImages = images}
+        commandFailures =
+          concat
+            [ case p of
+                Probed key rs -> [codeText EIoCommandMissing <> ": '" <> w <> "' is declared on " <> T.drop 1 key <> ", which does not provide it" | (w, False) <- rs]
+                NoShell key ws why -> [codeText EIoCommandMissing <> ": " <> T.drop 1 key <> " cannot start /bin/sh (" <> why <> "), so it provides none of " <> T.intercalate ", " ["'" <> w <> "'" | w <- ws]]
+                ProbeFailed key why -> [codeText EIoEnvResolve <> ": the commands of " <> T.drop 1 key <> " could not be probed: " <> why]
+            | p <- probes
+            ]
     when (frozen && updated /= baseLock) $ do
       imageSummary <- imageSummaryRows paths (Just updated) mats
       summary opts began moduleRows imageSummary "lask.lock.json unchanged"
@@ -332,7 +341,8 @@ cmdSync opts frozen prune = do
         (\n -> note pg ("warning: '" <> n <> "' is declared in lask.json but no module imports it (lask sync --prune removes it)"))
         unused
     mapM_ (\(h, e) -> TIO.hPutStrLn stderr (shortPath h <> ": " <> e)) failures
-    if null failures then exitSuccess else exitWith (ExitFailure 3)
+    mapM_ (TIO.hPutStrLn stderr) commandFailures
+    if null failures && null commandFailures then exitSuccess else exitWith (ExitFailure 3)
   where
     third (_, _, c) = c
     minus a b = [x | x <- a, x `notElem` b]

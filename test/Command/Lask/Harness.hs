@@ -115,7 +115,9 @@ withProject files action =
 -- @--env NAME@ with the value the client's environment gave it. A file
 -- @daemon-down@ makes it answer as a client that reaches no daemon: every
 -- command fails. A file @run-fails@ makes a @run@ write its contents to
--- stderr and exit with the code in @run-exit@.
+-- stderr and exit with the code in @run-exit@. A @run@ of lask's
+-- command probe (spec 11.7) reports every word present except those
+-- with a file @missing/<word>@.
 --
 -- A reference pulled by its Docker Hub name, as podman is made to pull
 -- one, is also found by its short name, as podman's store finds it.
@@ -162,6 +164,7 @@ fakeDocker =
       -- environment, as docker takes it; @env@ records what it found.
       "  run) prev=''",
       "    [ -f \"$S/run-fails\" ] && { cat \"$S/run-fails\" >&2; exit \"$(cat \"$S/run-exit\")\"; }",
+      "    case \"$*\" in *'command -v'*) w=0; for a in \"$@\"; do if [ $w = 1 ]; then if [ -f \"$S/missing/$a\" ]; then echo \"-$a\"; else echo \"+$a\"; fi; fi; [ \"$a\" = sh ] && w=1; done; exit 0 ;; esac",
       "    for a in \"$@\"; do",
       "      if [ \"$prev\" = --env ]; then case \"$a\" in *=*) ;; *) eval \"v=\\${$a-UNSET}\"; echo \"$a=$v\" >> \"$S/env\" ;; esac; fi",
       "      prev=\"$a\"",

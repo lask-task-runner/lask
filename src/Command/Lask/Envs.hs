@@ -16,6 +16,7 @@ module Command.Lask.Envs
     collectRegistryImages,
     collectEnvReadsFrom,
     readsStdin,
+    reachableDecls,
   )
 where
 

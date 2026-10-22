@@ -29,6 +29,8 @@ data ErrorCode
   | ETypeCommandName
   | ETypeCommandDuplicate
   | ETypeCommandSyntax
+  | ETypeCommandSchema
+  | ETypeCommandOption
   | ETypeEnvConstruct
   | ETypeAccess
   | ETypeFieldDuplicate
@@ -56,6 +58,7 @@ data ErrorCode
   | EIoEnvResolve
   | EIoImageMissing
   | EIoImageDigest
+  | EIoCommandMissing
   | EIoFs
   | EIoDataDecode
   | EIoSecretProvider
@@ -71,11 +74,13 @@ data ErrorCode
 -- mistake that is not an error.
 data AdvisoryCode
   = WAsyncUnused
+  | WCommandOption
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 advisoryText :: AdvisoryCode -> Text
 advisoryText c = case c of
   WAsyncUnused -> "W-ASYNC-UNUSED"
+  WCommandOption -> "W-COMMAND-OPTION"
 
 -- | Error stage (spec 14.3).
 data Stage
@@ -102,6 +107,8 @@ codeText c = case c of
   ETypeCommandName -> "E-TYPE-COMMAND-NAME"
   ETypeCommandDuplicate -> "E-TYPE-COMMAND-DUPLICATE"
   ETypeCommandSyntax -> "E-TYPE-COMMAND-SYNTAX"
+  ETypeCommandSchema -> "E-TYPE-COMMAND-SCHEMA"
+  ETypeCommandOption -> "E-TYPE-COMMAND-OPTION"
   ETypeEnvConstruct -> "E-TYPE-ENV-CONSTRUCT"
   ETypeAccess -> "E-TYPE-ACCESS"
   ETypeFieldDuplicate -> "E-TYPE-FIELD-DUPLICATE"
@@ -129,6 +136,7 @@ codeText c = case c of
   EIoEnvResolve -> "E-IO-ENV-RESOLVE"
   EIoImageMissing -> "E-IO-IMAGE-MISSING"
   EIoImageDigest -> "E-IO-IMAGE-DIGEST"
+  EIoCommandMissing -> "E-IO-COMMAND-MISSING"
   EIoFs -> "E-IO-FS"
   EIoDataDecode -> "E-IO-DATA-DECODE"
   EIoSecretProvider -> "E-IO-SECRET-PROVIDER"

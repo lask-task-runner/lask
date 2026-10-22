@@ -218,6 +218,7 @@ builtinValueNames =
     ]
 
 -- | Builtin type aliases that user code must not redefine
--- (spec 6.6, 6.9): @CommandResult@ and @Error@.
+-- (spec ch. 5, 6.6, 6.9): @CommandResult@, @Error@, and the types of
+-- command schemas.
 builtinTypeAliasNames :: Set Text
-builtinTypeAliasNames = Set.fromList ["CommandResult", "Error"]
+builtinTypeAliasNames = Set.fromList ["CommandResult", "Error", "CommandOption", "CommandSpec", "CommandSchema"]

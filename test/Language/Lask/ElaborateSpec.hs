@@ -1023,6 +1023,136 @@ spec = do
     it "accepts an escaped hole as one word" $
       accepts "f = \"&&\"\nv() = $[#local] echo #{f}"
 
+  describe "command schemas (spec ch. 5)" $ do
+    let goSchema =
+          T.unlines
+            [ "goSchema: CommandSchema = {",
+              "  root: { closed: true, style: \"single-dash\" },",
+              "  subcommands: {",
+              "    \"test\": {",
+              "      closed: true,",
+              "      intermixed: true,",
+              "      options: [",
+              "        { names: [\"-v\"] },",
+              "        { names: [\"-run\"], value: \"required\" },",
+              "        { names: [\"-covermode\"], value: \"required\", values: [\"set\", \"count\", \"atomic\"] }",
+              "      ]",
+              "    },",
+              "    \"run\": { closed: true, stop_at_first_positional: true },",
+              "    \"mod\": { closed: true },",
+              "    \"mod tidy\": { closed: true, options: [{ names: [\"-v\"] }] }",
+              "  }",
+              "}",
+              "command { \"go\" } on #golang:1.25 schema { \"go\": goSchema }"
+            ]
+        withGo body = goSchema <> body
+        lsSchema =
+          T.unlines
+            [ "command { \"ls\" } on #alpine:3.20 schema { \"ls\": {",
+              "  root: {",
+              "    closed: true,",
+              "    options: [",
+              "      { names: [\"-l\"] },",
+              "      { names: [\"-a\", \"--all\"] },",
+              "      { names: [\"-w\", \"--width\"], value: \"required\" }",
+              "    ]",
+              "  }",
+              "} }"
+            ]
+
+    it "accepts invocations the schema describes" $ do
+      accepts (withGo "v() = $ go test -v -run TestX ./...")
+      accepts (withGo "v() = $ go test ./... -v")
+      accepts (withGo "v() = $ go test --run=TestX -covermode=atomic")
+      accepts (withGo "v() = $ go mod tidy -v")
+      accepts (withGo "v() = $ go run ./cmd -anything goes")
+      accepts (withGo "v() = $ cd x && go test -v | tee log")
+
+    it "rejects an unknown option or subcommand of a closed schema" $ do
+      rejects (withGo "v() = $ go test -rn TestX") ETypeCommandOption
+      rejects (withGo "v() = $ go tset ./...") ETypeCommandOption
+      rejects (withGo "v() = $ go mod tidy -x") ETypeCommandOption
+      rejects (withGo "v() = $ echo $(go tset)") ETypeCommandOption
+
+    it "rejects a missing value, a value where none is taken, and a value not listed" $ do
+      rejects (withGo "v() = $ go test -run") ETypeCommandOption
+      rejects (withGo "v() = $ go test -v=1") ETypeCommandOption
+      rejects (withGo "v() = $ go test -covermode fast") ETypeCommandOption
+
+    it "reads the gnu style: clusters, long names and attached values" $ do
+      accepts (lsSchema <> "v() = $ ls -la --width=80 -w80 --all -w 80 dir")
+      rejects (lsSchema <> "v() = $ ls -lx") ETypeCommandOption
+      rejects (lsSchema <> "v() = $ ls --color") ETypeCommandOption
+      rejects (lsSchema <> "v() = $ ls -l --width") ETypeCommandOption
+
+    it "stops at what it cannot read" $ do
+      accepts (withGo "v(n: String) = $ go test -run #{n} -v")
+      accepts (withGo "v(n: String) = $ go test #{n} -bogus")
+      accepts (withGo "v(n: String) = $ go test -run #{raw(n)}")
+      accepts (withGo "v() = $ go test $FLAGS -bogus")
+      accepts (withGo "v() = $ go test -- -bogus")
+
+    it "checks only commands whose environment dispatch selected" $
+      accepts (withGo "v() = $[#golang:1.25] go tset")
+
+    it "advises instead of rejecting when the schema is not closed" $ do
+      let src = "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"-v\"] }] } } }\nv() = $ go -x\n"
+      advisedAt WCommandOption src >>= (`shouldBe` [2])
+
+    it "carries a schema with an imported command word" $
+      rejectsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./tools.lask\"\nv() = $ go tset\n"),
+          ("tools.lask", withGo "")
+        ]
+        ETypeCommandOption
+
+    it "takes a schema from a binding in another module" $
+      acceptsFiles
+        [ ("main.lask", "import * as tools from \"./tools.lask\"\ncommand { \"go\" } on #golang:1.25 schema { \"go\": tools.s }\nv() = $ go -v\n"),
+          ("tools.lask", "s: CommandSchema = { root: { options: [{ names: [\"-v\"] }] } }\n")
+        ]
+
+    it "rejects a schema that is computed" $
+      rejects "mk(): CommandSchema = { root: {} }\ncommand { \"go\" } on #golang:1.25 schema { \"go\": mk() }\nv() = $ go" ETypeCommandSchema
+
+    it "rejects a schema for a word the declaration does not have" $
+      rejects "command { \"go\" } on #golang:1.25 schema { \"gofmt\": { root: {} } }\nv() = $ go" ETypeCommandSchema
+
+    it "rejects what the type of a schema cannot say" $ do
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { style: \"posix\" } } }\nv() = $ go" ETypeCommandSchema
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"v\"] }] } } }\nv() = $ go" ETypeCommandSchema
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"-v\"] }, { names: [\"-v\"] }] } } }\nv() = $ go" ETypeCommandSchema
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: {}, subcommands: { \"mod tidy\": {} } } }\nv() = $ go" ETypeCommandSchema
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"-v\"], values: [\"a\"] }] } } }\nv() = $ go" ETypeCommandSchema
+
+    it "needs a binding of a schema to be annotated, records having no width subtyping" $
+      rejects "s = { root: {} }\ncommand { \"go\" } on #golang:1.25 schema { \"go\": s }\nv() = $ go" ETypeMismatch
+
+    it "keeps the schema type names for the built-in aliases" $
+      rejects "type CommandSchema = String" ENameDuplicate
+
+  describe "probed command words (spec ch. 5)" $ do
+    let probes src = do
+          r <- elabProgram [("main.lask", src)]
+          pure (either (const Nothing) (Just . Map.findWithDefault Map.empty "main.lask" . cpProbes) r)
+
+    it "probes a word declared on an image written as it is" $ do
+      probes "command { \"go\" } on #golang:1.25" >>= (`shouldBe` Just (Map.fromList [("go", "#golang:1.25")]))
+      probes "g = #golang:1.25\ncommand { \"go\" } on g" >>= (`shouldBe` Just (Map.fromList [("go", "#golang:1.25")]))
+      probes "command { \"go\" } on #golang:1.25{memory: \"1g\", env: {\"GOFLAGS\": \"-v\"}}"
+        >>= (`shouldBe` Just (Map.fromList [("go", "#golang:1.25")]))
+
+    it "does not probe what the text does not pin to one image" $ do
+      probes "command { \"ls\" } on #local" >>= (`shouldBe` Just Map.empty)
+      probes "mk(): Environment = #golang:1.25\ncommand { \"go\" } on mk()" >>= (`shouldBe` Just Map.empty)
+      probes "command { \"go\" } on #golang:1.25{env: {\"PATH\": \"/opt/bin\"}}" >>= (`shouldBe` Just Map.empty)
+      probes "command { \"go\" } on #golang:1.25(platform = \"linux/amd64\")" >>= (`shouldBe` Just Map.empty)
+
+    it "records the probed words each declaration dispatches through" $ do
+      r <- elabProgram [("main.lask", "command { \"go\" } on #golang:1.25\nv() = $ go vet\nw() = $[#golang:1.25] go vet\n")]
+      fmap (Map.toList . cpDispatched) (either (const Nothing) Just r)
+        `shouldBe` Just [(("main.lask", "v"), [("go", "#golang:1.25")])]
+
   describe "misc" $ do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"
     it "rejects Array<Void> annotations" $

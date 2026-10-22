@@ -219,7 +219,7 @@ pModule = do
     ( Module
         (map fst items)
         (Set.fromList [n | (d, True) <- items, Just n <- [declaredName d]])
-        (Set.fromList [n | (Decl _ (DCommand ns _), True) <- items, Spanned _ n <- ns])
+        (Set.fromList [n | (Decl _ (DCommand ns _ _), True) <- items, Spanned _ n <- ns])
     )
   where
     declaredName d = case declF d of
@@ -297,7 +297,8 @@ pTopLevel =
         [ do
             _ <- pOn
             e <- pExpr
-            pure (Decl (s <> exprSpan e) (DCommand names e), False),
+            sch <- optional pSchema
+            pure (Decl (s <> exprSpan (fromMaybe e sch)) (DCommand names e sch), False),
           do
             Spanned e path <- kw KFrom *> stringLit "export path"
             pure (Decl (s <> e) (DExportCommandsFrom names path), False)
@@ -321,7 +322,8 @@ pCommandDecl = do
   names <- pCommandNames
   _ <- pOn
   e <- pExpr
-  pure (Decl (s <> exprSpan e) (DCommand names e))
+  sch <- optional pSchema
+  pure (Decl (s <> exprSpan (fromMaybe e sch)) (DCommand names e sch))
 
 -- | @on@ is a contextual keyword: nothing else may stand in its
 -- position, so it stays usable as an identifier everywhere else.
@@ -329,6 +331,15 @@ pOn :: P ()
 pOn = void . matchTok "on" $ \t -> case t of
   TLowerId "on" -> Just ()
   _ -> Nothing
+
+-- | @schema e@ after the environment of a command declaration (spec
+-- 5). Like @on@, @schema@ is a keyword only here.
+pSchema :: P Expr
+pSchema = do
+  void . matchTok "schema" $ \t -> case t of
+    TLowerId "schema" -> Just ()
+    _ -> Nothing
+  pExpr
 
 -- | @{ "go", "gofmt" }@. Every form that lists command words writes
 -- them in braces, so a declaration, an import and a re-export read

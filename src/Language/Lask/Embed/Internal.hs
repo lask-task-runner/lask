@@ -1066,7 +1066,9 @@ assemble exports = case nameErrors <> dupErrors <> docErrors <> kwErrors <> comm
           cpCommands = Map.singleton programModule (Map.fromList (concatMap declCommands decls)),
           cpCommandUses = [],
           cpHover = [],
-          cpAdvisories = []
+          cpAdvisories = [],
+          cpProbes = Map.empty,
+          cpDispatched = Map.empty
         }
 
 -- | A @lower_id@ (spec 3.2) that is not a reserved word.

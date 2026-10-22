@@ -77,10 +77,10 @@ data DeclF
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
-  | -- | @command { "go", "gofmt" } on #golang:1.25@ (spec 5):
-    -- registers each name as a command word of this module. Binds no
-    -- value name.
-    DCommand [Spanned Text] Expr
+  | -- | @command { "go", "gofmt" } on #golang:1.25 [schema e]@ (spec
+    -- 5): registers each name as a command word of this module, with
+    -- the command schemas @e@ gives them. Binds no value name.
+    DCommand [Spanned Text] Expr (Maybe Expr)
   | -- | @import command { "go", "gofmt" } from "path"@ (spec 5): makes
     -- command words the target module exports command words of this
     -- module.
@@ -311,7 +311,7 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
       (map stripParam ps)
       (fmap stripSpansType t)
       (stripSpansExpr e)
-  DCommand ns e -> DCommand (map stripWord ns) (stripSpansExpr e)
+  DCommand ns e sch -> DCommand (map stripWord ns) (stripSpansExpr e) (fmap stripSpansExpr sch)
   DImportCommands ns path -> DImportCommands (map stripWord ns) path
   DExportCommandsFrom ns path -> DExportCommandsFrom (map stripWord ns) path
   where

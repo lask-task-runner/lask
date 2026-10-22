@@ -46,6 +46,7 @@ library
       Language.Lask.Builtins.Regex
       Language.Lask.Builtins.Shell
       Language.Lask.Builtins.Sig
+      Language.Lask.CommandSchema
       Language.Lask.Confirm
       Language.Lask.Core.AST
       Language.Lask.Core.Compare
