@@ -70,6 +70,7 @@ projectImports base = do
       DImportNamed _ p -> Just p
       DImportNamespace _ p -> Just p
       DExportFrom _ p -> Just p
+      DExportNamespace _ p -> Just p
       DImportCommands _ p -> Just p
       DExportCommandsFrom _ p -> Just p
       _ -> Nothing

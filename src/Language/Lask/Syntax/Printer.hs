@@ -436,6 +436,9 @@ decl sp f = case f of
     ds <- importSpecs specs
     p <- path
     pure ("export " <> ds <> " from " <> p)
+  DExportNamespace alias _ -> do
+    p <- path
+    pure ("export * as " <> text alias <> " from " <> p)
   DTypeAlias n tps t -> do
     dtp <- typeParams tps
     joinAfter ("type " <> text n <> dtp) "=" (startOf (stypeSpan t)) (const (ty t))
