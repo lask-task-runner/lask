@@ -34,7 +34,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Builtins.Names (effectfulBuiltinNames)
-import Language.Lask.Builtins.Shell (escapeCommand)
+import Language.Lask.Builtins.Shell (escapeCommand, rawBuiltin)
 import Language.Lask.CommandSchema (Finding (..), Schema, Static (..), StaticF (..), checkCommand, fromStatic)
 import Language.Lask.Builtins.Sig
 import Language.Lask.Core.AST
@@ -1400,11 +1400,19 @@ elabString ctx path locals sp parts = do
   pure (Core sp core, TyString)
   where
     part (TPChunk _ t) = pure (CPText t)
-    part (TPInterp e) = do
+    part (TPInterp e) = CPExpr <$> hole e
+    -- Only a command string has one; its mark keeps escaping away
+    -- from it (6.6).
+    part (TPRaw e) = do
+      c <- hole e
+      let sp' = exprSpan e
+      pure (CPExpr (Core sp' (CApp (Core sp' (CVar (BuiltinRef rawBuiltin))) [Core sp' (CStr [CPExpr c])] [])))
+
+    hole e = do
       (c, t) <- infer ctx path locals e
       unless (holds ctx BStringifiable t) $
         abort (diag ETypeBound (exprSpan e) ("cannot interpolate a value of type " <> renderType t <> ": it is not stringifiable"))
-      pure (CPExpr c)
+      pure c
 
 -- Object literals ------------------------------------------------------------------
 

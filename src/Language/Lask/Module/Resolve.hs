@@ -469,12 +469,17 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
         -- and namespaces, which a misspelt @ns.member@ also reaches.
         undefDiag s n =
           suggesting n (concatMap Set.toList sc <> Map.keys (gsValues gs) <> Map.keys (gsNamespaces gs)) $
-            mkDiagnostic ENameUndefined StageStatic s ("undefined name: '" <> n <> "'")
+            mkDiagnostic ENameUndefined StageStatic s ("undefined name: '" <> n <> "'" <> rawHint n)
+        -- The function that once marked an unescaped hole (spec 6.6).
+        rawHint n
+          | n == "raw" = "; a hole the shell parses is written #!{e} in a command string"
+          | otherwise = ""
 
     checkArg sc (Arg _ (APos e)) = checkExpr sc e
     checkArg sc (Arg _ (AKw _ e)) = checkExpr sc e
 
     checkPart sc (TPInterp e) = checkExpr sc e
+    checkPart sc (TPRaw e) = checkExpr sc e
     checkPart _ (TPChunk _ _) = []
 
     -- Do blocks: bindings become visible only after their statement;

@@ -499,6 +499,7 @@ lexSemanticTokensWith commandWordSpans fileName src =
     partAtoms = concatMap partAtom
     partAtom (Tok.Chunk _ _) = []
     partAtom (Tok.Interp toks) = concatMap flattenToken toks
+    partAtom (Tok.RawInterp toks) = concatMap flattenToken toks
 
     spanWithin (S.Span a b) (S.Span outerS outerE) = a >= outerS && b <= outerE
     spanWithin _ _ = False
@@ -811,10 +812,10 @@ completionAt path src pos = do
 -- completion.
 commandCompletion :: FilePath -> Text -> Position -> IO (Maybe [CompletionItem])
 commandCompletion path src (Position pl pc) = do
-  -- The word being written becomes a raw hole, at which reading stops
-  -- (6.6): neither a half-written word nor an option still awaiting
-  -- its value keeps the rest from compiling.
-  p <- compileTextPartial path (replaceLine (\l -> T.take tokenStart l <> "#{raw(\"\")}" <> T.drop col l))
+  -- The word being written becomes a hole the shell parses, at which
+  -- reading stops (6.6): neither a half-written word nor an option
+  -- still awaiting its value keeps the rest from compiling.
+  p <- compileTextPartial path (replaceLine (\l -> T.take tokenStart l <> "#!{\"\"}" <> T.drop col l))
   pure $ do
     core <- partialCore p
     cu <-
@@ -896,20 +897,25 @@ commandCompletion path src (Position pl pc) = do
             Nothing
 
 -- | The parts of a command string read from the source, its holes
--- standing for themselves: @#{...}@ to its closing brace.
+-- standing for themselves: @#{...}@ and @#!{...}@ to the closing
+-- brace.
 commandParts :: S.Position -> Text -> [AST.TextPart]
 commandParts start = go start ""
   where
     go p acc t = case T.uncons t of
       Nothing -> chunk p acc []
       Just ('\\', rest) | "#{" `T.isPrefixOf` rest -> go p (acc <> "#{") (T.drop 2 rest)
+      Just ('\\', rest) | "#!{" `T.isPrefixOf` rest -> go p (acc <> "#!{") (T.drop 3 rest)
       Just ('#', rest)
-        | "{" `T.isPrefixOf` rest ->
-            let (holeText, after) = closing (1 :: Int) "" (T.drop 1 rest)
-                pAcc = advance p acc
-                holeEnd = advance pAcc ("#{" <> holeText <> "}")
-             in chunk p acc [AST.TPInterp (AST.Expr (S.Span pAcc holeEnd) (AST.EVar "_"))] <> go holeEnd "" after
+        | "{" `T.isPrefixOf` rest -> hole p acc AST.TPInterp "#{" (T.drop 1 rest)
+        | "!{" `T.isPrefixOf` rest -> hole p acc AST.TPRaw "#!{" (T.drop 2 rest)
       Just (c, rest) -> go p (acc <> T.singleton c) rest
+
+    hole p acc mk opener rest =
+      let (holeText, after) = closing (1 :: Int) "" rest
+          pAcc = advance p acc
+          holeEnd = advance pAcc (opener <> holeText <> "}")
+       in chunk p acc [mk (AST.Expr (S.Span pAcc holeEnd) (AST.EVar "_"))] <> go holeEnd "" after
 
     chunk _ "" more = more
     chunk p acc more = AST.TPChunk (S.Span p (advance p acc)) acc : more

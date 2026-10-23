@@ -1564,7 +1564,8 @@ notify(--verbose = false) = do {
 ```ebnf
 CommandExpr  = "$" [ stream ] [ "[" Expression "]" ] shell_string .
 stream       = "1" | "2" | "*" .
-shell_string = { shell_char | interpolation } .
+shell_string = { shell_char | interpolation | raw_hole } .
+raw_hole     = "#!{" Expression "}" .
 shell_char   = unicode_char .
 ```
 
@@ -1598,7 +1599,7 @@ Desugaring rules:
 - `$2[env] cmd` is syntactic sugar for the expression above with its success branch replaced by `r.stderr`.
 - A form written without an environment specification (`$ cmd`, `$1 cmd`, `$2 cmd`, `$* cmd`) expands identically, with the environment supplied by dispatch (10.9) over the command string. When dispatch selects no environment the expression is a static error (`E-TYPE-COMMAND-NOENV`); there is no fallback.
 - Only core functions (normalization to `run`, `fail`, and `choose`), a record literal and the internal escaping of the holes (Escaping, below) appear in the expanded forms, so the behavior can never be changed by user definitions.
-- `#{e}` inside a `shell_string` is evaluated first as string interpolation, and the post-interpolation string is passed as the command body. The value of each hole is escaped before it is substituted (Escaping, below).
+- `#{e}` and `#!{e}` inside a `shell_string` are evaluated first as string interpolation, and the post-interpolation string is passed as the command body. The value of each `#{e}` hole is escaped before it is substituted, and that of each `#!{e}` hole is not (Escaping, below).
 
 Lexical rules:
 
@@ -1606,7 +1607,8 @@ Lexical rules:
 - Leading and trailing whitespace of the command string is removed, and internal whitespace is preserved as is.
 - If the line ends with `\`, it is a continuation line; the `\` and the newline are removed and the next line is concatenated.
 - Inside the command string, the shell's `;`, quotation marks, pipes, etc. can be used without escaping.
-- `#{` starts an interpolation. To include a literal `#{`, write `\#{`. A `#` not followed by `{` is treated as an ordinary character.
+- `#{` starts an interpolation, and `#!{` a raw hole. To include a literal `#{` or `#!{`, write `\#{` or `\#!{`. A `#` followed by neither `{` nor `!{` is treated as an ordinary character, so `$ echo '#!/bin/sh'` needs no escape.
+- A raw hole exists only in a command string. In an interpreted string (3.4), `#!{` is ordinary text: `"#!{x}"` is the five characters it shows.
 - Inside `do`, the newline that terminates a command string simultaneously serves as statement termination (6.5).
 - A command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run(#local, "git --version") |> trim`.
 - All tokens on the same line after a command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. To process it inside an expression, first bind it and then use it, or call `run` directly.
@@ -1620,8 +1622,8 @@ Escaping:
   - Inside `"..."`, each `\`, `"`, `$` and `` ` `` of the value is preceded by `\`: `$ echo "hello, #{name}"` prints the name.
   - Inside `'...'`, each `'` of the value is written `'\''`: `$ sh -c 'grep -q "^#{name}:" /etc/passwd'`.
 - A hole in `$(...)` or backquotes is escaped for the quoting in force where the substitution is written; the shell's own reparsing of the substitution is not followed.
-- A hole written as a call of the builtin `raw` (15.5), `#{raw(e)}`, is substituted without escaping, so the shell parses the value: `$ go build #{raw(flags)}` passes each flag in `flags` as a word of its own. A call of any other function named `raw`, such as a local binding that shadows it, is escaped as any other hole is.
-- The escaping is POSIX shell escaping. The shell of a `local` environment on Windows is `cmd.exe` (10.2), which does not read it; a command meant for it writes its holes with `raw` and quotes them itself.
+- A raw hole `#!{e}` is substituted without escaping, so the shell parses the value: `$ go build #!{flags}` passes each flag in `flags` as a word of its own. It is written with its own delimiter, not with a function, so that what the shell parses is visible where the hole is written: no expression inside an ordinary hole, whatever function it calls, is substituted unescaped. Because the shell parses the value, a value from outside the program (an argument, a file, a command's output) must not reach a raw hole: it would run what it contains.
+- The escaping is POSIX shell escaping. The shell of a `local` environment on Windows is `cmd.exe` (10.2), which does not read it; a command meant for it writes its holes as raw holes and quotes them itself.
 - Only holes of a command execution expression are escaped. A string passed to `run` (15.5) is a command line as it is, so a value interpolated into it is quoted with `shell_quote` where it needs to be.
 - The escaping is part of the desugaring: it is written with internal builtins that no program can name, so user definitions cannot change it.
 
@@ -1630,7 +1632,7 @@ Shell syntax:
 - A command string must be well formed as POSIX shell syntax, as far as it can be read from the text alone. A violation is a static error (`E-TYPE-COMMAND-SYNTAX`), reported whether the environment is specified or selected by dispatch (10.9), and before dispatch is attempted. The check exists so that a command that every POSIX shell would reject is rejected where it is written, not when it runs.
 - The string is read before interpolation, after the lexical normalization above. Quoting follows the POSIX rules for `\`, `'...'` and `"..."`; a command substitution `$(...)` or `` `...` `` is read by the same rules as a script of its own; a parameter expansion `${...}` and an arithmetic expansion `$((...))` are read to their closing brackets and their content is not read; a word beginning with `#` begins a comment that runs to the end of its line. A hole is one opaque part of the word it is written in: escaped (Escaping, above), it can never act as an operator or a quote.
 - Reading stops at the first construct whose meaning depends on the shell dialect or on a value, and nothing after it is checked:
-  - a hole written as a call of `raw`, which the shell parses;
+  - a raw hole `#!{e}`, which the shell parses;
   - a reserved word in command position: `if`, `then`, `else`, `elif`, `fi`, `do`, `done`, `case`, `esac`, `while`, `until`, `for`, `{`, `}`, `!`, `[[`, `]]`, `function`, `select`, `time`, `coproc`;
   - a here-document (`<<`), process substitution (`<(` or `>(`), `|&`, and ANSI-C quoting `$'...'`;
   - a `(` that does not begin a command, as in a function definition `f()` or an array assignment `a=(...)`;
@@ -1644,7 +1646,7 @@ Shell syntax:
   - a group `( )` that contains no command.
 - A command consisting only of assignments or redirections is a command, as in the shell: `FOO=1` and `> out.txt` are well formed. A trailing `;` or `&` ends a list and is well formed.
 - The check is not made where the environment may be the `local` environment of a Windows host, whose shell is `cmd.exe` (10.2): on such a host it is made only when the environment is known from the text to be a container environment, written as a container environment expression directly or through top-level bindings.
-- Examples: `$[#local] make &&`, `$[#local] cat >`, `$[#local] echo "unterminated` and `$[#local] | grep x` are `E-TYPE-COMMAND-SYNTAX`. `$[#local] for f in *.go; do gofmt -l $f; done`, `$[#local] echo #{raw(flags)} &&` and `$[#local] echo hi # it's` are not, because reading stops at `for`, at the `raw` hole, and at the comment.
+- Examples: `$[#local] make &&`, `$[#local] cat >`, `$[#local] echo "unterminated` and `$[#local] | grep x` are `E-TYPE-COMMAND-SYNTAX`. `$[#local] for f in *.go; do gofmt -l $f; done`, `$[#local] echo #!{flags} &&` and `$[#local] echo hi # it's` are not, because reading stops at `for`, at the raw hole, and at the comment.
 
 Environment specification rules:
 
@@ -1660,7 +1662,7 @@ Typing rules:
 - `run` is typed as `Function<Runnable, String, CommandResult>` (7.5).
 - As a result of the desugaring, the expression type of `$ ...`, `$1 ...`, and `$2 ...` is `String`, and the expression type of `$* ...` is `CommandResult`.
 - If `env` does not conform to `Runnable`, it is a type error.
-- The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a static error (`E-TYPE-BOUND`).
+- The interpolation `#{e}`, and the raw hole `#!{e}`, must be of a stringifiable type. If it cannot be stringified, it is a static error (`E-TYPE-BOUND`).
 - The stringifiable types are `String`, `Number`, `Bool`, `Any`, a union all of whose members are stringifiable, and a type parameter whose bound entails `stringifiable` (4.4). This is the named bound `stringifiable` (4.2). Every other type, `Null` included, is not stringifiable, and `to_string` (15.3) accepts exactly the same set. `String | Null` is therefore **not** stringifiable: a value that may be absent cannot be interpolated into a command, and must be resolved by `case` (6.4) or `cast` (15.8) first. `Any` is stringifiable statically and may still fail at runtime (15.3), because its content is unknown until then.
 
 Evaluation rules:
@@ -2790,7 +2792,7 @@ Determinacy principle:
 Input:
 
 - The procedure operates on the command string before interpolation, after the lexical normalization of 6.6 (leading and trailing whitespace removed, continuation lines joined).
-- Each interpolation `#{...}` is one opaque character, belonging to no other class. A hole may expand to any text, so no analysis may look through one.
+- Each interpolation `#{...}`, and each raw hole `#!{...}`, is one opaque character, belonging to no other class. A hole may expand to any text, so no analysis may look through one.
 
 Regions and segmentation:
 
@@ -4451,7 +4453,6 @@ The built-in library provides at least the following functions.
 - `run`: `Function<Runnable, String, CommandResult>`
 - `runnable`: `Function<Environment, Runnable>`, with the run options of 10.2 as keyword parameters
 - `shell_quote`: `Function<String, String>`
-- `raw`: `Function<String, String>`
 
 Contract:
 
@@ -4482,8 +4483,7 @@ upload(env: Runnable, src: String, dst: String): CommandResult =
   run(env, "aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}")
 ```
 
-- `raw(s)` returns `s`. Its only effect is on a hole of a command execution expression written as `#{raw(e)}`, which is substituted without escaping (6.6). Because the shell then parses the value, a value from outside the program (an argument, a file, a command's output) must not reach `raw`: it would run what it contains.
-- `shell_quote` and `raw` are pure functions, and are placed here rather than among the string operations of 15.3 because their contracts are about command construction.
+- `shell_quote` is a pure function, and is placed here rather than among the string operations of 15.3 because its contract is about command construction. There is no function that marks a hole to be substituted unescaped: that is the raw hole `#!{e}` of 6.6.
 - Masking (12.8) matches registered values as exact substrings. Escaping a value rewrites the characters it escapes, so a registered secret is also registered in each form the escaping of 6.6 and `shell_quote` write it (every `'` as `'\''`; every `\`, `"`, `$` and `` ` `` preceded by `\`), and the command line that carries it is masked as well.
 
 ### 15.6 Parallel and Asynchronous Helper Functions

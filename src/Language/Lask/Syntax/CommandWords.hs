@@ -94,6 +94,7 @@ atoms = go 0
   where
     go _ [] = []
     go i (TPInterp _ : ps) = AHole i NoSpan : go (i + 1) ps
+    go i (TPRaw _ : ps) = AHole i NoSpan : go (i + 1) ps
     go i (TPChunk sp t : ps) =
       let cs = T.unpack t
        in walk i (startOf sp) cs <> go (i + length cs) ps

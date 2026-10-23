@@ -38,7 +38,7 @@ import qualified Data.Vector as V
 import Data.Word (Word8)
 import Language.Lask.Builtins.Format (decodeFormat, encodeFormat)
 import qualified Language.Lask.Builtins.Path as P
-import Language.Lask.Builtins.Shell (shellEscape, shellEscapeBuiltins, shellQuote)
+import Language.Lask.Builtins.Shell (rawBuiltin, shellEscape, shellEscapeBuiltins, shellQuote)
 import qualified Language.Lask.Builtins.Regex as Re
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.ExecLog (LogSink)
@@ -280,7 +280,7 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
           ]
   ("shell_quote", [VString v]) -> pure (VString (shellQuote v))
   -- A hole of a command string marked as substituted as it is (6.6).
-  ("raw", [VString v]) -> pure (VString v)
+  (n, [VString v]) | n == rawBuiltin -> pure (VString v)
   -- The escaping 6.6 gives every other hole, for the quoting it is in.
   (n, [VString v]) | Just q <- lookup n shellEscapeBuiltins -> pure (VString (shellEscape q v))
   -- 15.6 parallel/async ------------------------------------------------------

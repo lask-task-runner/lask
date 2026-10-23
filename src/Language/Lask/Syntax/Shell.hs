@@ -8,7 +8,7 @@
 -- The reading follows the determinacy principle of 10.9. It stops at
 -- the first construct whose reading depends on the shell dialect or on
 -- a value — a reserved word in command position, a here-document, a
--- hole written with @raw@, and the others 6.6 lists — and nothing past
+-- hole written @#!{e}@, and the others 6.6 lists — and nothing past
 -- that point is reported. What it reports before it is an error in
 -- every POSIX shell.
 --
@@ -29,7 +29,7 @@ import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Span (Position (..), Span (..))
-import Language.Lask.Syntax.AST (Expr (..), ExprF (..), TextPart (..))
+import Language.Lask.Syntax.AST (Expr (..), TextPart (..))
 
 -- | What a command string reads as, up to where reading stops.
 data ShellReading = ShellReading
@@ -88,9 +88,8 @@ spanKey NoSpan = Nothing
 
 -- Atoms ---------------------------------------------------------------------
 
--- | One character, or one hole. A hole written as a call of @raw@ is
--- parsed by the shell, so it can be anything (6.6). Any function named
--- @raw@ counts: treating a shadowing one as raw only reads less.
+-- | One character, or one hole. A hole written @#!{e}@ is parsed by the
+-- shell, so it can be anything (6.6).
 data Atom
   = AChar Span Char
   | AHole Span Bool
@@ -98,11 +97,9 @@ data Atom
 atoms :: [TextPart] -> [Atom]
 atoms = concatMap part
   where
-    part (TPInterp e) = [AHole (exprSpan e) (isRaw e)]
+    part (TPInterp e) = [AHole (exprSpan e) False]
+    part (TPRaw e) = [AHole (exprSpan e) True]
     part (TPChunk sp t) = walk (startOf sp) (T.unpack t)
-
-    isRaw (Expr _ (ECall (Expr _ (EVar "raw")) _)) = True
-    isRaw _ = False
 
     startOf (Span s _) = Just s
     startOf NoSpan = Nothing

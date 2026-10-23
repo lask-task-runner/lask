@@ -143,7 +143,7 @@ blockExprs (Block _ ss) = concatMap stmtExprs ss
       SExpr e -> [e]
 
 partExprs :: [TextPart] -> [Expr]
-partExprs ps = [e | TPInterp e <- ps]
+partExprs ps = [e | TPInterp e <- ps] <> [e | TPRaw e <- ps]
 
 argExpr :: Arg -> Expr
 argExpr (Arg _ (APos e)) = e

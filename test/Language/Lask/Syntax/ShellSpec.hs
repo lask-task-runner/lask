@@ -7,7 +7,7 @@ module Language.Lask.Syntax.ShellSpec (spec) where
 
 import Data.Text (Text)
 import Language.Lask.Span (Span (NoSpan))
-import Language.Lask.Syntax.AST (Arg (..), ArgF (..), Expr (..), ExprF (..), TextPart (..))
+import Language.Lask.Syntax.AST (Expr (..), ExprF (..), TextPart (..))
 import Language.Lask.Syntax.Shell
 import Test.Hspec
 
@@ -18,15 +18,13 @@ reading t = readShell [TPChunk NoSpan t]
 problem :: Text -> Maybe Text
 problem = fmap snd . srProblem . reading
 
--- | A string with one hole spliced in; @raw@ writes it as @#{raw(x)}@.
+-- | A string with one hole spliced in; @raw@ writes it as @#!{x}@.
 withHole :: Bool -> Text -> Text -> ShellReading
 withHole raw pre post =
-  readShell [TPChunk NoSpan pre, TPInterp hole, TPChunk NoSpan post]
+  readShell [TPChunk NoSpan pre, hole, TPChunk NoSpan post]
   where
     x = Expr NoSpan (EVar "x")
-    hole
-      | raw = Expr NoSpan (ECall (Expr NoSpan (EVar "raw")) [Arg NoSpan (APos x)])
-      | otherwise = x
+    hole = if raw then TPRaw x else TPInterp x
 
 -- | Each simple command: its name, and its arguments as the literal
 -- text they have, or @?@ when they have none.
@@ -115,7 +113,7 @@ spec = do
       problem "cat <<EOF &&" `shouldBe` Nothing
       problem "diff <(a) >(b) |" `shouldBe` Nothing
 
-    it "stops at a hole written with raw" $ do
+    it "stops at a hole written #!{e}" $ do
       srProblem (withHole True "echo " " &&") `shouldBe` Nothing
       srProblem (withHole True "echo '" "") `shouldBe` Nothing
 

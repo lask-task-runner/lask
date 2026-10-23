@@ -162,7 +162,6 @@ builtinValueNames =
       "run",
       "runnable",
       "shell_quote",
-      "raw",
       -- 15.6 parallel/async
       "spawn",
       "all",

@@ -74,7 +74,7 @@ The thing to take away: an environment is a value. A command that names none is 
 
 ## 05-commands
 
-**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation and its escaping, `raw`, `run`, the `command ... on ...` declarations that dispatch a bare `$`, and what is checked before a command runs: its shell syntax, the options a command schema describes, and whether the image has the programs declared on it.
+**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation and its escaping, the raw hole `#!{...}`, `run`, the `command ... on ...` declarations that dispatch a bare `$`, and what is checked before a command runs: its shell syntax, the options a command schema describes, and whether the image has the programs declared on it.
 
 ```bash
 lask sync

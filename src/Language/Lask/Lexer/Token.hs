@@ -89,6 +89,9 @@ data StrPart
     -- (spec 10.9), so dispatch is unaffected.
     Chunk Span Text
   | Interp [Spanned Token]
+  | -- | @#!{...}@ in a command string (spec 6.6): substituted without
+    -- escaping, for the shell to parse.
+    RawInterp [Spanned Token]
   deriving (Show, Eq, Ord)
 
 -- | Which part of a command result a command expression selects
@@ -217,6 +220,7 @@ stripToken t = case t of
   where
     stripPart (Chunk _ c) = Chunk NoSpan c
     stripPart (Interp ts) = Interp (stripTokens' ts)
+    stripPart (RawInterp ts) = RawInterp (stripTokens' ts)
     stripTokens' = map (Spanned NoSpan . stripToken . spannedValue)
 
 stripTokens :: [Spanned Token] -> [Token]

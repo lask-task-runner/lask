@@ -123,13 +123,14 @@ echo_text(--text: String = "a b; rm -rf /"): String =
 
 // Pass flags through the shell as words of their own.
 //
-// `#{raw(flags)}` is the one hole the shell parses: each flag in
-// `flags` becomes its own word. Never give `raw` a value from outside
-// the program, such as a CLI argument — the shell would run what it
-// contains.
+// `#!{flags}` is the one hole the shell parses: each flag in `flags`
+// becomes its own word. It has a delimiter of its own, so where the
+// shell parses a value is visible in the command itself. Never put a
+// value from outside the program in it, such as a CLI argument — the
+// shell would run what it contains.
 list_root(): String = do {
   flags = "-1 -a"
-  $[alpine] ls #{raw(flags)} /
+  $[alpine] ls #!{flags} /
   |> trim
 }
 

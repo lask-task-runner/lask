@@ -248,7 +248,10 @@ data ExprF
 -- | A piece of a string or command string. 'TPChunk' carries the
 -- source span it was lexed from, so a position inside it can be
 -- recovered by walking its text (spec 10.9 command words).
-data TextPart = TPChunk Span Text | TPInterp Expr
+-- 'TPRaw' is a hole written @#!{e}@, which only a command string has
+-- (spec 6.6): the shell parses its value instead of receiving it
+-- escaped.
+data TextPart = TPChunk Span Text | TPInterp Expr | TPRaw Expr
   deriving (Show, Eq)
 
 -- | One arm of an 'ECase'. 'Nothing' as the heads marks the @else@
@@ -367,6 +370,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
     stripHeads (TypeHeads ts) = TypeHeads (map stripSpansType ts)
     stripPart (TPChunk _ c) = TPChunk NoSpan c
     stripPart (TPInterp e) = TPInterp (stripSpansExpr e)
+    stripPart (TPRaw e) = TPRaw (stripSpansExpr e)
     stripArg (Arg _ (APos e)) = Arg NoSpan (APos (stripSpansExpr e))
     stripArg (Arg _ (AKw n e)) = Arg NoSpan (AKw n (stripSpansExpr e))
 

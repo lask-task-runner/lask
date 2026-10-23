@@ -1018,7 +1018,7 @@ spec = do
     it "accepts what it cannot read past" $ do
       accepts "v() = $[#local] for f in a b; do echo $f; done"
       accepts "v() = $[#local] case x in a) echo a;; esac"
-      accepts "flags = \"&&\"\nv() = $[#local] echo #{raw(flags)}"
+      accepts "flags = \"&&\"\nv() = $[#local] echo #!{flags}"
 
     it "accepts an escaped hole as one word" $
       accepts "f = \"&&\"\nv() = $[#local] echo #{f}"
@@ -1088,7 +1088,7 @@ spec = do
     it "stops at what it cannot read" $ do
       accepts (withGo "v(n: String) = $ go test -run #{n} -v")
       accepts (withGo "v(n: String) = $ go test #{n} -bogus")
-      accepts (withGo "v(n: String) = $ go test -run #{raw(n)}")
+      accepts (withGo "v(n: String) = $ go test -run #!{n}")
       accepts (withGo "v() = $ go test $FLAGS -bogus")
       accepts (withGo "v() = $ go test -- -bogus")
 
@@ -1152,6 +1152,17 @@ spec = do
       r <- elabProgram [("main.lask", "command { \"go\" } on #golang:1.25\nv() = $ go vet\nw() = $[#golang:1.25] go vet\n")]
       fmap (Map.toList . cpDispatched) (either (const Nothing) Just r)
         `shouldBe` Just [(("main.lask", "v"), [("go", "#golang:1.25")])]
+
+  describe "holes the shell parses (spec 6.6)" $ do
+    it "types a #!{e} hole as any other hole" $ do
+      accepts "n = 1\nv() = $[#local] echo #!{n}"
+      rejects "n = [1]\nv() = $[#local] echo #!{n}" ETypeBound
+
+    it "has no function raw" $
+      rejects "flags = \"-v\"\nv() = $[#local] go build #{raw(flags)}" ENameUndefined
+
+    it "keeps #!{ an ordinary piece of text outside a command" $
+      hasType "s = \"#!{x}\"" "s" "String"
 
   describe "misc" $ do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"

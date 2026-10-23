@@ -486,6 +486,15 @@ spec = do
               [TPChunk NoSpan "echo ", TPInterp (var "msg")]
           )
 
+    it "parses a hole the shell parses (spec 6.6)" $
+      pExpr "$[#local] go build #!{flags}"
+        `shouldBe` Right
+          ( ECommand
+              StreamOut
+              (Just (ex (EEnv "local" Nothing Nothing)))
+              [TPChunk NoSpan "go build ", TPRaw (var "flags")]
+          )
+
     it "parses stream selectors" $
       pExpr "$*[#local] ls"
         `shouldBe` Right (ECommand StreamAll (Just (ex (EEnv "local" Nothing Nothing))) [TPChunk NoSpan "ls"])

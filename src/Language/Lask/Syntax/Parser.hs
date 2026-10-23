@@ -184,7 +184,7 @@ stringLit lbl = matchTok lbl $ \t -> case t of
   where
     chunksOnly ps = T.concat <$> traverse chunkOf ps
     chunkOf (Chunk _ c) = Just c
-    chunkOf (Interp _) = Nothing
+    chunkOf _ = Nothing
 
 -- | Close a type argument list: @>@, or split @>>@\/@>=@ by pushing
 -- the remainder back.
@@ -715,6 +715,7 @@ pString = do
 convertPart :: StrPart -> P TextPart
 convertPart (Chunk sp c) = pure (TPChunk sp c)
 convertPart (Interp toks) = TPInterp <$> subExpr "<interpolation>" toks
+convertPart (RawInterp toks) = TPRaw <$> subExpr "<interpolation>" toks
 
 -- | Parse a captured nested token stream as a full expression.
 subExpr :: String -> [Spanned Token] -> P Expr
