@@ -1085,22 +1085,6 @@ spec = do
       rejects (lsSchema <> "v() = $ ls --color") ETypeCommandOption
       rejects (lsSchema <> "v() = $ ls -l --width") ETypeCommandOption
 
-    it "leaves what follows an option with stops to the program it names" $ do
-      let py = "command { \"python\" } on #python:3.13 schema { \"python\": { root: { closed: true, stop_at_first_positional: true, options: [{ names: [\"-m\"], value: \"required\", stops: true }, { names: [\"-c\"], value: \"required\", stops: true }, { names: [\"-u\"] }] } } }\n"
-      accepts (py <> "v() = $ python -u -m pytest -k smoke -x")
-      accepts (py <> "v() = $ python -c 'print(1)' -x")
-      accepts (py <> "v() = $ python script.py --anything")
-      rejects (py <> "v() = $ python -x -m pytest") ETypeCommandOption
-      rejects (py <> "v() = $ python -m") ETypeCommandOption
-
-    it "reads an abbreviated long option where the spec allows it" $ do
-      let mk = "command { \"make\" } on #gcc:16.2.0 schema { \"make\": { root: { closed: true, abbreviations: true, options: [{ names: [\"-n\", \"--dry-run\"] }, { names: [\"--debug\"], value: \"optional\" }, { names: [\"-C\", \"--directory\"], value: \"required\" }] } } }\n"
-      accepts (mk <> "v() = $ make --dry all")
-      accepts (mk <> "v() = $ make --dir build all")
-      rejects (mk <> "v() = $ make --d all") ETypeCommandOption
-      rejects (mk <> "v() = $ make --dir") ETypeCommandOption
-      rejects (withGo "v() = $ go test --ru X") ETypeCommandOption
-
     it "stops at what it cannot read" $ do
       accepts (withGo "v(n: String) = $ go test -run #{n} -v")
       accepts (withGo "v(n: String) = $ go test #{n} -bogus")
@@ -1147,11 +1131,27 @@ spec = do
     it "keeps the schema type names for the built-in aliases" $
       rejects "type CommandSchema = String" ENameDuplicate
 
-  describe "dispatched command words (spec ch. 5)" $
-    it "records the words each declaration dispatches through, with the table they are in" $ do
+  describe "probed command words (spec ch. 5)" $ do
+    let probes src = do
+          r <- elabProgram [("main.lask", src)]
+          pure (either (const Nothing) (Just . Map.findWithDefault Map.empty "main.lask" . cpProbes) r)
+
+    it "probes a word declared on an image written as it is" $ do
+      probes "command { \"go\" } on #golang:1.25" >>= (`shouldBe` Just (Map.fromList [("go", "#golang:1.25")]))
+      probes "g = #golang:1.25\ncommand { \"go\" } on g" >>= (`shouldBe` Just (Map.fromList [("go", "#golang:1.25")]))
+      probes "command { \"go\" } on #golang:1.25{memory: \"1g\", env: {\"GOFLAGS\": \"-v\"}}"
+        >>= (`shouldBe` Just (Map.fromList [("go", "#golang:1.25")]))
+
+    it "does not probe what the text does not pin to one image" $ do
+      probes "command { \"ls\" } on #local" >>= (`shouldBe` Just Map.empty)
+      probes "mk(): Environment = #golang:1.25\ncommand { \"go\" } on mk()" >>= (`shouldBe` Just Map.empty)
+      probes "command { \"go\" } on #golang:1.25{env: {\"PATH\": \"/opt/bin\"}}" >>= (`shouldBe` Just Map.empty)
+      probes "command { \"go\" } on #golang:1.25(platform = \"linux/amd64\")" >>= (`shouldBe` Just Map.empty)
+
+    it "records the probed words each declaration dispatches through" $ do
       r <- elabProgram [("main.lask", "command { \"go\" } on #golang:1.25\nv() = $ go vet\nw() = $[#golang:1.25] go vet\n")]
       fmap (Map.toList . cpDispatched) (either (const Nothing) Just r)
-        `shouldBe` Just [(("main.lask", "v"), [("main.lask", "go")])]
+        `shouldBe` Just [(("main.lask", "v"), [("go", "#golang:1.25")])]
 
   describe "holes the shell parses (spec 6.6)" $ do
     it "types a #!{e} hole as any other hole" $ do

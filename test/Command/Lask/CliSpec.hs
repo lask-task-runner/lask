@@ -63,24 +63,6 @@ spec = beforeAll findLask $ do
         cs <- calls state
         length [c | c <- cs, "command -v" `isInfixOf` c] `shouldBe` 1
 
-    it "probes a declaration whose environment is made by a call, with its run options (spec ch. 5)" $ \lask ->
-      withFakeDocker $ \state extra ->
-        withProject
-          [ ( "main.lask",
-              "tool(--image: Environment = #alpine:3.22.2): Runnable = runnable(image, env = {\"TOOL_HOME\": \"/opt\"})\n\
-              \command { \"cat\" } on tool()\n\
-              \command { \"ls\" } on #local\n\
-              \hi(): String = $ cat x\n"
-            )
-          ]
-          $ \dir -> do
-            b <- runLaskEnv lask dir extra ["sync"] ""
-            resExit b `shouldBe` 0
-            lockText dir >>= (`shouldContain` "\"cat\": \"present\"")
-            lockText dir >>= (`shouldNotContain` "\"ls\"")
-            cs <- calls state
-            [c | c <- cs, "command -v" `isInfixOf` c] `shouldSatisfy` all ("--env TOOL_HOME" `isInfixOf`)
-
     it "refuses to run a declared command its image does not provide (spec ch. 5, 11.7)" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
         createDirectoryIfMissing True (state </> "missing")

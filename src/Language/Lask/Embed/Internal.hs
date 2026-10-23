@@ -1067,6 +1067,7 @@ assemble exports = case nameErrors <> dupErrors <> docErrors <> kwErrors <> comm
           cpCommandUses = [],
           cpHover = [],
           cpAdvisories = [],
+          cpProbes = Map.empty,
           cpDispatched = Map.empty,
           cpSchemas = Map.empty,
           cpSchemaUses = []

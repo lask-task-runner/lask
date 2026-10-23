@@ -47,15 +47,15 @@ import Language.Lask.Obs.CommandLog
 import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
-import Command.Lask.Images (commandImage, evalCommandEnv, loadPins, lockedImages, missingCommands)
+import Command.Lask.Images (loadPins, lockedImages, missingCommands)
 import Language.Lask.Deps.Lock (LockImage (..))
 import Language.Lask.Runtime.Container (ContainerBackend, resolveBackend)
 import Language.Lask.Runtime.Image (ImagePins, Recipe (..), imageExists, recipeSource, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
-import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, renderSite)
-import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
+import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, noAsyncTracker, renderSite)
+import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, evalCore, mkRtCtx, topValue)
 import Language.Lask.Runtime.Secrets (maskFailure)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
@@ -171,8 +171,7 @@ cmdRunEval printResult runOpts = do
   -- A declared program its image lacks fails every command that runs
   -- it, so nothing is run (spec ch. 5).
   images <- lockedImages core
-  missingNow <- missingCommands core images [(cdModule d, cdName d) | d <- reachableDecls core key]
-  case missingNow of
+  case missingCommands core images [(cdModule d, cdName d) | d <- reachableDecls core key] of
     [] -> pure ()
     missing -> do
       traceId <- maybe newTraceId pure (optTraceId opts)
@@ -607,11 +606,11 @@ cmdCmd cmdOpts
           Just envCore -> do
             traceId <- maybe newTraceId pure (optTraceId opts)
             images <- lockedImages core
-            img <- commandImage core envCore
-            case img of
-              Just (key, _)
-                | Just False <- Map.lookup name . liCommands =<< Map.lookup key images ->
-                    failureExit opts traceId (ioFailure EIoCommandMissing (missingMessage [(name, key)]))
+            let probed = Map.findWithDefault Map.empty (cpEntry core) (cpProbes core)
+            case Map.lookup name probed of
+              Just img
+                | Just False <- Map.lookup name . liCommands =<< Map.lookup img images ->
+                    failureExit opts traceId (ioFailure EIoCommandMissing (missingMessage [(name, img)]))
               _ -> pure ()
             secrets <- newSecretResolver
             envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
@@ -721,3 +720,21 @@ imagePresent backend pins baseDir resolved = case resolved of
     tagE <- recipeTag baseDir r
     either (const (pure False)) (imageExists backend) tagE
 
+-- | Evaluate a command's environment (spec 11.8). The environment of a
+-- command declaration can reach no effect (ch. 5), so nothing here can
+-- run a command, touch a file or read the standard input, which
+-- belongs to the program. The hooks refuse rather than run anything if
+-- that guarantee is ever broken. It may read the environment, through
+-- the reader given (spec 9.8).
+evalCommandEnv :: (Text -> IO (Maybe Text)) -> CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
+evalCommandEnv readEnv core c = do
+  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())) noAsyncTracker readEnv)
+  r <- try (evalCore ctx Map.empty c)
+  pure $ case r of
+    Left lf -> Left lf
+    Right (VEnv ev) -> Right ev
+    Right _ -> Left (refusal "the command's environment did not evaluate to an Environment")
+  where
+    refuseCommand _ _ = pure (Left (refusal "the environment of a command declaration tried to run a command"))
+    refuseFile _ _ = pure (Left (refusal "the environment of a command declaration tried to access a file"))
+    refusal = ioFailure EIoEnvResolve

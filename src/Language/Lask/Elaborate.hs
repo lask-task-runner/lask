@@ -107,11 +107,12 @@ data CoreProgram = CoreProgram
     cpHover :: [HoverInfo],
     -- | Advisory diagnostics (spec 14.2), in source order.
     cpAdvisories :: [Advisory],
-    -- | For each declaration, the command words through which its own
-    -- command strings take their environment by dispatch (10.9), with
-    -- the module whose table holds them, for the check before a run
-    -- (spec ch. 5).
-    cpDispatched :: Map Key [(FilePath, Text)],
+    -- | The probed command words (spec ch. 5) of each module, with the
+    -- lock key of the image they are declared on.
+    cpProbes :: Map FilePath (Map Text Text),
+    -- | For each declaration, the probed words whose environment its
+    -- own command strings take by dispatch (10.9), with their image.
+    cpDispatched :: Map Key [(Text, Text)],
     -- | Each module's command words that have a schema (spec ch. 5).
     cpSchemas :: Map FilePath (Map Text Schema),
     -- | Every simple command checked against a schema, for editor
@@ -246,7 +247,7 @@ data St = St
     -- | The declarations being elaborated, innermost first.
     stCurrent :: [Key],
     -- | The probed words each declaration dispatches through.
-    stDispatched :: Map Key (Set (FilePath, Text)),
+    stDispatched :: Map Key (Set (Text, Text)),
     stSchemaUses :: [SchemaUse],
     stFailures :: Failures
   }
@@ -287,7 +288,10 @@ data CommandEntry = CommandEntry
     -- declaration reached through two imports is one entry, not two.
     ceOrigin :: (FilePath, Int),
     -- | The command schema the declaration gives the word, if any.
-    ceSchema :: Maybe Schema
+    ceSchema :: Maybe Schema,
+    -- | The lock key of the image the word is probed on (spec ch. 5),
+    -- when the declaration's environment names one as it is.
+    ceImage :: Maybe Text
   }
 
 -- | The identity selection compares (spec 10.9). The environment of a
@@ -439,6 +443,7 @@ elaborateRecovering prog scopes nameErrors =
             -- An expression elaborated twice, by a bidirectional
             -- fallback, reports once.
             cpAdvisories = sortOn advSpan (nub (stAdvisories st)),
+            cpProbes = Map.map (Map.mapMaybe ceImage) (stCommands st),
             cpDispatched = Map.map Set.toList (stDispatched st),
             cpSchemas = Map.map (Map.mapMaybe ceSchema) (stCommands st),
             cpSchemaUses = stSchemaUses st
@@ -466,7 +471,7 @@ elaborateRecovering prog scopes nameErrors =
       maybe Set.empty (moduleInternal . lmModule) $
         Map.lookup (progEntry prog) (progModules prog)
     emptyCore =
-      CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] [] Map.empty Map.empty []
+      CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] [] Map.empty Map.empty Map.empty []
     -- Every module's command declarations are checked, whether or not
     -- a command string uses them (spec ch. 5), and so is every type
     -- alias, whether or not a type refers to it (spec 4.2).
@@ -2060,7 +2065,7 @@ elabCommand ctx path locals sp stream mEnv parts = do
         Spanned _ w : _
           | Just entry <- Map.lookup w tbl -> checkSchemas ctx path sp reading (ceSource entry)
         _ -> pure ()
-      recordDispatched [(path, w) | Spanned _ w <- ws]
+      recordDispatched [(w, img) | Spanned _ w <- ws, Just e <- [Map.lookup w tbl], Just img <- [ceImage e]]
       pure (c, Just (renderEnvCore c), ws)
   when hostIsWindows $ do
     container <- runsInContainer ctx envCore
@@ -2289,18 +2294,48 @@ staticValue ctx = go Set.empty
     textPart (CPText t) = Just t
     textPart (CPExpr _) = Nothing
 
--- | Record the command words a command string of the declaration
--- being elaborated dispatches through, for the check before a run
--- (spec ch. 5).
-recordDispatched :: [(FilePath, Text)] -> TC ()
+-- | Record the probed words a command string of the declaration being
+-- elaborated dispatches through, for the check before a run (spec ch.
+-- 5).
+recordDispatched :: [(Text, Text)] -> TC ()
 recordDispatched [] = pure ()
 recordDispatched ws = do
   current <- gets stCurrent
   case current of
     key : _ ->
       modify $ \s ->
-        s {stDispatched = Map.insertWith Set.union key (Set.fromList ws) (stDispatched s)}
+        s {stDispatched = Map.insertWith Set.union key (Set.fromList [(w, img) | (w, img) <- ws]) (stDispatched s)}
     [] -> pure ()
+
+-- | The lock key of the one image an environment names as it is,
+-- when the text shows it (spec ch. 5): a container environment with a
+-- registry reference or a recipe for its head and no image option
+-- that changes which image that is, through top-level bindings, and
+-- with run options that leave @PATH@ alone.
+probedImage :: Ctx -> Core -> TC (Maybe Text)
+probedImage ctx = go Set.empty
+  where
+    go seen c = case coreF c of
+      CEnv "docker" args -> pure (image args)
+      CRunnable base opts | pathKept opts -> go seen base
+      CVar (TopRef p n)
+        | not (Set.member (p, n) seen) -> do
+            cd <- demandDecl ctx (p, n)
+            go (Set.insert (p, n) seen) (cdCore cd)
+      _ -> pure Nothing
+
+    image args = case (lookup "image" args, lookup "dockerfile" args) of
+      (Just (Core _ (CStrLit ref)), _)
+        | all ((== "image") . fst) args -> Just ("#" <> ref)
+      (_, Just (Core _ (CStrLit df)))
+        | all ((`elem` ["dockerfile", "context", "build_args"]) . fst) args -> Just ("#" <> df)
+      _ -> Nothing
+
+    pathKept opts = case lookup "env" opts of
+      Nothing -> True
+      Just (Core _ (CMapLit kvs)) -> "PATH" `notElem` map fst kvs
+      Just (Core _ (CRecordLit kvs)) -> "PATH" `notElem` map fst kvs
+      Just _ -> False
 
 -- | Check the simple commands of a dispatched command string against
 -- the schemas of the declarations that selected its environment (spec
@@ -2378,17 +2413,18 @@ buildCommandTable ctx path = foldM recoverSite Map.empty (moduleCommandSites ctx
       env <- declaredEnv ctx path envExpr
       src <- envSource ctx path i env
       schemas <- maybe (pure Map.empty) (declaredSchemas ctx path names) schemaExpr
-      foldM (addDeclared env src i schemas) tbl names
+      img <- probedImage ctx env
+      foldM (addDeclared env src i schemas img) tbl names
     addSite tbl (SiteImport names key) = do
       target <- commandTable ctx key
       foldM (addImported key target) tbl names
 
-    addDeclared env src i schemas tbl (Spanned sp n) = do
+    addDeclared env src i schemas img tbl (Spanned sp n) = do
       unless (validCommandName n) $
         abort . diag ETypeCommandName sp $
           "'" <> n <> "' could never be recognized as a command word in a command string"
       when (Map.member n tbl) $ abort (duplicate sp n)
-      pure (Map.insert n (CommandEntry sp env src (path, i) (Map.lookup n schemas)) tbl)
+      pure (Map.insert n (CommandEntry sp env src (path, i) (Map.lookup n schemas) img) tbl)
 
     -- The resolver has already checked that the target exports the
     -- word. The same declaration reached along two import paths is

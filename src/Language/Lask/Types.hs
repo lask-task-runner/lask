@@ -170,7 +170,6 @@ commandOptionType =
           ("value", Field True TyString),
           ("values", Field True (TyArray TyString)),
           ("global", Field True TyBool),
-          ("stops", Field True TyBool),
           ("description", Field True TyString)
         ]
     )
@@ -185,7 +184,6 @@ commandSpecType =
           ("options", Field True (TyArray commandOptionType)),
           ("intermixed", Field True TyBool),
           ("stop_at_first_positional", Field True TyBool),
-          ("abbreviations", Field True TyBool),
           ("description", Field True TyString)
         ]
     )
