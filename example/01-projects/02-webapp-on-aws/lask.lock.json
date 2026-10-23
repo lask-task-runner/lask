@@ -1,6 +1,6 @@
 {
     "images": {
-        "#.lask/deps/sha256-d6e5f5ff0b222ba677c232bb93b91b5bc5373649e79de4217bfee9bde790018d/lib/images/unix/Dockerfile": {
+        "#.lask/deps/sha256-2e8896866231f426ad3011246ab35efc3ea869abc491b1f9c7ed317e17979984/lib/images/unix/Dockerfile": {
             "commands": {
                 "bzip2": "present",
                 "curl": "present",
@@ -17,7 +17,7 @@
                 "zip": "present"
             },
             "kind": "recipe",
-            "tag": "lask/509fdb158aa35aca8374aa040823addf01ec99160fbd68a997f2b862db67f7c4"
+            "tag": "lask/a6516cea28314eb2507d04961dc44ee5db87b365b2046ca0277e2509f250516f"
         },
         "#amazon/aws-cli:2.36.41": {
             "digest": "sha256:be7c8de0160a2e2269159bc2634c002c85b1a21d6322e2ad513b3f7f48325c99",
@@ -71,9 +71,9 @@
     "modules": {
         "tools": {
             "git": "https://github.com/lask-task-runner/lask-module-tools.git",
-            "hash": "sha256-d6e5f5ff0b222ba677c232bb93b91b5bc5373649e79de4217bfee9bde790018d",
-            "requested": "v0.4.0",
-            "rev": "6dd5c8c8485cfa9c86e0ce7c09f5152b8047a7d7"
+            "hash": "sha256-2e8896866231f426ad3011246ab35efc3ea869abc491b1f9c7ed317e17979984",
+            "requested": "v0.5.0",
+            "rev": "c3530f9581f5a002cdd8deaebb95b1248bcf02a3"
         }
     }
 }
