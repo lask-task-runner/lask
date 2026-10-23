@@ -1114,6 +1114,12 @@ spec = do
       accepts (mvn <> "v() = $ mvn -am --also-make -B --batch-mode --q package")
       rejects (mvn <> "v() = $ mvn --also-mak package") ETypeCommandOption
 
+    it "reads a +word as an option named with '+', before the subcommand" $ do
+      let rustup = "command { \"rustup\" } on #rust:1.98 schema { \"rustup\": { root: { closed: true, options: [{ names: [\"+\"], value: \"required\", prefix: true }] }, subcommands: { \"show\": { closed: true } } } }\n"
+      accepts (rustup <> "v() = $ rustup +nightly show")
+      rejects (rustup <> "v() = $ rustup +nightly shwo") ETypeCommandOption
+      rejects "command { \"x\" } on #alpine:3.20 schema { \"x\": { root: { options: [{ names: [\"+x\"] }] } } }\nv() = $ x" ETypeCommandSchema
+
     it "rejects a prefix option that takes no value" $
       rejects "command { \"x\" } on #alpine:3.20 schema { \"x\": { root: { options: [{ names: [\"-W\"], prefix: true }] } } }\nv() = $ x" ETypeCommandSchema
 
