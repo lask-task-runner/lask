@@ -740,8 +740,8 @@ Command declarations:
 - The environment must not have an effect. It must not reach, directly or through the top-level declarations it references, command execution (15.5, and so no command execution expression), the filesystem (15.11), diagnostic output (15.12), nondeterministic generation (15.13), the functions that wait (15.7), or the standard input (9.3). Reachability over-approximates as enumeration does (11.4): a reference counts whether or not it is ever called. A violation is a static error (`E-TYPE-COMMAND-EFFECT`). Reading the variables of the process (15.9) is permitted.
 - The restriction is what an environment has to satisfy for everything that reads it without running a task. Every image a declaration can name stays enumerable (11.4), since enumeration walks its expression; `cmd` can evaluate the environment without running anything and without consuming the standard input, which belongs to the program (11.8); and the environment means the same wherever the word is used, including in a module that imports it.
 - `#local` is permitted, and is how a module states which programs it runs on the host.
-- A declaration's words are **probed** when its environment is known from the text to name one container image as it is: a container environment expression whose head is a registry reference or a recipe, written in the declaration or reached through top-level value bindings, with no image option but those of a recipe (`context`, `build_args`) and no `platform`, and with run options, if any, that do not set the variable `PATH` and whose `env` is a map literal with literal keys. Such a word is probed by `lask sync` (11.7), which records in the lock whether the image provides a program of that name (Lock file, below). A declaration made with a call, or whose environment is `#local`, is not probed: the host's programs may be installed by the very tasks that run them.
-- Before `run` or `eval` evaluates anything, and before `cmd` runs its command, a probed word recorded as missing from its image is an external I/O error (`E-IO-COMMAND-MISSING`, exit code `3`) when the invocation can reach a command execution expression whose environment dispatch selected through that word (10.9); for `run` and `eval`, reachability over-approximates as enumeration does (11.4). The word was declared as the name of a program the environment provides, and a command naming it would fail however it is written. The diagnostic names the word and its image. A word whose image the lock records nothing for is not checked.
+- A declaration's words are **probed** when its environment, evaluated as `lask cmd` evaluates it (11.8), is a container environment that names no `platform`. The evaluation runs nothing and reaches no file, since the environment must have no effect (above), and a secret reference in it is left unresolved. Such a word is probed by `lask sync` (11.7), which records in the lock whether the image provides a program of that name (Lock file, below). A word whose environment is `#local` is not probed: the host's programs may be installed by the very tasks that run them.
+- Before `run` or `eval` evaluates anything, and before `cmd` runs its command, a probed word recorded as missing from its image is an external I/O error (`E-IO-COMMAND-MISSING`, exit code `3`) when the invocation can reach a command execution expression whose environment dispatch selected through that word (10.9); for `run` and `eval`, reachability over-approximates as enumeration does (11.4). The image is found by evaluating the word's environment again, as the probe did. The word was declared as the name of a program the environment provides, and a command naming it would fail however it is written. The diagnostic names the word and its image. A word whose image the lock records nothing for is not checked.
 - A command declaration takes a visibility marker like any other declaration. Omitting it is equivalent to `export`, and makes the words **exported command words** of the module; `internal` keeps them to it. Exporting a word changes nothing in another module until that module imports the word by name.
 - The same word declared twice within one module, or both declared and imported, is a static error (`E-TYPE-COMMAND-DUPLICATE`). The names occupy no namespace shared with values or types, so they cannot collide with a declaration, a value import, or a type alias.
 
@@ -766,6 +766,7 @@ Command schemas:
     value?: String,               // "none" (the default), "required" or "optional"
     values?: Array<String>,       // the values the option takes, when they are a closed set
     global?: Bool,                // also accepted by every subcommand below (default false)
+    stops?: Bool,                 // what follows the option and its value belongs to another program, as after `python -m mod`
     description?: String
   >
 
@@ -775,6 +776,7 @@ Command schemas:
     options?: Array<CommandOption>,
     intermixed?: Bool,            // options may follow positional arguments; default true for gnu, false for single-dash
     stop_at_first_positional?: Bool,  // what follows the first positional argument belongs to another program
+    abbreviations?: Bool,         // a long option may be shortened to a unique prefix, as getopt_long and optparse allow; the parent's when absent, false at the root
     description?: String
   >
 
@@ -795,16 +797,17 @@ Checking a command string against a schema:
 - The check applies to a command execution expression whose environment is selected by dispatch (10.9), and to each simple command of its shell reading (6.6) whose command word is plainly written (no quotation, escape or expansion, and no `/`) and is a command word of the module whose declaration has the source dispatch selected and gives the word a schema. An expression with an environment specification is not checked: the program it runs may not be the one declared.
 - The words after the command word are read in order, assignments and redirections left out:
   1. A word that follows an option requiring a value is its value, whatever it is, provided it expands to one field. If the option lists `values`, a literal value not among them is an error.
-  2. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
-  3. `--` ends the check.
-  4. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option, and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` is read as `-name`.
-  5. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
+  2. An option with `stops` ends the check once it and its value are read: `python -m pytest -k smoke` checks `-m` and its value, and leaves `-k` to pytest.
+  3. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
+  4. `--` ends the check.
+  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` is read as `-name`.
+  6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
 - Each of the following is reported, and the check ends at the first:
-  - an option the current spec does not have, or a subcommand it does not have;
+  - an option the current spec does not have, or a subcommand it does not have, or an abbreviated option that is ambiguous;
   - an option written with `=value` whose `value` is `"none"`;
   - an option whose `value` is `"required"` at the end of the command, unless the shell reading stopped inside it;
   - a literal value not among the option's `values`.
-- An unknown option or subcommand is a static error (`E-TYPE-COMMAND-OPTION`) when the current spec is `closed`, and otherwise the advisory `W-COMMAND-OPTION` (14.2), since a spec that is not closed does not claim to be complete. The other findings are `E-TYPE-COMMAND-OPTION` whatever the spec says.
+- An unknown option or subcommand, or an ambiguous abbreviation, is a static error (`E-TYPE-COMMAND-OPTION`) when the current spec is `closed`, and otherwise the advisory `W-COMMAND-OPTION` (14.2), since a spec that is not closed does not claim to be complete. The other findings are `E-TYPE-COMMAND-OPTION` whatever the spec says.
 
 ```lask
 go_schema: CommandSchema = {
@@ -3367,7 +3370,8 @@ Rules (images):
 
 Rules (command probes):
 
-- After the images are materialized, `sync` probes the command words of every declaration whose words are probed (Chapter 5), in every module the program loads, whose image materialized: in one container of the image, with no run options and the base directory mounted as for a command (10.5), `/bin/sh` reports for each word whether `command -v` finds it. The result is recorded in the image's lock entry as `commands`.
+- After the images are materialized, `sync` probes the command words of every declaration whose words are probed (Chapter 5), in every module the program loads, whose image materialized: in a container of the image, run with the run options its environment evaluated to and the base directory mounted as for a command (10.5), `/bin/sh` reports for each word whether `command -v` finds it. Words declared on one image with different run options are probed in a container per set of options, and a word any of them finds is present. The result is recorded in the image's lock entry as `commands`.
+- An image whose lock entry is unchanged and already records every word declared on it is not probed again.
 - A word the image does not provide is reported as `E-IO-COMMAND-MISSING`, naming the word, the image and the declaration, and `sync` exits with `3`. The images and their pins are still recorded, and so is the word as `"missing"`, so that `run` refuses the commands that use it (Chapter 5) until the declaration or the image is corrected.
 - An image whose `/bin/sh` cannot be started provides none of its words: lask runs every command string through it (10.2), so each is recorded as `"missing"`, and the diagnostic says so.
 - A probe that cannot be run for another reason, such as an engine that stops answering, records nothing for that image and is reported as the failure it is (`E-IO-ENV-RESOLVE`).

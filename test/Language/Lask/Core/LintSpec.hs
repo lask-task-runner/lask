@@ -54,7 +54,7 @@ spec = describe "Language.Lask.Core.Lint" $ do
         g = decl "g" Nothing (core (CApp (core (CVar (BuiltinRef "trim"))) [] []))
         h = decl "h" Nothing (core (CVar (TopRef "m" "nope")))
         i = decl "i" Nothing (core (CVar (BuiltinRef "nope")))
-        prog = CoreProgram "m" "." (Map.fromList [(("m", n), d) | d@(CoreDecl _ n _ _ _ _ _) <- [f, g, h, i]]) mempty mempty [] [] [] mempty mempty mempty []
+        prog = CoreProgram "m" "." (Map.fromList [(("m", n), d) | d@(CoreDecl _ n _ _ _ _ _) <- [f, g, h, i]]) mempty mempty [] [] [] mempty mempty []
     lintProgram prog
       `shouldMatchList` [ "f: the local y is not bound",
                           "g: calls the built-in trim with 0 arguments, but it takes 1",

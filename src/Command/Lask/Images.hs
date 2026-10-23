@@ -17,6 +17,8 @@ module Command.Lask.Images
     Probed (..),
     probeCommands,
     missingCommands,
+    evalCommandEnv,
+    commandImage,
   )
 where
 
@@ -32,8 +34,16 @@ import qualified Data.Text as T
 import Language.Lask.Deps.Lock
 import Language.Lask.Elaborate (CoreProgram (..), Key)
 import Language.Lask.ErrorCode (ErrorCode (..), codeText)
+import Control.Exception (try)
+import Language.Lask.Builtins.Impl (RtHooks (..))
+import Language.Lask.Core.AST (Core)
+import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
 import Language.Lask.Runtime.Container (ContainerBackend (..), RunSpec (..))
+import Language.Lask.Runtime.Environment (ResolvedEnv (..), resolveEnv)
+import Language.Lask.Runtime.Eval (evalCore, mkRtCtx)
 import Language.Lask.Runtime.Image
+import Language.Lask.Runtime.Value (EnvValue, LaskFailure, Value (..), ioFailure)
+import Language.Lask.SecretStore.Resolve (readEnvVarUnresolved)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Process (readCreateProcessWithExitCode)
@@ -249,46 +259,85 @@ data Probed
   | -- | The probe could not be run; why.
     ProbeFailed Text Text
 
--- | Probe the command words declared on each image that materialized
--- (spec ch. 5, 11.7): in one container of the image, @/bin/sh@ reports
--- whether @command -v@ finds each. Returns the image section of the
--- lock with the results recorded, and one outcome per image probed. An
--- image whose probe could not run keeps no results. An image the prior
--- lock pins to the same content, with results for the same words, is
--- not probed again: its results are those.
+-- | Evaluate the environment of a command declaration as @lask cmd@
+-- does (spec 11.8): nothing runs, no file is touched, and a secret
+-- reference stays unresolved.
+evalCommandEnv :: (Text -> IO (Maybe Text)) -> CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
+evalCommandEnv readEnv core c = do
+  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())) noAsyncTracker readEnv)
+  r <- try (evalCore ctx Map.empty c)
+  pure $ case r of
+    Left lf -> Left lf
+    Right (VEnv ev) -> Right ev
+    Right _ -> Left (refusal "the command's environment did not evaluate to an Environment")
+  where
+    refuseCommand _ _ = pure (Left (refusal "the environment of a command declaration tried to run a command"))
+    refuseFile _ _ = pure (Left (refusal "the environment of a command declaration tried to access a file"))
+    refusal = ioFailure EIoEnvResolve
+
+-- | The image a declared command word runs in (spec ch. 5): the lock
+-- key of the image its environment evaluates to, with the run options.
+-- 'Nothing' for the local environment, one that names a platform, and
+-- one that does not evaluate: those words are not probed.
+commandImage :: CoreProgram -> Core -> IO (Maybe (Text, Map Text Value))
+commandImage core c = do
+  r <- evalCommandEnv readEnvVarUnresolved core c
+  pure $ case r >>= resolveEnv of
+    Right (ResolvedDocker ref opts)
+      | not (Map.member "platform" opts) -> Just (registryKey ref, opts)
+    Right (ResolvedRecipe rc opts)
+      | rcPlatform rc == Nothing -> Just (recipeKey (rcDockerfile rc), opts)
+    _ -> Nothing
+
+-- | Probe the command words of every module's declarations whose image
+-- materialized (spec ch. 5, 11.7): in one container of the image, run
+-- with the environment's run options, @/bin/sh@ reports whether
+-- @command -v@ finds each word. Returns the image section of the lock
+-- with the results recorded, and one outcome per image probed. A word
+-- found under any of the run options it is declared with is present.
+-- An image whose probe could not run keeps no results. An image the
+-- prior lock pins to the same content, with results for the same
+-- words, is not probed again: its results are those.
 probeCommands :: ContainerBackend -> CoreProgram -> [Materialized] -> Map Text LockImage -> Map Text LockImage -> IO (Map Text LockImage, [Probed])
 probeCommands backend core mats prior images = do
-  outcomes <- mapM probeOrReuse targets
-  let recorded = foldr record images outcomes
-  pure (recorded, outcomes)
+  declared <-
+    fmap concat . mapM (\(w, c) -> maybe [] (\(k, o) -> [(k, o, w)]) <$> commandImage core c) $
+      [(w, c) | tbl <- Map.elems (cpCommands core), (w, c) <- Map.toList tbl]
+  let pinned = Map.fromList [(irKey (matRow m), image) | m <- mats, notFailed (matOutcome m), Just image <- [matPinned m]]
+      byImage = Map.fromListWith (<>) [(k, [w]) | (k, _, w) <- declared]
+  outcomes <-
+    mapM
+      (\(key, image) -> probeImage key image (Set.toList (Set.fromList (byImage Map.! key))) [(o, w) | (k, o, w) <- declared, k == key])
+      [(k, image) | (k, image) <- Map.toList pinned, Map.member k byImage]
+  pure (foldr record images outcomes, outcomes)
   where
-    byImage = Map.fromListWith (<>) [(k, [w]) | tbl <- Map.elems (cpProbes core), (w, k) <- Map.toList tbl]
-    targets =
-      [ (key, image, Set.toList (Set.fromList ws))
-      | m <- mats,
-        notFailed (matOutcome m),
-        Just image <- [matPinned m],
-        let key = irKey (matRow m),
-        Just ws <- [Map.lookup key byImage]
-      ]
     notFailed (Failed _) = False
     notFailed _ = True
 
-    probeOrReuse t@(key, _, ws) = case (Map.lookup key prior, Map.lookup key images) of
+    probeImage key image ws uses = case (Map.lookup key prior, Map.lookup key images) of
       (Just before, Just now)
         | before {liCommands = Map.empty} == now,
           Map.keys (liCommands before) == ws ->
             pure (Probed key (Map.toList (liCommands before)))
-      _ -> probe t
+      _ -> do
+        -- One run per distinct set of run options the words come with.
+        let groups = Map.elems (Map.fromListWith (\(o, a) (_, b) -> (o, a <> b)) [(T.pack (show (Map.toAscList o)), (o, [w])) | (o, w) <- uses])
+        results <- mapM (\(o, gws) -> probeWith image o (Set.toList (Set.fromList gws))) groups
+        pure $ case [r | Left r <- results] of
+          Left why : _ -> ProbeFailed key why
+          Right (gws, why) : _ -> NoShell key gws why
+          [] -> Probed key (Map.toList (Map.fromListWith (||) (concat [rs | Right rs <- results])))
 
-    probe (key, image, ws) = do
+    -- Left (Left why): the probe could not run. Left (Right (words, why)):
+    -- the image's shell could not start.
+    probeWith image opts ws = do
       cp <-
         cbRunProcess backend $
           RunSpec
             { runBaseDir = cpBaseDir core,
               runName = Nothing,
               runImage = image,
-              runOptions = Map.empty,
+              runOptions = opts,
               runStdin = False,
               runTty = False,
               runEntrypoint = "/bin/sh",
@@ -300,12 +349,12 @@ probeCommands backend core mats prior images = do
             ExitSuccess -> 0
             ExitFailure n -> n
       pure $ case cbRunFailure backend exit errText of
-        Just why -> ProbeFailed key why
+        Just why -> Left (Left why)
         Nothing
           | exit == 0 ->
               let seen = Map.fromList [(T.drop 1 l, T.take 1 l == "+") | l <- T.lines (T.pack out), T.take 1 l `elem` ["+", "-"]]
-               in Probed key [(w, Map.findWithDefault False w seen) | w <- ws]
-          | otherwise -> NoShell key ws (if T.null errText then "/bin/sh exited with " <> T.pack (show exit) else errText)
+               in Right [(w, Map.findWithDefault False w seen) | w <- ws]
+          | otherwise -> Left (Right (ws, if T.null errText then "/bin/sh exited with " <> T.pack (show exit) else errText))
 
     script = "for w in \"$@\"; do if command -v \"$w\" >/dev/null 2>&1; then echo \"+$w\"; else echo \"-$w\"; fi; done"
 
@@ -314,14 +363,24 @@ probeCommands backend core mats prior images = do
       NoShell key ws _ -> Map.adjust (\li -> li {liCommands = Map.fromList [(w, False) | w <- ws]}) key m
       ProbeFailed _ _ -> m
 
--- | The probed words recorded as missing from their image that the
--- given declarations dispatch through (spec ch. 5), with the image.
-missingCommands :: CoreProgram -> Map Text LockImage -> [Key] -> [(Text, Text)]
+-- | The command words recorded as missing from their image (spec ch.
+-- 5) that the given declarations dispatch through, with the image:
+-- each word's environment is evaluated, as the probe evaluated it, to
+-- find the image it runs in.
+missingCommands :: CoreProgram -> Map Text LockImage -> [Key] -> IO [(Text, Text)]
 missingCommands core images keys =
-  Set.toList . Set.fromList $
-    [ (w, img)
-    | k <- keys,
-      (w, img) <- Map.findWithDefault [] k (cpDispatched core),
-      Just li <- [Map.lookup img images],
-      Map.lookup w (liCommands li) == Just False
-    ]
+  Set.toList . Set.fromList . concat
+    <$> mapM
+      missingOf
+      (Set.toList (Set.fromList [u | k <- keys, u <- Map.findWithDefault [] k (cpDispatched core)]))
+  where
+    missingOf (m, w) = case Map.lookup m (cpCommands core) >>= Map.lookup w of
+      Nothing -> pure []
+      Just c -> do
+        img <- commandImage core c
+        pure
+          [ (w, key)
+          | Just (key, _) <- [img],
+            Just li <- [Map.lookup key images],
+            Map.lookup w (liCommands li) == Just False
+          ]
