@@ -777,6 +777,7 @@ Command schemas:
     options?: Array<CommandOption>,
     intermixed?: Bool,            // options may follow positional arguments; default true for gnu, false for single-dash
     stop_at_first_positional?: Bool,  // what follows the first positional argument belongs to another program
+    subcommand_optional?: Bool,   // a positional argument that names no subcommand is an argument: `grype alpine:3.20` beside `grype db update`
     abbreviations?: Bool,         // a long option may be shortened to a unique prefix, as getopt_long and optparse allow; the parent's when absent, false at the root
     description?: String
   >
@@ -802,7 +803,7 @@ Checking a command string against a schema:
   3. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
   4. `--` ends the check.
   5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
-  6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
+  6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. With `subcommand_optional`, a word that names no subcommand is a positional argument of the current spec instead of an unknown subcommand. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
 - Each of the following is reported, and the check ends at the first:
   - an option the current spec does not have, or a subcommand it does not have, or an abbreviated option that is ambiguous;
   - an option written with `=value` whose `value` is `"none"`;

@@ -1120,6 +1120,12 @@ spec = do
       rejects (rustup <> "v() = $ rustup +nightly shwo") ETypeCommandOption
       rejects "command { \"x\" } on #alpine:3.20 schema { \"x\": { root: { options: [{ names: [\"+x\"] }] } } }\nv() = $ x" ETypeCommandSchema
 
+    it "reads a word that names no subcommand as an argument where the subcommand may be omitted" $ do
+      let grype = "command { \"grype\" } on #anchore/grype:v0.119 schema { \"grype\": { root: { closed: true, subcommand_optional: true, options: [{ names: [\"-o\", \"--output\"], value: \"required\" }] }, subcommands: { \"db\": { closed: true }, \"db update\": { closed: true } } } }\n"
+      accepts (grype <> "v() = $ grype alpine:3.20 -o json && grype db update")
+      rejects (grype <> "v() = $ grype alpine:3.20 --bogus") ETypeCommandOption
+      rejects (grype <> "v() = $ grype db updat") ETypeCommandOption
+
     it "rejects a prefix option that takes no value" $
       rejects "command { \"x\" } on #alpine:3.20 schema { \"x\": { root: { options: [{ names: [\"-W\"], prefix: true }] } } }\nv() = $ x" ETypeCommandSchema
 
