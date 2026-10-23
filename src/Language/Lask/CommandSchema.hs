@@ -448,9 +448,13 @@ walkCommand schema word = go (St "" False Nothing)
       | otherwise = go st rest
 
     -- In the single-dash style a name may also be written with two
-    -- dashes, as Go's flag package reads it.
+    -- dashes, as Go's flag package reads it, unless an option is named
+    -- with two dashes itself (java's --class-path beside -cp).
     normalised st t
-      | styleAt schema (stPath st) == SingleDash, "--" `T.isPrefixOf` t = T.drop 1 t
+      | styleAt schema (stPath st) == SingleDash,
+        "--" `T.isPrefixOf` t,
+        not (isJust (lookupOpt st (fst (T.breakOn "=" t)))) =
+          T.drop 1 t
       | otherwise = t
 
     lookupOpt st name = find (elem name . optNames) (optionsAt schema (stPath st))
