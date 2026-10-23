@@ -243,13 +243,6 @@ builtinDocs =
             "A hole of a command execution expression is already escaped (6.6), so `$ cp #{src} .` needs no `shell_quote`; one there quotes the value twice."
           ]
       ),
-      ( "raw",
-        doc
-          "15.5"
-          [ "`raw(s)` returns `s`. A hole of a command execution expression written as `#{raw(s)}` is substituted without escaping, so the shell parses `s`: `$ go build #{raw(flags)}` passes each flag in `flags` as its own word.",
-            "Anywhere else it changes nothing. Never give it a value from outside the program, such as an argument or a file: the shell would run what it contains."
-          ]
-      ),
       -- 15.6 parallel/async
       ("spawn", doc "15.6" ["`spawn(f)` starts `f` concurrently and returns a handle. Get the result with `await h`."]),
       ( "all",

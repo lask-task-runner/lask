@@ -64,12 +64,14 @@ data LockEntry = LockEntry
 
 -- | A materialized container image (spec 10.3): a recipe built to a
 -- content-addressed tag, or a registry reference pinned to the digest
--- it resolved to.
+-- it resolved to, with whether it provides each command word declared
+-- on it (11.7): 'True' for present, 'False' for missing.
 data LockImage = LockImage
   { liKind :: Text,
     liRef :: Maybe Text,
     liTag :: Maybe Text,
-    liDigest :: Maybe Text
+    liDigest :: Maybe Text,
+    liCommands :: Map Text Bool
   }
   deriving (Show, Eq)
 
@@ -150,7 +152,19 @@ parseLockFile bytes = do
     image (key, v) = do
       o <- asObject ("lock image '" <> key <> "'") v
       let kind = maybe "registry" id (str o "kind")
-      Right (key, LockImage kind (str o "ref") (str o "tag") (str o "digest"))
+      commands <- case KM.lookup "commands" o of
+        Nothing -> Right Map.empty
+        Just cs -> do
+          co <- asObject ("the commands of lock image '" <> key <> "'") cs
+          Map.fromList
+            <$> traverse
+              ( \(k, x) -> case x of
+                  A.String "present" -> Right (AK.toText k, True)
+                  A.String "missing" -> Right (AK.toText k, False)
+                  _ -> Left (err ("lock image '" <> key <> "': the command '" <> AK.toText k <> "' must be \"present\" or \"missing\""))
+              )
+              (KM.toList co)
+      Right (key, LockImage kind (str o "ref") (str o "tag") (str o "digest") commands)
 
 renderLockFile :: LockFile -> BL.ByteString
 renderLockFile lf =
@@ -176,7 +190,10 @@ renderLockFile lf =
           [ ["kind" A..= liKind i],
             maybe [] (\x -> ["ref" A..= x]) (liRef i),
             maybe [] (\x -> ["tag" A..= x]) (liTag i),
-            maybe [] (\x -> ["digest" A..= x]) (liDigest i)
+            maybe [] (\x -> ["digest" A..= x]) (liDigest i),
+            [ "commands" A..= A.object [AK.fromText w A..= (if ok then "present" else "missing" :: Text) | (w, ok) <- Map.toAscList (liCommands i)]
+            | not (Map.null (liCommands i))
+            ]
           ]
 
 err :: Text -> Diagnostic

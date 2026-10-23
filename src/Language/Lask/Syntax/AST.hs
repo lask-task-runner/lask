@@ -77,10 +77,10 @@ data DeclF
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
-  | -- | @command { "go", "gofmt" } on #golang:1.25@ (spec 5):
-    -- registers each name as a command word of this module. Binds no
-    -- value name.
-    DCommand [Spanned Text] Expr
+  | -- | @command { "go", "gofmt" } on #golang:1.25 [schema e]@ (spec
+    -- 5): registers each name as a command word of this module, with
+    -- the command schemas @e@ gives them. Binds no value name.
+    DCommand [Spanned Text] Expr (Maybe Expr)
   | -- | @import command { "go", "gofmt" } from "path"@ (spec 5): makes
     -- command words the target module exports command words of this
     -- module.
@@ -248,7 +248,10 @@ data ExprF
 -- | A piece of a string or command string. 'TPChunk' carries the
 -- source span it was lexed from, so a position inside it can be
 -- recovered by walking its text (spec 10.9 command words).
-data TextPart = TPChunk Span Text | TPInterp Expr
+-- 'TPRaw' is a hole written @#!{e}@, which only a command string has
+-- (spec 6.6): the shell parses its value instead of receiving it
+-- escaped.
+data TextPart = TPChunk Span Text | TPInterp Expr | TPRaw Expr
   deriving (Show, Eq)
 
 -- | One arm of an 'ECase'. 'Nothing' as the heads marks the @else@
@@ -311,7 +314,7 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
       (map stripParam ps)
       (fmap stripSpansType t)
       (stripSpansExpr e)
-  DCommand ns e -> DCommand (map stripWord ns) (stripSpansExpr e)
+  DCommand ns e sch -> DCommand (map stripWord ns) (stripSpansExpr e) (fmap stripSpansExpr sch)
   DImportCommands ns path -> DImportCommands (map stripWord ns) path
   DExportCommandsFrom ns path -> DExportCommandsFrom (map stripWord ns) path
   where
@@ -367,6 +370,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
     stripHeads (TypeHeads ts) = TypeHeads (map stripSpansType ts)
     stripPart (TPChunk _ c) = TPChunk NoSpan c
     stripPart (TPInterp e) = TPInterp (stripSpansExpr e)
+    stripPart (TPRaw e) = TPRaw (stripSpansExpr e)
     stripArg (Arg _ (APos e)) = Arg NoSpan (APos (stripSpansExpr e))
     stripArg (Arg _ (AKw n e)) = Arg NoSpan (AKw n (stripSpansExpr e))
 

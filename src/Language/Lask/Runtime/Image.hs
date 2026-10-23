@@ -194,7 +194,7 @@ lockPins :: Map Text LockImage -> Map Text Text
 lockPins images =
   Map.fromList
     [ (ref, pinnedRef ref digest)
-    | LockImage "registry" (Just ref) _ (Just digest) <- Map.elems images
+    | LockImage "registry" (Just ref) _ (Just digest) _ <- Map.elems images
     ]
 
 -- | Pins for @run@, @eval@, @cmd@ and @envs@: each pinned reference to

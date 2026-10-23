@@ -46,6 +46,7 @@ library
       Language.Lask.Builtins.Regex
       Language.Lask.Builtins.Shell
       Language.Lask.Builtins.Sig
+      Language.Lask.CommandSchema
       Language.Lask.Confirm
       Language.Lask.Core.AST
       Language.Lask.Core.Compare
@@ -95,6 +96,7 @@ library
       Language.Lask.Syntax.Parser
       Language.Lask.Syntax.Printer
       Language.Lask.Syntax.Scope
+      Language.Lask.Syntax.Shell
       Language.Lask.Syntax.TokenStream
       Language.Lask.Types
       Language.Lask.Utils
@@ -297,6 +299,7 @@ test-suite lask-test
       Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
       Language.Lask.Syntax.PrinterSpec
+      Language.Lask.Syntax.ShellSpec
       Language.LaskSpec
       Language.LSP.LaskSpec
       Paths_lask

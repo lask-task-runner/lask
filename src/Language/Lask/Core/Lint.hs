@@ -31,7 +31,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Builtins.Names (coreFunctionNames)
-import Language.Lask.Builtins.Shell (shellEscapeBuiltins)
+import Language.Lask.Builtins.Shell (rawBuiltin, shellEscapeBuiltins)
 import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes)
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
@@ -102,6 +102,6 @@ lintDecl cp cd = map ((cdName cd <> ": ") <>) (nub (go Set.empty (cdCore cd)))
     known n = Map.member n builtinSchemes || n `Set.member` coreFunctionNames || n `elem` internalNames
 
     -- Names the elaborator refers to that no program can write.
-    internalNames = ["stdin", "%commandFail"] <> map fst shellEscapeBuiltins
+    internalNames = ["stdin", "%commandFail", rawBuiltin] <> map fst shellEscapeBuiltins
 
     tshow = T.pack . show

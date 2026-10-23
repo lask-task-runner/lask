@@ -140,7 +140,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Stack (CallStack, HasCallStack, SrcLoc (..), callStack, getCallStack)
 import GHC.TypeLits (KnownSymbol, Symbol, symbolVal)
-import Language.Lask.Builtins.Shell (escapeCommand)
+import Language.Lask.Builtins.Shell (escapeCommand, rawBuiltin)
 import Language.Lask.Core.AST
 import Language.Lask.Core.Lint (lintProgram)
 import Language.Lask.Core.Pretty (renderCore)
@@ -463,11 +463,11 @@ getOr (E m) (E k) (E d) = builtin NoSpan "get_or" [m, k, d]
 getEnvOr :: E v 'TString -> E v 'TString -> E v 'TString
 getEnvOr (E n) (E d) = builtin NoSpan "get_env_or" [n, d]
 
--- | @raw(s)@: in the arguments of 'run', 'runAll' and the like, @s@
--- is given to the shell as it is rather than escaped (spec 6.6). Never
--- give it a value from outside the program.
+-- | The hole @#!{s}@: in the arguments of 'run', 'runAll' and the
+-- like, @s@ is given to the shell as it is rather than escaped (spec
+-- 6.6). Never give it a value from outside the program.
 raw :: E v 'TString -> E v 'TString
-raw (E s) = builtin NoSpan "raw" [s]
+raw (E s) = builtin NoSpan rawBuiltin [s]
 
 -- Binding ------------------------------------------------------------------------
 
@@ -1066,7 +1066,11 @@ assemble exports = case nameErrors <> dupErrors <> docErrors <> kwErrors <> comm
           cpCommands = Map.singleton programModule (Map.fromList (concatMap declCommands decls)),
           cpCommandUses = [],
           cpHover = [],
-          cpAdvisories = []
+          cpAdvisories = [],
+          cpProbes = Map.empty,
+          cpDispatched = Map.empty,
+          cpSchemas = Map.empty,
+          cpSchemaUses = []
         }
 
 -- | A @lower_id@ (spec 3.2) that is not a reserved word.

@@ -156,7 +156,6 @@ builtinSchemes =
       -- elaborator against the options of 10.2 (spec 15.5).
       ("runnable", mono [TyEnvironment] TyRunnable),
       ("shell_quote", mono [TyString] TyString),
-      ("raw", mono [TyString] TyString),
       -- 15.6 parallel/async
       ("spawn", poly ["T"] [TyFun [] (tv "T")] (TyAsync (tv "T"))),
       ("all", poly ["T"] [TyArray (TyAsync (tv "T"))] (TyArray (tv "T"))),

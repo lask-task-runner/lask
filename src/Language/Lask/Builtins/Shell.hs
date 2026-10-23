@@ -9,6 +9,7 @@ module Language.Lask.Builtins.Shell
     shellEscapeBuiltin,
     shellEscapeBuiltins,
     shellQuote,
+    rawBuiltin,
   )
 where
 
@@ -19,7 +20,8 @@ import Language.Lask.Core.AST
 -- | Escape every hole of a command string (spec 6.6) for the shell
 -- quoting it sits in, so that its value reaches the command as text:
 -- one word outside quotes, the inside of the quotes it is written in.
--- A hole that is a call of the builtin @raw@ is substituted as it is.
+-- A hole written @#!{e}@, which the elaborator marks with 'rawBuiltin',
+-- is substituted as it is.
 --
 -- The quoting is that of the literal text alone (backslash, @'...'@
 -- and @"..."@); a hole in @$(...)@ or backquotes counts as being where
@@ -42,10 +44,16 @@ escapeCommand c = c
 
 escapeHole :: ShellQuoting -> Core -> Core
 escapeHole q c = case coreF c of
-  CApp (Core _ (CVar (BuiltinRef "raw"))) _ _ -> c
+  CApp (Core _ (CVar (BuiltinRef n))) _ _ | n == rawBuiltin -> c
   _ -> Core sp (CApp (Core sp (CVar (BuiltinRef (shellEscapeBuiltin q)))) [Core sp (CStr [CPExpr c])] [])
   where
     sp = coreSpan c
+
+-- | The internal builtin that marks a hole written @#!{e}@ (spec 6.6):
+-- the identity on its string, which escaping leaves alone. No program
+-- can write its name.
+rawBuiltin :: Text
+rawBuiltin = "%raw"
 
 -- | The shell quoting a hole of a command string sits in.
 data ShellQuoting = QuoteNone | QuoteSingle | QuoteDouble

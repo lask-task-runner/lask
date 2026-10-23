@@ -12,7 +12,7 @@ import Command.Lask.Common
 import Command.Lask.Project (cmdDepsAdd, cmdDepsGraph, cmdDepsList, cmdDepsRm, cmdEnvsList, cmdSync)
 import Command.Lask.Complete (completionScript)
 import Command.Lask.Fmt (cmdFmt)
-import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, readsStdin)
+import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, reachableDecls, readsStdin)
 import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
@@ -47,7 +47,8 @@ import Language.Lask.Obs.CommandLog
 import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
-import Command.Lask.Images (loadPins)
+import Command.Lask.Images (loadPins, lockedImages, missingCommands)
+import Language.Lask.Deps.Lock (LockImage (..))
 import Language.Lask.Runtime.Container (ContainerBackend, resolveBackend)
 import Language.Lask.Runtime.Image (ImagePins, Recipe (..), imageExists, recipeSource, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
@@ -167,6 +168,14 @@ cmdRunEval printResult runOpts = do
             cliArgs
       _ -> usageError opts ("'" <> fnName <> "' is not a callable function")
 
+  -- A declared program its image lacks fails every command that runs
+  -- it, so nothing is run (spec ch. 5).
+  images <- lockedImages core
+  case missingCommands core images [(cdModule d, cdName d) | d <- reachableDecls core key] of
+    [] -> pure ()
+    missing -> do
+      traceId <- maybe newTraceId pure (optTraceId opts)
+      failureExit opts traceId (ioFailure EIoCommandMissing (missingMessage missing))
   -- Before anything is evaluated, and before stdin is read: a refused
   -- confirmation leaves nothing half done (spec 11.2).
   confirmOrExit opts (runConfirm runOpts) compiled fnName key cd posVals kwVals
@@ -426,7 +435,7 @@ failureExit opts traceId uncaught = do
       -- stream (spec 12.2: code + stage).
       stage = case lfCode lf of
         Just c
-          | c `elem` [EIoStdinRead, EIoEnvResolve, EIoImageMissing, EIoImageDigest, EIoFs, EIoDataDecode] ->
+          | c `elem` [EIoStdinRead, EIoEnvResolve, EIoImageMissing, EIoImageDigest, EIoCommandMissing, EIoFs, EIoDataDecode] ->
               StageIo
         _ -> StageRuntime
       msg = failureMessage lf
@@ -596,6 +605,13 @@ cmdCmd cmdOpts
               (suggest name (Map.keys table))
           Just envCore -> do
             traceId <- maybe newTraceId pure (optTraceId opts)
+            images <- lockedImages core
+            let probed = Map.findWithDefault Map.empty (cpEntry core) (cpProbes core)
+            case Map.lookup name probed of
+              Just img
+                | Just False <- Map.lookup name . liCommands =<< Map.lookup img images ->
+                    failureExit opts traceId (ioFailure EIoCommandMissing (missingMessage [(name, img)]))
+              _ -> pure ()
             secrets <- newSecretResolver
             envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
             writeErr <- newLineWriter stderr
@@ -612,6 +628,12 @@ cmdCmd cmdOpts
               Left failure -> failureExit opts traceId failure
               Right 0 -> exitSuccess
               Right code -> exitWith (ExitFailure code)
+
+-- | The diagnostic of declared programs their images lack (spec ch. 5).
+missingMessage :: [(Text, Text)] -> Text
+missingMessage missing =
+  T.intercalate "; " ["'" <> w <> "' is declared on " <> T.drop 1 img <> ", which does not provide it" | (w, img) <- missing]
+    <> " (as lask sync found); correct the command declaration or its image, then run lask sync"
 
 -- | @lask cmd --help@: the option help, then every command word of
 -- the entry module with the state of the image it needs, as @lask run

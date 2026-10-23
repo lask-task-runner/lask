@@ -52,6 +52,33 @@ spec = beforeAll findLask $ do
         cs <- calls state
         [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` all ("alpine@sha256:aaa" `isInfixOf`)
 
+    it "probes the declared command words on sync and records them in the lock (spec 11.7)" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        b <- runLaskEnv lask dir extra ["sync"] ""
+        resExit b `shouldBe` 0
+        lockText dir >>= (`shouldContain` "\"cat\": \"present\"")
+        -- An image pinned to the same content is not probed again.
+        b2 <- runLaskEnv lask dir extra ["sync", "--frozen"] ""
+        resExit b2 `shouldBe` 0
+        cs <- calls state
+        length [c | c <- cs, "command -v" `isInfixOf` c] `shouldBe` 1
+
+    it "refuses to run a declared command its image does not provide (spec ch. 5, 11.7)" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        createDirectoryIfMissing True (state </> "missing")
+        writeFile (state </> "missing" </> "cat") ""
+        b <- runLaskEnv lask dir extra ["sync"] ""
+        resExit b `shouldBe` 3
+        resErr b `shouldContain` "E-IO-COMMAND-MISSING"
+        lockText dir >>= (`shouldContain` "\"cat\": \"missing\"")
+        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit r `shouldBe` 3
+        resErr r `shouldContain` "E-IO-COMMAND-MISSING"
+        c <- runLaskEnv lask dir extra ["cmd", "cat", "x"] ""
+        resExit c `shouldBe` 3
+        cs <- calls state
+        [x | x <- cs, "run " `isPrefixOf` x, not ("command -v" `isInfixOf` x)] `shouldBe` []
+
     -- A command line is visible to every user of the host (spec 10.2).
     it "passes env values to the container without putting them on the command line" $ \lask ->
       withFakeDocker $ \state extra ->
@@ -63,6 +90,8 @@ spec = beforeAll findLask $ do
           ]
           $ \dir -> do
             _ <- runLaskEnv lask dir extra ["sync"] ""
+            -- Only the command's own run, not the probe of sync (11.7).
+            writeFile (state </> "calls") ""
             r <- runLaskEnv lask dir extra ["eval", "hi"] ""
             resExit r `shouldBe` 0
             runs <- filter ("run " `isPrefixOf`) <$> calls state
@@ -115,6 +144,7 @@ spec = beforeAll findLask $ do
     it "attaches stdin to a containerized cmd even when it is not a terminal" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
         _ <- runLaskEnv lask dir extra ["sync"] ""
+        writeFile (state </> "calls") ""
         r <- runLaskEnv lask dir extra ["cmd", "cat"] "hello\n"
         resExit r `shouldBe` 0
         runs <- filter ("run " `isPrefixOf`) <$> calls state

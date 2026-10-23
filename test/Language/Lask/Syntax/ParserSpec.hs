@@ -180,7 +180,13 @@ spec = do
 
     it "parses a command declaration with its words in braces (spec 5)" $
       pModule "command { \"go\", \"gofmt\" } on e"
-        `shouldBe` Right [DCommand [sp "go", sp "gofmt"] (var "e")]
+        `shouldBe` Right [DCommand [sp "go", sp "gofmt"] (var "e") Nothing]
+
+    it "parses the schema of a command declaration (spec 5)" $ do
+      pModule "command { \"go\" } on e schema s"
+        `shouldBe` Right [DCommand [sp "go"] (var "e") (Just (var "s"))]
+      pModule "export command { \"go\" } on e schema s"
+        `shouldBe` Right [DCommand [sp "go"] (var "e") (Just (var "s"))]
 
     it "parses an import of command words (spec 5)" $
       pModule "import command { \"node\", \"python\" } from \"tools\""
@@ -188,7 +194,7 @@ spec = do
 
     it "parses the export forms of a command declaration (spec 5)" $ do
       pModule "export command { \"go\" } on e"
-        `shouldBe` Right [DCommand [sp "go"] (var "e")]
+        `shouldBe` Right [DCommand [sp "go"] (var "e") Nothing]
       pModule "export command { \"go\" } from \"./lib.lask\""
         `shouldBe` Right [DExportCommandsFrom [sp "go"] "./lib.lask"]
 
@@ -478,6 +484,15 @@ spec = do
               StreamOut
               (Just (ex (EEnv "alpine:3.12" Nothing Nothing)))
               [TPChunk NoSpan "echo ", TPInterp (var "msg")]
+          )
+
+    it "parses a hole the shell parses (spec 6.6)" $
+      pExpr "$[#local] go build #!{flags}"
+        `shouldBe` Right
+          ( ECommand
+              StreamOut
+              (Just (ex (EEnv "local" Nothing Nothing)))
+              [TPChunk NoSpan "go build ", TPRaw (var "flags")]
           )
 
     it "parses stream selectors" $

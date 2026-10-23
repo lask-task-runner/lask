@@ -300,9 +300,12 @@ spec = do
     it "escapes a hole for the quotes it is written in (spec 6.6)" $ do
       evalsTo "n = \"$x\"\nf() = $[#local] echo \"a #{n}\"" "f" "\"\\\"a \\\\$x\\\"\\n\""
       evalsTo "n = \"$x\"\nf() = $[#local] echo 'a #{n}'" "f" "\"'a $x'\\n\""
-    it "substitutes a raw hole as it is" $
-      evalsTo "n = \"-v -x\"\nf() = $[#local] echo #{raw(n)}" "f" "\"-v -x\\n\""
-    it "escapes a hole whose raw is not the builtin" $
+    it "substitutes a hole written #!{e} as it is (spec 6.6)" $ do
+      evalsTo "n = \"-v -x\"\nf() = $[#local] echo #!{n}" "f" "\"-v -x\\n\""
+      evalsTo "n = \"it's\"\nf() = $[#local] echo '#!{n}'" "f" "\"'it's'\\n\""
+    it "keeps an escaped #!{ as text" $
+      evalsTo "f() = $[#local] echo '\\#!{n}'" "f" "\"'#!{n}'\\n\""
+    it "escapes a hole that calls a function named raw like any other" $
       evalsTo "f() = do {\n  raw = \\(s: String) -> s\n  $[#local] echo #{raw(\"a b\")}\n}" "f" "\"'a b'\\n\""
     it "propagates infrastructure failures" $
       failsWith "f() = $[#local] unreachable" "f" EIoEnvResolve

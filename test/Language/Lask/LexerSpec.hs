@@ -170,6 +170,21 @@ spec = do
       lexed "$ echo \\#{x}"
         `shouldBe` Right [TCommand StreamOut Nothing (chunk1 "echo #{x}")]
 
+    it "captures a hole the shell parses, #!{...}, inside command strings (spec 6.6)" $
+      lexed "$ go build #!{flags} ."
+        `shouldBe` Right
+          [TCommand StreamOut Nothing [Chunk NoSpan "go build ", RawInterp [nt (lid "flags")], Chunk NoSpan " ."]]
+
+    it "escapes literal \\#!{ in command strings" $
+      lexed "$ echo \\#!{x}"
+        `shouldBe` Right [TCommand StreamOut Nothing (chunk1 "echo #!{x}")]
+
+    it "keeps #!{ literal text in an ordinary string" $
+      lexed "\"#!{x}\"" `shouldBe` Right [TString [Chunk NoSpan "#!{x}"]]
+
+    it "keeps a shebang in a command literal" $
+      lexed "$ echo '#!/bin/sh'" `shouldBe` Right [TCommand StreamOut Nothing (chunk1 "echo '#!/bin/sh'")]
+
     it "treats a lone # in commands as literal" $
       lexed "$ echo a#b" `shouldBe` Right [TCommand StreamOut Nothing (chunk1 "echo a#b")]
 

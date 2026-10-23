@@ -267,11 +267,11 @@ internal declared_version(yaml: String): String = do {
 //
 // Commands run under cmd.exe on Windows, where neither shasum nor a
 // POSIX quote exists, so the hash comes from PowerShell there, and the
-// file name goes in raw: the holes of a command are escaped for a
-// POSIX shell (spec 6.6).
+// file name goes in as a raw hole, `#!{file}`: the other holes of a
+// command are escaped for a POSIX shell (spec 6.6).
 internal write_checksum(file: String, --windows = false): String = do {
   hash = if (windows) {
-    $[#local] pwsh -NoProfile -Command "(Get-FileHash '#{raw(file)}' -Algorithm SHA256).Hash.ToLower()"
+    $[#local] pwsh -NoProfile -Command "(Get-FileHash '#!{file}' -Algorithm SHA256).Hash.ToLower()"
   } else {
     $[#local] shasum -a 256 #{file} | cut -d ' ' -f 1
   }
@@ -288,7 +288,7 @@ internal archive_tar(bin_dir: String, name: String): String = do {
 
 internal archive_zip(bin_dir: String, name: String): String = do {
   file = "#{name}.zip"
-  $[#local] pwsh -NoProfile -Command "Compress-Archive -Path '#{raw(bin_dir)}/lask.exe' -DestinationPath '#{raw(file)}' -Force"
+  $[#local] pwsh -NoProfile -Command "Compress-Archive -Path '#!{bin_dir}/lask.exe' -DestinationPath '#!{file}' -Force"
   file
 }
 
@@ -392,7 +392,7 @@ internal latest_tag(): String = do {
 // `fields` is the `-f key=value` flags, given to the shell as words.
 internal dispatch(workflow: String, fields: String): String = do {
   since = $[#local] date -u +%Y-%m-%dT%H:%M:%SZ
-  $[#local] gh workflow run #{workflow} --ref main #{raw(fields)}
+  $[#local] gh workflow run #{workflow} --ref main #!{fields}
   until(backoff_fixed(5, 24), \(id: String) -> id != "", \() -> newest_run(workflow, trim(since)))
 }
 

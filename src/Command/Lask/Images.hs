@@ -14,6 +14,9 @@ module Command.Lask.Images
     Outcome (..),
     Materialized (..),
     materialize,
+    Probed (..),
+    probeCommands,
+    missingCommands,
   )
 where
 
@@ -29,9 +32,11 @@ import qualified Data.Text as T
 import Language.Lask.Deps.Lock
 import Language.Lask.Elaborate (CoreProgram (..), Key)
 import Language.Lask.ErrorCode (ErrorCode (..), codeText)
-import Language.Lask.Runtime.Container (ContainerBackend)
+import Language.Lask.Runtime.Container (ContainerBackend (..), RunSpec (..))
 import Language.Lask.Runtime.Image
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import System.Process (readCreateProcessWithExitCode)
 
 -- | The images the lock of a program's project records; none when it
 -- has no lock file yet.
@@ -177,7 +182,7 @@ materialize backend pg core prior = do
           case [(p, e) | (p, Left e) <- rest] of
             (p, e) : _ -> done it row Nothing (Failed (codeText EIoImageMissing <> ": " <> p <> ": " <> e)) before
             [] ->
-              done it row (Just image) (if null rest then outcome else Pulled) (Just (LockImage "registry" (Just ref) Nothing (Just digest)))
+              done it row (Just image) (if null rest then outcome else Pulled) (Just (LockImage "registry" (Just ref) Nothing (Just digest) Map.empty))
 
     -- Materialize one reference for one platform, and the digest it is
     -- pinned to. A platform's variant cannot be told present by its
@@ -233,4 +238,90 @@ materialize backend pg core prior = do
           case built of
             Left e -> done it row Nothing (Failed (codeText EIoImageMissing <> ": " <> e)) before
             Right () ->
-              done it row (Just tag) (if present then AlreadyPresent else Built) (Just (LockImage "recipe" Nothing (Just tag) Nothing))
+              done it row (Just tag) (if present then AlreadyPresent else Built) (Just (LockImage "recipe" Nothing (Just tag) Nothing Map.empty))
+
+-- | The outcome of probing the command words of one image (spec 11.7).
+data Probed
+  = -- | The words, each with whether the image provides it.
+    Probed Text [(Text, Bool)]
+  | -- | The image's @/bin/sh@ could not be started; why.
+    NoShell Text [Text] Text
+  | -- | The probe could not be run; why.
+    ProbeFailed Text Text
+
+-- | Probe the command words declared on each image that materialized
+-- (spec ch. 5, 11.7): in one container of the image, @/bin/sh@ reports
+-- whether @command -v@ finds each. Returns the image section of the
+-- lock with the results recorded, and one outcome per image probed. An
+-- image whose probe could not run keeps no results. An image the prior
+-- lock pins to the same content, with results for the same words, is
+-- not probed again: its results are those.
+probeCommands :: ContainerBackend -> CoreProgram -> [Materialized] -> Map Text LockImage -> Map Text LockImage -> IO (Map Text LockImage, [Probed])
+probeCommands backend core mats prior images = do
+  outcomes <- mapM probeOrReuse targets
+  let recorded = foldr record images outcomes
+  pure (recorded, outcomes)
+  where
+    byImage = Map.fromListWith (<>) [(k, [w]) | tbl <- Map.elems (cpProbes core), (w, k) <- Map.toList tbl]
+    targets =
+      [ (key, image, Set.toList (Set.fromList ws))
+      | m <- mats,
+        notFailed (matOutcome m),
+        Just image <- [matPinned m],
+        let key = irKey (matRow m),
+        Just ws <- [Map.lookup key byImage]
+      ]
+    notFailed (Failed _) = False
+    notFailed _ = True
+
+    probeOrReuse t@(key, _, ws) = case (Map.lookup key prior, Map.lookup key images) of
+      (Just before, Just now)
+        | before {liCommands = Map.empty} == now,
+          Map.keys (liCommands before) == ws ->
+            pure (Probed key (Map.toList (liCommands before)))
+      _ -> probe t
+
+    probe (key, image, ws) = do
+      cp <-
+        cbRunProcess backend $
+          RunSpec
+            { runBaseDir = cpBaseDir core,
+              runName = Nothing,
+              runImage = image,
+              runOptions = Map.empty,
+              runStdin = False,
+              runTty = False,
+              runEntrypoint = "/bin/sh",
+              runCommand = ["-c", script, "sh"] <> ws
+            }
+      (code, out, err) <- readCreateProcessWithExitCode cp ""
+      let errText = T.strip (T.pack err)
+          exit = case code of
+            ExitSuccess -> 0
+            ExitFailure n -> n
+      pure $ case cbRunFailure backend exit errText of
+        Just why -> ProbeFailed key why
+        Nothing
+          | exit == 0 ->
+              let seen = Map.fromList [(T.drop 1 l, T.take 1 l == "+") | l <- T.lines (T.pack out), T.take 1 l `elem` ["+", "-"]]
+               in Probed key [(w, Map.findWithDefault False w seen) | w <- ws]
+          | otherwise -> NoShell key ws (if T.null errText then "/bin/sh exited with " <> T.pack (show exit) else errText)
+
+    script = "for w in \"$@\"; do if command -v \"$w\" >/dev/null 2>&1; then echo \"+$w\"; else echo \"-$w\"; fi; done"
+
+    record outcome m = case outcome of
+      Probed key rs -> Map.adjust (\li -> li {liCommands = Map.fromList rs}) key m
+      NoShell key ws _ -> Map.adjust (\li -> li {liCommands = Map.fromList [(w, False) | w <- ws]}) key m
+      ProbeFailed _ _ -> m
+
+-- | The probed words recorded as missing from their image that the
+-- given declarations dispatch through (spec ch. 5), with the image.
+missingCommands :: CoreProgram -> Map Text LockImage -> [Key] -> [(Text, Text)]
+missingCommands core images keys =
+  Set.toList . Set.fromList $
+    [ (w, img)
+    | k <- keys,
+      (w, img) <- Map.findWithDefault [] k (cpDispatched core),
+      Just li <- [Map.lookup img images],
+      Map.lookup w (liCommands li) == Just False
+    ]

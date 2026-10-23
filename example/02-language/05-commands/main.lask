@@ -13,8 +13,38 @@ alpine = #alpine:3.22.2
 // A `$` with no environment gets one from the command words in the
 // string, matched against these declarations. Matching is lexical and
 // exact — `/bin/cat` matches nothing, a basename is never taken.
-command { "cat", "wc", "grep", "sort" } on alpine
+//
+// `lask sync` also asks the image whether it has each program declared
+// on it, and records the answer in lask.lock.json ("commands"). A
+// program it lacks is E-IO-COMMAND-MISSING, from sync and before
+// anything runs, so a task never gets halfway to a command that cannot
+// start. Programs on #local are not asked about: a task may install
+// them first.
+command { "cat", "wc", "sort" } on alpine
 command { "uname", "echo" } on #local
+
+// What `grep` takes, so that a misspelt option is caught before it
+// runs. A schema is an ordinary value of the built-in type
+// CommandSchema, written with literals so that it is known without
+// running anything; the annotation is needed, because a record literal
+// alone infers every field it gives as required.
+//
+// `closed: true` says nothing exists but what is listed: an unknown
+// option is then E-TYPE-COMMAND-OPTION. Without it, only an advisory.
+// The editor completes and describes the options from the same value.
+grep_schema: CommandSchema = {
+  root: {
+    closed: true,
+    options: [
+      { names: ["-c", "--count"], description: "print only a count of the matching lines" },
+      { names: ["-i", "--ignore-case"], description: "ignore case distinctions" },
+      { names: ["-v", "--invert-match"], description: "select the lines that do not match" },
+      { names: ["-e", "--regexp"], value: "required", description: "the pattern to match" }
+    ]
+  }
+}
+
+command { "grep" } on alpine schema { "grep": grep_schema }
 
 // The kernel of the host, from `uname`.
 //
@@ -93,13 +123,14 @@ echo_text(--text: String = "a b; rm -rf /"): String =
 
 // Pass flags through the shell as words of their own.
 //
-// `#{raw(flags)}` is the one hole the shell parses: each flag in
-// `flags` becomes its own word. Never give `raw` a value from outside
-// the program, such as a CLI argument — the shell would run what it
-// contains.
+// `#!{flags}` is the one hole the shell parses: each flag in `flags`
+// becomes its own word. It has a delimiter of its own, so where the
+// shell parses a value is visible in the command itself. Never put a
+// value from outside the program in it, such as a CLI argument — the
+// shell would run what it contains.
 list_root(): String = do {
   flags = "-1 -a"
-  $[alpine] ls #{raw(flags)} /
+  $[alpine] ls #!{flags} /
   |> trim
 }
 
@@ -117,6 +148,22 @@ count(--args: String = "-l", --file: String = "/etc/passwd"): Number = do {
 }
 
 internal split_first(s: String): String = first(split(s, " "))
+
+// Count the accounts whose login shell is the one given.
+//
+// The command is checked against grep_schema before it runs:
+// `$ grep -cnt ...` would be E-TYPE-COMMAND-OPTION ('grep' has no
+// option '-n'), and `$ grep -c -e` E-TYPE-COMMAND-OPTION too (the
+// option '-e' requires a value). So is the shell syntax of every
+// command string: `$ grep -c sh /etc/passwd |` is E-TYPE-COMMAND-SYNTAX.
+// A hole in place of a value is fine — what it holds is not known
+// until it runs, and nothing is guessed about it.
+//
+// @example lask eval shell_users --shell /bin/sh
+shell_users(--shell: String = "/bin/sh"): Number =
+  $ grep -c -e :#{shell} /etc/passwd
+  |> trim
+  |> to_number
 
 // Two commands in one string, one environment.
 //

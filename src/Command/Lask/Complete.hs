@@ -992,7 +992,7 @@ fromModule path src m =
     -- reads one file, and resolving the import would mean loading
     -- another.
     commandWords d = case AST.declF d of
-      AST.DCommand names env ->
+      AST.DCommand names env _ ->
         [(w, environmentText env) | Spanned _ w <- names]
       AST.DImportCommands names from ->
         [(w, Just (importedFrom from)) | Spanned _ w <- names]
