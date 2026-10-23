@@ -14,7 +14,10 @@ import * as tools from "tools"
 go_cache = "lask-go-cache"
 grype_cache = "lask-grype-cache"
 
-command { "go", "gofmt" } on tools.go(cache_dir = go_cache)
+// go and gofmt take the schemas tools gives them, so a command that runs
+// them is checked against their options before it runs, and an editor
+// completes them.
+command { "go", "gofmt" } on tools.go(cache_dir = go_cache) schema { "go": tools.go_schema, "gofmt": tools.gofmt_schema }
 command { "syft" } on tools.syft()
 command { "grype" } on tools.grype(cache_dir = grype_cache)
 command { "sha256sum", "rm" } on tools.unix()

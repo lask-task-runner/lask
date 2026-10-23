@@ -1,19 +1,47 @@
 {
     "images": {
-        "#.lask/deps/sha256-5e8cb0df8a92b384f66f8813bcba203f012052c53c50ec2707f31ca9b6519c7d/lib/images/anchore/Dockerfile": {
+        "#.lask/deps/sha256-d6e5f5ff0b222ba677c232bb93b91b5bc5373649e79de4217bfee9bde790018d/lib/images/anchore/Dockerfile": {
+            "commands": {
+                "grype": "present",
+                "syft": "present"
+            },
             "kind": "recipe",
-            "tag": "lask/7a1f2061b294569a54c314d5a72a327db8822141d765384f416bdd7240c86964"
+            "tag": "lask/7136246c2b8daf0002e1501aa9d8180694a3d7ae823dff6e937fa5ba3b160187"
         },
-        "#.lask/deps/sha256-5e8cb0df8a92b384f66f8813bcba203f012052c53c50ec2707f31ca9b6519c7d/lib/images/unix/Dockerfile": {
+        "#.lask/deps/sha256-d6e5f5ff0b222ba677c232bb93b91b5bc5373649e79de4217bfee9bde790018d/lib/images/unix/Dockerfile": {
+            "commands": {
+                "bzip2": "present",
+                "curl": "present",
+                "envsubst": "present",
+                "gzip": "present",
+                "jq": "present",
+                "openssl": "present",
+                "rm": "present",
+                "rsync": "present",
+                "sha256sum": "present",
+                "tar": "present",
+                "unzip": "present",
+                "wget": "present",
+                "xz": "present",
+                "yq": "present",
+                "zip": "present"
+            },
             "kind": "recipe",
-            "tag": "lask/133a691536fa1509ce6da54c4d8ca009de1609560969a3285ecc59d179bbe76c"
+            "tag": "lask/509fdb158aa35aca8374aa040823addf01ec99160fbd68a997f2b862db67f7c4"
         },
         "#golang:1.27.1-trixie": {
+            "commands": {
+                "go": "present",
+                "gofmt": "present"
+            },
             "digest": "sha256:8f58fd67ea075142d947a60e0caa4317746a55118d312f027793d382c7741734",
             "kind": "registry",
             "ref": "golang:1.27.1-trixie"
         },
         "#tools/cosign.Dockerfile": {
+            "commands": {
+                "cosign": "present"
+            },
             "kind": "recipe",
             "tag": "lask/e8ea39fe52f1bbf85264ad215bcbf5f0fd9ab04aa58137fb3b3a56674284b701"
         }
@@ -22,9 +50,9 @@
     "modules": {
         "tools": {
             "git": "https://github.com/lask-task-runner/lask-module-tools.git",
-            "hash": "sha256-5e8cb0df8a92b384f66f8813bcba203f012052c53c50ec2707f31ca9b6519c7d",
-            "requested": "v0.3.3",
-            "rev": "1c31f8f0d24a5b09e18f253b19a46929530dfa93"
+            "hash": "sha256-d6e5f5ff0b222ba677c232bb93b91b5bc5373649e79de4217bfee9bde790018d",
+            "requested": "v0.4.0",
+            "rev": "6dd5c8c8485cfa9c86e0ce7c09f5152b8047a7d7"
         }
     }
 }

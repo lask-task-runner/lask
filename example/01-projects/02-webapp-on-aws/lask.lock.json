@@ -1,8 +1,23 @@
 {
     "images": {
-        "#.lask/deps/sha256-5e8cb0df8a92b384f66f8813bcba203f012052c53c50ec2707f31ca9b6519c7d/lib/images/unix/Dockerfile": {
+        "#.lask/deps/sha256-d6e5f5ff0b222ba677c232bb93b91b5bc5373649e79de4217bfee9bde790018d/lib/images/unix/Dockerfile": {
+            "commands": {
+                "bzip2": "present",
+                "curl": "present",
+                "envsubst": "present",
+                "gzip": "present",
+                "jq": "present",
+                "openssl": "present",
+                "rsync": "present",
+                "tar": "present",
+                "unzip": "present",
+                "wget": "present",
+                "xz": "present",
+                "yq": "present",
+                "zip": "present"
+            },
             "kind": "recipe",
-            "tag": "lask/133a691536fa1509ce6da54c4d8ca009de1609560969a3285ecc59d179bbe76c"
+            "tag": "lask/509fdb158aa35aca8374aa040823addf01ec99160fbd68a997f2b862db67f7c4"
         },
         "#amazon/aws-cli:2.36.41": {
             "digest": "sha256:be7c8de0160a2e2269159bc2634c002c85b1a21d6322e2ad513b3f7f48325c99",
@@ -30,11 +45,23 @@
             "ref": "mcr.microsoft.com/playwright:v1.63.0-noble"
         },
         "#node:24.22.1-alpine3.24": {
+            "commands": {
+                "corepack": "present",
+                "node": "present",
+                "npm": "present",
+                "npx": "present"
+            },
             "digest": "sha256:6a1c190e17215d844926b0677f4bf87273ff7d5e54db06d3b5b5863ab0b09a3d",
             "kind": "registry",
             "ref": "node:24.22.1-alpine3.24"
         },
         "#python:3.12.14-alpine3.24": {
+            "commands": {
+                "pip": "present",
+                "pip3": "present",
+                "python": "present",
+                "python3": "present"
+            },
             "digest": "sha256:4c47124a8391cb7a9f571164147d154777cf012a4ece5f86097130d7a4478111",
             "kind": "registry",
             "ref": "python:3.12.14-alpine3.24"
@@ -44,9 +71,9 @@
     "modules": {
         "tools": {
             "git": "https://github.com/lask-task-runner/lask-module-tools.git",
-            "hash": "sha256-5e8cb0df8a92b384f66f8813bcba203f012052c53c50ec2707f31ca9b6519c7d",
-            "requested": "v0.3.3",
-            "rev": "1c31f8f0d24a5b09e18f253b19a46929530dfa93"
+            "hash": "sha256-d6e5f5ff0b222ba677c232bb93b91b5bc5373649e79de4217bfee9bde790018d",
+            "requested": "v0.4.0",
+            "rev": "6dd5c8c8485cfa9c86e0ce7c09f5152b8047a7d7"
         }
     }
 }
