@@ -32,10 +32,10 @@ module Language.Lask.CommandSchema
   )
 where
 
-import Data.List (find)
+import Data.List (find, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Span (Span (..))
@@ -88,6 +88,10 @@ data Opt = Opt
     -- | What follows the option and its value belongs to another
     -- program, as with @python -m@.
     optStops :: Bool,
+    -- | The value follows the name in the same word, as with @-Xmx2g@
+    -- and @-DNAME=value@: a word that begins with the name is this
+    -- option.
+    optPrefix :: Bool,
     optDescription :: Maybe Text
   }
   deriving (Show, Eq)
@@ -176,8 +180,10 @@ fromStatic (Static sp f) = do
           pure (Just vs)
       global <- optBool fs "global"
       stops <- optBool fs "stops"
+      prefix <- optBool fs "prefix"
+      unless' (not prefix || kind /= ValueNone) (osp, "an option with 'prefix' takes a value, written right after its name")
       description <- traverse string (present fs "description")
-      pure (Opt names kind values global stops description)
+      pure (Opt names kind values global stops prefix description)
 
     nameOf v@(Static vsp _) = do
       n <- string v
@@ -340,6 +346,10 @@ walkCommand schema word = go (St "" False Nothing)
     -- A word with a dynamic part: its option name is known only when
     -- the literal start runs past it to an '='.
     partial st w = case T.breakOn "=" (normalised st (swPrefix w)) of
+      _
+        | Just (name, o, _) <- prefixOpt st (normalised st (swPrefix w)),
+          not (isJust (lookupOpt st (fst (T.breakOn "=" (swPrefix w))))) ->
+            with w (RoleOption (stPath st) name o) stop
       (name, eq)
         | not (T.null eq) && ("--" `T.isPrefixOf` name || styleAt schema (stPath st) == SingleDash) ->
             case lookupOpt st name of
@@ -383,7 +393,13 @@ walkCommand schema word = go (St "" False Nothing)
     long st t w rest =
       let (written, eq) = T.breakOn "=" t
        in case longOpt st written of
-            Left Nothing -> found (unknownOption st written w)
+            Left Nothing -> case prefixOpt st t of
+              Just (name, o, v) ->
+                with w (RoleOption (stPath st) name o) $
+                  case valueProblem (stPath st) o name w {swPrefix = v} of
+                    Just f -> found f
+                    Nothing -> after o st rest
+              Nothing -> found (unknownOption st written w)
             Left (Just names) ->
               found
                 ( Finding
@@ -438,6 +454,20 @@ walkCommand schema word = go (St "" False Nothing)
       | otherwise = t
 
     lookupOpt st name = find (elem name . optNames) (optionsAt schema (stPath st))
+
+    -- An option written with its value in the same word, by the
+    -- longest name that the word begins with.
+    prefixOpt st t =
+      case sortOn (negate . T.length . fst)
+        [ (n, o)
+        | o <- optionsAt schema (stPath st),
+          optPrefix o,
+          n <- optNames o,
+          n `T.isPrefixOf` t,
+          T.length t > T.length n
+        ] of
+        (n, o) : _ -> Just (n, o, T.drop (T.length n) t)
+        [] -> Nothing
 
     -- A long option by its name, or, where the spec allows it, by a
     -- prefix of exactly one long name. 'Left' with the names a prefix
