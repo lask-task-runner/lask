@@ -70,6 +70,9 @@ data Spec = Spec
     -- | 'Nothing': true in the @gnu@ style, false in @single-dash@.
     spIntermixed :: Maybe Bool,
     spStopAtFirstPositional :: Bool,
+    -- | 'Nothing': the parent's, false at the root. A long option may
+    -- then be shortened to a unique prefix (getopt_long, optparse).
+    spAbbreviations :: Maybe Bool,
     spDescription :: Maybe Text
   }
   deriving (Show, Eq)
@@ -82,6 +85,9 @@ data Opt = Opt
     optValue :: ValueKind,
     optValues :: Maybe [Text],
     optGlobal :: Bool,
+    -- | What follows the option and its value belongs to another
+    -- program, as with @python -m@.
+    optStops :: Bool,
     optDescription :: Maybe Text
   }
   deriving (Show, Eq)
@@ -137,8 +143,9 @@ fromStatic (Static sp f) = do
         Just v -> mapM option =<< array v
       intermixed <- traverse bool (present fs "intermixed")
       stopAt <- optBool fs "stop_at_first_positional"
+      abbreviations <- traverse bool (present fs "abbreviations")
       description <- traverse string (present fs "description")
-      pure (Spec closed style opts intermixed stopAt description)
+      pure (Spec closed style opts intermixed stopAt abbreviations description)
 
     styleOf v@(Static vsp _) = do
       t <- string v
@@ -168,8 +175,9 @@ fromStatic (Static sp f) = do
           unless' (not (null vs)) (vsp, "'values' must list at least one value")
           pure (Just vs)
       global <- optBool fs "global"
+      stops <- optBool fs "stops"
       description <- traverse string (present fs "description")
-      pure (Opt names kind values global description)
+      pure (Opt names kind values global stops description)
 
     nameOf v@(Static vsp _) = do
       n <- string v
@@ -225,6 +233,13 @@ ancestors path = case T.breakOnEnd " " path of
 specAt :: Schema -> Text -> Spec
 specAt schema "" = schRoot schema
 specAt schema path = fromMaybe (schRoot schema) (Map.lookup path (schSubcommands schema))
+
+abbreviationsAt :: Schema -> Text -> Bool
+abbreviationsAt schema path = case spAbbreviations (specAt schema path) of
+  Just b -> b
+  Nothing -> case ancestors path of
+    parent : _ -> abbreviationsAt schema parent
+    [] -> False
 
 styleAt :: Schema -> Text -> Style
 styleAt schema path = case spStyle (specAt schema path) of
@@ -309,7 +324,9 @@ walkCommand schema word = go (St "" False Nothing)
             then stop
             else case valueProblem (stPath st) o n w of
               Just f -> found f
-              Nothing -> with w (RoleValue (stPath st) n o) (go st {stAwaiting = Nothing} rest)
+              Nothing
+                | optStops o -> with w (RoleValue (stPath st) n o) stop
+                | otherwise -> with w (RoleValue (stPath st) n o) (go st {stAwaiting = Nothing} rest)
       | not (swSingle w) = stop
       | swLiteral w = literal st (swPrefix w) w rest
       | "-" `T.isPrefixOf` swPrefix w = partial st w
@@ -364,10 +381,19 @@ walkCommand schema word = go (St "" False Nothing)
 
     -- @--name@, @--name=value@, or in the single-dash style @-name@.
     long st t w rest =
-      let (name, eq) = T.breakOn "=" t
-       in case lookupOpt st name of
-            Nothing -> found (unknownOption st name w)
-            Just o ->
+      let (written, eq) = T.breakOn "=" t
+       in case longOpt st written of
+            Left Nothing -> found (unknownOption st written w)
+            Left (Just names) ->
+              found
+                ( Finding
+                    (swSpan w)
+                    (spClosed (specAt schema (stPath st)))
+                    ( "'" <> written <> "' of '" <> shown (stPath st) <> "' is ambiguous: it begins "
+                        <> T.intercalate ", " ["'" <> n <> "'" | n <- names]
+                    )
+                )
+            Right (name, o) ->
               with w (RoleOption (stPath st) name o) $
                 if
                   | not (T.null eq) ->
@@ -375,9 +401,9 @@ walkCommand schema word = go (St "" False Nothing)
                         then found (noValue st name w)
                         else case valueProblem (stPath st) o name w {swPrefix = T.drop 1 eq} of
                           Just f -> found f
-                          Nothing -> go st rest
+                          Nothing -> after o st rest
                   | optValue o == ValueRequired -> go st {stAwaiting = Just (o, name, swSpan w)} rest
-                  | otherwise -> go st rest
+                  | otherwise -> after o st rest
 
     -- @-abc@: single-letter options, the first that takes a value
     -- taking the rest of the word.
@@ -389,13 +415,21 @@ walkCommand schema word = go (St "" False Nothing)
               Nothing -> found (unknownOption st name w)
               Just o ->
                 with w (RoleOption (stPath st) name o) $ case optValue o of
-                  ValueNone -> cluster st more w rest
+                  ValueNone
+                    | optStops o -> stop
+                    | otherwise -> cluster st more w rest
                   kind
                     | not (T.null more) -> case valueProblem (stPath st) o name w {swPrefix = more} of
                         Just f -> found f
-                        Nothing -> go st rest
+                        Nothing -> after o st rest
                     | kind == ValueRequired -> go st {stAwaiting = Just (o, name, swSpan w)} rest
-                    | otherwise -> go st rest
+                    | otherwise -> after o st rest
+
+    -- The words after an option that stops reading belong to another
+    -- program.
+    after o st rest
+      | optStops o = stop
+      | otherwise = go st rest
 
     -- In the single-dash style a name may also be written with two
     -- dashes, as Go's flag package reads it.
@@ -404,6 +438,22 @@ walkCommand schema word = go (St "" False Nothing)
       | otherwise = t
 
     lookupOpt st name = find (elem name . optNames) (optionsAt schema (stPath st))
+
+    -- A long option by its name, or, where the spec allows it, by a
+    -- prefix of exactly one long name. 'Left' with the names a prefix
+    -- begins when it begins several.
+    longOpt st written = case lookupOpt st written of
+      Just o -> Right (written, o)
+      Nothing
+        | abbreviationsAt schema (stPath st),
+          "--" `T.isPrefixOf` written,
+          T.length written > 2 ->
+            case [(n, o) | o <- optionsAt schema (stPath st), n <- optNames o, "--" `T.isPrefixOf` n, written `T.isPrefixOf` n] of
+              [] -> Left Nothing
+              hits@((n, o) : _)
+                | all ((== optNames o) . optNames . snd) hits -> Right (n, o)
+                | otherwise -> Left (Just (map fst hits))
+        | otherwise -> Left Nothing
 
     intermixed st = fromMaybe (styleAt schema (stPath st) == Gnu) (spIntermixed (specAt schema (stPath st)))
 
