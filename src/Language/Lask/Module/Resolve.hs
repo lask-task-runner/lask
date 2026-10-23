@@ -105,7 +105,10 @@ data Publics = Publics
     -- those it re-exports. A command word keeps its text through a
     -- re-export, so no origin needs recording here: elaboration takes
     -- each word's declaration from the module it names.
-    pubCommands :: Set Text
+    pubCommands :: Set Text,
+    -- | The namespaces the module re-exports (spec 5), by the name it
+    -- publishes them under, with the module each names.
+    pubNamespaces :: Map Text FilePath
   }
 
 modulePublics :: LoadedModule -> Publics
@@ -124,7 +127,8 @@ modulePublics lm =
           | DExportFrom specs path <- decls,
             ImportSpec _ n a <- specs,
             not (maybe n id a `Set.member` internal)
-          ]
+          ],
+      pubNamespaces = Map.fromList [(alias, reKey path) | DExportNamespace alias path <- decls]
     }
   where
     decls = map declF (moduleDecls (lmModule lm))
@@ -161,22 +165,30 @@ namespaceMember scopes key n = case Map.lookup key scopes >>= Map.lookup n . gsV
 -- publishes them by (spec 5). These are what the CLI invokes and lists
 -- (11.2, 11.6): a re-exported name is as much a public symbol of the
 -- module as one it declares.
+--
+-- The public values of a namespace the module re-exports are public
+-- symbols too, by their qualified name: @python.env@ for @export * as
+-- python from "./lib/python.lask"@ (spec 5).
 entryPublicValues :: Program -> Map FilePath GlobalScope -> [(Text, (FilePath, Text))]
-entryPublicValues prog scopes = case Map.lookup entry (progModules prog) of
-  Nothing -> []
-  Just lm ->
-    [ (n, namespaceMember scopes entry n)
-    | Decl _ f <- moduleDecls (lmModule lm),
-      n <- case f of
-        DValue n' _ _ _ -> [n']
-        DFunction n' _ _ _ _ -> [n']
-        DExportFrom specs _ -> [maybe n' id a | ImportSpec _ n' a <- specs]
-        _ -> [],
-      not (startsUpper n),
-      not (n `Set.member` moduleInternal (lmModule lm))
-    ]
+entryPublicValues prog scopes = publicValuesOf (0 :: Int) "" (progEntry prog)
   where
-    entry = progEntry prog
+    publicValuesOf depth prefix key = case Map.lookup key (progModules prog) of
+      Just lm | depth < 16 ->
+        [ (prefix <> n, namespaceMember scopes key n)
+        | Decl _ f <- moduleDecls (lmModule lm),
+          n <- case f of
+            DValue n' _ _ _ -> [n']
+            DFunction n' _ _ _ _ -> [n']
+            DExportFrom specs _ -> [maybe n' id a | ImportSpec _ n' a <- specs]
+            _ -> [],
+          not (startsUpper n),
+          not (n `Set.member` moduleInternal (lmModule lm))
+        ]
+          <> concat
+            [ publicValuesOf (depth + 1) (prefix <> alias <> ".") (Map.findWithDefault (T.unpack p) p (lmImportKeys lm))
+            | Decl _ (DExportNamespace alias p) <- moduleDecls (lmModule lm)
+            ]
+      _ -> []
     startsUpper t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
 
 -- Scope construction ---------------------------------------------------------
@@ -221,13 +233,17 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
       DCommand {} -> go gs ds rest
       DImportCommands {} -> go gs ds rest
       DExportCommandsFrom {} -> go gs ds rest
-      DImportNamespace alias path ->
-        let key = resolveKey path
-            dups =
-              [dupDiag sp alias | conflictsValue alias gs || Map.member alias (gsNamespaces gs)]
-                <> [coreDiag sp alias | isUnbindableName alias]
-         in go gs {gsNamespaces = Map.insert alias key (gsNamespaces gs)} (dups <> ds) rest
+      DImportNamespace alias path -> goNamespace gs ds rest sp alias path
+      -- A namespace re-export binds the namespace locally exactly as a
+      -- namespace import does; being public as well is 'modulePublics'.
+      DExportNamespace alias path -> goNamespace gs ds rest sp alias path
       where
+        goNamespace gs' ds' rest' sp' alias path =
+          let key = resolveKey path
+              dups =
+                [dupDiag sp' alias | conflictsValue alias gs' || Map.member alias (gsNamespaces gs')]
+                  <> [coreDiag sp' alias | isUnbindableName alias]
+           in go gs' {gsNamespaces = Map.insert alias key (gsNamespaces gs')} (dups <> ds') rest'
         goValue gs' ds' rest' sp' n =
           let dups =
                 [dupDiag sp' n | conflictsValue n gs' || Map.member n (gsNamespaces gs')]
@@ -239,11 +255,13 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
     addImport key (gs, ds) (ImportSpec sp name alias) =
       let visible = maybe name id alias
           isType = startsUpper name
+          nsTarget = Map.lookup key publics >>= Map.lookup name . pubNamespaces
           existsDiag = case Map.lookup key publics of
             Nothing -> []
             Just pub
               | isType && name `Set.member` pubTypes pub -> []
               | not isType && name `Set.member` pubValues pub -> []
+              | not isType && Map.member name (pubNamespaces pub) -> []
               | otherwise ->
                   [ suggesting name (Set.toList (if isType then pubTypes pub else pubValues pub)) $
                       mkDiagnostic ENameUndefined StageStatic sp $
@@ -261,6 +279,8 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
           (originKey, originName) = followOrigin (0 :: Int) key name
           gs'
             | isType = gs {gsTypes = Map.insert visible (TAlias originKey originName) (gsTypes gs)}
+            -- A namespace the module re-exports is imported as one.
+            | Just nsKey <- nsTarget = gs {gsNamespaces = Map.insert visible nsKey (gsNamespaces gs)}
             | otherwise = gs {gsValues = Map.insert visible (VTopLevel originKey originName) (gsValues gs)}
        in (gs', existsDiag <> dups <> ds)
 
@@ -338,6 +358,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       DImportNamed {} -> []
       DExportFrom {} -> []
       DImportNamespace {} -> []
+      DExportNamespace {} -> []
 
     -- A command word can be imported only if the target exports it.
     -- A missing module is reported by the loader, not here.
@@ -410,21 +431,22 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       EVar n
         | inScope n sc || Map.member n (gsValues gs) -> []
         | otherwise -> [undefDiag sp n]
-      EDot inner fld -> case exprF inner of
-        EVar m
-          | not (inScope m sc),
-            not (Map.member m (gsValues gs)),
-            Just key <- Map.lookup m (gsNamespaces gs) ->
-              -- Namespace member reference (rank 4).
-              case Map.lookup key publics of
-                Just pub
-                  | spannedValue fld `Set.member` pubValues pub -> []
-                pub ->
-                  [ suggesting (spannedValue fld) (maybe [] (Set.toList . pubValues) pub) $
-                      mkDiagnostic ENameUndefined StageStatic (spannedSpan fld) $
-                        "namespace '" <> m <> "' has no public symbol '" <> spannedValue fld <> "'"
+      EDot inner fld -> case namespaceOf sc inner of
+        Just (m, key) ->
+          -- Namespace member reference (rank 4).
+          case Map.lookup key publics of
+            Just pub
+              | spannedValue fld `Set.member` pubValues pub -> []
+              | Map.member (spannedValue fld) (pubNamespaces pub) ->
+                  [ mkDiagnostic ENameUndefined StageStatic (spannedSpan fld) $
+                      "'" <> m <> "." <> spannedValue fld <> "' is a namespace, not a value; name one of its members"
                   ]
-        _ -> checkExpr sc inner
+            pub ->
+              [ suggesting (spannedValue fld) (maybe [] (\p -> Set.toList (pubValues p) <> Map.keys (pubNamespaces p)) pub) $
+                  mkDiagnostic ENameUndefined StageStatic (spannedSpan fld) $
+                    "namespace '" <> m <> "' has no public symbol '" <> spannedValue fld <> "'"
+              ]
+        Nothing -> checkExpr sc inner
       EIndex e i -> checkExpr sc e <> checkExpr sc i
       ECall fn as -> checkExpr sc fn <> concatMap (checkArg sc) as
       EArray es -> concatMap (checkExpr sc) es
@@ -474,6 +496,20 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
         rawHint n
           | n == "raw" = "; a hole the shell parses is written #!{e} in a command string"
           | otherwise = ""
+
+    -- The namespace an expression names, if it names one: a namespace
+    -- in scope, or a namespace that one publishes (spec 5), with the
+    -- name it is written as.
+    namespaceOf sc (Expr _ ex) = case ex of
+      EVar m
+        | not (inScope m sc),
+          not (Map.member m (gsValues gs)) ->
+            (,) m <$> Map.lookup m (gsNamespaces gs)
+      EDot inner fld -> do
+        (m, key) <- namespaceOf sc inner
+        k <- Map.lookup key publics >>= Map.lookup (spannedValue fld) . pubNamespaces
+        pure (m <> "." <> spannedValue fld, k)
+      _ -> Nothing
 
     checkArg sc (Arg _ (APos e)) = checkExpr sc e
     checkArg sc (Arg _ (AKw _ e)) = checkExpr sc e

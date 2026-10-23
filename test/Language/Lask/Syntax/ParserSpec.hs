@@ -188,6 +188,10 @@ spec = do
       pModule "export command { \"go\" } on e schema s"
         `shouldBe` Right [DCommand [sp "go"] (var "e") (Just (var "s"))]
 
+    it "parses a namespace re-export (spec 5)" $
+      pModule "export * as py from \"./py.lask\""
+        `shouldBe` Right [DExportNamespace "py" "./py.lask"]
+
     it "parses an import of command words (spec 5)" $
       pModule "import command { \"node\", \"python\" } from \"tools\""
         `shouldBe` Right [DImportCommands [sp "node", sp "python"] "tools"]

@@ -77,6 +77,9 @@ data DeclF
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
+  | -- | @export * as m from "path"@ (spec 5): a namespace import that
+    -- is also a public namespace of this module.
+    DExportNamespace Text Text
   | -- | @command { "go", "gofmt" } on #golang:1.25 [schema e]@ (spec
     -- 5): registers each name as a command word of this module, with
     -- the command schemas @e@ gives them. Binds no value name.
@@ -305,6 +308,7 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DImportNamed specs path -> DImportNamed (map stripSpec specs) path
   DImportNamespace a p -> DImportNamespace a p
   DExportFrom specs path -> DExportFrom (map stripSpec specs) path
+  DExportNamespace a p -> DExportNamespace a p
   DTypeAlias n ps t -> DTypeAlias n (map stripTypeParam ps) (stripSpansType t)
   DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
   DFunction n tps ps t e ->

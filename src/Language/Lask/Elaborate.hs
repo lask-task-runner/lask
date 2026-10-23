@@ -520,6 +520,7 @@ unitsHolding prog ds =
       DImportNamed specs _ -> imported path specs
       DExportFrom specs _ -> imported path specs
       DImportNamespace alias _ -> ([(path, alias)], [], [])
+      DExportNamespace alias _ -> ([(path, alias)], [], [])
     imported path specs =
       ([(path, v) | (v, False) <- bad], [(path, v) | (v, True) <- bad], [])
       where
@@ -1484,11 +1485,8 @@ checkObject ctx path locals sp kvs expected = case expected of
 -- Accessors -------------------------------------------------------------------------
 
 elabDot :: Ctx -> FilePath -> Locals -> Span -> Expr -> Span -> Text -> TC (Core, Type)
-elabDot ctx path locals sp inner fsp fld = case exprF inner of
-  EVar m
-    | not (Map.member m locals),
-      Nothing <- lookupValueTarget ctx path m,
-      Just key <- namespaceTarget m -> do
+elabDot ctx path locals sp inner fsp fld = case namespaceExpr ctx path locals inner of
+  Just key -> do
         -- Namespace member (resolution rank 4, spec 7.2), followed to
         -- its declaration when the module re-exports it.
         let target@(defPath, defName) = namespaceMember (ctxScopes ctx) key fld
@@ -1505,9 +1503,20 @@ elabDot ctx path locals sp inner fsp fld = case exprF inner of
             diag ETypeAccess fsp ("record has no field '" <> fld <> "': " <> renderType t)
       other ->
         abort (diag ETypeAccess fsp ("field access requires a Record type, got " <> renderType other))
-  where
-    namespaceTarget m =
-      Map.lookup path (ctxScopes ctx) >>= Map.lookup m . gsNamespaces
+
+-- | The module a namespace expression names (spec 5): a namespace in
+-- scope, or a namespace that one re-exports, @tools.python@. Name
+-- resolution has already rejected a namespace that is not public.
+namespaceExpr :: Ctx -> FilePath -> Locals -> Expr -> Maybe FilePath
+namespaceExpr ctx path locals (Expr _ ex) = case ex of
+  EVar m
+    | not (Map.member m locals),
+      Nothing <- lookupValueTarget ctx path m ->
+        Map.lookup path (ctxScopes ctx) >>= Map.lookup m . gsNamespaces
+  EDot inner (Spanned _ n) -> do
+    key <- namespaceExpr ctx path locals inner
+    Map.lookup key (ctxScopes ctx) >>= Map.lookup n . gsNamespaces
+  _ -> Nothing
 
 elabIndex :: Ctx -> FilePath -> Locals -> Span -> Expr -> Expr -> TC (Core, Type)
 elabIndex ctx path locals sp inner idx = do
@@ -2247,10 +2256,15 @@ declaredSchemas ctx path names e = do
     VObject kvs -> pure kvs
     _ -> abort (diag ETypeCommandSchema sp "the schemas of a command declaration must be a map keyed by its command words")
   let declared = [n | Spanned _ n <- names]
+      -- A map written here names words of this declaration; one a
+      -- top-level value holds may give other words too (spec ch. 5).
+      written = case coreF c of
+        CMapLit _ -> True
+        _ -> False
   Map.fromList
     <$> mapM
       ( \(k, s@(Static ssp _)) -> do
-          unless (k `elem` declared) $
+          unless (k `elem` declared || not written) $
             abort . suggesting k declared $
               diag ETypeCommandSchema (orSpan ssp) ("'" <> k <> "' is not a command word of this declaration")
           case fromStatic s of
@@ -2258,7 +2272,7 @@ declaredSchemas ctx path names e = do
               abort (diag ETypeCommandSchema (orSpan (if esp == NoSpan then ssp else esp)) ("invalid command schema for '" <> k <> "': " <> why))
             Right schema -> pure (k, schema)
       )
-      entries
+      [entry | entry@(k, _) <- entries, k `elem` declared || written]
   where
     orSpan s = if s == NoSpan then exprSpan e else s
 
@@ -2777,10 +2791,8 @@ elabCall ctx path locals sp fn args mExpected = do
                 pure (CalleeBuiltin bn scheme)
               Nothing -> abort (undefinedName ctx path locals (exprSpan fn) n)
             Nothing -> abort (undefinedName ctx path locals (exprSpan fn) n)
-      EDot (Expr _ (EVar m)) (Spanned _ fld)
-        | not (Map.member m locals),
-          Nothing <- lookupValueTarget ctx path m,
-          Just key <- Map.lookup path (ctxScopes ctx) >>= Map.lookup m . gsNamespaces ->
+      EDot inner (Spanned _ fld)
+        | Just key <- namespaceExpr ctx path locals inner ->
             staticFromDecl (namespaceMember (ctxScopes ctx) key fld)
       ELambda ps rt body -> do
         (lam, ty, params) <- elabLambda ctx path locals (exprSpan fn) Nothing ps rt body

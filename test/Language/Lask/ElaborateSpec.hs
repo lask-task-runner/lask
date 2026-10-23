@@ -1175,6 +1175,38 @@ spec = do
     it "keeps #!{ an ordinary piece of text outside a command" $
       hasType "s = \"#!{x}\"" "s" "String"
 
+  describe "namespace re-export (spec 5)" $ do
+    let files main =
+          [ ("main.lask", main),
+            ("tools.lask", "export * as py from \"./py.lask\"\nexport * as go from \"./go.lask\"\n"),
+            ("py.lask", "env(--image: Environment = #python:3.12): Runnable = runnable(image)\nschema_3_12: Map<CommandSchema> = { \"python\": { root: { closed: true, options: [{ names: [\"-u\"] }] } }, \"pip\": { root: {} } }\nschema: Map<CommandSchema> = schema_3_12\ninternal hidden = 1\n"),
+            ("go.lask", "env(): Runnable = runnable(#golang:1.25)\n")
+          ]
+
+    it "reaches a member through two namespaces, keyword arguments included" $
+      acceptsFiles (files "import * as tools from \"./tools.lask\"\ncommand { \"python\" } on tools.py.env(image = #python:3.13) schema tools.py.schema\nv() = $ python -u x.py\n")
+
+    it "imports a re-exported namespace by name" $
+      acceptsFiles (files "import { py } from \"./tools.lask\"\nv() = $[py.env()] python -u x.py\n")
+
+    it "uses the namespace in the module that re-exports it" $
+      acceptsFiles
+        [ ("main.lask", "export * as py from \"./py.lask\"\ne = py.env()\n"),
+          ("py.lask", "env(): Runnable = runnable(#python:3.12)\n")
+        ]
+
+    it "checks a command against a schema reached through namespaces, ignoring the words it does not declare" $
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\ncommand { \"python\" } on tools.py.env() schema tools.py.schema\nv() = $ python -x\n") ETypeCommandOption
+
+    it "still rejects a word a written map gives that the declaration lacks" $
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\ncommand { \"python\" } on tools.py.env() schema { \"pyhton\": { root: {} } }\nv() = $ python\n") ETypeCommandSchema
+
+    it "rejects a namespace written as a value, a missing member and a non-public one" $ do
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.py\n") ENameUndefined
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.py.nope\n") ENameUndefined
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.py.hidden\n") ENameUndefined
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.rb.env()\n") ENameUndefined
+
   describe "misc" $ do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"
     it "rejects Array<Void> annotations" $

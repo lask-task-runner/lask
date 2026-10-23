@@ -708,7 +708,7 @@ CommandDecl   = "command" CommandWords "on" Expression [ "schema" Expression ] .
 CommandWords  = "{" string_lit { "," string_lit } "}" .
 
 ImportDecl      = "import" ( NamedImports | NamespaceImport | CommandImports ) "from" ImportPath .
-ExportDecl      = "export" ( NamedImports | CommandImports ) "from" ImportPath .
+ExportDecl      = "export" ( NamedImports | NamespaceImport | CommandImports ) "from" ImportPath .
 CommandImports  = "command" CommandWords .
 NamedImports    = "{" ImportSpecifier { "," ImportSpecifier } "}" .
 ImportSpecifier = ( lower_id | upper_id ) [ "as" ( lower_id | upper_id ) ] .
@@ -757,7 +757,7 @@ internal command { "mv", "rm", "ls" } on #local
 
 Command schemas:
 
-- A command declaration may give its words **command schemas** after `schema`: what options and subcommands each program takes, against which the command strings that run it are checked before execution. The expression is checked against the expected type `Map<CommandSchema>`, keyed by words of the declaration. A key that is not one of them is a static error (`E-TYPE-COMMAND-SCHEMA`); a word with no key has no schema.
+- A command declaration may give its words **command schemas** after `schema`: what options and subcommands each program takes, against which the command strings that run it are checked before execution. The expression is checked against the expected type `Map<CommandSchema>`, keyed by words of the declaration; a word with no key has no schema. A key that is not one of them is a static error (`E-TYPE-COMMAND-SCHEMA`) where the map is a literal written in the declaration, and is ignored where it comes from a top-level value the declaration refers to: a module may publish the schemas of several words as one map, `schema tools.python.schema`, of which a declaration uses those it declares.
 - The types of a schema are built-in type aliases, and must not be overridden by user-defined type aliases or value declarations:
 
   ```lask fragment
@@ -900,7 +900,16 @@ Re-export (`ExportDecl`):
 - Type aliases may be re-exported.
 - A name that is not a public symbol of the target module is an error before type checking.
 - `ImportPath` may be a local path or a dependency name. Re-exporting from a dependency republishes that dependency's symbols as part of the current module's public API.
-- No wildcard form is provided: neither `export * from` nor `export * as ns from`. The names to be published are made explicit in the declaration, for the same reason that no bulk import form is provided.
+- No wildcard form is provided: there is no `export * from`. The names to be published are made explicit in the declaration, for the same reason that no bulk import form is provided.
+
+Namespace re-export:
+
+- `export * as ns from "path"` is a namespace import whose namespace is, in addition, a public namespace of the current module. Within the module, `ns` is bound as the namespace import `import * as ns from "path"` binds it.
+- A module that imports the current one reaches its public namespaces through it: with `import * as m from "path"`, `m.ns` names the namespace and `m.ns.symbol` a public symbol of the module `ns` refers to, and a call `m.ns.f(...)` keeps `f`'s parameter list as a call through `m.f` does. A named import `import { ns } from "path"` binds `ns` as a namespace of the importing module. The same holds through any number of namespaces.
+- A namespace is not a value: `m.ns` written where a value is expected is an error before type checking (`E-NAME-UNDEFINED`), as is a member that is not a public symbol of the module the namespace refers to.
+- It brings no name in: only `ns` is published, and what it holds is reached only qualified, so the rule above still holds. A type alias is referenced through one namespace only (`m.TypeName`, 4.2); a public type of a re-exported namespace is reached by importing that module, or by the alias's own re-export.
+- The public functions and values of a namespace the entry module re-exports are invoked and listed by the CLI under their qualified name, `lask eval python.env --image ...` (11.2, 11.6), through any number of namespaces.
+- Same-name collision rules are those of namespace imports.
 - Same-name collision rules are those of named imports. `ExportDecl` edges participate in the acyclicity requirement of the module dependency graph.
 
 Evaluation timing of top-level declarations:

@@ -52,6 +52,18 @@ spec = beforeAll findLask $ do
         cs <- calls state
         [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` all ("alpine@sha256:aaa" `isInfixOf`)
 
+    it "invokes a function of a re-exported namespace by its qualified name (spec 5, 11.2)" $ \lask ->
+      withProject
+        [ ("main.lask", "export * as py from \"./py.lask\"\n"),
+          ("py.lask", "greet(--name: String = \"x\"): String = \"hi #{name}\"\n")
+        ]
+        $ \dir -> do
+          r <- runLaskEnv lask dir [] ["eval", "py.greet", "--name", "lask"] ""
+          resExit r `shouldBe` 0
+          resOut r `shouldContain` "hi lask"
+          h <- runLaskEnv lask dir [] ["run", "--help"] ""
+          resOut h `shouldContain` "py.greet"
+
     it "probes the declared command words on sync and records them in the lock (spec 11.7)" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
         b <- runLaskEnv lask dir extra ["sync"] ""

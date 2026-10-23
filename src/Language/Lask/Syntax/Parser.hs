@@ -277,7 +277,7 @@ pTopLevel =
     [ (\d -> (d, False)) <$> pCommandDecl,
       do
         s <- kw KExport
-        choice [pExportFrom s, pExportCommand s, plain],
+        choice [pExportFrom s, pExportNamespace s, pExportCommand s, plain],
       do
         _ <- kw KInternal
         (\d -> (d, True)) <$> choice [pCommandDecl, pDecl],
@@ -303,6 +303,14 @@ pTopLevel =
             Spanned e path <- kw KFrom *> stringLit "export path"
             pure (Decl (s <> e) (DExportCommandsFrom names path), False)
         ]
+
+    -- @export * as m from "path"@ (spec 5).
+    pExportNamespace s = do
+      _ <- op OpMul
+      _ <- kw KAs
+      Spanned _ alias <- lowerId
+      Spanned e path <- kw KFrom *> stringLit "export path"
+      pure (Decl (s <> e) (DExportNamespace alias path), False)
 
     -- @export { a, b } from "path"@ (spec 5).
     pExportFrom s = do
