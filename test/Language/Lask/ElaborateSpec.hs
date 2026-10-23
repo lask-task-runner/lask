@@ -1101,6 +1101,17 @@ spec = do
       rejects (mk <> "v() = $ make --dir") ETypeCommandOption
       rejects (withGo "v() = $ go test --ru X") ETypeCommandOption
 
+    it "reads an option whose value follows its name in the same word" $ do
+      let java = "command { \"java\" } on #eclipse-temurin:25 schema { \"java\": { root: { closed: true, style: \"single-dash\", stop_at_first_positional: true, options: [{ names: [\"-D\"], value: \"required\", prefix: true }, { names: [\"-X\", \"-XX:\"], value: \"required\", prefix: true }, { names: [\"-cp\", \"-classpath\"], value: \"required\" }, { names: [\"-jar\"], value: \"required\", stops: true }, { names: [\"-version\"] }] } } }\n"
+      accepts (java <> "v() = $ java -Xmx2g -XX:+UseG1GC -Dapp.env=prod -cp lib/* Main --anything")
+      accepts (java <> "v(p: String) = $ java -D#{p} -jar app.jar -x")
+      accepts (java <> "v() = $ java -version")
+      rejects (java <> "v() = $ java -Ymx2g Main") ETypeCommandOption
+      rejects (java <> "v() = $ java -jar") ETypeCommandOption
+
+    it "rejects a prefix option that takes no value" $
+      rejects "command { \"x\" } on #alpine:3.20 schema { \"x\": { root: { options: [{ names: [\"-W\"], prefix: true }] } } }\nv() = $ x" ETypeCommandSchema
+
     it "stops at what it cannot read" $ do
       accepts (withGo "v(n: String) = $ go test -run #{n} -v")
       accepts (withGo "v(n: String) = $ go test #{n} -bogus")

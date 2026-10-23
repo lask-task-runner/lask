@@ -171,6 +171,7 @@ commandOptionType =
           ("values", Field True (TyArray TyString)),
           ("global", Field True TyBool),
           ("stops", Field True TyBool),
+          ("prefix", Field True TyBool),
           ("description", Field True TyString)
         ]
     )
