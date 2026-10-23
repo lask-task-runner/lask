@@ -1,13 +1,15 @@
-install_path = "$HOME/.local/bin"
+home = get_env("HOME")
+
+install_path = path_join([home, ".local", "bin"])
 
 envs: Map<Environment> = { "local": #local, "docker": #haskell:9.10.3 }
 
 // Where each shell looks for completion scripts, and what the file has
 // to be called there.
 completion_dirs: Map<String> = {
-  "bash": "$HOME/.bash_completion.d",
-  "zsh": "$HOME/.zsh/completions",
-  "fish": "$HOME/.config/fish/completions"
+  "bash": path_join([home, ".bash_completion.d"]),
+  "zsh": path_join([home, ".zsh", "completions"]),
+  "fish": path_join([home, ".config", "fish", "completions"])
 }
 
 completion_files: Map<String> = {
@@ -67,7 +69,7 @@ install(--output = install_path, --env: String = "local") = do {
   if (env == "local") {
     $[#local] stack --local-bin-path #{output} install
   } else {
-    build_on_docker(output = install_path)
+    build_on_docker(output = output)
   }
 }
 
