@@ -1,6 +1,6 @@
 import * as tools from "tools"
 
-command { "python", "pip" } on python
+command { "python", "pip" } on python schema { "python": tools.python_schema, "pip": tools.pip_schema }
 command { "node", "npm", "npx" } on node
 command { "aws" } on aws
 command { "terraform" } on terraform

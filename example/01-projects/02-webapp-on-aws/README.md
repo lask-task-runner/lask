@@ -29,7 +29,7 @@ playwright = tools.playwright(image = #mcr.microsoft.com/playwright:v1.62.1-jamm
 A `command` declaration then says which environment provides each program:
 
 ```lask
-command { "python", "pip" } on python
+command { "python", "pip" } on python schema { "python": tools.python_schema, "pip": tools.pip_schema }
 command { "node", "npm", "npx" } on node
 command { "aws" } on aws
 command { "terraform" } on terraform
@@ -42,7 +42,7 @@ So a task names only what it runs, and the command words pick the container — 
 test_api() = $ pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
 ```
 
-Pinning the versions in one place means a task can't quietly drift onto a different toolchain than its neighbours.
+Pinning the versions in one place means a task can't quietly drift onto a different toolchain than its neighbours. The `schema` tools gives `python` and `pip` checks every command that runs them before anything runs: `$ pip instal requests` is an error in `lask check`, not a failed task.
 
 Tasks call other tasks, so you compose them instead of repeating yourself. That's all `lask run test` was:
 
