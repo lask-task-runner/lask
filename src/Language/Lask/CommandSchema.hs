@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Command schemas (spec ch. 5, "Command schemas"): what a command
@@ -19,6 +20,15 @@ module Language.Lask.CommandSchema
     fromStatic,
     Finding (..),
     checkCommand,
+    Role (..),
+    WalkEnd (..),
+    Walk (..),
+    walkCommand,
+    Offer (..),
+    OfferKind (..),
+    offersAfter,
+    valuesOf,
+    describeRole,
   )
 where
 
@@ -59,7 +69,8 @@ data Spec = Spec
     spOptions :: [Opt],
     -- | 'Nothing': true in the @gnu@ style, false in @single-dash@.
     spIntermixed :: Maybe Bool,
-    spStopAtFirstPositional :: Bool
+    spStopAtFirstPositional :: Bool,
+    spDescription :: Maybe Text
   }
   deriving (Show, Eq)
 
@@ -70,7 +81,8 @@ data Opt = Opt
   { optNames :: [Text],
     optValue :: ValueKind,
     optValues :: Maybe [Text],
-    optGlobal :: Bool
+    optGlobal :: Bool,
+    optDescription :: Maybe Text
   }
   deriving (Show, Eq)
 
@@ -125,7 +137,8 @@ fromStatic (Static sp f) = do
         Just v -> mapM option =<< array v
       intermixed <- traverse bool (present fs "intermixed")
       stopAt <- optBool fs "stop_at_first_positional"
-      pure (Spec closed style opts intermixed stopAt)
+      description <- traverse string (present fs "description")
+      pure (Spec closed style opts intermixed stopAt description)
 
     styleOf v@(Static vsp _) = do
       t <- string v
@@ -155,7 +168,8 @@ fromStatic (Static sp f) = do
           unless' (not (null vs)) (vsp, "'values' must list at least one value")
           pure (Just vs)
       global <- optBool fs "global"
-      pure (Opt names kind values global)
+      description <- traverse string (present fs "description")
+      pure (Opt names kind values global description)
 
     nameOf v@(Static vsp _) = do
       n <- string v
@@ -239,31 +253,70 @@ data St = St
     stAwaiting :: Maybe (Opt, Text, Span)
   }
 
+-- | What a word of an invocation is to its schema.
+data Role
+  = -- | An option of the spec at the path, under the name written.
+    RoleOption Text Text Opt
+  | -- | The value of an option.
+    RoleValue Text Text Opt
+  | -- | The word selecting the subcommand at the path.
+    RoleSubcommand Text
+  | -- | A positional argument of the spec at the path.
+    RoleArgument Text
+  deriving (Show, Eq)
+
+-- | Where reading an invocation ended.
+data WalkEnd
+  = -- | At something wrong.
+    EndFinding Finding
+  | -- | At a word it cannot read, or where options are no longer read.
+    EndStopped
+  | -- | At the end of the words: the path reached, the option still
+    -- awaiting its value, and whether a subcommand may still follow.
+    EndAt Text (Maybe (Opt, Text, Span)) Bool
+  deriving (Show, Eq)
+
+-- | Each word read, with its role, and where reading ended.
+data Walk = Walk
+  { wkRoles :: [(ShellWord, Role)],
+    wkEnd :: WalkEnd
+  }
+  deriving (Show, Eq)
+
 -- | Check one simple command, whose command word is @word@, against
 -- its schema. Checking stops at the first word it cannot read (spec
 -- ch. 5), and at the first finding.
 checkCommand :: Schema -> Text -> SimpleCommand -> [Finding]
-checkCommand schema word cmd = go (St "" False Nothing) (scArgs cmd)
+checkCommand schema word cmd = case wkEnd (walkCommand schema word (scArgs cmd)) of
+  EndFinding f -> [f]
+  EndAt path (Just (o, n, sp)) _
+    | not (scCut cmd) && optValue o == ValueRequired ->
+        [Finding sp True ("the option '" <> n <> "' of '" <> shownPath word path <> "' requires a value")]
+  _ -> []
+
+-- | Read the words of an invocation of @word@ against its schema.
+walkCommand :: Schema -> Text -> [ShellWord] -> Walk
+walkCommand schema word = go (St "" False Nothing)
   where
-    go st [] = case stAwaiting st of
-      Just (o, n, sp)
-        | not (scCut cmd) && optValue o == ValueRequired ->
-            [Finding sp True ("the option '" <> n <> "' of '" <> shown (stPath st) <> "' requires a value")]
-      _ -> []
+    stop = Walk [] EndStopped
+    found f = Walk [] (EndFinding f)
+    with w r (Walk rs e) = Walk ((w, r) : rs) e
+
+    go st [] = Walk [] (EndAt (stPath st) (stAwaiting st) (subcommandsOpen st))
     go st (w : rest)
       | Just (o, n, _) <- stAwaiting st =
           if not (swSingle w)
-            then []
+            then stop
             else case valueProblem (stPath st) o n w of
-              Just f -> [f]
-              Nothing -> go st {stAwaiting = Nothing} rest
-      | not (swSingle w) = []
+              Just f -> found f
+              Nothing -> with w (RoleValue (stPath st) n o) (go st {stAwaiting = Nothing} rest)
+      | not (swSingle w) = stop
       | swLiteral w = literal st (swPrefix w) w rest
       | "-" `T.isPrefixOf` swPrefix w = partial st w
-      | otherwise = []
+      | otherwise = stop
 
     literal st t w rest
-      | t == "--" = []
+      | t == "--" = stop
       | t == "-" || not ("-" `T.isPrefixOf` t) = positional st t w rest
       | otherwise = option st t w rest
 
@@ -273,31 +326,35 @@ checkCommand schema word cmd = go (St "" False Nothing) (scArgs cmd)
       (name, eq)
         | not (T.null eq) && ("--" `T.isPrefixOf` name || styleAt schema (stPath st) == SingleDash) ->
             case lookupOpt st name of
-              Nothing -> [unknownOption st name w]
+              Nothing -> found (unknownOption st name w)
               Just o
-                | optValue o == ValueNone -> [Finding (swSpan w) True ("the option '" <> name <> "' of '" <> shown (stPath st) <> "' takes no value")]
-                | otherwise -> []
-      _ -> []
+                | optValue o == ValueNone -> found (noValue st name w)
+                | otherwise -> with w (RoleOption (stPath st) name o) stop
+      _ -> stop
+
+    children st = [k | k <- Map.keys (schSubcommands schema), parentOf k == stPath st]
+    subcommandsOpen st = not (stPositional st) && not (null (children st))
 
     positional st t w rest =
-      let children = [k | k <- Map.keys (schSubcommands schema), parentOf k == stPath st]
-          path' = if T.null (stPath st) then t else stPath st <> " " <> t
+      let path' = if T.null (stPath st) then t else stPath st <> " " <> t
           spec = specAt schema (stPath st)
-       in if not (stPositional st) && not (null children)
+       in if subcommandsOpen st
             then case Map.lookup path' (schSubcommands schema) of
-              Just _ -> go (St path' False Nothing) rest
+              Just _ -> with w (RoleSubcommand path') (go (St path' False Nothing) rest)
               Nothing ->
-                [ Finding
-                    (swSpan w)
-                    (spClosed spec)
-                    ( "'" <> shown (stPath st) <> "' has no subcommand '" <> t <> "'"
-                        <> didYouMean t [T.takeWhileEnd (/= ' ') k | k <- children]
-                    )
-                ]
+                found
+                  ( Finding
+                      (swSpan w)
+                      (spClosed spec)
+                      ( "'" <> shown (stPath st) <> "' has no subcommand '" <> t <> "'"
+                          <> didYouMean t [T.takeWhileEnd (/= ' ') k | k <- children st]
+                      )
+                  )
             else
-              if spStopAtFirstPositional spec || not (intermixed st)
-                then []
-                else go st {stPositional = True} rest
+              with w (RoleArgument (stPath st)) $
+                if spStopAtFirstPositional spec || not (intermixed st)
+                  then stop
+                  else go st {stPositional = True} rest
 
     option st t w rest = case styleAt schema (stPath st) of
       Gnu
@@ -309,16 +366,18 @@ checkCommand schema word cmd = go (St "" False Nothing) (scArgs cmd)
     long st t w rest =
       let (name, eq) = T.breakOn "=" t
        in case lookupOpt st name of
-            Nothing -> [unknownOption st name w]
-            Just o
-              | not (T.null eq) ->
-                  if optValue o == ValueNone
-                    then [Finding (swSpan w) True ("the option '" <> name <> "' of '" <> shown (stPath st) <> "' takes no value")]
-                    else case valueProblem (stPath st) o name w {swPrefix = T.drop 1 eq} of
-                      Just f -> [f]
-                      Nothing -> go st rest
-              | optValue o == ValueRequired -> go st {stAwaiting = Just (o, name, swSpan w)} rest
-              | otherwise -> go st rest
+            Nothing -> found (unknownOption st name w)
+            Just o ->
+              with w (RoleOption (stPath st) name o) $
+                if
+                  | not (T.null eq) ->
+                      if optValue o == ValueNone
+                        then found (noValue st name w)
+                        else case valueProblem (stPath st) o name w {swPrefix = T.drop 1 eq} of
+                          Just f -> found f
+                          Nothing -> go st rest
+                  | optValue o == ValueRequired -> go st {stAwaiting = Just (o, name, swSpan w)} rest
+                  | otherwise -> go st rest
 
     -- @-abc@: single-letter options, the first that takes a value
     -- taking the rest of the word.
@@ -327,15 +386,16 @@ checkCommand schema word cmd = go (St "" False Nothing) (scArgs cmd)
       Just (c, more) ->
         let name = T.pack ['-', c]
          in case lookupOpt st name of
-              Nothing -> [unknownOption st name w]
-              Just o -> case optValue o of
-                ValueNone -> cluster st more w rest
-                kind
-                  | not (T.null more) -> case valueProblem (stPath st) o name w {swPrefix = more} of
-                      Just f -> [f]
-                      Nothing -> go st rest
-                  | kind == ValueRequired -> go st {stAwaiting = Just (o, name, swSpan w)} rest
-                  | otherwise -> go st rest
+              Nothing -> found (unknownOption st name w)
+              Just o ->
+                with w (RoleOption (stPath st) name o) $ case optValue o of
+                  ValueNone -> cluster st more w rest
+                  kind
+                    | not (T.null more) -> case valueProblem (stPath st) o name w {swPrefix = more} of
+                        Just f -> found f
+                        Nothing -> go st rest
+                    | kind == ValueRequired -> go st {stAwaiting = Just (o, name, swSpan w)} rest
+                    | otherwise -> go st rest
 
     -- In the single-dash style a name may also be written with two
     -- dashes, as Go's flag package reads it.
@@ -355,6 +415,8 @@ checkCommand schema word cmd = go (St "" False Nothing) (scArgs cmd)
             <> didYouMean name (concatMap optNames (optionsAt schema (stPath st)))
         )
 
+    noValue st name w = Finding (swSpan w) True ("the option '" <> name <> "' of '" <> shown (stPath st) <> "' takes no value")
+
     valueProblem path o name w = case optValues o of
       Just vs
         | swLiteral w,
@@ -370,12 +432,83 @@ checkCommand schema word cmd = go (St "" False Nothing) (scArgs cmd)
               )
       _ -> Nothing
 
-    shown "" = word
-    shown path = word <> " " <> path
+    shown = shownPath word
 
-    parentOf k = case T.breakOnEnd " " k of
-      ("", _) -> ""
-      (p, _) -> T.dropEnd 1 p
+shownPath :: Text -> Text -> Text
+shownPath word "" = word
+shownPath word path = word <> " " <> path
+
+parentOf :: Text -> Text
+parentOf k = case T.breakOnEnd " " k of
+  ("", _) -> ""
+  (p, _) -> T.dropEnd 1 p
+
+-- Editor support -------------------------------------------------------------------
+
+-- | Something an editor may offer where a word of an invocation is
+-- being written (spec ch. 5): an option, a subcommand or a value.
+data Offer = Offer
+  { ofText :: Text,
+    ofKind :: OfferKind,
+    ofDescription :: Maybe Text
+  }
+  deriving (Show, Eq)
+
+data OfferKind = OfferOption | OfferSubcommand | OfferValue
+  deriving (Show, Eq)
+
+-- | What may be written after the given words of an invocation of
+-- @word@: the values of an option awaiting one, or else the options
+-- of the spec reached and, while one may still follow, its
+-- subcommands. Nothing where reading stopped.
+offersAfter :: Schema -> Text -> [ShellWord] -> [Offer]
+offersAfter schema word ws = case wkEnd (walkCommand schema word ws) of
+  EndAt _ (Just (o, _, _)) _ -> [Offer v OfferValue Nothing | v <- fromMaybe [] (optValues o)]
+  EndAt path Nothing open ->
+    [Offer n OfferOption (optDescription o) | o <- optionsAt schema path, n <- optNames o]
+      <> [ Offer (T.takeWhileEnd (/= ' ') k) OfferSubcommand (spDescription s)
+         | open,
+           (k, s) <- Map.toList (schSubcommands schema),
+           parentOf k == path
+         ]
+  _ -> []
+
+-- | The values the option a word names takes, for a word written
+-- @name=@ (spec ch. 5).
+valuesOf :: Schema -> Text -> [ShellWord] -> Text -> [Offer]
+valuesOf schema word ws name = case wkEnd (walkCommand schema word ws) of
+  EndAt path _ _ ->
+    [ Offer v OfferValue Nothing
+    | o <- optionsAt schema path,
+      name `elem` optNames o,
+      v <- fromMaybe [] (optValues o)
+    ]
+  _ -> []
+
+-- | A description of a word of an invocation, for hover: the option,
+-- value or subcommand it is, with the schema's description.
+describeRole :: Schema -> Text -> Role -> Text
+describeRole schema word r = case r of
+  RoleOption path name o ->
+    T.intercalate "\n\n" $
+      ["`" <> name <> "` — option of `" <> shownPath word path <> "`" <> aliases name o <> takes o]
+        <> maybe [] pure (optDescription o)
+  RoleValue path name o ->
+    "value of `" <> name <> "` (`" <> shownPath word path <> "`)"
+      <> maybe "" (\vs -> ": one of " <> T.intercalate ", " ["`" <> v <> "`" | v <- vs]) (optValues o)
+  RoleSubcommand path ->
+    T.intercalate "\n\n" $
+      ["`" <> shownPath word path <> "` — subcommand"]
+        <> maybe [] pure (spDescription (specAt schema path))
+  RoleArgument path -> "argument of `" <> shownPath word path <> "`"
+  where
+    aliases name o = case filter (/= name) (optNames o) of
+      [] -> ""
+      others -> " (also " <> T.intercalate ", " ["`" <> n <> "`" | n <- others] <> ")"
+    takes o = case optValue o of
+      ValueNone -> ""
+      ValueRequired -> ", takes a value"
+      ValueOptional -> ", takes an optional value after `=`"
 
 didYouMean :: Text -> [Text] -> Text
 didYouMean n pool = case suggest n pool of

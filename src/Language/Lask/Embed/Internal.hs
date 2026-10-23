@@ -1068,7 +1068,9 @@ assemble exports = case nameErrors <> dupErrors <> docErrors <> kwErrors <> comm
           cpHover = [],
           cpAdvisories = [],
           cpProbes = Map.empty,
-          cpDispatched = Map.empty
+          cpDispatched = Map.empty,
+          cpSchemas = Map.empty,
+          cpSchemaUses = []
         }
 
 -- | A @lower_id@ (spec 3.2) that is not a reserved word.

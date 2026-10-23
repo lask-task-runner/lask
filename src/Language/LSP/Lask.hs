@@ -60,7 +60,9 @@ import Language.Lask.Builtins.Doc (builtinDocs, renderBuiltinDoc)
 import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
 import Language.Lask.Doc (docBlockAbove)
-import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..), readFieldType)
+import Language.Lask.CommandSchema (Offer (..), OfferKind (..), Schema (..), Spec (..), Walk (..), describeRole, offersAfter, valuesOf, walkCommand)
+import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..), SchemaUse (..), readFieldType)
+import Language.Lask.Syntax.Shell (ShellReading (..), ShellWord (..), SimpleCommand (..), readShell)
 import Language.Lask.ErrorCode (advisoryText, codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
 import qualified Language.Lask.Lexer.Token as Tok
@@ -135,7 +137,7 @@ lspOptions :: Options
 lspOptions =
   defaultOptions
     { optTextDocumentSync = Just syncOptions,
-      optCompletionTriggerCharacters = Just ['.']
+      optCompletionTriggerCharacters = Just ['.', '-', '=']
     }
 
 syncOptions :: LSP.TextDocumentSyncOptions
@@ -405,19 +407,36 @@ lexSemanticTokensWith commandWordSpans fileName src =
           sorted = sortOn (spanStart . fst) atoms
        in Right (join (map toAbsolutes sorted))
   where
-    -- @on@ is a keyword only where a command declaration puts it
-    -- (spec ch. 5), and an identifier everywhere else. The braces
+    -- @on@ and @schema@ are keywords only where a command declaration
+    -- puts them (spec ch. 5), and identifiers everywhere else. The braces
     -- around the command words make that position lexical: @command@,
     -- @{@, the words, @}@, and then @on@.
     commandOnSpans = go
       where
         go (Tok.Spanned _ (Tok.TKw Tok.KCommand) : Tok.Spanned _ Tok.TLBrace : rest) =
           case dropWhile (not . closesWords) rest of
-            _ : Tok.Spanned sp (Tok.TLowerId "on") : rest' -> sp : go rest'
+            _ : Tok.Spanned sp (Tok.TLowerId "on") : rest' -> sp : schema rest'
             rest' -> go rest'
         go (_ : rest) = go rest
         go [] = []
         closesWords (Tok.Spanned _ t) = t == Tok.TRBrace
+
+        -- @schema@ follows the environment expression, so it is the
+        -- first @schema@ outside brackets after @on@ that is not the
+        -- expression itself or a field of it.
+        schema (first : rest) = walk (depth (0 :: Int) (Tok.spannedValue first)) first rest
+          where
+            walk _ _ [] = []
+            walk d prev (t@(Tok.Spanned sp tok) : more) = case tok of
+              Tok.TLowerId "schema"
+                | d == 0, Tok.spannedValue prev /= Tok.TDot -> sp : go more
+              Tok.TNewline | d == 0 -> go more
+              _ -> walk (depth d tok) t more
+            depth d tok
+              | tok `elem` [Tok.TLParen, Tok.TLBracket, Tok.TLBrace] = d + 1
+              | tok `elem` [Tok.TRParen, Tok.TRBracket, Tok.TRBrace] = max 0 (d - 1)
+              | otherwise = d
+        schema [] = []
 
     spanStart (S.Span s _) = Just s
     spanStart S.NoSpan = Nothing
@@ -592,9 +611,10 @@ hoverAt path src (Position pl pc) = do
             | hi <- cpHover core,
               spanContains (hiSpan hi) line col
             ]
-      case hits of
-        [] -> declNameHover compiled path src line col
-        _ -> do
+      case (schemaHoverAt core path line col, hits) of
+        (Just h, _) -> pure (Just h)
+        (Nothing, []) -> declNameHover compiled path src line col
+        (Nothing, _) -> do
           let hi = minimumBy (comparing (spanSize . hiSpan)) hits
           case hiBuiltin hi of
             Just bn -> do
@@ -644,6 +664,33 @@ withConfirmNote compiled key docs = case key >>= ruleFor (compiledProgram compil
   Just (_, rule) ->
     let note = "**Confirmation:** " <> describeRule rule <> " (`lask.json`)"
      in Just (maybe note (<> "\n\n" <> note) docs)
+
+-- | Hover on a word of a command string checked against a command
+-- schema (spec ch. 5): the command, option, value or subcommand it is,
+-- with what the schema says of it.
+schemaHoverAt :: CoreProgram -> FilePath -> Int -> Int -> Maybe Hover
+schemaHoverAt core path line col =
+  listToMaybe $
+    [ markdownHover (swSpan n) ("`" <> suWord su <> "` — command" <> maybe "" ("\n\n" <>) (spDescription (schRoot (suSchema su))))
+    | su <- cpSchemaUses core,
+      let n = scName (suCommand su),
+      inSpan path (swSpan n) line col
+    ]
+      <> [ markdownHover (swSpan w) (describeRole (suSchema su) (suWord su) r)
+         | su <- cpSchemaUses core,
+           (w, r) <- wkRoles (walkCommand (suSchema su) (suWord su) (scArgs (suCommand su))),
+           inSpan path (swSpan w) line col
+         ]
+
+markdownHover :: S.Span -> Text -> Hover
+markdownHover sp body =
+  Hover (LSP.InL (LSP.MarkupContent LSP.MarkupKind_Markdown body)) (Just (toRange sp))
+
+-- | Whether a 1-based line and column fall in a span of this file.
+inSpan :: FilePath -> S.Span -> Int -> Int -> Bool
+inSpan path (S.Span (S.Position f l1 c1) (S.Position _ l2 c2)) line col =
+  normalise f == normalise path && (line, col) >= (l1, c1) && (line, col) < (l2, c2)
+inSpan _ S.NoSpan _ _ = False
 
 mkHover :: Text -> Text -> Maybe Text -> S.Span -> Hover
 mkHover name typeText docs sp =
@@ -751,7 +798,136 @@ data Cand = Cand
 -- public members of a namespace or the fields of a record after a
 -- dot, and the keyword parameters of the call being written.
 completionAt :: FilePath -> Text -> Position -> IO [CompletionItem]
-completionAt path src (Position pl pc)
+completionAt path src pos = do
+  offered <- commandCompletion path src pos
+  case offered of
+    Just items -> pure items
+    Nothing -> languageCompletion path src pos
+
+-- | Completion inside a dispatched command string whose command word
+-- has a command schema (spec ch. 5): the options and subcommands that
+-- may come next, or the values of the option awaiting one. 'Nothing'
+-- anywhere else, which leaves the position to the language's own
+-- completion.
+commandCompletion :: FilePath -> Text -> Position -> IO (Maybe [CompletionItem])
+commandCompletion path src (Position pl pc) = do
+  -- The word being written becomes a raw hole, at which reading stops
+  -- (6.6): neither a half-written word nor an option still awaiting
+  -- its value keeps the rest from compiling.
+  p <- compileTextPartial path (replaceLine (\l -> T.take tokenStart l <> "#{raw(\"\")}" <> T.drop col l))
+  pure $ do
+    core <- partialCore p
+    cu <-
+      listToMaybe
+        [ cu
+        | cu <- cpCommandUses core,
+          isJust (cuEnv cu),
+          S.Span (S.Position f l c) _ <- [cuSpan cu],
+          normalise f == normalise path,
+          l == lineIdx + 1,
+          c - 1 < tokenStart
+        ]
+    S.Span (S.Position _ _ startCol) _ <- pure (cuSpan cu)
+    schemas <- listToMaybe [m | (k, m) <- Map.toList (cpSchemas core), normalise k == normalise path]
+    let written = T.drop (startCol - 1) (T.take tokenStart lineText)
+        -- After the '$' and any stream specifier (6.6).
+        body = T.dropWhile (`elem` ("12*" :: String)) (T.drop 1 written)
+        bodyCol = startCol + (T.length written - T.length body)
+        reading = readShell (commandParts (S.Position path (lineIdx + 1) bodyCol) body)
+    cmd <- listToMaybe (reverse (srCommands reading))
+    let name = scName cmd
+        lastWord = last (name : scArgs cmd)
+    -- The cursor must be in that command, past its last word.
+    S.Span _ (S.Position _ endLine endCol) <- pure (swSpan lastWord)
+    if endLine == lineIdx + 1 && T.all (== ' ') (T.drop (endCol - 1) (T.take tokenStart lineText)) && endCol - 1 < tokenStart
+      then pure ()
+      else Nothing
+    if swLiteral name && swPlain name then pure () else Nothing
+    schema <- Map.lookup (swPrefix name) schemas
+    let (offers, editFrom) = case T.breakOn "=" token of
+          (opt, eq)
+            | "-" `T.isPrefixOf` opt,
+              not (T.null eq) ->
+                (valuesOf schema (swPrefix name) (scArgs cmd) opt, tokenStart + T.length opt + 1)
+          _ -> (offersAfter schema (swPrefix name) (scArgs cmd), tokenStart)
+    pure (map (offerItem editFrom) offers)
+  where
+    srcLines = T.splitOn "\n" src
+    lineIdx = fromIntegral pl :: Int
+    col = fromIntegral pc :: Int
+    lineText = case drop lineIdx srcLines of
+      (x : _) -> x
+      [] -> ""
+    before = T.take col lineText
+    token = T.takeWhileEnd (/= ' ') before
+    tokenStart = col - T.length token
+
+    replaceLine f = T.intercalate "\n" (zipWith apply [0 ..] srcLines)
+      where
+        apply i l
+          | i == (lineIdx :: Int) = f l
+          | otherwise = l
+
+    offerItem editFrom o =
+      let range = Range (Position pl (fromIntegral editFrom)) (Position pl pc)
+       in CompletionItem
+            (ofText o)
+            Nothing
+            ( Just $ case ofKind o of
+                OfferOption -> CompletionItemKind_Property
+                OfferSubcommand -> CompletionItemKind_Keyword
+                OfferValue -> CompletionItemKind_Value
+            )
+            Nothing
+            (ofDescription o)
+            Nothing
+            Nothing
+            Nothing
+            (Just (ofText o))
+            (Just (ofText o))
+            Nothing
+            Nothing
+            Nothing
+            (Just (LSP.InL (TextEdit range (ofText o))))
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+
+-- | The parts of a command string read from the source, its holes
+-- standing for themselves: @#{...}@ to its closing brace.
+commandParts :: S.Position -> Text -> [AST.TextPart]
+commandParts start = go start ""
+  where
+    go p acc t = case T.uncons t of
+      Nothing -> chunk p acc []
+      Just ('\\', rest) | "#{" `T.isPrefixOf` rest -> go p (acc <> "#{") (T.drop 2 rest)
+      Just ('#', rest)
+        | "{" `T.isPrefixOf` rest ->
+            let (holeText, after) = closing (1 :: Int) "" (T.drop 1 rest)
+                pAcc = advance p acc
+                holeEnd = advance pAcc ("#{" <> holeText <> "}")
+             in chunk p acc [AST.TPInterp (AST.Expr (S.Span pAcc holeEnd) (AST.EVar "_"))] <> go holeEnd "" after
+      Just (c, rest) -> go p (acc <> T.singleton c) rest
+
+    chunk _ "" more = more
+    chunk p acc more = AST.TPChunk (S.Span p (advance p acc)) acc : more
+
+    closing _ acc "" = (acc, "")
+    closing d acc t = case T.uncons t of
+      Just ('}', rest) | d == 1 -> (acc, rest)
+      Just ('}', rest) -> closing (d - 1) (acc <> "}") rest
+      Just ('{', rest) -> closing (d + 1) (acc <> "{") rest
+      Just (c, rest) -> closing d (acc <> T.singleton c) rest
+      Nothing -> (acc, "")
+
+    advance p t = p {S.column = S.column p + T.length t}
+
+-- | Completion of the language itself: what 'completionAt' offers
+-- outside a command string with a schema.
+languageCompletion :: FilePath -> Text -> Position -> IO [CompletionItem]
+languageCompletion path src (Position pl pc)
   | afterDot = do
       p <- compileTextPartial path healedDot
       pure (items (dotCands p))

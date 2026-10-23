@@ -9,6 +9,7 @@
 -- its body).
 module Language.Lask.Elaborate
   ( CoreProgram (..),
+    SchemaUse (..),
     CommandUse (..),
     CoreDecl (..),
     readFieldType,
@@ -111,7 +112,21 @@ data CoreProgram = CoreProgram
     cpProbes :: Map FilePath (Map Text Text),
     -- | For each declaration, the probed words whose environment its
     -- own command strings take by dispatch (10.9), with their image.
-    cpDispatched :: Map Key [(Text, Text)]
+    cpDispatched :: Map Key [(Text, Text)],
+    -- | Each module's command words that have a schema (spec ch. 5).
+    cpSchemas :: Map FilePath (Map Text Schema),
+    -- | Every simple command checked against a schema, for editor
+    -- tooling.
+    cpSchemaUses :: [SchemaUse]
+  }
+  deriving (Show)
+
+-- | One simple command of a dispatched command string, with the
+-- schema of its command word (spec ch. 5).
+data SchemaUse = SchemaUse
+  { suWord :: Text,
+    suSchema :: Schema,
+    suCommand :: SimpleCommand
   }
   deriving (Show)
 
@@ -233,6 +248,7 @@ data St = St
     stCurrent :: [Key],
     -- | The probed words each declaration dispatches through.
     stDispatched :: Map Key (Set (Text, Text)),
+    stSchemaUses :: [SchemaUse],
     stFailures :: Failures
   }
 
@@ -428,7 +444,9 @@ elaborateRecovering prog scopes nameErrors =
             -- fallback, reports once.
             cpAdvisories = sortOn advSpan (nub (stAdvisories st)),
             cpProbes = Map.map (Map.mapMaybe ceImage) (stCommands st),
-            cpDispatched = Map.map Set.toList (stDispatched st)
+            cpDispatched = Map.map Set.toList (stDispatched st),
+            cpSchemas = Map.map (Map.mapMaybe ceSchema) (stCommands st),
+            cpSchemaUses = stSchemaUses st
           }
       )
   where
@@ -446,13 +464,14 @@ elaborateRecovering prog scopes nameErrors =
           stAdvisories = [],
           stCurrent = [],
           stDispatched = Map.empty,
+          stSchemaUses = [],
           stFailures = Failures [] failedDecls failedAliases failedWords
         }
     internal =
       maybe Set.empty (moduleInternal . lmModule) $
         Map.lookup (progEntry prog) (progModules prog)
     emptyCore =
-      CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] [] Map.empty Map.empty
+      CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] [] Map.empty Map.empty Map.empty []
     -- Every module's command declarations are checked, whether or not
     -- a command string uses them (spec ch. 5), and so is every type
     -- alias, whether or not a type refers to it (spec 4.2).
@@ -2328,7 +2347,8 @@ checkSchemas ctx path sp reading src = do
                 swPlain n,
                 not (T.any (== '/') word),
                 ceSource entry == src,
-                Just schema <- ceSchema entry ->
+                Just schema <- ceSchema entry -> do
+                  modify (\s -> s {stSchemaUses = SchemaUse word schema cmd : stSchemaUses s})
                   case checkCommand schema word cmd of
                     f : _
                       | fdSure f -> abort (diag ETypeCommandOption (at (fdSpan f)) (fdMessage f))

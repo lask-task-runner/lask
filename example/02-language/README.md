@@ -74,13 +74,14 @@ The thing to take away: an environment is a value. A command that names none is 
 
 ## 05-commands
 
-**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation and its escaping, `raw`, `run`, and the `command ... on ...` declarations that dispatch a bare `$`.
+**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation and its escaping, `raw`, `run`, the `command ... on ...` declarations that dispatch a bare `$`, and what is checked before a command runs: its shell syntax, the options a command schema describes, and whether the image has the programs declared on it.
 
 ```bash
 lask sync
 lask eval probe --path /etc/os-release
 lask eval inspect            # a command that exits 3, without raising
 lask eval report
+lask eval shell_users        # grep, checked against its schema
 ```
 
 The thing to take away: a command string swallows the rest of its line. `$ uname -s |> trim` hands `|> trim` to the shell and returns the empty string; the pipe belongs on the next line.
