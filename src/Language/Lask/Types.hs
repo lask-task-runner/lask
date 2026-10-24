@@ -186,6 +186,7 @@ commandSpecType =
           ("options", Field True (TyArray commandOptionType)),
           ("intermixed", Field True TyBool),
           ("stop_at_first_positional", Field True TyBool),
+          ("subcommand_optional", Field True TyBool),
           ("abbreviations", Field True TyBool),
           ("description", Field True TyString)
         ]

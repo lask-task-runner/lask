@@ -70,6 +70,9 @@ data Spec = Spec
     -- | 'Nothing': true in the @gnu@ style, false in @single-dash@.
     spIntermixed :: Maybe Bool,
     spStopAtFirstPositional :: Bool,
+    -- | A positional argument that names no subcommand is an argument
+    -- of this spec: @grype alpine:3.20@ beside @grype db update@.
+    spSubcommandOptional :: Bool,
     -- | 'Nothing': the parent's, false at the root. A long option may
     -- then be shortened to a unique prefix (getopt_long, optparse).
     spAbbreviations :: Maybe Bool,
@@ -147,9 +150,10 @@ fromStatic (Static sp f) = do
         Just v -> mapM option =<< array v
       intermixed <- traverse bool (present fs "intermixed")
       stopAt <- optBool fs "stop_at_first_positional"
+      subOptional <- optBool fs "subcommand_optional"
       abbreviations <- traverse bool (present fs "abbreviations")
       description <- traverse string (present fs "description")
-      pure (Spec closed style opts intermixed stopAt abbreviations description)
+      pure (Spec closed style opts intermixed stopAt subOptional abbreviations description)
 
     styleOf v@(Static vsp _) = do
       t <- string v
@@ -371,6 +375,7 @@ walkCommand schema word = go (St "" False Nothing)
        in if subcommandsOpen st
             then case Map.lookup path' (schSubcommands schema) of
               Just _ -> with w (RoleSubcommand path') (go (St path' False Nothing) rest)
+              Nothing | spSubcommandOptional spec -> argument spec
               Nothing ->
                 found
                   ( Finding
@@ -380,11 +385,13 @@ walkCommand schema word = go (St "" False Nothing)
                           <> didYouMean t [T.takeWhileEnd (/= ' ') k | k <- children st]
                       )
                   )
-            else
-              with w (RoleArgument (stPath st)) $
-                if spStopAtFirstPositional spec || not (intermixed st)
-                  then stop
-                  else go st {stPositional = True} rest
+            else argument spec
+      where
+        argument spec =
+          with w (RoleArgument (stPath st)) $
+            if spStopAtFirstPositional spec || not (intermixed st)
+              then stop
+              else go st {stPositional = True} rest
 
     option st t w rest = case styleAt schema (stPath st) of
       Gnu
