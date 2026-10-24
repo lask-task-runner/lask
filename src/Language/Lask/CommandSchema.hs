@@ -182,15 +182,16 @@ fromStatic (Static sp f) = do
       stops <- optBool fs "stops"
       prefix <- optBool fs "prefix"
       unless' (not prefix || kind /= ValueNone) (osp, "an option with 'prefix' takes a value, written right after its name")
+      unless' (prefix || all ("-" `T.isPrefixOf`) names) (osp, "only an option with 'prefix' may have a name beginning with '+'")
       description <- traverse string (present fs "description")
       pure (Opt names kind values global stops prefix description)
 
     nameOf v@(Static vsp _) = do
       n <- string v
-      unless' (validName n) (vsp, "'" <> n <> "' is not an option name: it must begin with '-', not be '-' or '--', and contain no whitespace, '=' or quotation character")
+      unless' (validName n) (vsp, "'" <> n <> "' is not an option name: it must begin with '-' or '+', not be '-' or '--', and contain no whitespace, '=' or quotation character")
       pure n
     validName n =
-      "-" `T.isPrefixOf` n
+      ("-" `T.isPrefixOf` n || "+" `T.isPrefixOf` n)
         && n /= "-"
         && n /= "--"
         && T.all (\c -> c `notElem` (" \t\n='\"\\" :: String)) n
@@ -340,6 +341,8 @@ walkCommand schema word = go (St "" False Nothing)
 
     literal st t w rest
       | t == "--" = stop
+      -- rustup's +toolchain: a word an option named with '+' begins
+      | "+" `T.isPrefixOf` t, isJust (prefixOpt st t) = long st t w rest
       | t == "-" || not ("-" `T.isPrefixOf` t) = positional st t w rest
       | otherwise = option st t w rest
 
