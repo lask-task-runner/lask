@@ -1109,6 +1109,11 @@ spec = do
       rejects (java <> "v() = $ java -Ymx2g Main") ETypeCommandOption
       rejects (java <> "v() = $ java -jar") ETypeCommandOption
 
+    it "reads a two-dash name of a single-dash program as itself, and otherwise as one dash" $ do
+      let mvn = "command { \"mvn\" } on #maven:3.9 schema { \"mvn\": { root: { closed: true, style: \"single-dash\", intermixed: true, options: [{ names: [\"-am\", \"--also-make\"] }, { names: [\"-B\", \"--batch-mode\"] }, { names: [\"-q\"] }] } } }\n"
+      accepts (mvn <> "v() = $ mvn -am --also-make -B --batch-mode --q package")
+      rejects (mvn <> "v() = $ mvn --also-mak package") ETypeCommandOption
+
     it "rejects a prefix option that takes no value" $
       rejects "command { \"x\" } on #alpine:3.20 schema { \"x\": { root: { options: [{ names: [\"-W\"], prefix: true }] } } }\nv() = $ x" ETypeCommandSchema
 
