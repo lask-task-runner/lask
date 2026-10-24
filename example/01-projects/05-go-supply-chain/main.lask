@@ -17,10 +17,10 @@ grype_cache = "lask-grype-cache"
 // go and gofmt take the schemas tools gives them, so a command that runs
 // them is checked against their options before it runs, and an editor
 // completes them.
-command { "go", "gofmt" } on tools.go(cache_dir = go_cache) schema { "go": tools.go_schema, "gofmt": tools.gofmt_schema }
-command { "syft" } on tools.syft()
-command { "grype" } on tools.grype(cache_dir = grype_cache)
-command { "sha256sum", "rm" } on tools.unix()
+command { "go", "gofmt" } on tools.go.env(cache_dir = go_cache) schema tools.go.schema
+command { "syft" } on tools.syft.env()
+command { "grype" } on tools.grype.env(cache_dir = grype_cache)
+command { "sha256sum", "rm" } on tools.unix.env()
 command { "cosign" } on cosign_image
 
 // cosign's own image has no shell, so this recipe copies it onto Alpine.
@@ -63,7 +63,7 @@ test() = do {
 build(os: String, arch: String, --version: String = "dev"): String = do {
   ext = os == "windows" ? ".exe" : ""
   out = "dist/hello_#{version}_#{os}_#{arch}#{ext}"
-  target = tools.go(goos = os, goarch = arch, cgo_enabled = "0", cache_dir = go_cache)
+  target = tools.go.env(goos = os, goarch = arch, cgo_enabled = "0", cache_dir = go_cache)
   $[target] go build -trimpath -ldflags "-s -w -X main.version=#{version}" -o #{out} ./cmd/hello
   out
 }

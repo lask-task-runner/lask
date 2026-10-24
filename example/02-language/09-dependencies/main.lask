@@ -15,7 +15,9 @@
 // lask.json and lask.lock.json, where it can be reviewed and pinned.
 import * as tools from "tools"
 
-// The named form works the same way, `as` included.
+// The named form works the same way, `as` included. Each tool of this
+// dependency is a namespace, so `tf` names one here: `tf.env(...)` is
+// tools.terraform.env, with its keyword parameters.
 import { terraform as tf } from "tools"
 
 // A dependency can export command words, which are imported by name
@@ -29,11 +31,11 @@ import command { "jq" } from "tools"
 // re-exports it from its own entry module, which is why every
 // dependency has exactly one surface.
 
-// The dependency's function returns where terraform runs. Its image is
+// The dependency's env function returns where terraform runs. Its image is
 // the dependency's default unless one is written here, as it is:
 // either way it is a head written in some file, so `lask sync`
 // pulls it and pins it in this project's lock.
-command { "terraform" } on tf(image = #hashicorp/terraform:1.16.4)
+command { "terraform" } on tf.env(image = #hashicorp/terraform:1.16.4)
 
 // The version of terraform the shared environment runs.
 //
@@ -46,7 +48,7 @@ tool_version(): String = $ terraform version
 //
 // @param dir  A directory of .tf files.
 fmt_ok(--dir: String = "."): Bool = do {
-  r = $*[tools.terraform()] terraform fmt -check -recursive #{dir}
+  r = $*[tools.terraform.env()] terraform fmt -check -recursive #{dir}
   r.code == 0
 }
 
