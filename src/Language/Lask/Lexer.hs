@@ -244,8 +244,10 @@ pCommandString = do
     pCmdPart =
       choice
         [ chunked ("#{" <$ chunk "\\#{"),
+          chunked ("#!{" <$ chunk "\\#!{"),
           chunked ("" <$ try (char '\\' *> pNewline)), -- line continuation
           Interp <$> (chunk "#{" *> pNestedUntil TLBrace TRBrace),
+          RawInterp <$> (chunk "#!{" *> pNestedUntil TLBrace TRBrace),
           chunked (takeWhile1P Nothing plainChar),
           chunked (T.singleton <$> satisfy (\c -> c /= '\n' && c /= '\r'))
         ]

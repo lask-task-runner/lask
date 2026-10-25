@@ -18,6 +18,7 @@ import Command.Lask.Common
 import Command.Lask.DepUse (ImportSite (..), projectImports)
 import Command.Lask.Envs (HeadImage (..), HeadUse (..), Requirer (..), collectHeadUses)
 import Command.Lask.Images
+import Language.Lask.Runtime.Container (ContainerBackend (..), resolveBackend)
 import Language.Lask.Runtime.Image (daemonReachable)
 import Command.Lask.Options (CommonOpts (..), DepsAddSource (..))
 import Command.Lask.Progress (finish, note, section, start, withProgress)
@@ -296,8 +297,18 @@ cmdSync opts frozen prune = do
         TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
         exitWith (ExitFailure 1)
     let core = compiledCore compiled
-    (images, mats) <- materialize pg core (lockImages baseLock)
+    backend <- resolveBackend
+    (materialized, mats) <- materialize backend pg core (lockImages baseLock)
+    (images, probes) <- probeCommands backend core mats (lockImages baseLock) materialized
     let updated = baseLock {lockImages = images}
+        commandFailures =
+          concat
+            [ case p of
+                Probed key rs -> [codeText EIoCommandMissing <> ": '" <> w <> "' is declared on " <> T.drop 1 key <> ", which does not provide it" | (w, False) <- rs]
+                NoShell key ws why -> [codeText EIoCommandMissing <> ": " <> T.drop 1 key <> " cannot start /bin/sh (" <> why <> "), so it provides none of " <> T.intercalate ", " ["'" <> w <> "'" | w <- ws]]
+                ProbeFailed key why -> [codeText EIoEnvResolve <> ": the commands of " <> T.drop 1 key <> " could not be probed: " <> why]
+            | p <- probes
+            ]
     when (frozen && updated /= baseLock) $ do
       imageSummary <- imageSummaryRows paths (Just updated) mats
       summary opts began moduleRows imageSummary "lask.lock.json unchanged"
@@ -324,13 +335,14 @@ cmdSync opts frozen prune = do
     summary opts began moduleRows imageSummary written
     let dropped = Map.keys (maybe Map.empty lockImages prior) `minus` Map.keys (lockImages recorded)
     unless (null dropped) $
-      note pg ("images no longer required (kept on the Docker daemon): " <> T.intercalate ", " (map (T.drop 1) dropped))
+      note pg ("images no longer required (kept on " <> cbDaemon backend <> "): " <> T.intercalate ", " (map (T.drop 1) dropped))
     unless prune $
       mapM_
         (\n -> note pg ("warning: '" <> n <> "' is declared in lask.json but no module imports it (lask sync --prune removes it)"))
         unused
     mapM_ (\(h, e) -> TIO.hPutStrLn stderr (shortPath h <> ": " <> e)) failures
-    if null failures then exitSuccess else exitWith (ExitFailure 3)
+    mapM_ (TIO.hPutStrLn stderr) commandFailures
+    if null failures && null commandFailures then exitSuccess else exitWith (ExitFailure 3)
   where
     third (_, _, c) = c
     minus a b = [x | x <- a, x `notElem` b]
@@ -720,8 +732,9 @@ cmdDepsRm opts name = do
   unless (Map.null gone) $
     TIO.putStrLn ("removed from lask.lock.json: " <> T.intercalate ", " (Map.keys gone))
   let dropped = Map.keys priorImages `minus` Map.keys keptImages
-  unless (null dropped) $
-    TIO.putStrLn ("images no longer required (kept on the Docker daemon): " <> T.intercalate ", " (map (T.drop 1) dropped))
+  unless (null dropped) $ do
+    backend <- resolveBackend
+    TIO.putStrLn ("images no longer required (kept on " <> cbDaemon backend <> "): " <> T.intercalate ", " (map (T.drop 1) dropped))
   exitSuccess
   where
     minus a b = [x | x <- a, x `notElem` b]
@@ -730,8 +743,8 @@ cmdDepsRm opts name = do
 
 -- | @lask envs list@ (spec 11.4): every environment the program can
 -- run in, what the lock resolves it to, what requires it, and whether
--- its image is on the Docker daemon. The daemon is asked once, read
--- only; when it cannot be reached a warning says so and the status is
+-- its image is on the container engine (10.10). The engine is asked
+-- once, read only; when it cannot be reached a warning says so and the status is
 -- @?@. No network, no pull, no build.
 cmdEnvsList :: CommonOpts -> Maybe Text -> IO ()
 cmdEnvsList opts function = do
@@ -748,9 +761,10 @@ cmdEnvsList opts function = do
         k : _ -> pure (Just k)
         [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
   lock <- loadLockMaybe paths
-  daemon <- daemonReachable
+  backend <- resolveBackend
+  daemon <- daemonReachable backend
   case daemon of
-    Left e -> TIO.hPutStrLn stderr ("warning: cannot reach the Docker daemon (" <> e <> "); image status is not checked")
+    Left e -> TIO.hPutStrLn stderr ("warning: cannot reach " <> cbDaemon backend <> " (" <> e <> "); image status is not checked")
     Right () -> pure ()
   let uses = collectHeadUses core scope
       locals = sort (nub [huBy u | u@(HeadUse HeadLocal _) <- uses])
@@ -763,7 +777,7 @@ cmdEnvsList opts function = do
         | otherwise -> pure ("not built (lask sync)", ToneWarn)
       (Just _, Left _) -> pure ("?", ToneWarn)
       (Just p, Right ()) -> do
-        ok <- isPresent p
+        ok <- isPresent backend p
         pure (if ok then ("present", ToneOk) else ("missing (lask sync)", ToneBad))
     pure (ImageLine (environmentLabel row) (irKind row) pinned (map (requirerLabel paths lock) (irRequiredBy row)) status tone Nothing)
   let localLine = [ImageLine "#local" "local" Nothing (map (requirerLabel paths lock) locals) "ok" ToneOk Nothing | not (null locals)]

@@ -137,7 +137,7 @@ wait_for(--path: String = "/etc/os-release"): CommandResult = until(
   \() -> exists(path)
 )
 
-internal exists(path: String): CommandResult = $* test -e #{shell_quote(path)}
+internal exists(path: String): CommandResult = $* test -e #{path}
 
 // Bound a step in time.
 //

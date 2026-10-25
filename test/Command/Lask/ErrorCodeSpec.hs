@@ -49,6 +49,10 @@ trigger c = case c of
   ETypeCommandEffect -> check "command { \"go\" } on #golang:1.25{env: {\"IN\": stdin}}\nv() = $ go vet\n"
   ETypeCommandName -> check "command { \"my prog\" } on #local\nv() = $ ls\n"
   ETypeCommandDuplicate -> check "command { \"go\" } on #local\ncommand { \"go\" } on #golang:1.25\n"
+  ETypeCommandSyntax -> check "v() = $[#local] make &&\n"
+  ETypeCommandSchema -> check "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { style: \"posix\" } } }\nv() = $ go vet\n"
+  ETypeCommandOption ->
+    check "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { closed: true } } }\nv() = $ go -x\n"
   ETypeEnvConstruct -> check "e = #local(memory = \"1g\")\n"
   ETypeAccess -> check "u = {name: \"a\"}\nn = u.nope\n"
   ETypeFieldDuplicate -> check "r = {a: 1, a: 2}\n"
@@ -121,6 +125,12 @@ trigger c = case c of
       void (runLaskEnv lask dir extra ["sync"] "")
       writeFile (state </> "present" </> "alpine_sha256_aaa") "[\"alpine@sha256:ccc\"]"
       runLaskEnv lask dir extra ["sync"] ""
+  EIoCommandMissing -> Scripted 3 $ \lask ->
+    withFakeDocker $ \state extra -> withProject pinned $ \dir -> do
+      createDirectoryIfMissing True (state </> "missing")
+      writeFile (state </> "missing" </> "cat") ""
+      void (runLaskEnv lask dir extra ["sync"] "")
+      runLaskEnv lask dir extra ["eval", "hi"] ""
   EIoFs -> Invoke "f() = read_file(\"nope.txt\", #local)\n" ["eval", "f"] 3
   EIoDataDecode -> Invoke "f() = from_json(\"{oops\")\n" ["eval", "f"] 3
   -- Secret references (spec 9.8), read by `f` from PW.

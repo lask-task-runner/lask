@@ -1,13 +1,15 @@
-install_path = "$HOME/.local/bin"
+home = get_env("HOME")
+
+install_path = path_join([home, ".local", "bin"])
 
 envs: Map<Environment> = { "local": #local, "docker": #haskell:9.10.3 }
 
 // Where each shell looks for completion scripts, and what the file has
 // to be called there.
 completion_dirs: Map<String> = {
-  "bash": "$HOME/.bash_completion.d",
-  "zsh": "$HOME/.zsh/completions",
-  "fish": "$HOME/.config/fish/completions"
+  "bash": path_join([home, ".bash_completion.d"]),
+  "zsh": path_join([home, ".zsh", "completions"]),
+  "fish": path_join([home, ".config", "fish", "completions"])
 }
 
 completion_files: Map<String> = {
@@ -67,7 +69,7 @@ install(--output = install_path, --env: String = "local") = do {
   if (env == "local") {
     $[#local] stack --local-bin-path #{output} install
   } else {
-    build_on_docker(output = install_path)
+    build_on_docker(output = output)
   }
 }
 
@@ -190,13 +192,11 @@ coverage_report(): String = $[#local] tools/coverage-report.sh
 // @complete dir @dir
 // @complete lask @file
 smoke_colon_dir(--dir = path_join([get_env_or("RUNNER_TEMP", "/tmp"), "colon:dir"]), --lask = built_lask()): String = do {
-  d = shell_quote(dir)
-  l = shell_quote(lask)
-  $[#local] mkdir -p #{d} && cp -R example/01-projects/01-hello-world/. #{d}/
+  $[#local] mkdir -p #{dir} && cp -R example/01-projects/01-hello-world/. #{dir}/
   // A task never pulls its image (spec 10.3): `lask sync` pulls it and
   // pins its digest in lask.lock.json first.
-  $[#local] cd #{d} && #{l} sync
-  out = $[#local] cd #{d} && #{l} run cowsay-hello Lask 2>&1
+  $[#local] cd #{dir} && #{lask} sync
+  out = $[#local] cd #{dir} && #{lask} run cowsay-hello Lask 2>&1
   // The captured stream also carries the trace, and the trace echoes
   // the command — so a bare `Hello, Lask!` matches even when nothing
   // ran. The framed form is drawn by cowsay and appears only when the
@@ -207,6 +207,21 @@ smoke_colon_dir(--dir = path_join([get_env_or("RUNNER_TEMP", "/tmp"), "colon:dir
   out
 }
 
+// Drive lask on one container engine: pull and pin, build a recipe,
+// run with run options, read and write files, pass a variable by name,
+// and stop an abandoned container (spec 10.10).
+//
+// Not part of `ci`, which needs only Docker: CI runs it once for each
+// of podman and nerdctl.
+//
+// @param engine  docker, podman or nerdctl.
+// @param lask    The lask binary to drive.
+// @complete engine docker podman nerdctl
+// @complete lask @file
+// @example lask run smoke-engine podman
+smoke_engine(engine: String, --lask = built_lask()): String =
+  $[#local] tools/engine-smoke.sh #{engine} #{lask}
+
 // Drive the generated completion scripts through bash, zsh and fish.
 //
 // The scripts are shell code, so the only place their quoting and word
@@ -216,7 +231,7 @@ smoke_colon_dir(--dir = path_join([get_env_or("RUNNER_TEMP", "/tmp"), "colon:dir
 // @param lask  The lask binary whose scripts are tested.
 // @complete lask @file
 smoke_completion(--lask = built_lask()): String =
-  $[#local] tools/completion-smoke.sh #{shell_quote(lask)}
+  $[#local] tools/completion-smoke.sh #{lask}
 
 // Everything CI checks after the build: the test suites, then the
 // smoke tests that need a real Docker daemon and real shells.
@@ -253,12 +268,14 @@ internal declared_version(yaml: String): String = do {
 // Write `<file>.sha256` in the format `sha256sum -c` reads.
 //
 // Commands run under cmd.exe on Windows, where neither shasum nor a
-// POSIX quote exists, so the hash comes from PowerShell there.
+// POSIX quote exists, so the hash comes from PowerShell there, and the
+// file name goes in as a raw hole, `#!{file}`: the other holes of a
+// command are escaped for a POSIX shell (spec 6.6).
 internal write_checksum(file: String, --windows = false): String = do {
   hash = if (windows) {
-    $[#local] pwsh -NoProfile -Command "(Get-FileHash '#{file}' -Algorithm SHA256).Hash.ToLower()"
+    $[#local] pwsh -NoProfile -Command "(Get-FileHash '#!{file}' -Algorithm SHA256).Hash.ToLower()"
   } else {
-    $[#local] shasum -a 256 #{shell_quote(file)} | cut -d ' ' -f 1
+    $[#local] shasum -a 256 #{file} | cut -d ' ' -f 1
   }
   sum = "#{file}.sha256"
   write_file(sum, "#{trim(hash)}  #{basename(file)}\n", #local)
@@ -267,13 +284,13 @@ internal write_checksum(file: String, --windows = false): String = do {
 
 internal archive_tar(bin_dir: String, name: String): String = do {
   file = "#{name}.tar.gz"
-  $[#local] tar -C #{shell_quote(bin_dir)} -czf #{shell_quote(file)} lask
+  $[#local] tar -C #{bin_dir} -czf #{file} lask
   file
 }
 
 internal archive_zip(bin_dir: String, name: String): String = do {
   file = "#{name}.zip"
-  $[#local] pwsh -NoProfile -Command "Compress-Archive -Path '#{bin_dir}/lask.exe' -DestinationPath '#{file}' -Force"
+  $[#local] pwsh -NoProfile -Command "Compress-Archive -Path '#!{bin_dir}/lask.exe' -DestinationPath '#!{file}' -Force"
   file
 }
 
@@ -281,7 +298,7 @@ internal package_deb(version: String, bin_dir: String, name: String): String = d
   root = "dist/deb"
   make_dir("#{root}/DEBIAN", #local)
   make_dir("#{root}/usr/bin", #local)
-  $[#local] install -m 0755 #{shell_quote(bin_dir)}/lask #{root}/usr/bin/lask
+  $[#local] install -m 0755 #{bin_dir}/lask #{root}/usr/bin/lask
   control = [
     "Package: lask",
     "Version: #{version}",
@@ -294,7 +311,7 @@ internal package_deb(version: String, bin_dir: String, name: String): String = d
   ]
   write_file("#{root}/DEBIAN/control", join(control, "\n"), #local)
   file = "#{name}.deb"
-  $[#local] dpkg-deb --build #{root} #{shell_quote(file)}
+  $[#local] dpkg-deb --build #{root} #{file}
   file
 }
 
@@ -373,9 +390,11 @@ internal latest_tag(): String = do {
 //
 // `gh workflow run` does not say which run it started, so this looks
 // for a manual run of the workflow created since the dispatch.
+//
+// `fields` is the `-f key=value` flags, given to the shell as words.
 internal dispatch(workflow: String, fields: String): String = do {
   since = $[#local] date -u +%Y-%m-%dT%H:%M:%SZ
-  $[#local] gh workflow run #{workflow} --ref main #{fields}
+  $[#local] gh workflow run #{workflow} --ref main #!{fields}
   until(backoff_fixed(5, 24), \(id: String) -> id != "", \() -> newest_run(workflow, trim(since)))
 }
 
@@ -410,7 +429,7 @@ release_bump(version: String): String = do {
   $[#local] git commit -q -m "chore: bump version to #{version}" -- package.yaml lask.cabal
   $[#local] git push -q origin dev
   body = "Release v#{version}: brings the changes on `dev` since #{previous} into `main` and bumps `package.yaml` to #{version}.\n\nBreaking changes since #{previous}:\n- \n"
-  url = $[#local] gh pr create --base main --head dev --title "chore: bump version to #{version}" --body #{shell_quote(body)}
+  url = $[#local] gh pr create --base main --head dev --title "chore: bump version to #{version}" --body #{body}
   trim(url)
 }
 
@@ -451,7 +470,7 @@ release(version: String, --notes: String = "notes.md"): String = do {
   retry(backoff_fixed(30, 3), \() -> fetch_release_files(build, version))
 
   log("publishing #{tag}")
-  url = $[#local] gh release create #{tag} --target main --title #{tag} --notes-file #{shell_quote(notes)} \
+  url = $[#local] gh release create #{tag} --target main --title #{tag} --notes-file #{notes} \
     dist/release/lask-#{tag}-*.tar.gz dist/release/lask-#{tag}-*.zip dist/release/lask-#{tag}-*.deb
 
   log("install-testing #{tag}")

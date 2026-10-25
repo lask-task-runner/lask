@@ -229,6 +229,54 @@ spec = do
     it "marks `command` in an import as a keyword" $
       hasAtom "import command { \"go\" } from \"./tools.lask\"" (0, 7, 7, SemanticTokenTypes_Keyword)
 
+  describe "command schemas (spec ch. 5)" $ do
+    let decl =
+          "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { closed: true, style: \"single-dash\", description: \"the Go tool\" }, \
+          \subcommands: { \"test\": { closed: true, intermixed: true, description: \"test packages\", options: [\
+          \{ names: [\"-v\"], description: \"verbose output\" }, \
+          \{ names: [\"-covermode\"], value: \"required\", values: [\"set\", \"count\"] }] }, \
+          \\"mod\": {} } } }\n"
+        at line = do
+          let src = decl <> line <> "\n"
+          labels "test.lask" src 1 (fromIntegral (T.length line))
+        hoverOn line word = do
+          let src = decl <> line <> "\n"
+              c = T.length (fst (T.breakOn word line))
+          h <- hoverAt "test.lask" src (Position 1 (fromIntegral c))
+          pure $ case h of
+            Just (Hover (InL (MarkupContent _ t)) _) -> Just t
+            _ -> Nothing
+
+    it "offers the subcommands after the command word" $
+      at "v() = $ go " >>= (`shouldMatchList` ["test", "mod"])
+
+    it "offers the options of the subcommand reached" $
+      at "v() = $ go test -" >>= (`shouldMatchList` ["-v", "-covermode"])
+
+    it "offers the values of an option awaiting one" $ do
+      at "v() = $ go test -covermode " >>= (`shouldMatchList` ["set", "count"])
+      at "v() = $ go test -covermode=" >>= (`shouldMatchList` ["set", "count"])
+
+    it "replaces the word being written" $ do
+      let src = decl <> "v() = $ go test -co\n"
+      items <- completionAt "test.lask" src (Position 1 19)
+      [r | i <- items, i ^. L.label == "-covermode", Just (InL (TextEdit r _)) <- [i ^. L.textEdit]]
+        `shouldBe` [Range (Position 1 16) (Position 1 19)]
+
+    it "leaves an explicit environment to the language's completion" $
+      at "v() = $[#golang:1.25] go test -" >>= (`shouldSatisfy` notElem "-v")
+
+    it "describes an option, a subcommand and the command on hover" $ do
+      hoverOn "v() = $ go test -v ./..." "-v" >>= (`shouldSatisfy` maybe False (T.isInfixOf "verbose output"))
+      hoverOn "v() = $ go test -v ./..." "test" >>= (`shouldSatisfy` maybe False (T.isInfixOf "test packages"))
+      hoverOn "v() = $ go test -v ./..." "go" >>= (`shouldSatisfy` maybe False (T.isInfixOf "the Go tool"))
+
+    it "marks `schema` in a command declaration as a keyword" $ do
+      hasAtom "command { \"go\" } on #golang:1.25 schema s" (0, 33, 6, SemanticTokenTypes_Keyword)
+      hasAtom "command { \"go\" } on #golang:1.25{memory: \"1g\"} schema s" (0, 47, 6, SemanticTokenTypes_Keyword)
+      hasAtom "command { \"go\" } on schema" (0, 20, 6, SemanticTokenTypes_Variable)
+      hasAtom "schema = 1" (0, 0, 6, SemanticTokenTypes_Variable)
+
   describe "hover" $ do
     let src =
           "// Adds one.\n\

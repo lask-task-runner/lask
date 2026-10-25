@@ -42,9 +42,9 @@ Everything lives in [main.lask](main.lask). The two environments come from [lask
 command { "node", "npm", "npx" } on node
 
 node_image = #node:24.22.1-bookworm-slim
-node = tools.node(image = node_image, extra_env = quiet)
+node = tools.node.env(image = node_image, extra_env = quiet)
 
-playwright = tools.playwright(
+playwright = tools.playwright.env(
   image = #mcr.microsoft.com/playwright:v1.63.0-noble,
   extra_env = merge(quiet, {"CI": "1"})
 )
@@ -66,7 +66,7 @@ The browser tests name their environment explicitly, since `npx` is declared on 
 test_e2e(--grep: String = "") =
   grep == ""
     ? $[playwright] npx playwright test
-    : $[playwright] npx playwright test --grep #{shell_quote(grep)}
+    : $[playwright] npx playwright test --grep #{grep}
 ```
 
 `ci` composes them. Lint and build don't depend on each other, so they run at the same time, in two containers:

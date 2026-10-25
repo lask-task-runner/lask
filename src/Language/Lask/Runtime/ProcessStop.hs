@@ -5,9 +5,9 @@
 -- A thread running a command can be cancelled before the command
 -- exits: 'race' cancels the computations that lost (15.6). Cancelling
 -- the thread does not stop the process it started, so the process and
--- everything it started are stopped here, and a container is stopped
--- through the daemon, since stopping the @docker run@ client leaves it
--- running.
+-- everything it started are stopped here. A container is stopped
+-- through its engine ('Language.Lask.Runtime.Container.cbStop'), since
+-- stopping the client that runs it leaves it running.
 --
 -- The command keeps lask's process group, so a password prompt read
 -- from the terminal and Ctrl-C behave as they do for any child. The
@@ -15,7 +15,6 @@
 module Language.Lask.Runtime.ProcessStop
   ( withStoppableProcess,
     stopProcessTree,
-    stopContainer,
     newContainerName,
     stopGraceSeconds,
   )
@@ -30,7 +29,6 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import Data.Text (Text)
-import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import System.Entropy (getEntropy)
 import System.Exit (ExitCode)
@@ -110,14 +108,6 @@ stopProcessTree graceSeconds ph = do
           unless (null live) $ do
             threadDelay 50000
             waitGone (ticks - 1) tree
-
--- | Stop and remove a container by name. The daemon sends the
--- termination request and kills after the grace period, and the
--- removal covers a container that was created but never started.
-stopContainer :: Int -> Text -> IO ()
-stopContainer graceSeconds name = do
-  quietly "docker" ["stop", "-t", show graceSeconds, T.unpack name]
-  quietly "docker" ["rm", "--force", T.unpack name]
 
 -- | A name for one container run, so that it can be stopped by name.
 newContainerName :: IO Text

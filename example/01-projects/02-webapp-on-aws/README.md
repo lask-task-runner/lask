@@ -21,19 +21,19 @@ Everything lives in [main.lask](main.lask). A few excerpts, to give you the shap
 Execution environments are values, so they're declared once at the top of the file and referred to by name. Each one comes from [lask-module-tools](https://github.com/lask-task-runner/lask-module-tools), imported like any other code reuse across projects (`import * as tools from "tools"`, declared once in [lask.json](lask.json) and pinned by content hash in [lask.lock.json](lask.lock.json)) — a function per tool that returns what to run it in: the image, written here as a head such as `#python:3.12.14-alpine3.24`, and how to run it:
 
 ```lask
-python = tools.python(image = #python:3.12.14-alpine3.24)
-node = tools.node(image = #node:24.22.1-alpine3.24)
-playwright = tools.playwright(image = #mcr.microsoft.com/playwright:v1.62.1-jammy)
+python = tools.python.env(image = #python:3.12.14-alpine3.24)
+node = tools.node.env(image = #node:24.22.1-alpine3.24)
+playwright = tools.playwright.env(image = #mcr.microsoft.com/playwright:v1.62.1-jammy)
 ```
 
 A `command` declaration then says which environment provides each program:
 
 ```lask
-command { "python", "pip" } on python
+command { "python", "pip" } on python schema tools.python.schema
 command { "node", "npm", "npx" } on node
 command { "aws" } on aws
 command { "terraform" } on terraform
-command { "curl" } on tools.unix()
+command { "curl" } on tools.unix.env()
 ```
 
 So a task names only what it runs, and the command words pick the container — which is why you didn't need Python installed:
@@ -42,7 +42,7 @@ So a task names only what it runs, and the command words pick the container — 
 test_api() = $ pip install -q --no-cache-dir -r api/requirements.txt && python -m unittest discover -s api -p "test_*.py"
 ```
 
-Pinning the versions in one place means a task can't quietly drift onto a different toolchain than its neighbours.
+Pinning the versions in one place means a task can't quietly drift onto a different toolchain than its neighbours. The `schema` tools gives `python` and `pip` checks every command that runs them before anything runs: `$ pip instal requests` is an error in `lask check`, not a failed task.
 
 Tasks call other tasks, so you compose them instead of repeating yourself. That's all `lask run test` was:
 
@@ -74,7 +74,7 @@ aws_access_key_id = mark_secret(get_env("AWS_ACCESS_KEY_ID"))
 aws_secret_access_key = mark_secret(get_env("AWS_SECRET_ACCESS_KEY"))
 aws_region = get_env("AWS_DEFAULT_REGION")
 
-aws = tools.aws(
+aws = tools.aws.env(
   image = #amazon/aws-cli:2.36.41,
   access_key_id = aws_access_key_id,
   secret_access_key = aws_secret_access_key,

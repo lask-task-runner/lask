@@ -64,7 +64,7 @@ The thing to take away: every `case` needs an `else`, last, always — exhaustiv
 **Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits and other container options, an image built from the local `Dockerfile`, and environments held in a `Map<Environment>` and chosen at run time.
 
 ```bash
-lask envs list               # every image, and whether each is on the Docker daemon
+lask envs list               # every image, and whether each is on the container engine
 lask sync
 lask eval tool-versions
 lask eval uname-in --env built
@@ -74,13 +74,14 @@ The thing to take away: an environment is a value. A command that names none is 
 
 ## 05-commands
 
-**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation, `shell_quote`, `run`, and the `command ... on ...` declarations that dispatch a bare `$`.
+**Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation and its escaping, the raw hole `#!{...}`, `run`, the `command ... on ...` declarations that dispatch a bare `$`, and what is checked before a command runs: its shell syntax, the options a command schema describes, and whether the image has the programs declared on it.
 
 ```bash
 lask sync
 lask eval probe --path /etc/os-release
 lask eval inspect            # a command that exits 3, without raising
 lask eval report
+lask eval shell_users        # grep, checked against its schema
 ```
 
 The thing to take away: a command string swallows the rest of its line. `$ uname -s |> trim` hands `|> trim` to the shell and returns the empty string; the pipe belongs on the next line.

@@ -647,7 +647,7 @@ rootCommands =
       ]
 
     envsSubs =
-      [ (plain "list" "List the environments, what the lock resolves them to, what requires them, and whether each image is on the Docker daemon" commonOpts)
+      [ (plain "list" "List the environments, what the lock resolves them to, what requires them, and whether each image is on the container engine" commonOpts)
           { cmdPos = [PosFunction]
           }
       ]
@@ -992,7 +992,7 @@ fromModule path src m =
     -- reads one file, and resolving the import would mean loading
     -- another.
     commandWords d = case AST.declF d of
-      AST.DCommand names env ->
+      AST.DCommand names env _ ->
         [(w, environmentText env) | Spanned _ w <- names]
       AST.DImportCommands names from ->
         [(w, Just (importedFrom from)) | Spanned _ w <- names]

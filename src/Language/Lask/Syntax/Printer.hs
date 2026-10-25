@@ -436,6 +436,9 @@ decl sp f = case f of
     ds <- importSpecs specs
     p <- path
     pure ("export " <> ds <> " from " <> p)
+  DExportNamespace alias _ -> do
+    p <- path
+    pure ("export * as " <> text alias <> " from " <> p)
   DTypeAlias n tps t -> do
     dtp <- typeParams tps
     joinAfter ("type " <> text n <> dtp) "=" (startOf (stypeSpan t)) (const (ty t))
@@ -448,14 +451,15 @@ decl sp f = case f of
     dps <- params open ps
     drt <- traverse ty rt
     joinAfter (text n <> dtp <> dps <> annot drt) "=" (startOf (exprSpan e)) (exprOn e)
-  DCommand ns e -> do
+  DCommand ns e sch -> do
     -- @export command { ... } on e@ is the only declaration whose span
     -- starts at its @export@.
     exported <- tokAt start
     dn <- commandNames ns
     de <- expr e
+    ds <- traverse expr sch
     let prefix = if exported == Just (TKw KExport) then "export " else ""
-    pure (prefix <> "command " <> dn <> " on " <> de)
+    pure (prefix <> "command " <> dn <> " on " <> de <> maybe "" (" schema " <>) ds)
   DImportCommands ns _ -> do
     dn <- commandNames ns
     p <- path

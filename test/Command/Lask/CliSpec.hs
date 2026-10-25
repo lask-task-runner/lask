@@ -52,6 +52,63 @@ spec = beforeAll findLask $ do
         cs <- calls state
         [c | c <- cs, "run " `isPrefixOf` c] `shouldSatisfy` all ("alpine@sha256:aaa" `isInfixOf`)
 
+    it "invokes a function of a re-exported namespace by its qualified name (spec 5, 11.2)" $ \lask ->
+      withProject
+        [ ("main.lask", "export * as py from \"./py.lask\"\n"),
+          ("py.lask", "greet(--name: String = \"x\"): String = \"hi #{name}\"\n")
+        ]
+        $ \dir -> do
+          r <- runLaskEnv lask dir [] ["eval", "py.greet", "--name", "lask"] ""
+          resExit r `shouldBe` 0
+          resOut r `shouldContain` "hi lask"
+          h <- runLaskEnv lask dir [] ["run", "--help"] ""
+          resOut h `shouldContain` "py.greet"
+
+    it "probes the declared command words on sync and records them in the lock (spec 11.7)" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        b <- runLaskEnv lask dir extra ["sync"] ""
+        resExit b `shouldBe` 0
+        lockText dir >>= (`shouldContain` "\"cat\": \"present\"")
+        -- An image pinned to the same content is not probed again.
+        b2 <- runLaskEnv lask dir extra ["sync", "--frozen"] ""
+        resExit b2 `shouldBe` 0
+        cs <- calls state
+        length [c | c <- cs, "command -v" `isInfixOf` c] `shouldBe` 1
+
+    it "probes a declaration whose environment is made by a call, with its run options (spec ch. 5)" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ( "main.lask",
+              "tool(--image: Environment = #alpine:3.22.2): Runnable = runnable(image, env = {\"TOOL_HOME\": \"/opt\"})\n\
+              \command { \"cat\" } on tool()\n\
+              \command { \"ls\" } on #local\n\
+              \hi(): String = $ cat x\n"
+            )
+          ]
+          $ \dir -> do
+            b <- runLaskEnv lask dir extra ["sync"] ""
+            resExit b `shouldBe` 0
+            lockText dir >>= (`shouldContain` "\"cat\": \"present\"")
+            lockText dir >>= (`shouldNotContain` "\"ls\"")
+            cs <- calls state
+            [c | c <- cs, "command -v" `isInfixOf` c] `shouldSatisfy` all ("--env TOOL_HOME" `isInfixOf`)
+
+    it "refuses to run a declared command its image does not provide (spec ch. 5, 11.7)" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        createDirectoryIfMissing True (state </> "missing")
+        writeFile (state </> "missing" </> "cat") ""
+        b <- runLaskEnv lask dir extra ["sync"] ""
+        resExit b `shouldBe` 3
+        resErr b `shouldContain` "E-IO-COMMAND-MISSING"
+        lockText dir >>= (`shouldContain` "\"cat\": \"missing\"")
+        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit r `shouldBe` 3
+        resErr r `shouldContain` "E-IO-COMMAND-MISSING"
+        c <- runLaskEnv lask dir extra ["cmd", "cat", "x"] ""
+        resExit c `shouldBe` 3
+        cs <- calls state
+        [x | x <- cs, "run " `isPrefixOf` x, not ("command -v" `isInfixOf` x)] `shouldBe` []
+
     -- A command line is visible to every user of the host (spec 10.2).
     it "passes env values to the container without putting them on the command line" $ \lask ->
       withFakeDocker $ \state extra ->
@@ -63,6 +120,8 @@ spec = beforeAll findLask $ do
           ]
           $ \dir -> do
             _ <- runLaskEnv lask dir extra ["sync"] ""
+            -- Only the command's own run, not the probe of sync (11.7).
+            writeFile (state </> "calls") ""
             r <- runLaskEnv lask dir extra ["eval", "hi"] ""
             resExit r `shouldBe` 0
             runs <- filter ("run " `isPrefixOf`) <$> calls state
@@ -115,6 +174,7 @@ spec = beforeAll findLask $ do
     it "attaches stdin to a containerized cmd even when it is not a terminal" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
         _ <- runLaskEnv lask dir extra ["sync"] ""
+        writeFile (state </> "calls") ""
         r <- runLaskEnv lask dir extra ["cmd", "cat"] "hello\n"
         resExit r `shouldBe` 0
         runs <- filter ("run " `isPrefixOf`) <$> calls state
@@ -237,6 +297,83 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 3
         resErr r `shouldContain` "E-IO-ENV-RESOLVE"
         resErr r `shouldNotContain` "E-IO-IMAGE-MISSING"
+
+  -- The same program on podman or nerdctl, through their clients
+  -- (spec 10.10).
+  describe "container engines (spec 10.10)" $ do
+    let proj =
+          [ ( "main.lask",
+              "command { \"cat\" } on #alpine:3.22.2\n\
+              \hi(): String = $ cat x\n"
+            )
+          ]
+        engineIs e extra = ("LASK_CONTAINER_ENGINE", e) : [kv | kv@(k, _) <- extra, k /= "LASK_CONTAINER_ENGINE"]
+
+    -- Podman reads a short name through its own registry configuration,
+    -- which may not name Docker Hub, so the reference a program writes
+    -- is pulled as Docker reads it.
+    it "pulls a short name on podman as the Docker Hub name, and runs the pinned image" $ \lask ->
+      withFakeEngine "podman" $ \state extra -> withProject proj $ \dir -> do
+        b <- runLaskEnv lask dir extra ["sync"] ""
+        resExit b `shouldBe` 0
+        resOut b `shouldContain` "#alpine:3.22.2  registry  sha256:aaa  main.lask: command cat  pulled"
+        cs <- calls state
+        [c | c <- cs, "pull " `isPrefixOf` c]
+          `shouldBe` ["pull docker.io/library/alpine:3.22.2", "pull docker.io/library/alpine@sha256:aaa"]
+        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit r `shouldBe` 0
+        runs <- filter ("run " `isPrefixOf`) <$> calls state
+        runs `shouldSatisfy` (not . null)
+        runs `shouldSatisfy` all ("alpine@sha256:aaa" `isInfixOf`)
+
+    it "asks podman and nerdctl for the engine's information to tell whether it answers" $ \lask ->
+      mapM_
+        ( \(engine, daemon) -> withFakeEngine engine $ \state extra -> withProject proj $ \dir -> do
+            _ <- runLaskEnv lask dir extra ["sync"] ""
+            writeFile (state </> "calls") ""
+            r <- runLaskEnv lask dir extra ["envs", "list"] ""
+            resExit r `shouldBe` 0
+            cs <- calls state
+            [c | c <- cs, not ("image inspect" `isPrefixOf` c)] `shouldSatisfy` all ("info " `isPrefixOf`)
+            writeFile (state </> "daemon-down") ""
+            down <- runLaskEnv lask dir extra ["envs", "list"] ""
+            resErr down `shouldContain` ("warning: cannot reach " <> daemon)
+        )
+        [("podman", "Podman"), ("nerdctl", "containerd (nerdctl)")]
+
+    -- nerdctl exits 1 when it cannot run the container, as a command may,
+    -- and says why on a fatal log line.
+    it "tells nerdctl's own failure from the command's exit code" $ \lask ->
+      withFakeEngine "nerdctl" $ \state extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["sync"] ""
+        writeFile (state </> "run-exit") "1"
+        writeFile (state </> "run-fails") "time=\"2026-01-01T00:00:00Z\" level=fatal msg=\"failed to mount: \\\"/work\\\"\"\n"
+        infra <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit infra `shouldBe` 3
+        resErr infra `shouldContain` "E-IO-ENV-RESOLVE"
+        resErr infra `shouldContain` "failed to mount: \"/work\""
+        writeFile (state </> "run-fails") "cat: x: No such file or directory\n"
+        own <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit own `shouldBe` 1
+        resErr own `shouldNotContain` "E-IO-ENV-RESOLVE"
+
+    it "takes docker's exit code 125 as its own failure" $ \lask ->
+      withFakeDocker $ \state extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["sync"] ""
+        writeFile (state </> "run-exit") "125"
+        writeFile (state </> "run-fails") "docker: Error response from daemon: invalid mount config\n"
+        r <- runLaskEnv lask dir extra ["eval", "hi"] ""
+        resExit r `shouldBe` 3
+        resErr r `shouldContain` "E-IO-ENV-RESOLVE"
+        resErr r `shouldContain` "invalid mount config"
+
+    it "reports an engine LASK_CONTAINER_ENGINE does not know when a container is needed" $ \lask ->
+      withFakeDocker $ \_ extra -> withProject proj $ \dir -> do
+        _ <- runLaskEnv lask dir extra ["sync"] ""
+        r <- runLaskEnv lask dir (engineIs "lxc" extra) ["eval", "hi"] ""
+        resExit r `shouldBe` 3
+        resErr r `shouldContain` "E-IO-ENV-RESOLVE"
+        resErr r `shouldContain` "LASK_CONTAINER_ENGINE is 'lxc', which is none of docker, podman, nerdctl"
 
   describe "generic functions from the CLI (spec 11.2)" $ do
     let proj =

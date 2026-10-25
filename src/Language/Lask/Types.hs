@@ -30,6 +30,9 @@ module Language.Lask.Types
     wellFormed,
     errorType,
     commandResultType,
+    commandOptionType,
+    commandSpecType,
+    commandSchemaType,
     stringifiable,
   )
 where
@@ -155,6 +158,47 @@ commandResultType =
         [ ("code", requiredField TyNumber),
           ("stdout", requiredField TyString),
           ("stderr", requiredField TyString)
+        ]
+    )
+
+-- | Builtin alias @CommandOption@ (spec ch. 5, command schemas).
+commandOptionType :: Type
+commandOptionType =
+  TyRecord
+    ( Map.fromList
+        [ ("names", requiredField (TyArray TyString)),
+          ("value", Field True TyString),
+          ("values", Field True (TyArray TyString)),
+          ("global", Field True TyBool),
+          ("stops", Field True TyBool),
+          ("prefix", Field True TyBool),
+          ("description", Field True TyString)
+        ]
+    )
+
+-- | Builtin alias @CommandSpec@ (spec ch. 5, command schemas).
+commandSpecType :: Type
+commandSpecType =
+  TyRecord
+    ( Map.fromList
+        [ ("closed", Field True TyBool),
+          ("style", Field True TyString),
+          ("options", Field True (TyArray commandOptionType)),
+          ("intermixed", Field True TyBool),
+          ("stop_at_first_positional", Field True TyBool),
+          ("subcommand_optional", Field True TyBool),
+          ("abbreviations", Field True TyBool),
+          ("description", Field True TyString)
+        ]
+    )
+
+-- | Builtin alias @CommandSchema@ (spec ch. 5, command schemas).
+commandSchemaType :: Type
+commandSchemaType =
+  TyRecord
+    ( Map.fromList
+        [ ("root", requiredField commandSpecType),
+          ("subcommands", Field True (TyMap commandSpecType))
         ]
     )
 

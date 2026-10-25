@@ -9,6 +9,7 @@
 -- its body).
 module Language.Lask.Elaborate
   ( CoreProgram (..),
+    SchemaUse (..),
     CommandUse (..),
     CoreDecl (..),
     readFieldType,
@@ -24,6 +25,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (foldM, unless, when)
 import Control.Monad.State.Strict (StateT (runStateT), get, gets, lift, modify, put)
 import Data.Maybe (isJust, isNothing, listToMaybe)
+import Data.Bifunctor (first)
 import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -32,6 +34,8 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Builtins.Names (effectfulBuiltinNames)
+import Language.Lask.Builtins.Shell (escapeCommand, rawBuiltin)
+import Language.Lask.CommandSchema (Finding (..), Schema, Static (..), StaticF (..), checkCommand, fromStatic)
 import Language.Lask.Builtins.Sig
 import Language.Lask.Core.AST
 import Language.Lask.Diagnostic
@@ -42,10 +46,12 @@ import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), ValueTar
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST
 import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), commandWords, validCommandName)
+import Language.Lask.Syntax.Shell (ShellReading (..), ShellWord (..), SimpleCommand (..), readShell)
 import Language.Lask.Deps.Cache (inCache)
 import Language.Lask.Runtime.Image (recipeSource)
 import Language.Lask.Types
 import System.FilePath (isAbsolute, joinPath, normalise, splitDirectories, takeDirectory, (</>))
+import qualified System.Info
 
 -- Program-level results ------------------------------------------------------
 
@@ -100,7 +106,26 @@ data CoreProgram = CoreProgram
     -- elaboration for editor tooling (hover).
     cpHover :: [HoverInfo],
     -- | Advisory diagnostics (spec 14.2), in source order.
-    cpAdvisories :: [Advisory]
+    cpAdvisories :: [Advisory],
+    -- | For each declaration, the command words through which its own
+    -- command strings take their environment by dispatch (10.9), with
+    -- the module whose table holds them, for the check before a run
+    -- (spec ch. 5).
+    cpDispatched :: Map Key [(FilePath, Text)],
+    -- | Each module's command words that have a schema (spec ch. 5).
+    cpSchemas :: Map FilePath (Map Text Schema),
+    -- | Every simple command checked against a schema, for editor
+    -- tooling.
+    cpSchemaUses :: [SchemaUse]
+  }
+  deriving (Show)
+
+-- | One simple command of a dispatched command string, with the
+-- schema of its command word (spec ch. 5).
+data SchemaUse = SchemaUse
+  { suWord :: Text,
+    suSchema :: Schema,
+    suCommand :: SimpleCommand
   }
   deriving (Show)
 
@@ -218,6 +243,11 @@ data St = St
     stCommandsBuilding :: Set FilePath,
     -- | Advisories found so far, most recent first.
     stAdvisories :: [Advisory],
+    -- | The declarations being elaborated, innermost first.
+    stCurrent :: [Key],
+    -- | The probed words each declaration dispatches through.
+    stDispatched :: Map Key (Set (FilePath, Text)),
+    stSchemaUses :: [SchemaUse],
     stFailures :: Failures
   }
 
@@ -255,7 +285,9 @@ data CommandEntry = CommandEntry
     ceSource :: EnvSource,
     -- | The declaring module and the declaration's position in it. A
     -- declaration reached through two imports is one entry, not two.
-    ceOrigin :: (FilePath, Int)
+    ceOrigin :: (FilePath, Int),
+    -- | The command schema the declaration gives the word, if any.
+    ceSchema :: Maybe Schema
   }
 
 -- | The identity selection compares (spec 10.9). The environment of a
@@ -406,7 +438,10 @@ elaborateRecovering prog scopes nameErrors =
             cpHover = stHover st,
             -- An expression elaborated twice, by a bidirectional
             -- fallback, reports once.
-            cpAdvisories = sortOn advSpan (nub (stAdvisories st))
+            cpAdvisories = sortOn advSpan (nub (stAdvisories st)),
+            cpDispatched = Map.map Set.toList (stDispatched st),
+            cpSchemas = Map.map (Map.mapMaybe ceSchema) (stCommands st),
+            cpSchemaUses = stSchemaUses st
           }
       )
   where
@@ -422,13 +457,16 @@ elaborateRecovering prog scopes nameErrors =
           stCommands = Map.empty,
           stCommandsBuilding = Set.empty,
           stAdvisories = [],
+          stCurrent = [],
+          stDispatched = Map.empty,
+          stSchemaUses = [],
           stFailures = Failures [] failedDecls failedAliases failedWords
         }
     internal =
       maybe Set.empty (moduleInternal . lmModule) $
         Map.lookup (progEntry prog) (progModules prog)
     emptyCore =
-      CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] []
+      CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] [] Map.empty Map.empty []
     -- Every module's command declarations are checked, whether or not
     -- a command string uses them (spec ch. 5), and so is every type
     -- alias, whether or not a type refers to it (spec 4.2).
@@ -476,12 +514,13 @@ unitsHolding prog ds =
       DValue n _ _ _ -> ([(path, n)], [], [])
       DFunction n _ _ _ _ -> ([(path, n)], [], [])
       DTypeAlias n _ _ -> ([], [(path, n)], [])
-      DCommand ns _ -> ([], [], [(path, n) | Spanned _ n <- ns])
+      DCommand ns _ _ -> ([], [], [(path, n) | Spanned _ n <- ns])
       DImportCommands ns _ -> ([], [], [(path, n) | Spanned _ n <- ns])
       DExportCommandsFrom ns _ -> ([], [], [(path, n) | Spanned _ n <- ns])
       DImportNamed specs _ -> imported path specs
       DExportFrom specs _ -> imported path specs
       DImportNamespace alias _ -> ([(path, alias)], [], [])
+      DExportNamespace alias _ -> ([(path, alias)], [], [])
     imported path specs =
       ([(path, v) | (v, False) <- bad], [(path, v) | (v, True) <- bad], [])
       where
@@ -633,9 +672,11 @@ tryDemandDecl ctx key@(path, name) = do
       | key `Set.member` failed -> pure Nothing
       | otherwise -> do
           d <- maybe (missingDecl ctx ("declaration " <> name)) pure (lookupDeclAst ctx key)
+          outer <- gets stCurrent
           r <- recoverTC $ do
-            modify (\s -> s {stActive = Set.insert key (stActive s)})
+            modify (\s -> s {stActive = Set.insert key (stActive s), stCurrent = key : outer})
             elabDecl ctx path d
+          modify (\s -> s {stCurrent = outer})
           case r of
             Right cd -> do
               modify $ \s ->
@@ -837,6 +878,9 @@ aliasType ctx path sp qualifier n args = do
   case Map.lookup searchPath (ctxScopes ctx) >>= Map.lookup n . gsTypes of
     Just (TBuiltinAlias "Error") -> noArgs >> pure errorType
     Just (TBuiltinAlias "CommandResult") -> noArgs >> pure commandResultType
+    Just (TBuiltinAlias "CommandOption") -> noArgs >> pure commandOptionType
+    Just (TBuiltinAlias "CommandSpec") -> noArgs >> pure commandSpecType
+    Just (TBuiltinAlias "CommandSchema") -> noArgs >> pure commandSchemaType
     Just (TBuiltinAlias other) ->
       abort (diag ENameUndefined sp ("internal: unknown builtin alias " <> other))
     -- A parameterised alias is elaborated once with its parameters
@@ -1352,11 +1396,19 @@ elabString ctx path locals sp parts = do
   pure (Core sp core, TyString)
   where
     part (TPChunk _ t) = pure (CPText t)
-    part (TPInterp e) = do
+    part (TPInterp e) = CPExpr <$> hole e
+    -- Only a command string has one; its mark keeps escaping away
+    -- from it (6.6).
+    part (TPRaw e) = do
+      c <- hole e
+      let sp' = exprSpan e
+      pure (CPExpr (Core sp' (CApp (Core sp' (CVar (BuiltinRef rawBuiltin))) [Core sp' (CStr [CPExpr c])] [])))
+
+    hole e = do
       (c, t) <- infer ctx path locals e
       unless (holds ctx BStringifiable t) $
         abort (diag ETypeBound (exprSpan e) ("cannot interpolate a value of type " <> renderType t <> ": it is not stringifiable"))
-      pure (CPExpr c)
+      pure c
 
 -- Object literals ------------------------------------------------------------------
 
@@ -1433,11 +1485,8 @@ checkObject ctx path locals sp kvs expected = case expected of
 -- Accessors -------------------------------------------------------------------------
 
 elabDot :: Ctx -> FilePath -> Locals -> Span -> Expr -> Span -> Text -> TC (Core, Type)
-elabDot ctx path locals sp inner fsp fld = case exprF inner of
-  EVar m
-    | not (Map.member m locals),
-      Nothing <- lookupValueTarget ctx path m,
-      Just key <- namespaceTarget m -> do
+elabDot ctx path locals sp inner fsp fld = case namespaceExpr ctx path locals inner of
+  Just key -> do
         -- Namespace member (resolution rank 4, spec 7.2), followed to
         -- its declaration when the module re-exports it.
         let target@(defPath, defName) = namespaceMember (ctxScopes ctx) key fld
@@ -1454,9 +1503,20 @@ elabDot ctx path locals sp inner fsp fld = case exprF inner of
             diag ETypeAccess fsp ("record has no field '" <> fld <> "': " <> renderType t)
       other ->
         abort (diag ETypeAccess fsp ("field access requires a Record type, got " <> renderType other))
-  where
-    namespaceTarget m =
-      Map.lookup path (ctxScopes ctx) >>= Map.lookup m . gsNamespaces
+
+-- | The module a namespace expression names (spec 5): a namespace in
+-- scope, or a namespace that one re-exports, @tools.python@. Name
+-- resolution has already rejected a namespace that is not public.
+namespaceExpr :: Ctx -> FilePath -> Locals -> Expr -> Maybe FilePath
+namespaceExpr ctx path locals (Expr _ ex) = case ex of
+  EVar m
+    | not (Map.member m locals),
+      Nothing <- lookupValueTarget ctx path m ->
+        Map.lookup path (ctxScopes ctx) >>= Map.lookup m . gsNamespaces
+  EDot inner (Spanned _ n) -> do
+    key <- namespaceExpr ctx path locals inner
+    Map.lookup key (ctxScopes ctx) >>= Map.lookup n . gsNamespaces
+  _ -> Nothing
 
 elabIndex :: Ctx -> FilePath -> Locals -> Span -> Expr -> Expr -> TC (Core, Type)
 elabIndex ctx path locals sp inner idx = do
@@ -1989,7 +2049,12 @@ elabCommand ::
   [TextPart] ->
   TC (Core, Type)
 elabCommand ctx path locals sp stream mEnv parts = do
-  (cmdCore, _) <- elabString ctx path locals sp parts
+  (cmdCore, _) <- first escapeCommand <$> elabString ctx path locals sp parts
+  -- The shell syntax is checked before dispatch (6.6), whose own
+  -- reading cannot segment a string with an open region. Only on
+  -- Windows does it wait for the environment, which may be cmd.exe.
+  let reading = readShell parts
+  unless hostIsWindows (checkShellSyntax sp reading)
   (envCore, shownEnv, viaWords) <- case mEnv of
     Just envExpr -> do
       (c, t) <- infer ctx path locals envExpr
@@ -1999,7 +2064,16 @@ elabCommand ctx path locals sp stream mEnv parts = do
       pure (c, Nothing, [])
     Nothing -> do
       (c, ws) <- dispatchEnv ctx path sp parts
+      tbl <- commandTable ctx path
+      case ws of
+        Spanned _ w : _
+          | Just entry <- Map.lookup w tbl -> checkSchemas ctx path sp reading (ceSource entry)
+        _ -> pure ()
+      recordDispatched [(path, w) | Spanned _ w <- ws]
       pure (c, Just (renderEnvCore c), ws)
+  when hostIsWindows $ do
+    container <- runsInContainer ctx envCore
+    when container (checkShellSyntax sp reading)
   recordCommandUse sp shownEnv viaWords
   let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run"))) [envCore, cmdCore] [])
   case stream of
@@ -2025,13 +2099,41 @@ elabCommand ctx path locals sp stream mEnv parts = do
           failCall = Core sp (CApp (Core sp (CVar (BuiltinRef "%commandFail"))) [errRecord] [])
        in Core sp (CDo [CSBind r call, CSExpr (Core sp (CIf cond okBranch failCall))])
 
+-- | The local environment of a Windows host runs a command string with
+-- cmd.exe (10.2), which does not read POSIX shell syntax.
+hostIsWindows :: Bool
+hostIsWindows = System.Info.os == "mingw32"
+
+-- | A command string must be well formed as POSIX shell syntax, as far
+-- as its reading goes (6.6).
+checkShellSyntax :: Span -> ShellReading -> TC ()
+checkShellSyntax sp reading = case srProblem reading of
+  Nothing -> pure ()
+  Just (psp, why) ->
+    abort . diag ETypeCommandSyntax (if psp == NoSpan then sp else psp) $
+      "this command is not valid shell syntax: " <> why
+
+-- | Whether an environment is known from the text to be a container
+-- one, through the bindings that name it.
+runsInContainer :: Ctx -> Core -> TC Bool
+runsInContainer ctx = go Set.empty
+  where
+    go seen c = case coreF c of
+      CEnv kind _ -> pure (kind /= "local")
+      CRunnable base _ -> go seen base
+      CVar (TopRef p n)
+        | not (Set.member (p, n) seen) -> do
+            cd <- demandDecl ctx (p, n)
+            go (Set.insert (p, n) seen) (cdCore cd)
+      _ -> pure False
+
 -- Command declarations and dispatch (spec ch. 5, 10.9) -----------------------
 
 -- | Where a module's command words come from: its own declarations,
 -- with their positions, and its imports and re-exports of command
 -- words, with the module they name. In source order.
 data CommandSite
-  = SiteDecl Int [Spanned Text] Expr
+  = SiteDecl Int [Spanned Text] Expr (Maybe Expr)
   | SiteImport [Spanned Text] FilePath
 
 moduleCommandSites :: Ctx -> FilePath -> [CommandSite]
@@ -2041,7 +2143,7 @@ moduleCommandSites ctx path = case Map.lookup path (progModules (ctxProg ctx)) o
     [ site
     | (i, Decl _ f) <- zip [0 ..] (moduleDecls (lmModule lm)),
       site <- case f of
-        DCommand ns e -> [SiteDecl i ns e]
+        DCommand ns e sch -> [SiteDecl i ns e sch]
         DImportCommands ns p -> [SiteImport ns (importKey lm p)]
         DExportCommandsFrom ns p -> [SiteImport ns (importKey lm p)]
         _ -> []
@@ -2143,6 +2245,105 @@ envKey c = case coreF c of
   CMapLit kvs -> "{" <> T.intercalate "," [k <> ":" <> envKey v | (k, v) <- sortOn fst kvs] <> "}"
   other -> T.pack (show other)
 
+-- | The command schemas of a declaration (spec ch. 5): a
+-- @Map\<CommandSchema\>@ keyed by words of the declaration, known
+-- without evaluation.
+declaredSchemas :: Ctx -> FilePath -> [Spanned Text] -> Expr -> TC (Map Text Schema)
+declaredSchemas ctx path names e = do
+  c <- check ctx path Map.empty e (TyMap commandSchemaType)
+  Static sp v <- staticValue ctx c
+  entries <- case v of
+    VObject kvs -> pure kvs
+    _ -> abort (diag ETypeCommandSchema sp "the schemas of a command declaration must be a map keyed by its command words")
+  let declared = [n | Spanned _ n <- names]
+      -- A map written here names words of this declaration; one a
+      -- top-level value holds may give other words too (spec ch. 5).
+      written = case coreF c of
+        CMapLit _ -> True
+        _ -> False
+  Map.fromList
+    <$> mapM
+      ( \(k, s@(Static ssp _)) -> do
+          unless (k `elem` declared || not written) $
+            abort . suggesting k declared $
+              diag ETypeCommandSchema (orSpan ssp) ("'" <> k <> "' is not a command word of this declaration")
+          case fromStatic s of
+            Left (esp, why) ->
+              abort (diag ETypeCommandSchema (orSpan (if esp == NoSpan then ssp else esp)) ("invalid command schema for '" <> k <> "': " <> why))
+            Right schema -> pure (k, schema)
+      )
+      [entry | entry@(k, _) <- entries, k `elem` declared || written]
+  where
+    orSpan s = if s == NoSpan then exprSpan e else s
+
+-- | A value written with literals and references to top-level values
+-- alone (spec ch. 5), read without evaluating anything.
+staticValue :: Ctx -> Core -> TC Static
+staticValue ctx = go Set.empty
+  where
+    go seen c =
+      let sp = coreSpan c
+          here = pure . Static sp
+       in case coreF c of
+            CNull -> here VNull
+            CBool b -> here (VBool b)
+            CNumber n -> here (VNumber (realToFrac n))
+            CStrLit t -> here (VString t)
+            CStr ps | Just ts <- traverse textPart ps -> here (VString (T.concat ts))
+            CArray es -> Static sp . VArray <$> mapM (go seen) es
+            CMapLit kvs -> Static sp . VObject <$> mapM (traverse (go seen)) kvs
+            CRecordLit kvs -> Static sp . VObject <$> mapM (traverse (go seen)) kvs
+            CVar (TopRef p n)
+              | not (Set.member (p, n) seen) -> do
+                  cd <- demandDecl ctx (p, n)
+                  go (Set.insert (p, n) seen) (cdCore cd)
+            _ ->
+              abort . diag ETypeCommandSchema sp $
+                "a command schema must be written with literals and references to top-level values, and this part is computed"
+    textPart (CPText t) = Just t
+    textPart (CPExpr _) = Nothing
+
+-- | Record the command words a command string of the declaration
+-- being elaborated dispatches through, for the check before a run
+-- (spec ch. 5).
+recordDispatched :: [(FilePath, Text)] -> TC ()
+recordDispatched [] = pure ()
+recordDispatched ws = do
+  current <- gets stCurrent
+  case current of
+    key : _ ->
+      modify $ \s ->
+        s {stDispatched = Map.insertWith Set.union key (Set.fromList ws) (stDispatched s)}
+    [] -> pure ()
+
+-- | Check the simple commands of a dispatched command string against
+-- the schemas of the declarations that selected its environment (spec
+-- ch. 5). A command word declared elsewhere, or not plainly written,
+-- is not checked.
+checkSchemas :: Ctx -> FilePath -> Span -> ShellReading -> EnvSource -> TC ()
+checkSchemas ctx path sp reading src = do
+  tbl <- commandTable ctx path
+  mapM_ (one tbl) (srCommands reading)
+  where
+    one tbl cmd =
+      let n = scName cmd
+          word = swPrefix n
+       in case Map.lookup word tbl of
+            Just entry
+              | swLiteral n,
+                swPlain n,
+                not (T.any (== '/') word),
+                ceSource entry == src,
+                Just schema <- ceSchema entry -> do
+                  modify (\s -> s {stSchemaUses = SchemaUse word schema cmd : stSchemaUses s})
+                  case checkCommand schema word cmd of
+                    f : _
+                      | fdSure f -> abort (diag ETypeCommandOption (at (fdSpan f)) (fdMessage f))
+                      | otherwise -> advise WCommandOption (at (fdSpan f)) (fdMessage f)
+                    [] -> pure ()
+            _ -> pure ()
+    at s = if s == NoSpan then sp else s
+
 -- | The module's command words and the environments they name, built
 -- once per module and then cached.
 commandTable :: Ctx -> FilePath -> TC (Map Text CommandEntry)
@@ -2184,23 +2385,24 @@ buildCommandTable ctx path = foldM recoverSite Map.empty (moduleCommandSites ctx
               modifyFailures (\fs -> fs {fsWords = Set.union (Set.fromList lost) (fsWords fs)})
               pure tbl
 
-    siteNames (SiteDecl _ names _) = names
+    siteNames (SiteDecl _ names _ _) = names
     siteNames (SiteImport names _) = names
 
-    addSite tbl (SiteDecl i names envExpr) = do
+    addSite tbl (SiteDecl i names envExpr schemaExpr) = do
       env <- declaredEnv ctx path envExpr
       src <- envSource ctx path i env
-      foldM (addDeclared env src i) tbl names
+      schemas <- maybe (pure Map.empty) (declaredSchemas ctx path names) schemaExpr
+      foldM (addDeclared env src i schemas) tbl names
     addSite tbl (SiteImport names key) = do
       target <- commandTable ctx key
       foldM (addImported key target) tbl names
 
-    addDeclared env src i tbl (Spanned sp n) = do
+    addDeclared env src i schemas tbl (Spanned sp n) = do
       unless (validCommandName n) $
         abort . diag ETypeCommandName sp $
           "'" <> n <> "' could never be recognized as a command word in a command string"
       when (Map.member n tbl) $ abort (duplicate sp n)
-      pure (Map.insert n (CommandEntry sp env src (path, i)) tbl)
+      pure (Map.insert n (CommandEntry sp env src (path, i) (Map.lookup n schemas)) tbl)
 
     -- The resolver has already checked that the target exports the
     -- word. The same declaration reached along two import paths is
@@ -2589,10 +2791,8 @@ elabCall ctx path locals sp fn args mExpected = do
                 pure (CalleeBuiltin bn scheme)
               Nothing -> abort (undefinedName ctx path locals (exprSpan fn) n)
             Nothing -> abort (undefinedName ctx path locals (exprSpan fn) n)
-      EDot (Expr _ (EVar m)) (Spanned _ fld)
-        | not (Map.member m locals),
-          Nothing <- lookupValueTarget ctx path m,
-          Just key <- Map.lookup path (ctxScopes ctx) >>= Map.lookup m . gsNamespaces ->
+      EDot inner (Spanned _ fld)
+        | Just key <- namespaceExpr ctx path locals inner ->
             staticFromDecl (namespaceMember (ctxScopes ctx) key fld)
       ELambda ps rt body -> do
         (lam, ty, params) <- elabLambda ctx path locals (exprSpan fn) Nothing ps rt body

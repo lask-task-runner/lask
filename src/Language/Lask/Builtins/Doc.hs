@@ -239,8 +239,8 @@ builtinDocs =
       ( "shell_quote",
         doc
           "15.5"
-          [ "`shell_quote(s)` returns one POSIX shell word that expands to exactly `s`. Pass any value that can contain spaces or shell metacharacters through it before interpolating: `$ cp #{shell_quote(src)} #{shell_quote(dst)}`.",
-            "The result is already quoted, so don't quote it again."
+          [ "`shell_quote(s)` returns one POSIX shell word that expands to exactly `s`, for a command line built as a string: `run(env, \"cp #{shell_quote(src)} .\")`.",
+            "A hole of a command execution expression is already escaped (6.6), so `$ cp #{src} .` needs no `shell_quote`; one there quotes the value twice."
           ]
       ),
       -- 15.6 parallel/async

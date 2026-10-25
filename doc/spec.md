@@ -75,6 +75,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [10.7 Permission Boundary](#107-permission-boundary)
     - [10.8 Responsibilities for Absorbing Environment Differences](#108-responsibilities-for-absorbing-environment-differences)
     - [10.9 Command Dispatch](#109-command-dispatch)
+    - [10.10 Container Engine](#1010-container-engine)
   - [11. CLI Specification](#11-cli-specification)
     - [11.1 Subcommands](#111-subcommands)
     - [11.2 Function Invocation](#112-function-invocation)
@@ -203,7 +204,7 @@ This section defines the principal terms used in this specification.
 - Command word: The name of a program that a command declaration registers, together with the environment that provides it (Chapter 5). A module has the command words it declares and those it imports.
 - Dispatch: Choosing the execution environment of a command written without `[env]` by matching the programs its command string runs against the module's command words (10.9).
 - Secret binding: A binding whose name is marked `!!`, whose value is masked wherever it appears in what the implementation writes to stderr (6.10, 12.8).
-- Materialization: Making an image the program requires present on the Docker daemon, by pulling a registry reference or building a recipe, and recording the result in the lock file (10.3). Only `sync` materializes images (11.7).
+- Materialization: Making an image the program requires present on the container engine (10.10), by pulling a registry reference or building a recipe, and recording the result in the lock file (10.3). Only `sync` materializes images (11.7).
 
 ## 2. Notation
 
@@ -703,11 +704,11 @@ Declaration = ValueDecl | FunctionDecl .
 ValueDecl   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 FunctionDecl = lower_id [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" Type ] "=" Expression .
 
-CommandDecl   = "command" CommandWords "on" Expression .
+CommandDecl   = "command" CommandWords "on" Expression [ "schema" Expression ] .
 CommandWords  = "{" string_lit { "," string_lit } "}" .
 
 ImportDecl      = "import" ( NamedImports | NamespaceImport | CommandImports ) "from" ImportPath .
-ExportDecl      = "export" ( NamedImports | CommandImports ) "from" ImportPath .
+ExportDecl      = "export" ( NamedImports | NamespaceImport | CommandImports ) "from" ImportPath .
 CommandImports  = "command" CommandWords .
 NamedImports    = "{" ImportSpecifier { "," ImportSpecifier } "}" .
 ImportSpecifier = ( lower_id | upper_id ) [ "as" ( lower_id | upper_id ) ] .
@@ -727,6 +728,7 @@ Declaration termination rules:
 - Type parameters are not part of a declaration's name. `first<T>` declares the symbol `first`, which is what an import, an export and a duplicate-definition check see.
 - `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
+- `schema` is a contextual keyword, like `on`: it is a keyword only after the environment of a command declaration, and remains usable as an identifier everywhere else. The environment expression ends before it, and it must be placed on the same line as the end of that expression; the schema expression may span lines by the open-bracket continuation rule.
 - `CommandWords` is written in braces in every form — a declaration, an import and a re-export — so that the three read alike. The braces may span lines by the open-bracket continuation rule; the closing `}` and the `on` or `from` that follows it must be placed on the same line. After `export command`, the word after the closing brace decides the form: `on` begins a command declaration, `from` a re-export.
 
 Command declarations:
@@ -738,6 +740,8 @@ Command declarations:
 - The environment must not have an effect. It must not reach, directly or through the top-level declarations it references, command execution (15.5, and so no command execution expression), the filesystem (15.11), diagnostic output (15.12), nondeterministic generation (15.13), the functions that wait (15.7), or the standard input (9.3). Reachability over-approximates as enumeration does (11.4): a reference counts whether or not it is ever called. A violation is a static error (`E-TYPE-COMMAND-EFFECT`). Reading the variables of the process (15.9) is permitted.
 - The restriction is what an environment has to satisfy for everything that reads it without running a task. Every image a declaration can name stays enumerable (11.4), since enumeration walks its expression; `cmd` can evaluate the environment without running anything and without consuming the standard input, which belongs to the program (11.8); and the environment means the same wherever the word is used, including in a module that imports it.
 - `#local` is permitted, and is how a module states which programs it runs on the host.
+- A declaration's words are **probed** when its environment, evaluated as `lask cmd` evaluates it (11.8), is a container environment that names no `platform`. The evaluation runs nothing and reaches no file, since the environment must have no effect (above), and a secret reference in it is left unresolved. Such a word is probed by `lask sync` (11.7), which records in the lock whether the image provides a program of that name (Lock file, below). A word whose environment is `#local` is not probed: the host's programs may be installed by the very tasks that run them.
+- Before `run` or `eval` evaluates anything, and before `cmd` runs its command, a probed word recorded as missing from its image is an external I/O error (`E-IO-COMMAND-MISSING`, exit code `3`) when the invocation can reach a command execution expression whose environment dispatch selected through that word (10.9); for `run` and `eval`, reachability over-approximates as enumeration does (11.4). The image is found by evaluating the word's environment again, as the probe did. The word was declared as the name of a program the environment provides, and a command naming it would fail however it is written. The diagnostic names the word and its image. A word whose image the lock records nothing for is not checked.
 - A command declaration takes a visibility marker like any other declaration. Omitting it is equivalent to `export`, and makes the words **exported command words** of the module; `internal` keeps them to it. Exporting a word changes nothing in another module until that module imports the word by name.
 - The same word declared twice within one module, or both declared and imported, is a static error (`E-TYPE-COMMAND-DUPLICATE`). The names occupy no namespace shared with values or types, so they cannot collide with a declaration, a value import, or a type alias.
 
@@ -749,6 +753,89 @@ command { "go", "gofmt" } on go(proxy = "direct")
 command { "node", "npm", "npx" } on node
 command { "docker-compose" } on #docker/compose:2.29.7
 internal command { "mv", "rm", "ls" } on #local
+```
+
+Command schemas:
+
+- A command declaration may give its words **command schemas** after `schema`: what options and subcommands each program takes, against which the command strings that run it are checked before execution. The expression is checked against the expected type `Map<CommandSchema>`, keyed by words of the declaration; a word with no key has no schema. A key that is not one of them is a static error (`E-TYPE-COMMAND-SCHEMA`) where the map is a literal written in the declaration, and is ignored where it comes from a top-level value the declaration refers to: a module may publish the schemas of several words as one map, `schema tools.python.schema`, of which a declaration uses those it declares.
+- The types of a schema are built-in type aliases, and must not be overridden by user-defined type aliases or value declarations:
+
+  ```lask fragment
+  type CommandOption = Record<
+    names: Array<String>,         // "-v", "--verbose", "-run"
+    value?: String,               // "none" (the default), "required" or "optional"
+    values?: Array<String>,       // the values the option takes, when they are a closed set
+    global?: Bool,                // also accepted by every subcommand below (default false)
+    stops?: Bool,                 // what follows the option and its value belongs to another program, as after `python -m mod`
+    prefix?: Bool,                // the value is written right after the name, in the same word: `-Xmx2g`, `-DNAME=value`, `-Wall`
+    description?: String
+  >
+
+  type CommandSpec = Record<
+    closed?: Bool,                // no option or subcommand exists but those listed (default false)
+    style?: String,               // "gnu" or "single-dash"; the parent's when absent, "gnu" at the root
+    options?: Array<CommandOption>,
+    intermixed?: Bool,            // options may follow positional arguments; default true for gnu, false for single-dash
+    stop_at_first_positional?: Bool,  // what follows the first positional argument belongs to another program
+    subcommand_optional?: Bool,   // a positional argument that names no subcommand is an argument: `grype alpine:3.20` beside `grype db update`
+    abbreviations?: Bool,         // a long option may be shortened to a unique prefix, as getopt_long and optparse allow; the parent's when absent, false at the root
+    description?: String
+  >
+
+  type CommandSchema = Record<
+    root: CommandSpec,
+    subcommands?: Map<CommandSpec>   // keyed by path: "test", "mod tidy"
+  >
+  ```
+
+- Subcommands are keyed by their path, the words that select them separated by single spaces, because a type alias cannot refer to itself (4.2). A path of more than one word requires its parent path among the keys.
+- A schema must be known without evaluation, as the command words are. The schema expression must be a **static value**: a `null`, number, boolean or string literal without interpolation; an array, map or record literal whose elements are static values; or a reference to a top-level value declaration, in this module or reached through an import, whose right-hand side is a static value and which is not a secret binding (6.10). Anything else — a call, an operator, a conditional — is a static error (`E-TYPE-COMMAND-SCHEMA`). A static value has no effect, so the restriction on the environment above holds of it as well.
+- A binding that holds a schema is annotated with its type (`go_schema: CommandSchema = {...}`). Without the annotation, the record literal infers every field it gives as required (4.3), and that record type does not conform to `CommandSchema` (4.4).
+- What the types cannot say is checked where the schema is written, and a violation is `E-TYPE-COMMAND-SCHEMA`: `style` is `"gnu"` or `"single-dash"`; `value` is `"none"`, `"required"` or `"optional"`; an option has at least one name, and each name begins with `-` — or, for an option with `prefix`, with `+` —, is neither `-` nor `--`, and contains no whitespace, `=` or quotation character; no name is given twice within one spec together with the global options of its ancestors; `values` lists at least one value and is not given for an option whose `value` is `"none"`; an option with `prefix` takes a value; a subcommand path is words without whitespace or quotation characters, none beginning with `-`, and its parent path is a key.
+- A schema belongs to the declaration: a word imported or re-exported keeps the schema the declaring module gave it.
+
+Checking a command string against a schema:
+
+- The check applies to a command execution expression whose environment is selected by dispatch (10.9), and to each simple command of its shell reading (6.6) whose command word is plainly written (no quotation, escape or expansion, and no `/`) and is a command word of the module whose declaration has the source dispatch selected and gives the word a schema. An expression with an environment specification is not checked: the program it runs may not be the one declared.
+- The words after the command word are read in order, assignments and redirections left out:
+  1. A word that follows an option requiring a value is its value, whatever it is, provided it expands to one field. If the option lists `values`, a literal value not among them is an error.
+  2. An option with `stops` ends the check once it and its value are read: `python -m pytest -k smoke` checks `-m` and its value, and leaves `-k` to pytest.
+  3. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
+  4. `--` ends the check.
+  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
+  6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. With `subcommand_optional`, a word that names no subcommand is a positional argument of the current spec instead of an unknown subcommand. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
+- Each of the following is reported, and the check ends at the first:
+  - an option the current spec does not have, or a subcommand it does not have, or an abbreviated option that is ambiguous;
+  - an option written with `=value` whose `value` is `"none"`;
+  - an option whose `value` is `"required"` at the end of the command, unless the shell reading stopped inside it;
+  - a literal value not among the option's `values`.
+- An unknown option or subcommand, or an ambiguous abbreviation, is a static error (`E-TYPE-COMMAND-OPTION`) when the current spec is `closed`, and otherwise the advisory `W-COMMAND-OPTION` (14.2), since a spec that is not closed does not claim to be complete. The other findings are `E-TYPE-COMMAND-OPTION` whatever the spec says.
+
+```lask
+go_schema: CommandSchema = {
+  root: { closed: true, style: "single-dash" },
+  subcommands: {
+    "test": {
+      closed: true,
+      intermixed: true,
+      options: [
+        { names: ["-v"], description: "verbose output" },
+        { names: ["-run"], value: "required" },
+        { names: ["-covermode"], value: "required", values: ["set", "count", "atomic"] }
+      ]
+    },
+    "run": { closed: true, stop_at_first_positional: true },
+    "mod": { closed: true },
+    "mod tidy": { closed: true, options: [{ names: ["-v"] }] }
+  }
+}
+
+command { "go", "gofmt" } on #golang:1.25 schema { "go": go_schema }
+
+ok() = $ go test -v -run TestParse ./...
+// $ go tset ./...         E-TYPE-COMMAND-OPTION: 'go' has no subcommand 'tset'
+// $ go test -run          E-TYPE-COMMAND-OPTION: '-run' requires a value
+// $ go test -covermode x  E-TYPE-COMMAND-OPTION: '-covermode' takes one of 'set', 'count', 'atomic'
 ```
 
 Command imports and exports:
@@ -814,7 +901,16 @@ Re-export (`ExportDecl`):
 - Type aliases may be re-exported.
 - A name that is not a public symbol of the target module is an error before type checking.
 - `ImportPath` may be a local path or a dependency name. Re-exporting from a dependency republishes that dependency's symbols as part of the current module's public API.
-- No wildcard form is provided: neither `export * from` nor `export * as ns from`. The names to be published are made explicit in the declaration, for the same reason that no bulk import form is provided.
+- No wildcard form is provided: there is no `export * from`. The names to be published are made explicit in the declaration, for the same reason that no bulk import form is provided.
+
+Namespace re-export:
+
+- `export * as ns from "path"` is a namespace import whose namespace is, in addition, a public namespace of the current module. Within the module, `ns` is bound as the namespace import `import * as ns from "path"` binds it.
+- A module that imports the current one reaches its public namespaces through it: with `import * as m from "path"`, `m.ns` names the namespace and `m.ns.symbol` a public symbol of the module `ns` refers to, and a call `m.ns.f(...)` keeps `f`'s parameter list as a call through `m.f` does. A named import `import { ns } from "path"` binds `ns` as a namespace of the importing module. The same holds through any number of namespaces.
+- A namespace is not a value: `m.ns` written where a value is expected is an error before type checking (`E-NAME-UNDEFINED`), as is a member that is not a public symbol of the module the namespace refers to.
+- It brings no name in: only `ns` is published, and what it holds is reached only qualified, so the rule above still holds. A type alias is referenced through one namespace only (`m.TypeName`, 4.2); a public type of a re-exported namespace is reached by importing that module, or by the alias's own re-export.
+- The public functions and values of a namespace the entry module re-exports are invoked and listed by the CLI under their qualified name, `lask eval python.env --image ...` (11.2, 11.6), through any number of namespaces.
+- Same-name collision rules are those of namespace imports.
 - Same-name collision rules are those of named imports. `ExportDecl` edges participate in the acyclicity requirement of the module dependency graph.
 
 Evaluation timing of top-level declarations:
@@ -896,7 +992,8 @@ Lock file:
   },
   "images": {
     "deploy-kit#sha256-71bc...": {"kind": "recipe", "tag": "lask/deploy-kit/sha256-71bc..."},
-    "#alpine:3.20": {"kind": "registry", "ref": "alpine:3.20", "digest": "sha256:..."}
+    "#alpine:3.20": {"kind": "registry", "ref": "alpine:3.20", "digest": "sha256:..."},
+    "#golang:1.25": {"kind": "registry", "ref": "golang:1.25", "digest": "sha256:...", "commands": {"go": "present", "gofmt": "present"}}
   }
 }
 ```
@@ -908,6 +1005,7 @@ Lock file:
 - `images` records the container images the resolved graph requires (10.3). Keys are `<dependency path>#<image key>`, where the dependency path is empty for the root project.
 - A registry reference is recorded once for the whole graph, under the empty path, whichever module writes it: one reference names one image wherever it appears, and resolving it when a command runs (10.4) needs nothing but the reference. Its entry holds the reference as written (`ref`) and the digest it is pinned to (`digest`).
 - An entry that no image of the program references any more is dropped when the images are next materialized.
+- `commands` records, for each command word declared on the image that `sync` probes (11.7), whether the image provides it: `"present"` or `"missing"`. A word that was not probed has no key, and an entry with none has no `commands`. Any other value is a static error (`E-MODULE-LOCK-STALE`).
 
 Consistency:
 
@@ -1480,7 +1578,8 @@ notify(--verbose = false) = do {
 ```ebnf
 CommandExpr  = "$" [ stream ] [ "[" Expression "]" ] shell_string .
 stream       = "1" | "2" | "*" .
-shell_string = { shell_char | interpolation } .
+shell_string = { shell_char | interpolation | raw_hole } .
+raw_hole     = "#!{" Expression "}" .
 shell_char   = unicode_char .
 ```
 
@@ -1513,8 +1612,8 @@ Desugaring rules:
 
 - `$2[env] cmd` is syntactic sugar for the expression above with its success branch replaced by `r.stderr`.
 - A form written without an environment specification (`$ cmd`, `$1 cmd`, `$2 cmd`, `$* cmd`) expands identically, with the environment supplied by dispatch (10.9) over the command string. When dispatch selects no environment the expression is a static error (`E-TYPE-COMMAND-NOENV`); there is no fallback.
-- Only core functions (normalization to `run`, `fail`, and `choose`) and a record literal appear in the expanded forms, so the behavior can never be changed by user definitions.
-- `#{e}` inside a `shell_string` is evaluated first as string interpolation, and the post-interpolation string is passed as the command body.
+- Only core functions (normalization to `run`, `fail`, and `choose`), a record literal and the internal escaping of the holes (Escaping, below) appear in the expanded forms, so the behavior can never be changed by user definitions.
+- `#{e}` and `#!{e}` inside a `shell_string` are evaluated first as string interpolation, and the post-interpolation string is passed as the command body. The value of each `#{e}` hole is escaped before it is substituted, and that of each `#!{e}` hole is not (Escaping, below).
 
 Lexical rules:
 
@@ -1522,12 +1621,46 @@ Lexical rules:
 - Leading and trailing whitespace of the command string is removed, and internal whitespace is preserved as is.
 - If the line ends with `\`, it is a continuation line; the `\` and the newline are removed and the next line is concatenated.
 - Inside the command string, the shell's `;`, quotation marks, pipes, etc. can be used without escaping.
-- `#{` starts an interpolation. To include a literal `#{`, write `\#{`. A `#` not followed by `{` is treated as an ordinary character.
+- `#{` starts an interpolation, and `#!{` a raw hole. To include a literal `#{` or `#!{`, write `\#{` or `\#!{`. A `#` followed by neither `{` nor `!{` is treated as an ordinary character, so `$ echo '#!/bin/sh'` needs no escape.
+- A raw hole exists only in a command string. In an interpreted string (3.4), `#!{` is ordinary text: `"#!{x}"` is the five characters it shows.
 - Inside `do`, the newline that terminates a command string simultaneously serves as statement termination (6.5).
 - A command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run(#local, "git --version") |> trim`.
 - All tokens on the same line after a command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. To process it inside an expression, first bind it and then use it, or call `run` directly.
 
 Here `run` is a core function and must not be directly declared or overridden by user code (15.5).
+
+Escaping:
+
+- A hole substitutes its value as text: the shell expands what is substituted to exactly the stringified value (6.2), and never parses it as shell source. Which escaping that takes depends on the shell quoting the hole is written in, determined from the literal text of the command string before it with the POSIX rules for backslash, `'...'` and `"..."` (a `\` outside single quotes escapes the next character):
+  - Outside quotes, the value is substituted as one shell word, as `shell_quote` writes it (15.5): `$ cp #{src} dist/` copies the file `src` names, whatever characters it holds.
+  - Inside `"..."`, each `\`, `"`, `$` and `` ` `` of the value is preceded by `\`: `$ echo "hello, #{name}"` prints the name.
+  - Inside `'...'`, each `'` of the value is written `'\''`: `$ sh -c 'grep -q "^#{name}:" /etc/passwd'`.
+- A hole in `$(...)` or backquotes is escaped for the quoting in force where the substitution is written; the shell's own reparsing of the substitution is not followed.
+- A raw hole `#!{e}` is substituted without escaping, so the shell parses the value: `$ go build #!{flags}` passes each flag in `flags` as a word of its own. It is written with its own delimiter, not with a function, so that what the shell parses is visible where the hole is written: no expression inside an ordinary hole, whatever function it calls, is substituted unescaped. Because the shell parses the value, a value from outside the program (an argument, a file, a command's output) must not reach a raw hole: it would run what it contains.
+- The escaping is POSIX shell escaping. The shell of a `local` environment on Windows is `cmd.exe` (10.2), which does not read it; a command meant for it writes its holes as raw holes and quotes them itself.
+- Only holes of a command execution expression are escaped. A string passed to `run` (15.5) is a command line as it is, so a value interpolated into it is quoted with `shell_quote` where it needs to be.
+- The escaping is part of the desugaring: it is written with internal builtins that no program can name, so user definitions cannot change it.
+
+Shell syntax:
+
+- A command string must be well formed as POSIX shell syntax, as far as it can be read from the text alone. A violation is a static error (`E-TYPE-COMMAND-SYNTAX`), reported whether the environment is specified or selected by dispatch (10.9), and before dispatch is attempted. The check exists so that a command that every POSIX shell would reject is rejected where it is written, not when it runs.
+- The string is read before interpolation, after the lexical normalization above. Quoting follows the POSIX rules for `\`, `'...'` and `"..."`; a command substitution `$(...)` or `` `...` `` is read by the same rules as a script of its own; a parameter expansion `${...}` and an arithmetic expansion `$((...))` are read to their closing brackets and their content is not read; a word beginning with `#` begins a comment that runs to the end of its line. A hole is one opaque part of the word it is written in: escaped (Escaping, above), it can never act as an operator or a quote.
+- Reading stops at the first construct whose meaning depends on the shell dialect or on a value, and nothing after it is checked:
+  - a raw hole `#!{e}`, which the shell parses;
+  - a reserved word in command position: `if`, `then`, `else`, `elif`, `fi`, `do`, `done`, `case`, `esac`, `while`, `until`, `for`, `{`, `}`, `!`, `[[`, `]]`, `function`, `select`, `time`, `coproc`;
+  - a here-document (`<<`), process substitution (`<(` or `>(`), `|&`, and ANSI-C quoting `$'...'`;
+  - a `(` that does not begin a command, as in a function definition `f()` or an array assignment `a=(...)`;
+  - a hole inside a comment, which may hold a newline that ends it.
+- Before that point, each of the following is an error:
+  - a quoted region, command substitution, parameter expansion, arithmetic expansion or group that is not closed before the end of the string;
+  - a `)` that closes nothing;
+  - an operator (`&&`, `||`, `|`, `;`, `&`) with no command before it, including two operators in a row; `;;`, which ends a clause of a `case` command and is read only after `case`, which stops reading;
+  - `&&`, `||` or `|` with no command after it. A newline may come between the operator and the command;
+  - a redirection operator (`<`, `>`, `>>`, `<&`, `>&`, `<>`, `>|`) with no word after it;
+  - a group `( )` that contains no command.
+- A command consisting only of assignments or redirections is a command, as in the shell: `FOO=1` and `> out.txt` are well formed. A trailing `;` or `&` ends a list and is well formed.
+- The check is not made where the environment may be the `local` environment of a Windows host, whose shell is `cmd.exe` (10.2): on such a host it is made only when the environment is known from the text to be a container environment, written as a container environment expression directly or through top-level bindings.
+- Examples: `$[#local] make &&`, `$[#local] cat >`, `$[#local] echo "unterminated` and `$[#local] | grep x` are `E-TYPE-COMMAND-SYNTAX`. `$[#local] for f in *.go; do gofmt -l $f; done`, `$[#local] echo #!{flags} &&` and `$[#local] echo hi # it's` are not, because reading stops at `for`, at the raw hole, and at the comment.
 
 Environment specification rules:
 
@@ -1543,7 +1676,7 @@ Typing rules:
 - `run` is typed as `Function<Runnable, String, CommandResult>` (7.5).
 - As a result of the desugaring, the expression type of `$ ...`, `$1 ...`, and `$2 ...` is `String`, and the expression type of `$* ...` is `CommandResult`.
 - If `env` does not conform to `Runnable`, it is a type error.
-- The interpolation `#{e}` must be of a stringifiable type. If it cannot be stringified, it is a static error (`E-TYPE-BOUND`).
+- The interpolation `#{e}`, and the raw hole `#!{e}`, must be of a stringifiable type. If it cannot be stringified, it is a static error (`E-TYPE-BOUND`).
 - The stringifiable types are `String`, `Number`, `Bool`, `Any`, a union all of whose members are stringifiable, and a type parameter whose bound entails `stringifiable` (4.4). This is the named bound `stringifiable` (4.2). Every other type, `Null` included, is not stringifiable, and `to_string` (15.3) accepts exactly the same set. `String | Null` is therefore **not** stringifiable: a value that may be absent cannot be interpolated into a command, and must be resolved by `case` (6.4) or `cast` (15.8) first. `Any` is stringifiable statically and may still fail at runtime (15.3), because its content is unknown until then.
 
 Evaluation rules:
@@ -1987,6 +2120,9 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-COMMAND-EFFECT`: the environment of a command declaration can reach an effect (Chapter 5)
 - `E-TYPE-COMMAND-NAME`: a command declaration names a program that could never be recognized in a command string (Chapter 5)
 - `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5)
+- `E-TYPE-COMMAND-SYNTAX`: a command string is not well formed as POSIX shell syntax (6.6)
+- `E-TYPE-COMMAND-SCHEMA`: the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5)
+- `E-TYPE-COMMAND-OPTION`: a command string invokes a program in a way its command schema rules out (Chapter 5)
 - `E-TYPE-ENV-CONSTRUCT`: invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree; 6.7, 10.2, 10.3, 15.5)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
 - `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
@@ -2498,7 +2634,10 @@ The run options this implementation provides:
 - An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing. This is how an argument says "not given" — a function that builds a runnable passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
 - `workdir` is the explicit working directory 10.5 gives precedence over the default.
 - `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
-- A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the `docker` client's command line and sets its value in the client's environment, from which docker takes it. A variable the client reads itself — a name beginning with `DOCKER_`, ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, in any case — is passed with its value on the command line instead, since setting it for the client would change which daemon it reaches or how.
+- A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the engine client's command line (10.10) and sets its value in the client's environment, from which the client takes it. A variable the client reads itself is passed with its value on the command line instead, since setting it for the client would change which engine it reaches or how. In any case, that is a name ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, and, by engine:
+  - `docker`: a name beginning with `DOCKER_`.
+  - `podman`: a name beginning with `CONTAINER_`, `CONTAINERS_`, `PODMAN_`, `BUILDAH_` or `XDG_`, or `TMPDIR` or `REGISTRY_AUTH_FILE`.
+  - `nerdctl`: a name beginning with `CONTAINERD_`, `NERDCTL_`, `BUILDKIT_`, `CNI_` or `XDG_`, or `TMPDIR`.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written.
 - A `Bool` parameter left `false` is the daemon's own default and is not passed; nothing is inferred from its absence.
 - `init` is the exception: it is on unless set to `false`. The container runs an init process as PID 1, which passes the termination request of 8.7 on to the program; a program that is PID 1 itself has no default signal handlers and would ignore it until the grace period ran out. `init = false` runs the program as PID 1.
@@ -2564,7 +2703,7 @@ Resolution rules:
 Failure rules:
 
 - Invalid heads and options are static errors (`E-TYPE-ENV-CONSTRUCT`) and do not occur in the runtime resolution of this section. The only means of specifying an execution environment is the in-language environment expression (no means of supplying an execution environment from the CLI is provided; 11.1).
-- Absence of the execution infrastructure (Docker daemon absent, image not materialized, etc.) is a pre-execution error.
+- Absence of the execution infrastructure (container engine unreachable, image not materialized, etc.) is a pre-execution error.
 - Resolution failure must be classified as an external I/O or runtime error in Chapter 14.
 
 Determinism:
@@ -2667,14 +2806,14 @@ Determinacy principle:
 Input:
 
 - The procedure operates on the command string before interpolation, after the lexical normalization of 6.6 (leading and trailing whitespace removed, continuation lines joined).
-- Each interpolation `#{...}` is one opaque character, belonging to no other class. A hole may expand to any text, so no analysis may look through one.
+- Each interpolation `#{...}`, and each raw hole `#!{...}`, is one opaque character, belonging to no other class. A hole may expand to any text, so no analysis may look through one.
 
 Regions and segmentation:
 
 - **Quoted regions.** A `'` opens a region ending at the next `'`; a `"` opens a region ending at the next unescaped `"`. A character preceded by `\` is literal. Nothing inside a quoted region is a separator or opens a region.
 - **Nested regions.** A command substitution `$(` to its matching `)`, a backquoted substitution `` ` `` to the next `` ` ``, and a grouping `(` to its matching `)` each open a nested region. Its content is segmented by these same rules and contributes its own command words; in the enclosing text the region occupies part of one word.
 - **Separators.** Outside quoted and nested regions, `&&`, `||`, `|`, `;`, `&`, and a newline are separators, matched longest-first. The text between two separators, before the first, or after the last, is a **segment**.
-- If a quoted or nested region is not closed before the end of the string, the command string is not analysable: dispatch selects nothing, and the diagnostic must state that the string could not be segmented rather than that no command was declared.
+- If a quoted or nested region is not closed before the end of the string, the command string is not analysable: dispatch selects nothing, and the diagnostic must state that the string could not be segmented rather than that no command was declared. Such a string is usually already `E-TYPE-COMMAND-SYNTAX` (6.6), which is reported first; dispatch reaches it only where the shell syntax check does not, as with a quotation character in a comment.
 
 Words and command words:
 
@@ -2718,6 +2857,27 @@ Examples, given `command { "go" } on #golang:1.25`, `command { "node", "npm", "n
 | `env FOO=1 go test` | `env` | nothing |
 | `#{bin} -chdir=infra init` | none (undeterminable) | nothing |
 | `ls dist && npm publish` | `ls`, `npm` | `E-TYPE-COMMAND-CONFLICT` |
+
+### 10.10 Container Engine
+
+A container environment runs on a container engine: the store that holds the images of 10.3 and runs the containers of 10.5.
+
+Selection:
+
+- The engines an implementation drives are listed below. The process environment variable `LASK_CONTAINER_ENGINE` selects one by name (`LASK_CONTAINER_ENGINE=podman`), in any case.
+- When `LASK_CONTAINER_ENGINE` is unset or empty, the engine is the first of `docker`, `podman` and `nerdctl` whose client is found on `PATH`, and `docker` when none is.
+- A value that names no engine is not a static error. A program that runs nothing in a container runs; anything that needs the engine fails with `E-IO-ENV-RESOLVE`, whose diagnostic quotes the value and lists the engines.
+- The selection is a property of the machine, not of the program: a project file does not name an engine, and the same program and lock file run on any of them. A pinned digest names the same image on every engine (10.3).
+
+Engines:
+
+- This implementation drives an engine through its Docker-compatible client, run as a subprocess: `docker` (Docker Engine), `podman` (Podman, rootful or rootless), and `nerdctl` (containerd, with BuildKit for recipes). The client is found on `PATH` under the engine's name.
+- Each operation of 10.3 to 10.5 means the same on every engine. Where the clients differ, the implementation absorbs the difference (10.8):
+  - Whether the engine can be reached is asked of the engine, not of the client: `docker version` for Docker, and the engine's information for the others.
+  - A registry reference is read as Docker reads it, a name with no registry being on Docker Hub. Podman resolves such a name through its own configuration, which may name other registries or none, so it is pulled by its Docker Hub name.
+  - A failure of the engine itself — the container never ran — is `E-IO-ENV-RESOLVE`, and never taken for the exit code of the command (8.7). Docker and Podman report it with exit code 125; nerdctl with exit code 1 and a fatal log line, which is what tells it apart.
+  - The variables of the `env` option are given to the client by name, as 10.2 requires, except those the client reads itself (10.2), which differ by engine.
+- A client that runs the engine elsewhere and does not pass its own environment on — such as a nerdctl that runs inside a virtual machine on macOS — cannot receive a variable by name, and a value of `env` given that way does not reach the container. Such a client is outside what this implementation supports for `env`.
 
 ## 11. CLI Specification
 
@@ -2944,7 +3104,7 @@ lask envs list provision
 
 ### 11.4 Environment List (`envs`)
 
-`envs list` enumerates the execution environments used by tasks and reports, for each, what the lock file resolves it to, what requires it, and whether its image is on the Docker daemon.
+`envs list` enumerates the execution environments used by tasks and reports, for each, what the lock file resolves it to, what requires it, and whether its image is on the container engine.
 
 Syntax:
 
@@ -2969,7 +3129,7 @@ Columns:
 
 Rules:
 
-- The Docker daemon is asked once whether it can be reached, and then whether each pinned image is present. Nothing is pulled or built, and no command runs in any environment.
+- The container engine is asked once whether it can be reached, and then whether each pinned image is present. Nothing is pulled or built, and no command runs in any environment.
 - When the daemon cannot be reached, a warning on stderr says so and why, and every `docker` status is `?`.
 - `envs list` reports; it does not fail. A missing or unpinned image, or a daemon that cannot be reached, is a status, and the exit code is `0`.
 - After the table, one line counts the environments by kind and by status.
@@ -3043,7 +3203,7 @@ Rules (`rm`):
 
 - `rm` removes a direct dependency: its entry in `lask.json`, its lock entry and those of the dependencies under it, the cache entries no remaining lock entry uses, and the lock entries of the images the program no longer requires (10.3; the program is read again to find them). It reaches no network.
 - A dependency a `.lask` file of the project still imports is not removed: the imports are listed, and it is a usage error. A transitive dependency is not removed either: the dependency that declares it is named.
-- Images on the Docker daemon are not removed, since the daemon may serve other projects; the ones no longer required are named.
+- Images on the container engine are not removed, since the engine may serve other projects; the ones no longer required are named.
 - The cache is cleaned only when it is the project's own (`.lask/deps`), not one `LASK_CACHE_DIR` names, which other projects may share.
 
 Output and exit codes:
@@ -3217,7 +3377,16 @@ Rules (images):
 - When any image fails to materialize, the images recorded in the lock are left as they were: no pin is added, replaced or dropped, and the summary reports the lock file unchanged (or updated for its modules only). A failed `sync` therefore never costs a pin that still worked.
 - Images are content-addressed, so an image whose registry digest or recipe hash is unchanged is not re-materialized.
 - The images are materialized after the modules, since reading the program needs its modules; a program that does not compile keeps its modules synced and reports the static error. A project that declares no dependency still has its images materialized.
-- `sync` executes no command inside the resulting containers.
+- `sync` executes no command inside the resulting containers, except the probe below.
+
+Rules (command probes):
+
+- After the images are materialized, `sync` probes the command words of every declaration whose words are probed (Chapter 5), in every module the program loads, whose image materialized: in a container of the image, run with the run options its environment evaluated to and the base directory mounted as for a command (10.5), `/bin/sh` reports for each word whether `command -v` finds it. Words declared on one image with different run options are probed in a container per set of options, and a word any of them finds is present. The result is recorded in the image's lock entry as `commands`.
+- An image whose lock entry is unchanged and already records every word declared on it is not probed again.
+- A word the image does not provide is reported as `E-IO-COMMAND-MISSING`, naming the word, the image and the declaration, and `sync` exits with `3`. The images and their pins are still recorded, and so is the word as `"missing"`, so that `run` refuses the commands that use it (Chapter 5) until the declaration or the image is corrected.
+- An image whose `/bin/sh` cannot be started provides none of its words: lask runs every command string through it (10.2), so each is recorded as `"missing"`, and the diagnostic says so.
+- A probe that cannot be run for another reason, such as an engine that stops answering, records nothing for that image and is reported as the failure it is (`E-IO-ENV-RESOLVE`).
+- Probe results are part of the lock: under `--frozen`, a probe that would change `commands` is `E-MODULE-LOCK-STALE`.
 
 General rules:
 
@@ -3230,13 +3399,13 @@ Progress and the summary:
 - While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
 - On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--format json` each of these is a JSON Lines event.
 - When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--format json` the summary is one object, `modules` and `images`.
-- The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the Docker daemon.
+- The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the container engine.
 
 Exit codes:
 
 - `0`: the operation completed successfully.
 - `1`: the project file or the lock file is missing (while dependencies are declared), malformed, stale under `--frozen`, or violates the schema (Chapter 5); a policy violation was detected before fetching; or the program has a static error.
-- `3`: a fetch, verification, or image materialization failure (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`).
+- `3`: a fetch, verification, or image materialization failure, or a declared command missing from its image (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`, `E-IO-COMMAND-MISSING`).
 - `4`: CLI usage error.
 
 ### 11.8 Command Invocation (`cmd`)
@@ -3836,6 +4005,9 @@ Representative codes:
 - `E-TYPE-COMMAND-EFFECT`
 - `E-TYPE-COMMAND-NAME`
 - `E-TYPE-COMMAND-DUPLICATE`
+- `E-TYPE-COMMAND-SYNTAX`
+- `E-TYPE-COMMAND-SCHEMA`
+- `E-TYPE-COMMAND-OPTION`
 - `E-TYPE-ENV-CONSTRUCT`
 - `E-TYPE-ACCESS`
 - `E-TYPE-FIELD-DUPLICATE`
@@ -3877,6 +4049,7 @@ Advisory codes:
   - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
   - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
   - `W-ASYNC-UNUSED`: a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`.
+  - `W-COMMAND-OPTION`: a command string uses an option or subcommand that a command schema which is not closed does not list (Chapter 5). Reported statically, with `stage: "static"`.
   - `W-ASYNC-UNAWAITED`: an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6). Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`.
 - Reporting advisory diagnostics is optional, with one exception: `W-ASYNC-UNAWAITED` is always reported, because a failure it carries is otherwise invisible. `check` and `serve` are the expected places for the static ones; `run` and `eval` report the run-time ones on stderr.
 
@@ -3960,6 +4133,9 @@ Minimum targets:
 - `E-TYPE-COMMAND-EFFECT`
 - `E-TYPE-COMMAND-NAME`
 - `E-TYPE-COMMAND-DUPLICATE`
+- `E-TYPE-COMMAND-SYNTAX`
+- `E-TYPE-COMMAND-SCHEMA`
+- `E-TYPE-COMMAND-OPTION`
 - `E-TYPE-ENV-CONSTRUCT`
 - `E-TYPE-ACCESS`
 - `E-TYPE-FIELD-DUPLICATE`
@@ -4006,8 +4182,9 @@ External I/O errors occur at boundaries external to the language.
 Representative examples:
 
 - `E-IO-STDIN-READ`: stdin read failure
-- `E-IO-ENV-RESOLVE`: execution environment resolution failure, including a Docker daemon that cannot be reached (10.4)
+- `E-IO-ENV-RESOLVE`: execution environment resolution failure, including a container engine that cannot be reached or cannot run the container (10.4, 10.10)
 - `E-IO-IMAGE-MISSING`: a required container image has not been materialized (10.3)
+- `E-IO-COMMAND-MISSING`: a command word declared on a container image names a program the image does not provide, as `sync` probed it (Chapter 5, 11.7)
 - `E-IO-IMAGE-DIGEST`: a pulled image's digest does not match the pinned digest (10.3)
 - `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
 - `E-IO-FS`: filesystem access failure (the filesystem functions of 15.11)
@@ -4314,16 +4491,15 @@ python(--image: Environment = #python:3.12.14-alpine3.24, --user: String | Null 
 Quoting:
 
 - `shell_quote(s)` returns a single POSIX shell word that expands to exactly `s`: the value wrapped in single quotes, with every embedded `'` rewritten as `'\''`.
-- A command execution expression substitutes an interpolation hole into the command string without escaping it (6.6), and the result is handed to a shell. A value that may contain whitespace, a quotation character, or any other shell metacharacter must therefore pass through `shell_quote` before it is interpolated, or the command it forms is not the command the author wrote.
+- A hole of a command execution expression is already escaped (6.6), so it needs no `shell_quote`; one there quotes the value twice, and the argument carries literal quotation characters. `shell_quote` is for a command line built as a string, such as one passed to `run` or to `sh -c`:
 
 ```lask
-upload(src: String, dst: String) =
-  $[#local] aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}
+upload(env: Runnable, src: String, dst: String): CommandResult =
+  run(env, "aws s3 cp #{shell_quote(src)} #{shell_quote(dst)}")
 ```
 
-- The result is already one word, and must not be quoted again by the caller: writing `"'#{shell_quote(v)}'"` produces a literal quotation character in the argument.
-- `shell_quote` is a pure function, and is placed here rather than among the string operations of 15.3 because its contract is about command construction.
-- Masking (12.8) matches registered values as exact substrings. Quoting wraps the value, so a registered secret is still a substring of the quoted result and is still masked. A value that contains `'` is rewritten by quoting, so it is also registered in its rewritten form (every `'` as `'\''`), and the quoted result is masked as well.
+- `shell_quote` is a pure function, and is placed here rather than among the string operations of 15.3 because its contract is about command construction. There is no function that marks a hole to be substituted unescaped: that is the raw hole `#!{e}` of 6.6.
+- Masking (12.8) matches registered values as exact substrings. Escaping a value rewrites the characters it escapes, so a registered secret is also registered in each form the escaping of 6.6 and `shell_quote` write it (every `'` as `'\''`; every `\`, `"`, `$` and `` ` `` preceded by `\`), and the command line that carries it is masked as well.
 
 ### 15.6 Parallel and Asynchronous Helper Functions
 
@@ -4421,7 +4597,7 @@ Evaluation of `until(delays, done, body)`:
 ```lask
 // The HTTP status of url, without failing on an error status.
 status(url: String): CommandResult =
-  $*[#local] curl -s -o /dev/null -w '%{http_code}' #{shell_quote(url)}
+  $*[#local] curl -s -o /dev/null -w '%{http_code}' #{url}
 
 // Poll every 5 seconds, 100 times at most, and give up after 10 minutes in any case.
 wait_ready(url: String): CommandResult =
@@ -4945,9 +5121,9 @@ Expected behavior:
 - `lask run hello`: executes the function and exits with exit code `0` without outputting the evaluation result to stdout.
 - `lask eval greet alice`: outputs `"hello, alice"` to stdout (the default `json` display).
 - `lask run greet alice --prefix hi`: executes with the positional argument `alice` and the keyword argument `--prefix hi` bound. The evaluation result is not output.
-- `build`: executes the build inside a container (the evaluation result is not output). If a connection to the Docker daemon cannot be made, a pre-execution error occurs (`E-IO-ENV-RESOLVE`) and it exits with exit code `3`.
+- `build`: executes the build inside a container (the evaluation result is not output). If the container engine cannot be reached, a pre-execution error occurs (`E-IO-ENV-RESOLVE`) and it exits with exit code `3`.
 - `provision`: executes commands in a container built from the declared recipe. If the image has not been materialized, an `E-IO-IMAGE-MISSING` diagnostic is output to stderr and it exits with exit code `3`.
-- `lask envs list provision`: lists the environments `provision` uses, what the lock resolves each to, and whether each image is on the Docker daemon. Exit code `0` whatever their status (11.4).
+- `lask envs list provision`: lists the environments `provision` uses, what the lock resolves each to, and whether each image is on the container engine. Exit code `0` whatever their status (11.4).
 
 ### 16.8 Execution Event Example
 

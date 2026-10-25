@@ -15,7 +15,7 @@ command { "node", "npm", "npx" } on node
 node_image = #node:24.22.1-bookworm-slim
 quiet: Map<String> = { "NEXT_TELEMETRY_DISABLED": "1" }
 
-node = tools.node(image = node_image, extra_env = quiet)
+node = tools.node.env(image = node_image, extra_env = quiet)
 
 // The dev server publishes its port, so the browser on the host reaches it.
 internal dev_server(port: Number): Runnable =
@@ -24,7 +24,7 @@ internal dev_server(port: Number): Runnable =
 // The tag is the @playwright/test version in package.json: the image
 // carries that release's browsers, and no other.
 playwright_image = #mcr.microsoft.com/playwright:v1.63.0-noble
-playwright = tools.playwright(image = playwright_image, extra_env = merge(quiet, { "CI": "1" }))
+playwright = tools.playwright.env(image = playwright_image, extra_env = merge(quiet, { "CI": "1" }))
 
 // Playwright's UI mode, published to the host. tools.playwright takes no
 // ports, so this gives the same image the run options it would have set:
@@ -56,7 +56,7 @@ build() = $ npm run build
 test_e2e(--grep: String = "") =
   grep == ""
     ? $[playwright] npx playwright test
-    : $[playwright] npx playwright test --grep #{shell_quote(grep)}
+    : $[playwright] npx playwright test --grep #{grep}
 
 // Watch the browser tests run, in Playwright's UI mode, until you stop it.
 //

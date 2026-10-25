@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           lask
-version:        0.11.0
+version:        0.12.0
 description:    Please see the README on GitHub at <https://github.com/lask-task-runner/lask#readme>
 homepage:       https://github.com/lask-task-runner/lask#readme
 bug-reports:    https://github.com/lask-task-runner/lask/issues
@@ -44,7 +44,9 @@ library
       Language.Lask.Builtins.Names
       Language.Lask.Builtins.Path
       Language.Lask.Builtins.Regex
+      Language.Lask.Builtins.Shell
       Language.Lask.Builtins.Sig
+      Language.Lask.CommandSchema
       Language.Lask.Confirm
       Language.Lask.Core.AST
       Language.Lask.Core.Compare
@@ -75,6 +77,7 @@ library
       Language.Lask.Repl
       Language.Lask.Runtime.AsyncTrack
       Language.Lask.Runtime.CancelScope
+      Language.Lask.Runtime.Container
       Language.Lask.Runtime.Environment
       Language.Lask.Runtime.Eval
       Language.Lask.Runtime.Glob
@@ -93,6 +96,7 @@ library
       Language.Lask.Syntax.Parser
       Language.Lask.Syntax.Printer
       Language.Lask.Syntax.Scope
+      Language.Lask.Syntax.Shell
       Language.Lask.Syntax.TokenStream
       Language.Lask.Types
       Language.Lask.Utils
@@ -268,6 +272,7 @@ test-suite lask-test
       Language.Lask.Builtins.FormatSpec
       Language.Lask.Builtins.PathSpec
       Language.Lask.Builtins.RegexSpec
+      Language.Lask.Builtins.ShellSpec
       Language.Lask.ConfirmSpec
       Language.Lask.Core.LintSpec
       Language.Lask.Deps.DepsSpec
@@ -294,6 +299,7 @@ test-suite lask-test
       Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
       Language.Lask.Syntax.PrinterSpec
+      Language.Lask.Syntax.ShellSpec
       Language.LaskSpec
       Language.LSP.LaskSpec
       Paths_lask

@@ -42,7 +42,7 @@ reservedIdentifiers = Set.singleton "stdin"
 -- | The builtins with an effect outside the program (spec 15.1):
 -- command execution (15.5), the filesystem (15.11), diagnostic output
 -- (15.12) and nondeterministic generation (15.13), plus the functions
--- of 15.7 that wait and log, and the standard input (9.3). @shell_quote@ sits in 15.5 but is pure, so it is not
+-- of 15.7 that wait and log, and the standard input (9.3). @shell_quote@ and @raw@ sit in 15.5 but are pure, so it is not
 -- here. The environment of a command declaration may reach none of
 -- them (spec ch. 5).
 effectfulBuiltinNames :: Set Text
@@ -217,6 +217,7 @@ builtinValueNames =
     ]
 
 -- | Builtin type aliases that user code must not redefine
--- (spec 6.6, 6.9): @CommandResult@ and @Error@.
+-- (spec ch. 5, 6.6, 6.9): @CommandResult@, @Error@, and the types of
+-- command schemas.
 builtinTypeAliasNames :: Set Text
-builtinTypeAliasNames = Set.fromList ["CommandResult", "Error"]
+builtinTypeAliasNames = Set.fromList ["CommandResult", "Error", "CommandOption", "CommandSpec", "CommandSchema"]

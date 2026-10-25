@@ -12,6 +12,7 @@ import qualified Data.Vector as V
 import Language.Lask.Builtins.Impl (FileOp (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
+import Language.Lask.Runtime.Container
 import Language.Lask.Runtime.Environment
 import Language.Lask.Runtime.Image (ImagePins, Recipe (..), recipeTag, unlockedPins)
 import Language.Lask.Runtime.Secrets (registerSecret, resetSecretRegistryForTests)
@@ -29,6 +30,23 @@ import Test.Hspec
 -- | These runners run on the host, where no image is involved.
 noPins :: ImagePins
 noPins = unlockedPins Map.empty
+
+-- | The engine the tests that run a command use: none of them reaches
+-- it, since they run on #local.
+docker :: ContainerBackend
+docker = cliBackend Docker
+
+-- | The arguments of a container run of a command string, as the
+-- command runner makes it.
+dockerShellArgs :: FilePath -> Text -> Text -> Map.Map Text Value -> Bool -> Text -> [String]
+dockerShellArgs baseDir name image opts wantStdin cmd =
+  runArgs Docker (RunSpec baseDir (Just name) image opts wantStdin False "/bin/sh" ["-c", cmd])
+
+dockerArgs :: FilePath -> Text -> Text -> Map.Map Text Value -> Text -> [String]
+dockerArgs baseDir name image opts = dockerShellArgs baseDir name image opts False
+
+dockerClientEnv :: Map.Map Text Value -> [(String, String)]
+dockerClientEnv = clientEnv Docker
 
 env :: Text -> [(Text, Value)] -> EnvValue
 env k ps = EnvValue k (Map.fromList ps)
@@ -205,6 +223,16 @@ spec = do
         `shouldBe` ["--env", "DOCKER_HOST=v", "--env", "HOME=v", "--env", "HTTPS_PROXY=v", "--env", "PATH=v", "--env", "no_proxy=v"]
       dockerClientEnv (Map.fromList options) `shouldBe` []
 
+    it "keeps on the command line a variable the podman or nerdctl client reads itself (spec 10.10)" $ do
+      let options = Map.fromList [("env", VMap (Map.fromList [(k, VString "v") | k <- ["CONTAINER_HOST", "CONTAINERD_ADDRESS", "XDG_RUNTIME_DIR", "TOKEN"]]))]
+          envValues e =
+            let args = runArgs e (RunSpec "/p" Nothing "i" options False False "/bin/sh" [])
+             in [a | ("--env", a) <- zip args (drop 1 args)]
+      envValues Podman `shouldBe` ["CONTAINERD_ADDRESS", "CONTAINER_HOST=v", "TOKEN", "XDG_RUNTIME_DIR=v"]
+      map fst (clientEnv Podman options) `shouldBe` ["CONTAINERD_ADDRESS", "TOKEN"]
+      envValues Nerdctl `shouldBe` ["CONTAINERD_ADDRESS=v", "CONTAINER_HOST", "TOKEN", "XDG_RUNTIME_DIR=v"]
+      map fst (clientEnv Nerdctl options) `shouldBe` ["CONTAINER_HOST", "TOKEN"]
+
     -- Null is how an argument says "not given" (spec 10.2); "" is a
     -- value the caller means, and is passed on.
     it "leaves out an option given null, and the null elements and values of a list or table" $ do
@@ -278,7 +306,7 @@ spec = do
 
   describe "local execution (spec 8.7, real process)" $ do
     it "runs a local command and captures streams and exit code" $ do
-      runner <- mkCommandRunner noPins "/tmp" noCommandLog
+      runner <- mkCommandRunner docker noPins "/tmp" noCommandLog
       r <- runner (env "local" []) "echo out; echo err 1>&2; exit 3"
       case r of
         Right (code, out, errOut) -> do
@@ -287,7 +315,7 @@ spec = do
           errOut `shouldBe` "err\n"
         Left lf -> expectationFailure (show lf)
     it "uses the base directory as the working directory" $ do
-      runner <- mkCommandRunner noPins "/tmp" noCommandLog
+      runner <- mkCommandRunner docker noPins "/tmp" noCommandLog
       r <- runner (env "local" []) "pwd"
       case r of
         Right (0, out, _) -> out `shouldSatisfy` (\o -> o == "/tmp\n" || o == "/private/tmp\n")
@@ -300,7 +328,7 @@ spec = do
           -- threads, so a sink must be atomic: a plain read-modify-write
           -- here loses entries.
           let sink cl = atomicModifyIORef' logRef (\ls -> (ls <> [cl], ()))
-          runner <- mkCommandRunner noPins "/tmp" sink
+          runner <- mkCommandRunner docker noPins "/tmp" sink
           pure (runner, readIORef logRef)
         runWithLog cmd = do
           (runner, readLog) <- mkLoggedRunner
@@ -368,7 +396,7 @@ spec = do
     it "stops the command and what it started when its thread is cancelled, and logs it as killed" $
       withSystemTempDirectory "lask-stop" $ \dir -> do
         logRef <- newIORef []
-        runner <- mkCommandRunner noPins dir (\cl -> atomicModifyIORef' logRef (\ls -> (ls <> [clKind cl], ())))
+        runner <- mkCommandRunner docker noPins dir (\cl -> atomicModifyIORef' logRef (\ls -> (ls <> [clKind cl], ())))
         -- The shell and the child it leaves in the background both
         -- record themselves, so both can be looked for afterwards.
         a <- async (runner (env "local" []) "echo $$ > pids; sleep 30 & echo $! >> pids; wait")
@@ -401,7 +429,7 @@ spec = do
 
   describe "filesystem functions (spec 15.11, real filesystem)" $ do
     let withProject act = withSystemTempDirectory "lask-fs" $ \dir -> do
-          runner <- mkFileRunner noPins dir
+          runner <- mkFileRunner docker noPins dir
           act dir (\op -> runner (env "local" []) op)
 
     it "writes a file and reads it back" $ withProject $ \_ run -> do

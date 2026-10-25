@@ -12,7 +12,7 @@ import Command.Lask.Common
 import Command.Lask.Project (cmdDepsAdd, cmdDepsGraph, cmdDepsList, cmdDepsRm, cmdEnvsList, cmdSync)
 import Command.Lask.Complete (completionScript)
 import Command.Lask.Fmt (cmdFmt)
-import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, readsStdin)
+import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, reachableDecls, readsStdin)
 import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
@@ -47,13 +47,15 @@ import Language.Lask.Obs.CommandLog
 import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
-import Command.Lask.Images (loadPins)
+import Command.Lask.Images (commandImage, evalCommandEnv, loadPins, lockedImages, missingCommands)
+import Language.Lask.Deps.Lock (LockImage (..))
+import Language.Lask.Runtime.Container (ContainerBackend, resolveBackend)
 import Language.Lask.Runtime.Image (ImagePins, Recipe (..), imageExists, recipeSource, recipeTag, resolveRegistry)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
-import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, noAsyncTracker, renderSite)
-import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, evalCore, mkRtCtx, topValue)
+import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, renderSite)
+import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Secrets (maskFailure)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
@@ -166,6 +168,15 @@ cmdRunEval printResult runOpts = do
             cliArgs
       _ -> usageError opts ("'" <> fnName <> "' is not a callable function")
 
+  -- A declared program its image lacks fails every command that runs
+  -- it, so nothing is run (spec ch. 5).
+  images <- lockedImages core
+  missingNow <- missingCommands core images [(cdModule d, cdName d) | d <- reachableDecls core key]
+  case missingNow of
+    [] -> pure ()
+    missing -> do
+      traceId <- maybe newTraceId pure (optTraceId opts)
+      failureExit opts traceId (ioFailure EIoCommandMissing (missingMessage missing))
   -- Before anything is evaluated, and before stdin is read: a refused
   -- confirmation leaves nothing half done (spec 11.2).
   confirmOrExit opts (runConfirm runOpts) compiled fnName key cd posVals kwVals
@@ -186,8 +197,9 @@ cmdRunEval printResult runOpts = do
   -- Images resolve through the lock, and are never pulled or built
   -- here (spec 10.3, 10.4).
   pins <- loadPins core
-  runner <- mkCommandRunner pins baseDir cmdLogSink
-  fileRunner <- mkFileRunner pins baseDir
+  backend <- resolveBackend
+  runner <- mkCommandRunner backend pins baseDir cmdLogSink
+  fileRunner <- mkFileRunner backend pins baseDir
   let -- `log` (spec 15.12) writes execution log lines to stderr,
       -- through the same serialized writer as the command logs.
       logSink
@@ -424,7 +436,7 @@ failureExit opts traceId uncaught = do
       -- stream (spec 12.2: code + stage).
       stage = case lfCode lf of
         Just c
-          | c `elem` [EIoStdinRead, EIoEnvResolve, EIoImageMissing, EIoImageDigest, EIoFs, EIoDataDecode] ->
+          | c `elem` [EIoStdinRead, EIoEnvResolve, EIoImageMissing, EIoImageDigest, EIoCommandMissing, EIoFs, EIoDataDecode] ->
               StageIo
         _ -> StageRuntime
       msg = failureMessage lf
@@ -594,6 +606,13 @@ cmdCmd cmdOpts
               (suggest name (Map.keys table))
           Just envCore -> do
             traceId <- maybe newTraceId pure (optTraceId opts)
+            images <- lockedImages core
+            img <- commandImage core envCore
+            case img of
+              Just (key, _)
+                | Just False <- Map.lookup name . liCommands =<< Map.lookup key images ->
+                    failureExit opts traceId (ioFailure EIoCommandMissing (missingMessage [(name, key)]))
+              _ -> pure ()
             secrets <- newSecretResolver
             envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
             writeErr <- newLineWriter stderr
@@ -601,7 +620,8 @@ cmdCmd cmdOpts
                   | optJsonFormat opts = jsonCommandLog traceId writeErr
                   | otherwise = textCommandLog writeErr
             pins <- loadPins core
-            r <- runDeclaredCommand pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
+            backend <- resolveBackend
+            r <- runDeclaredCommand backend pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
             case r of
               -- Failures before the program starts keep the existing
               -- classification (spec 11.8); the program's own exit code
@@ -609,6 +629,12 @@ cmdCmd cmdOpts
               Left failure -> failureExit opts traceId failure
               Right 0 -> exitSuccess
               Right code -> exitWith (ExitFailure code)
+
+-- | The diagnostic of declared programs their images lack (spec ch. 5).
+missingMessage :: [(Text, Text)] -> Text
+missingMessage missing =
+  T.intercalate "; " ["'" <> w <> "' is declared on " <> T.drop 1 img <> ", which does not provide it" | (w, img) <- missing]
+    <> " (as lask sync found); correct the command declaration or its image, then run lask sync"
 
 -- | @lask cmd --help@: the option help, then every command word of
 -- the entry module with the state of the image it needs, as @lask run
@@ -668,14 +694,15 @@ commandRowsText rows =
 commandRows :: CoreProgram -> Map.Map Text Core -> IO [CommandRow]
 commandRows core table = do
   pins <- loadPins core
-  mapM (row pins) (Map.toList table)
+  backend <- resolveBackend
+  mapM (row backend pins) (Map.toList table)
   where
-    row pins (name, envCore) = do
+    row backend pins (name, envCore) = do
       r <- evalCommandEnv readEnvVarUnresolved core envCore
       case r >>= resolveEnv of
         Left lf -> pure (name, "?", "<" <> failureMessage lf <> ">", False)
         Right resolved -> do
-          present <- imagePresent pins (cpBaseDir core) resolved
+          present <- imagePresent backend pins (cpBaseDir core) resolved
           let (kind, target) = describeResolved resolved
           pure (name, kind, target, present)
 
@@ -686,29 +713,11 @@ commandRows core table = do
 
 -- | Whether the image a command needs is on the target daemon. No
 -- network access and no build (spec 11.8, 10.3).
-imagePresent :: ImagePins -> FilePath -> ResolvedEnv -> IO Bool
-imagePresent pins baseDir resolved = case resolved of
+imagePresent :: ContainerBackend -> ImagePins -> FilePath -> ResolvedEnv -> IO Bool
+imagePresent backend pins baseDir resolved = case resolved of
   ResolvedLocal -> pure True
-  ResolvedDocker ref _ -> either (const False) (const True) <$> resolveRegistry pins ref
+  ResolvedDocker ref _ -> either (const False) (const True) <$> resolveRegistry backend pins ref
   ResolvedRecipe r _ -> do
     tagE <- recipeTag baseDir r
-    either (const (pure False)) imageExists tagE
+    either (const (pure False)) (imageExists backend) tagE
 
--- | Evaluate a command's environment (spec 11.8). The environment of a
--- command declaration can reach no effect (ch. 5), so nothing here can
--- run a command, touch a file or read the standard input, which
--- belongs to the program. The hooks refuse rather than run anything if
--- that guarantee is ever broken. It may read the environment, through
--- the reader given (spec 9.8).
-evalCommandEnv :: (Text -> IO (Maybe Text)) -> CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
-evalCommandEnv readEnv core c = do
-  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())) noAsyncTracker readEnv)
-  r <- try (evalCore ctx Map.empty c)
-  pure $ case r of
-    Left lf -> Left lf
-    Right (VEnv ev) -> Right ev
-    Right _ -> Left (refusal "the command's environment did not evaluate to an Environment")
-  where
-    refuseCommand _ _ = pure (Left (refusal "the environment of a command declaration tried to run a command"))
-    refuseFile _ _ = pure (Left (refusal "the environment of a command declaration tried to access a file"))
-    refusal = ioFailure EIoEnvResolve
