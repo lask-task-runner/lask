@@ -277,6 +277,7 @@ test-suite lask-test
       Language.Lask.Core.LintSpec
       Language.Lask.Deps.DepsSpec
       Language.Lask.DocSpec
+      Language.Lask.EditorCompileSpec
       Language.Lask.ElaborateSpec
       Language.Lask.Embed.Twin.ValuesAndTypes
       Language.Lask.Embed.TypeSpec

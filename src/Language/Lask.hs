@@ -12,17 +12,23 @@ module Language.Lask
   )
 where
 
+import Control.Exception (IOException, try)
+import qualified Data.ByteString as BS
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import Language.Lask.Deps.File (defaultDepsFileName)
+import Language.Lask.Deps.Lock (defaultLockFileName)
 import Language.Lask.Confirm (validateConfirm)
 import Language.Lask.Diagnostic (Diagnostic, settleDiagnostics)
 import Language.Lask.Elaborate (CoreProgram, elaborateRecovering)
-import Language.Lask.Module.Loader (LoadedModule (..), ModuleReader, Program (..), collapseDots, fileReader, loadProgramWith)
+import Language.Lask.Module.Loader (LoadedModule (..), LoaderEnv (..), ModuleReader, Program (..), collapseDots, defaultLoaderEnv, fileReader, loadProgramEnv, loadProgramWith)
 import Language.Lask.Module.Resolve (GlobalScope, resolveProgram)
 import Language.Lask.Syntax.AST (Module)
 import Language.Lask.Syntax.Parser (parseModule)
-import System.FilePath (normalise)
+import System.FilePath (normalise, takeDirectory, (</>))
+import System.IO.Unsafe (unsafePerformIO)
 
 data Compiled = Compiled
   { compiledProgram :: Program,
@@ -48,14 +54,18 @@ compileWith reader entry = do
   r <- loadProgramWith reader entry
   pure $ case r of
     Left ds -> Left (settleDiagnostics ds)
-    Right prog -> case checkProgram prog of
-      ([], scopes, core) ->
-        -- The project file's confirmations refer to the program; one
-        -- that no longer does is an error, never silently dropped (spec 5).
-        case validateConfirm prog scopes core of
-          [] -> Right (Compiled prog scopes core)
-          ds -> Left (settleDiagnostics ds)
-      (ds, _, _) -> Left ds
+    Right prog -> checkedWith prog (checkProgram prog)
+
+-- | A compiled program from a loaded one and its 'checkProgram'.
+checkedWith :: Program -> ([Diagnostic], Map FilePath GlobalScope, CoreProgram) -> Either [Diagnostic] Compiled
+checkedWith prog result = case result of
+  ([], scopes, core) ->
+    -- The project file's confirmations refer to the program; one
+    -- that no longer does is an error, never silently dropped (spec 5).
+    case validateConfirm prog scopes core of
+      [] -> Right (Compiled prog scopes core)
+      ds -> Left (settleDiagnostics ds)
+  (ds, _, _) -> Left ds
 
 -- | Name resolution and elaboration of a loaded program. Every
 -- independent error is reported (spec 14.3): a declaration that holds
@@ -70,7 +80,11 @@ checkProgram prog =
 -- | Compile an in-editor document: the entry module's text is
 -- provided directly; imported modules are read from disk.
 compileText :: FilePath -> Text -> IO (Either [Diagnostic] Compiled)
-compileText path txt = compileWith (textReader path txt) path
+compileText path txt = do
+  r <- editorCompile path txt
+  pure $ case r of
+    Left ds -> Left (settleDiagnostics ds)
+    Right (prog, result) -> checkedWith prog result
 
 -- | Like 'compileText' but keeps the results of the stages that did
 -- succeed, for editor features that must work on a buffer being typed.
@@ -78,7 +92,7 @@ compileText path txt = compileWith (textReader path txt) path
 -- rest of a module keeps working while one declaration is broken.
 compileTextPartial :: FilePath -> Text -> IO Partial
 compileTextPartial path txt = do
-  loaded <- loadProgramWith (textReader path txt) path
+  loaded <- editorCompile path txt
   pure $ case loaded of
     Left _ ->
       Partial
@@ -87,14 +101,13 @@ compileTextPartial path txt = do
           partialScopes = Map.empty,
           partialCore = Nothing
         }
-    Right prog ->
-      let (_, scopes, core) = checkProgram prog
-       in Partial
-            { partialModule = lmModule <$> Map.lookup (progEntry prog) (progModules prog),
-              partialProgram = Just prog,
-              partialScopes = scopes,
-              partialCore = Just core
-            }
+    Right (prog, (_, scopes, core)) ->
+      Partial
+        { partialModule = lmModule <$> Map.lookup (progEntry prog) (progModules prog),
+          partialProgram = Just prog,
+          partialScopes = scopes,
+          partialCore = Just core
+        }
 
 -- | Like 'compileFile' but keeps whatever the front end managed to
 -- produce, together with the diagnostics. CLI help is rendered from
@@ -145,3 +158,96 @@ textReader path txt p
 -- | Diagnostics for an in-editor document.
 checkText :: FilePath -> Text -> IO [Diagnostic]
 checkText path txt = either id (const []) <$> compileText path txt
+
+-- ---------------------------------------------------------------------
+-- What the language server compiled before
+--
+-- The editor features compile the buffer for every request, with all
+-- the modules it imports: a keystroke brings diagnostics, semantic
+-- tokens, inlay hints and completion, each a compile. A dependency
+-- such as lask-module-tools is megabytes of source, which takes far
+-- longer to lex and parse than the buffer. So a module's parse is kept
+-- for as long as its source is the same, and a compile of a buffer is
+-- kept for as long as the buffer and every file it read are.
+-- ---------------------------------------------------------------------
+
+-- | A file a compile read, and what it held: a module's source as the
+-- loader read it, or a project or lock file's bytes ('Nothing' when it
+-- was absent).
+data Input
+  = ModuleInput FilePath (Either Text Text)
+  | FileInput FilePath (Maybe BS.ByteString)
+
+-- | A compile of a buffer, with every file it read.
+data Memo a = Memo Text [Input] a
+
+-- | Each module's source, by path, with its parse.
+{-# NOINLINE parseCache #-}
+parseCache :: IORef (Map FilePath (Text, Either [Diagnostic] Module))
+parseCache = unsafePerformIO (newIORef Map.empty)
+
+-- | Each buffer's load and check, by path: diagnostics, semantic
+-- tokens, hover and the rest share one per version of the buffer.
+{-# NOINLINE compileMemo #-}
+compileMemo :: IORef (Map FilePath (Memo (Either [Diagnostic] (Program, ([Diagnostic], Map FilePath GlobalScope, CoreProgram)))))
+compileMemo = unsafePerformIO (newIORef Map.empty)
+
+-- | A buffer loaded with what it imports, and checked; the check is
+-- done when a caller first looks at it.
+editorCompile :: FilePath -> Text -> IO (Either [Diagnostic] (Program, ([Diagnostic], Map FilePath GlobalScope, CoreProgram)))
+editorCompile path txt = remembered compileMemo path txt $ \load -> fmap (\prog -> (prog, checkProgram prog)) <$> load
+
+cachedParse :: FilePath -> Text -> IO (Either [Diagnostic] Module)
+cachedParse path src = do
+  known <- Map.lookup path <$> readIORef parseCache
+  case known of
+    Just (before, parsed) | before == src -> pure parsed
+    _ -> do
+      let parsed = parseModule path src
+      atomicModifyIORef' parseCache (\m -> (Map.insert path (src, parsed) m, ()))
+      pure parsed
+
+-- | The result of the last compile of the buffer at the path, when the
+-- buffer and every file that compile read are unchanged; otherwise a
+-- new compile, whose load parses through the cache and records what it
+-- reads.
+remembered :: IORef (Map FilePath (Memo a)) -> FilePath -> Text -> (IO (Either [Diagnostic] Program) -> IO a) -> IO a
+remembered memo path txt compile = do
+  known <- Map.lookup path <$> readIORef memo
+  fresh <- case known of
+    Just (Memo before inputs result) | before == txt -> do
+      same <- and <$> mapM unchanged inputs
+      pure (if same then Just result else Nothing)
+    _ -> pure Nothing
+  case fresh of
+    Just result -> pure result
+    Nothing -> do
+      readsRef <- newIORef []
+      let note i = atomicModifyIORef' readsRef (\is -> (i : is, ()))
+          entry = collapseDots (normalise path)
+          reader p = do
+            r <- textReader path txt p
+            -- The buffer is the memo's key, not one of its inputs.
+            if collapseDots (normalise p) == entry then pure () else note (ModuleInput p r)
+            pure r
+          project dir = mapM_ (\f -> readMaybe (dir </> f) >>= note . FileInput (dir </> f)) [defaultDepsFileName, defaultLockFileName]
+      env0 <- defaultLoaderEnv reader path
+      let env =
+            env0
+              { leParse = cachedParse,
+                leLoadDeps = \dir -> project dir >> leLoadDeps env0 dir,
+                leLoadLock = \dir -> project dir >> leLoadLock env0 dir
+              }
+      -- The project's lock, which the loader environment reads before
+      -- any module, pins every dependency.
+      project (takeDirectory entry)
+      result <- compile (loadProgramEnv env path)
+      inputs <- readIORef readsRef
+      atomicModifyIORef' memo (\m -> (Map.insert path (Memo txt inputs result) m, ()))
+      pure result
+  where
+    unchanged (ModuleInput p before) = (== before) <$> fileReader p
+    unchanged (FileInput p before) = (== before) <$> readMaybe p
+    readMaybe p = either absent Just <$> try (BS.readFile p)
+    absent :: IOException -> Maybe BS.ByteString
+    absent _ = Nothing

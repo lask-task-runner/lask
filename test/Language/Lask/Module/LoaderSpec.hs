@@ -14,6 +14,7 @@ import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..))
 import Language.Lask.Diagnostic (diagCode)
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader
+import Language.Lask.Syntax.Parser (parseModule)
 import Test.Hspec
 
 -- | A hermetic loader environment over in-memory data.
@@ -21,6 +22,7 @@ fakeEnv :: [(FilePath, Text)] -> [(FilePath, DepsFile)] -> LoaderEnv
 fakeEnv files depsFiles =
   LoaderEnv
     { leReader = \p -> pure (maybe (Left "not found") Right (lookup p files)),
+      leParse = \p src -> pure (parseModule p src),
       leLoadDeps = \dir -> pure (Right (lookup dir depsFiles)),
       -- The fixtures pin hashes directly, so the lock covers whatever
       -- the deps file declares.
