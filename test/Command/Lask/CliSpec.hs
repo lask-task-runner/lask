@@ -75,6 +75,16 @@ spec = beforeAll findLask $ do
         cs <- calls state
         length [c | c <- cs, "command -v" `isInfixOf` c] `shouldBe` 1
 
+    it "probes with the module's directory mounted by its absolute path, under --module sub/main.lask" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject [("sub/main.lask", "command { \"cat\" } on #alpine:3.22.2\nhi(): String = $ cat x\n")] $ \dir -> do
+          b <- runLaskEnv lask dir extra ["sync", "--module", "sub/main.lask"] ""
+          resExit b `shouldBe` 0
+          cs <- calls state
+          let probes = [c | c <- cs, "command -v" `isInfixOf` c]
+          probes `shouldSatisfy` (not . null)
+          probes `shouldSatisfy` all ("type=bind,source=/" `isInfixOf`)
+
     it "probes a declaration whose environment is made by a call, with its run options (spec ch. 5)" $ \lask ->
       withFakeDocker $ \state extra ->
         withProject
