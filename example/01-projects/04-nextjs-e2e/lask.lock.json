@@ -31,9 +31,9 @@
     "modules": {
         "tools": {
             "git": "https://github.com/lask-task-runner/lask-module-tools.git",
-            "hash": "sha256-2e8896866231f426ad3011246ab35efc3ea869abc491b1f9c7ed317e17979984",
-            "requested": "v0.5.0",
-            "rev": "c3530f9581f5a002cdd8deaebb95b1248bcf02a3"
+            "hash": "sha256-7e14e99c6c3e58a541aa6820d0c9d300b64ca9bf7afea0d0d7b8cca2f6500760",
+            "requested": "v0.6.0",
+            "rev": "cb004a9f0105cec405b5e83814299a89ae6c60e3"
         }
     }
 }
