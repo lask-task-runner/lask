@@ -45,6 +45,7 @@ import Language.Lask.Runtime.Image
 import Language.Lask.Runtime.Value (EnvValue, LaskFailure, Value (..), ioFailure)
 import Language.Lask.SecretStore.Resolve (readEnvVarUnresolved)
 import System.Exit (ExitCode (..))
+import System.Directory (makeAbsolute)
 import System.FilePath ((</>))
 import System.Process (readCreateProcessWithExitCode)
 
@@ -300,6 +301,9 @@ commandImage core c = do
 -- words, is not probed again: its results are those.
 probeCommands :: ContainerBackend -> CoreProgram -> [Materialized] -> Map Text LockImage -> Map Text LockImage -> IO (Map Text LockImage, [Probed])
 probeCommands backend core mats prior images = do
+  -- The engine mounts it by path, which must be absolute: --module
+  -- sub/main.lask gives a base directory relative to the current one.
+  baseDir <- makeAbsolute (cpBaseDir core)
   declared <-
     fmap concat . mapM (\(w, c) -> maybe [] (\(k, o) -> [(k, o, w)]) <$> commandImage core c) $
       [(w, c) | tbl <- Map.elems (cpCommands core), (w, c) <- Map.toList tbl]
@@ -307,14 +311,14 @@ probeCommands backend core mats prior images = do
       byImage = Map.fromListWith (<>) [(k, [w]) | (k, _, w) <- declared]
   outcomes <-
     mapM
-      (\(key, image) -> probeImage key image (Set.toList (Set.fromList (byImage Map.! key))) [(o, w) | (k, o, w) <- declared, k == key])
+      (\(key, image) -> probeImage baseDir key image (Set.toList (Set.fromList (byImage Map.! key))) [(o, w) | (k, o, w) <- declared, k == key])
       [(k, image) | (k, image) <- Map.toList pinned, Map.member k byImage]
   pure (foldr record images outcomes, outcomes)
   where
     notFailed (Failed _) = False
     notFailed _ = True
 
-    probeImage key image ws uses = case (Map.lookup key prior, Map.lookup key images) of
+    probeImage baseDir key image ws uses = case (Map.lookup key prior, Map.lookup key images) of
       (Just before, Just now)
         | before {liCommands = Map.empty} == now,
           Map.keys (liCommands before) == ws ->
@@ -322,7 +326,7 @@ probeCommands backend core mats prior images = do
       _ -> do
         -- One run per distinct set of run options the words come with.
         let groups = Map.elems (Map.fromListWith (\(o, a) (_, b) -> (o, a <> b)) [(T.pack (show (Map.toAscList o)), (o, [w])) | (o, w) <- uses])
-        results <- mapM (\(o, gws) -> probeWith image o (Set.toList (Set.fromList gws))) groups
+        results <- mapM (\(o, gws) -> probeWith baseDir image o (Set.toList (Set.fromList gws))) groups
         pure $ case [r | Left r <- results] of
           Left why : _ -> ProbeFailed key why
           Right (gws, why) : _ -> NoShell key gws why
@@ -330,11 +334,11 @@ probeCommands backend core mats prior images = do
 
     -- Left (Left why): the probe could not run. Left (Right (words, why)):
     -- the image's shell could not start.
-    probeWith image opts ws = do
+    probeWith baseDir image opts ws = do
       cp <-
         cbRunProcess backend $
           RunSpec
-            { runBaseDir = cpBaseDir core,
+            { runBaseDir = baseDir,
               runName = Nothing,
               runImage = image,
               runOptions = opts,
