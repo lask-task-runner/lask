@@ -49,6 +49,9 @@ type ModuleReader = FilePath -> IO (Either Text Text)
 -- | All external capabilities of the loader, injectable for tests.
 data LoaderEnv = LoaderEnv
   { leReader :: ModuleReader,
+    -- | Parse a module's source; the language server keeps the result
+    -- of a source it has parsed before.
+    leParse :: FilePath -> Text -> IO (Either [Diagnostic] Module),
     -- | Load the dependency definition file of a tree root directory.
     leLoadDeps :: FilePath -> IO (Either Diagnostic (Maybe DepsFile)),
     -- | The lock file of the project (spec chapter 5). Resolution
@@ -134,6 +137,7 @@ defaultLoaderEnv reader entryPath = do
   pure
     LoaderEnv
       { leReader = reader,
+        leParse = \p src -> pure (parseModule p src),
         leLoadDeps = \dir -> loadDepsFile (dir </> defaultDepsFileName),
         leLoadLock = \dir -> loadLockFile (dir </> defaultLockFileName),
         leCacheDir = cacheDir,
@@ -233,23 +237,25 @@ loadProgramEnv env entryPath = do
                     StageStatic
                     NoSpan
                     (T.pack ("cannot load module: " <> path))
-            Right src -> case parseModule path src of
-              Left ds -> pure (Left ds)
-              Right m -> do
-                let importPaths = [p | Decl _ f <- moduleDecls m, p <- declImportPath f]
-                resolvedE <- resolveAll ctx importPaths
-                case resolvedE of
-                  Left d -> pure (Left [d])
-                  Right resolved ->
-                    loadAll (path : visiting) done order resolved >>= \r -> pure $ do
-                      (done', order') <- r
-                      let lm =
-                            LoadedModule
-                              { lmPath = path,
-                                lmModule = m,
-                                lmImportKeys = Map.fromList [(p, k) | (p, k, _) <- resolved]
-                              }
-                      pure (Map.insert path lm done', path : order')
+            Right src -> do
+              parsed <- leParse env path src
+              case parsed of
+                Left ds -> pure (Left ds)
+                Right m -> do
+                  let importPaths = [p | Decl _ f <- moduleDecls m, p <- declImportPath f]
+                  resolvedE <- resolveAll ctx importPaths
+                  case resolvedE of
+                    Left d -> pure (Left [d])
+                    Right resolved ->
+                      loadAll (path : visiting) done order resolved >>= \r -> pure $ do
+                        (done', order') <- r
+                        let lm =
+                              LoadedModule
+                                { lmPath = path,
+                                  lmModule = m,
+                                  lmImportKeys = Map.fromList [(p, k) | (p, k, _) <- resolved]
+                                }
+                        pure (Map.insert path lm done', path : order')
 
     resolveAll _ [] = pure (Right [])
     resolveAll ctx (p : rest) = do
