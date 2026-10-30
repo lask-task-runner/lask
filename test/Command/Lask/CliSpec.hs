@@ -8,6 +8,10 @@ module Command.Lask.CliSpec (spec) where
 import Command.Lask.Complete (Opt (..), Plan (..), classify)
 import Command.Lask.Harness
 import Control.Concurrent (threadDelay)
+import qualified Data.Aeson as A
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString.Lazy.Char8 as BL8
+import Data.Foldable (toList)
 import Data.IORef (readIORef)
 import Data.List (isInfixOf, isPrefixOf, nub, sort)
 import qualified Data.Text as T
@@ -1208,6 +1212,45 @@ spec = beforeAll findLask $ do
           resOut r `shouldNotContain` "node:20"
           whole <- runLask lask dir ["envs", "list"] ""
           resOut whole `shouldSatisfy` isInfixOf "node:20"
+    it "lists the programs run in each environment (spec 11.4)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "command { \"go\" } on golang\n\
+            \golang = #golang:1.22\n\
+            \envs: Map<Environment> = { \"a\": #alpine:3.20, \"b\": #debian:13 }\n\
+            \build() = $ go build ./...\n\
+            \clean() = $[#local] rm -rf dist && { echo done >&2; }\n\
+            \pick(--env: String = \"a\") = $[envs[env]] make\n\
+            \fixed() = $[envs[\"b\"]] ls\n\
+            \on(image: Environment) = $[image] cat x\n\
+            \with(--image: Environment = #busybox:1.37) = $[image] wc -l x\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["envs", "commands", "--format", "json"] ""
+          resExit r `shouldBe` 0
+          let envs = maybe [] id (A.decode (BL8.pack (resOut r)) :: Maybe [A.Value])
+              programsOf e =
+                sort
+                  [ p
+                  | A.Object o <- envs,
+                    KM.lookup "environment" o == Just (A.String e),
+                    Just (A.Array ps) <- [KM.lookup "programs" o],
+                    A.Object po <- toList ps,
+                    Just (A.String p) <- [KM.lookup "program" po]
+                  ]
+          programsOf "#local" `shouldBe` ["echo", "rm"]
+          programsOf "#golang:1.22" `shouldBe` ["go"]
+          programsOf "#alpine:3.20" `shouldBe` ["make"]
+          programsOf "#debian:13" `shouldBe` ["ls", "make"]
+          programsOf "#busybox:1.37" `shouldBe` ["wc"]
+          programsOf "(dynamic)" `shouldBe` ["cat", "wc"]
+          text <- runLask lask dir ["envs", "commands"] ""
+          resOut text `shouldSatisfy` isInfixOf "main.lask: pick (envs[env])"
+          resOut text `shouldSatisfy` isInfixOf "5 environments and (dynamic): 7 programs in 6 commands"
+          verbose <- runLask lask dir ["envs", "commands", "--verbose", "build"] ""
+          resExit verbose `shouldBe` 0
+          resOut verbose `shouldSatisfy` isInfixOf "main.lask:4  build  go build ./...  ← command \"go\""
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""

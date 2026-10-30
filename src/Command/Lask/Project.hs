@@ -11,12 +11,13 @@ module Command.Lask.Project
     cmdDepsGraph,
     cmdDepsRm,
     cmdEnvsList,
+    cmdEnvsCommands,
   )
 where
 
 import Command.Lask.Common
 import Command.Lask.DepUse (ImportSite (..), projectImports)
-import Command.Lask.Envs (HeadImage (..), HeadUse (..), Requirer (..), collectHeadUses)
+import Command.Lask.Envs (CommandSite (..), HeadImage (..), HeadUse (..), Requirer (..), collectCommandSites, collectHeadUses)
 import Command.Lask.Images
 import Language.Lask.Runtime.Container (ContainerBackend (..), resolveBackend)
 import Language.Lask.Runtime.Image (daemonReachable)
@@ -25,12 +26,12 @@ import Command.Lask.Progress (finish, note, section, start, withProgress)
 import Command.Lask.Table
 import Control.Applicative ((<|>))
 import Control.Exception (IOException, try)
-import Control.Monad (forM, unless, when)
+import Control.Monad (forM, forM_, unless, when)
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BL
 import Data.Either (isRight)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.List (nub, sort)
+import Data.List (nub, sort, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
@@ -44,7 +45,13 @@ import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
 import Language.Lask.Diagnostic (Diagnostic (..))
-import Language.Lask.Elaborate (CoreProgram (..))
+import Language.Lask.Core.AST (Core (..))
+import Language.Lask.Elaborate (CommandUse (..), CoreProgram (..))
+import Language.Lask.Lexer.Token (Spanned (..))
+import Language.Lask.Runtime.Image (Recipe (..), recipeSource)
+import Language.Lask.Span (Position (..), Span (..))
+import Language.Lask.Syntax.AST (TextPart (..), exprSpan)
+import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), programWords)
 import Language.Lask.ErrorCode
 import Language.Lask.Utils (kebabToSnake)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
@@ -154,15 +161,18 @@ dash = fromMaybe "—"
 -- a file of the project by its path, a dependency by its name — the
 -- declaration, and the parameter it is the default of.
 requirerLabel :: Paths -> Maybe LockFile -> Requirer -> Text
-requirerLabel paths lock rq = moduleLabel <> ": " <> rqWhat rq <> maybe "" (\k -> " (default --" <> k <> ")") (rqDefault rq)
+requirerLabel paths lock rq = moduleLabel paths lock (rqModule rq) <> ": " <> rqWhat rq <> maybe "" (\k -> " (default --" <> k <> ")") (rqDefault rq)
+
+-- | A module as a reader knows it: a file of the project by its path,
+-- a dependency by its name.
+moduleLabel :: Paths -> Maybe LockFile -> FilePath -> Text
+moduleLabel paths lock modulePath = case [p | h <- hashes, Just p <- [Map.lookup h byHash]] of
+  p : _ -> p
+  [] -> T.pack (makeRelative (pBase paths) modulePath)
   where
-    modulePath = rqModule rq
     segments = T.splitOn "/" (T.pack modulePath)
     hashes = [s | s <- segments, "sha256-" `T.isPrefixOf` s]
     byHash = Map.fromList [(lkHash e, p) | (p, e) <- Map.toList (maybe Map.empty lockModules lock)]
-    moduleLabel = case [p | h <- hashes, Just p <- [Map.lookup h byHash]] of
-      p : _ -> p
-      [] -> T.pack (makeRelative (pBase paths) modulePath)
 
 -- | The REQUIRED BY cell: two places, and how many more.
 requiredCell :: [Text] -> Text
@@ -817,3 +827,166 @@ cmdEnvsList opts function = do
               <> T.pack (show pinnedCount)
               <> " pinned in lask.lock.json"
   exitSuccess
+
+-- envs commands ------------------------------------------------------------------
+
+-- | One command as @lask envs commands@ lists it (spec 11.4).
+data CommandLine = CommandLine
+  { clModule :: Text,
+    clLine :: Int,
+    clDecl :: Text,
+    clCommand :: Text,
+    clPrograms :: [Text],
+    -- | The environment expression as written, or @command "<word>"@
+    -- for one dispatch selected.
+    clVia :: Text,
+    -- | Where it may run: each environment's label and kind.
+    clEnvs :: [(Text, Text)]
+  }
+
+cmdEnvsCommands :: CommonOpts -> Maybe Text -> Bool -> IO ()
+cmdEnvsCommands opts function verbose = do
+  compiledE <- compileFile (optModule opts)
+  compiled <- case compiledE of
+    Right c -> pure c
+    Left _ -> compileOrExit opts
+  paths <- projectPaths opts
+  let core = compiledCore compiled
+  scope <- case function of
+    Nothing -> pure Nothing
+    Just fn ->
+      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
+        k : _ -> pure (Just k)
+        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+  lock <- loadLockMaybe paths
+  let sites = Map.elems (Map.fromList [(csSpan c, c) | c <- collectCommandSites core scope])
+      uses = Map.fromList [(cuSpan u, u) | u <- cpCommandUses core]
+  sources <- fmap Map.fromList . forM (nub [f | CommandSite {csSpan = Span (Position f _ _) _} <- sites]) $ \f -> do
+    r <- try (TIO.readFile f) :: IO (Either IOException Text)
+    pure (f, either (const T.empty) id r)
+  let slice sp = case sp of
+        Span (Position f l1 c1) (Position _ l2 c2)
+          | Just src <- Map.lookup f sources ->
+              let ls = drop (l1 - 1) (take l2 (T.lines src))
+               in case ls of
+                    [] -> "?"
+                    [one] -> T.take (c2 - c1) (T.drop (c1 - 1) one)
+                    (first : more) -> T.intercalate "\n" (T.drop (c1 - 1) first : init more <> [T.take (c2 - 1) (last more)])
+        _ -> "?"
+      hole raw e = (if raw then "#!{" else "#{") <> slice (exprSpan e) <> "}"
+      line' sp = case sp of
+        Span (Position _ l _) _ -> l
+        NoSpan -> 0
+      toLine site =
+        let use = Map.lookup (csSpan site) uses
+            (command, programs) = case use of
+              Just u ->
+                ( joinLines (T.concat [piece p | p <- cuParts u]),
+                  case programWords hole (cuParts u) of
+                    Analysed ws -> map cwText ws
+                    NotAnalysable _ _ -> ["(unanalysable)"]
+                )
+              Nothing -> (joinLines (slice (csSpan site)), ["(computed)"])
+            -- A chunk is taken from the source, where a continuation
+            -- line is still marked, to be joined with a single space.
+            piece p = case p of
+              TPChunk NoSpan t -> t
+              TPChunk sp _ -> slice sp
+              TPInterp e -> hole False e
+              TPRaw e -> hole True e
+            via = case use of
+              Just CommandUse {cuEnv = Just _, cuWords = Spanned _ w : _} -> "command \"" <> w <> "\""
+              _ -> joinLines (slice (coreSpan (csEnv site)))
+         in CommandLine
+              (moduleLabel paths lock (csModule site))
+              (line' (csSpan site))
+              (csDecl site)
+              command
+              programs
+              via
+              ([headLabel h | h <- Set.toList (csHeads site)] <> [("(dynamic)", "dynamic") | csDynamic site])
+      cls = sortOn (\c -> (clModule c, clLine c)) (map toLine sites)
+      envs = sortOn envOrder (nub (sort (concatMap clEnvs cls)))
+      envOrder (label, kind) = (case kind of "local" -> 0 :: Int; "dynamic" -> 2; _ -> 1, label)
+      inEnv e = [c | c <- cls, e `elem` clEnvs c]
+      usedBy c
+        | length (clEnvs c) > 1 = clModule c <> ": " <> clDecl c <> " (" <> clVia c <> ")"
+        | otherwise = clModule c <> ": " <> clDecl c
+      programRows e = Map.toList (Map.fromListWith (flip (<>)) [(p, [usedBy c]) | c <- inEnv e, p <- clPrograms c])
+      shownVia (label, _) c = if clVia c == label then Nothing else Just (clVia c)
+  if optJsonFormat opts
+    then
+      printJson . A.toJSON $
+        [ A.object
+            [ ("environment", A.String label),
+              ("kind", A.String kind),
+              ( "programs",
+                A.toJSON
+                  [A.object [("program", A.String p), ("used_by", A.toJSON (nub (sort by)))] | (p, by) <- programRows e]
+              ),
+              ( "commands",
+                A.toJSON
+                  [ A.object
+                      [ ("command", A.String (clCommand c)),
+                        ("programs", A.toJSON (clPrograms c)),
+                        ("module", A.String (clModule c)),
+                        ("line", A.toJSON (clLine c)),
+                        ("declaration", A.String (clDecl c)),
+                        ("via", maybe A.Null A.String (shownVia e c))
+                      ]
+                  | c <- inEnv e
+                  ]
+              )
+            ]
+        | e@(label, kind) <- envs
+        ]
+    else
+      if null cls
+        then TIO.putStrLn "no commands"
+        else do
+          if verbose
+            then do
+              color <- colorFor (optNoColor opts) stdout
+              forM_ envs $ \e@(label, _) -> do
+                TIO.putStrLn (shortPath label)
+                -- The table is aligned under a header of no text,
+                -- which is left out.
+                mapM_ (TIO.putStrLn . ("  " <>)) . drop 1 . renderTable color ["", "", ""] $
+                  [ [plain (clModule c <> ":" <> T.pack (show (clLine c))), plain (clDecl c), plain (clCommand c <> maybe "" ("  ← " <>) (shownVia e c))]
+                  | c <- inEnv e
+                  ]
+            else
+              printTable
+                opts
+                ["ENVIRONMENT", "PROGRAM", "USED BY"]
+                [ [plain (shortPath label), plain p, plain (requiredCell by)]
+                | e@(label, _) <- envs,
+                  (p, by) <- programRows e
+                ]
+          let images = length [() | (_, kind) <- envs, kind /= "dynamic"]
+              dynamic = any ((== "dynamic") . snd) envs
+          TIO.putStrLn ""
+          TIO.putStrLn $
+            plural images "environment"
+              <> (if dynamic then " and (dynamic)" else "")
+              <> ": "
+              <> plural (length (nub (sort (concatMap clPrograms cls)))) "program"
+              <> " in "
+              <> plural (length cls) "command"
+  exitSuccess
+  where
+    -- A continuation line is joined to the one before it (6.6).
+    joinLines t = case T.lines t of
+      [] -> t
+      ls -> foldl1 joinTwo ls
+    joinTwo a b = case T.stripSuffix "\\" (T.stripEnd a) of
+      Just a' -> T.stripEnd a' <> " " <> T.stripStart b
+      Nothing -> a <> "; " <> T.stripStart b
+
+-- | An environment as @lask envs commands@ heads it, and its kind.
+headLabel :: HeadImage -> (Text, Text)
+headLabel h = case h of
+  HeadLocal -> ("#local", "local")
+  HeadRegistry ref Nothing -> ("#" <> ref, "registry")
+  HeadRegistry ref (Just p) -> ("#" <> ref <> " (" <> p <> ")", "registry")
+  HeadRecipe r -> ("#" <> recipeSource (rcDockerfile r), "recipe")

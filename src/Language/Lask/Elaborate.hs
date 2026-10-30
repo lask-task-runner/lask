@@ -140,7 +140,10 @@ data CommandUse = CommandUse
     cuEnv :: Maybe Text,
     -- | The command words that selected it, empty when the expression
     -- carried an explicit environment specification.
-    cuWords :: [Spanned Text]
+    cuWords :: [Spanned Text],
+    -- | The command string as written, for listing the programs it
+    -- runs (spec 11.4).
+    cuParts :: [TextPart]
   }
   deriving (Show, Eq)
 
@@ -312,9 +315,9 @@ data Failure
 type TC = StateT St (Either (Failure, Failures))
 
 -- | Record how one command execution expression got its environment.
-recordCommandUse :: Span -> Maybe Text -> [Spanned Text] -> TC ()
-recordCommandUse sp env ws =
-  modify (\s -> s {stCommandUses = CommandUse sp env ws : stCommandUses s})
+recordCommandUse :: Span -> Maybe Text -> [Spanned Text] -> [TextPart] -> TC ()
+recordCommandUse sp env ws parts =
+  modify (\s -> s {stCommandUses = CommandUse sp env ws parts : stCommandUses s})
 
 -- | An environment in the notation of environment expressions (6.7),
 -- for display.
@@ -2074,7 +2077,7 @@ elabCommand ctx path locals sp stream mEnv parts = do
   when hostIsWindows $ do
     container <- runsInContainer ctx envCore
     when container (checkShellSyntax sp reading)
-  recordCommandUse sp shownEnv viaWords
+  recordCommandUse sp shownEnv viaWords parts
   let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run"))) [envCore, cmdCore] [])
   case stream of
     StreamAll -> pure (call, commandResultType)

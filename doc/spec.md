@@ -2813,6 +2813,7 @@ Regions and segmentation:
 - **Quoted regions.** A `'` opens a region ending at the next `'`; a `"` opens a region ending at the next unescaped `"`. A character preceded by `\` is literal. Nothing inside a quoted region is a separator or opens a region.
 - **Nested regions.** A command substitution `$(` to its matching `)`, a backquoted substitution `` ` `` to the next `` ` ``, and a grouping `(` to its matching `)` each open a nested region. Its content is segmented by these same rules and contributes its own command words; in the enclosing text the region occupies part of one word.
 - **Separators.** Outside quoted and nested regions, `&&`, `||`, `|`, `;`, `&`, and a newline are separators, matched longest-first. The text between two separators, before the first, or after the last, is a **segment**.
+- **Redirection operators.** An `&` that immediately follows `>` or `<`, or immediately precedes `>`, and a `|` that immediately follows `>`, belong to a redirection operator (`>&`, `<&`, `&>`, `>|`, as in `2>&1`) and are not separators: they are ordinary characters of the word they stand in. Nothing else of a redirection is given meaning.
 - If a quoted or nested region is not closed before the end of the string, the command string is not analysable: dispatch selects nothing, and the diagnostic must state that the string could not be segmented rather than that no command was declared. Such a string is usually already `E-TYPE-COMMAND-SYNTAX` (6.6), which is reported first; dispatch reaches it only where the shell syntax check does not, as with a quotation character in a comment.
 
 Words and command words:
@@ -2846,6 +2847,7 @@ Examples, given `command { "go" } on #golang:1.25`, `command { "node", "npm", "n
 | command string | command words | selection |
 | --- | --- | --- |
 | `go test -v ./...` | `go` | `#golang:1.25` |
+| `go test ./... 2>&1 \| tee log` | `go`, `tee` | `#golang:1.25` |
 | `cd web && npm ci && npm test` | `cd`, `npm`, `npm` | the Node image |
 | `pip install -r req.txt && python -m unittest` | `pip`, `python` | the Python image |
 | `FOO=1 PATH=/x npm ci` | `npm` | the Node image |
@@ -2898,7 +2900,7 @@ Set up the project:
 
 - `sync`: fetches and verifies the external dependencies, materializes the container images the program requires, and writes the lock file, reporting its progress and listing what it resolved (11.7).
 - `deps`: lists, graphs, adds and removes external dependencies (11.5).
-- `envs`: lists the execution environments used by tasks, what the lock file resolves them to, what requires them, and whether each image is present (11.4).
+- `envs`: lists the execution environments used by tasks, what the lock file resolves them to, what requires them, and whether each image is present, and which programs tasks run in each (11.4).
 - `secrets`: lists the secret references in the environment and checks that the stores they name can be read from (11.10).
 
 Develop:
@@ -2936,6 +2938,7 @@ lask run [--module <path>] [<function>] --help
 lask eval [--module <path>] [<function>] --help
 lask repl [--module <path>]
 lask envs list [--module <path>] [<function>]
+lask envs commands [--module <path>] [--verbose] [<function>]
 lask sync [--module <path>] [--frozen] [--prune]
 lask deps list [--module <path>]
 lask deps graph [--module <path>] [<name>] [--depth <n>]
@@ -3150,6 +3153,74 @@ ENVIRONMENT                  KIND      PINNED               REQUIRED BY         
 #./infra/Dockerfile          recipe    lask/71bc04d9e2aa    main.lask: provision                present
 
 4 environments (1 local, 2 registry, 1 recipe): 1 ok, 2 present, 1 missing; 3 pinned in lask.lock.json
+```
+
+`envs commands` enumerates the command executions reachable from the module and reports, for each execution environment, the programs they run.
+
+Syntax:
+
+```text
+lask envs commands [--module <path>] [--verbose] [<function>]
+```
+
+Enumeration rules:
+
+- What is enumerated is every command execution expression (6.6), and every call of `run` (15.5), in the declarations reachable by the rules of `envs list`; with `<function>`, on the call graph reachable from that function. Reachability over-approximates in the same way.
+- A command word declared on an environment (Chapter 5) that no reachable command runs is not enumerated: it is listed by `lask cmd --help` (11.8). Nor are the built-in functions that take an environment without running a command (15.11).
+- Nothing is evaluated, no command runs, and the container engine is not contacted.
+
+Environment rules:
+
+- The environments a command may run in are determined statically from its environment expression — for a command whose environment dispatch selected (10.9), the environment of the command declaration that supplied it — and over-approximate, as enumeration does.
+- Every head the expression reaches is an environment the command may run in: a head written in it; what the expression of a top-level value binding it references reaches; and every head reachable from a function it references. An entry of a top-level map or record named by a literal key reaches only what that entry does, and a call of a top-level function does not reach the default of a keyword parameter the call supplies.
+- A parameter whose type can hold an environment — `Environment`, `Runnable`, `Any`, or a type containing one of them — makes a command whose environment expression can take its value **dynamic**: what a caller passes is not enumerated. A local binding takes what its expression reaches. The default of a keyword parameter is still reached, and its head is listed.
+- A dynamic command is listed under `(dynamic)` in addition to the heads it reaches.
+
+Program rules:
+
+- The programs of a command are read from its command string as written, before interpolation, by the segmentation of 10.9: the command word of each segment, nested regions included, in order of occurrence.
+- Unlike dispatch, every command word is a program, candidate or not. A path is shown as written (`tools/report.sh`), and so is a word containing a hole (`#{bin}/lask`).
+- A shell reserved word in command position is not a program. When the command word is `!`, `{`, `}`, `if`, `then`, `elif`, `else`, `fi`, `while`, `until`, `do`, `done` or `esac`, it is skipped, together with the assignment words after it, and the next word is the command word; a redirection in command position (`> out`, `2>&1`) is skipped in the same way, with its target; a segment whose command word is `for`, `case`, `select` or `in` contributes nothing. These rules apply only to this listing, and change nothing in dispatch, which gives no meaning to a reserved word, nor to a redirection in command position.
+- A command string that cannot be segmented has the one program `(unanalysable)`. A command line passed to `run` is a value, not written text, and has the one program `(computed)`.
+
+Columns:
+
+- `ENVIRONMENT`: the head, in the notation of `envs list`, or `(dynamic)`. Environments are listed `#local` first, then registry references and recipes in order of their notation, then `(dynamic)`.
+- `PROGRAM`: one row for each program run in the environment, in order of its text.
+- `USED BY`: the declarations whose commands run it, in the notation of `envs list`, two shown and how many more. A declaration whose command may run in more than one environment, or is dynamic, is followed by its environment expression as written in parentheses (`main.lask: test (envs[env])`).
+
+Rules (`--verbose`):
+
+- With `--verbose`, each environment is followed by one line for each command that may run in it: where it is written (`<module>:<line>`), the declaration it is in, the command string as written, with its continuation lines joined, and, when it is not the head of the environment it is listed under, its environment expression as written, or `command "<word>"` for a command whose environment dispatch selected.
+
+Output and exit codes:
+
+- The table is on stdout, followed by one line counting the environments, the programs and the commands.
+- With `--format json` the output is the same whether or not `--verbose` is given: an array with one object per environment: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `programs` (an array of `program` and `used_by`, every place in full) and `commands` (an array of `command`, `programs`, `module`, `line`, `declaration` and `via`, the environment expression, `null` when it is the head of the environment).
+- Exit codes: as for `envs list`.
+
+Execution example:
+
+```text
+$ lask envs commands
+ENVIRONMENT               PROGRAM  USED BY
+#local                    rm       main.lask: clean
+#alpine:3.20              make     main.lask: pick (envs[env])
+#debian:13                make     main.lask: pick (envs[env])
+#golang:1.22              go       main.lask: build, main.lask: test
+#node:24.21.0-alpine3.24  cd       main.lask: test_web
+#node:24.21.0-alpine3.24  npm      main.lask: test_web
+(dynamic)                 cat      main.lask: show
+
+5 environments and (dynamic): 6 programs in 6 commands
+
+$ lask envs commands --verbose pick
+#alpine:3.20
+  main.lask:9  pick  make  ← envs[env]
+#debian:13
+  main.lask:9  pick  make  ← envs[env]
+
+2 environments: 1 program in 1 command
 ```
 
 ### 11.5 Dependency Management (`deps`)

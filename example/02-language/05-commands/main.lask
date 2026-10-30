@@ -4,6 +4,7 @@
 // runs. Needs Docker for the container parts:
 //
 //   lask envs list       # every image this module can reach for
+//   lask envs commands   # the programs each environment runs
 //   lask sync            # materialize them; run and eval never pull
 //   lask eval greeting
 //   lask run  probe --path /etc/os-release
