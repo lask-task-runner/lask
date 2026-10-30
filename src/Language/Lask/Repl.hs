@@ -35,7 +35,7 @@ import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar)
 import Language.Lask.Obs.ExecLog (textLogSink)
 import Language.Lask.Deps.Lock (LockFile (..), defaultLockFileName, loadLockFile)
 import Language.Lask.Runtime.Container (resolveBackend)
-import Language.Lask.Runtime.Environment (mkCommandRunner, mkFileRunner)
+import Language.Lask.Runtime.Environment (mkCommandRunner, mkFileRunner, mkSessionOpener)
 import Language.Lask.Runtime.Image (lockPins, unlockedPins)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
 import Language.Lask.Runtime.Eval (mkRtCtx, topValue)
@@ -222,8 +222,9 @@ evalSession modulePath source = do
       backend <- resolveBackend
       runner <- mkCommandRunner backend pins baseDir (textCommandLog writeErr)
       fileRunner <- mkFileRunner backend pins baseDir
+      sessions <- mkSessionOpener backend pins baseDir
       secrets <- newSecretResolver
-      ctx <- mkRtCtx core "" (RtHooks runner fileRunner (textLogSink writeErr) noAsyncTracker (readEnvVar secrets))
+      ctx <- mkRtCtx core "" (RtHooks runner fileRunner sessions (textLogSink writeErr) noAsyncTracker (readEnvVar secrets))
       result <- try (topValue ctx (cpEntry core, resultName))
       pure (Right result)
 

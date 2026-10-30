@@ -49,6 +49,7 @@ effectfulBuiltinNames :: Set Text
 effectfulBuiltinNames =
   Set.fromList
     [ "run",
+      "with_container",
       "read_file",
       "write_file",
       "file_exists",
@@ -162,6 +163,7 @@ builtinValueNames =
       "run",
       "runnable",
       "shell_quote",
+      "with_container",
       -- 15.6 parallel/async
       "spawn",
       "all",

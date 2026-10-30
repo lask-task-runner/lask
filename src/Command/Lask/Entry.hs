@@ -201,6 +201,7 @@ cmdRunEval printResult runOpts = do
   backend <- resolveBackend
   runner <- mkCommandRunner backend pins baseDir cmdLogSink
   fileRunner <- mkFileRunner backend pins baseDir
+  sessions <- mkSessionOpener backend pins baseDir
   let -- `log` (spec 15.12) writes execution log lines to stderr,
       -- through the same serialized writer as the command logs.
       logSink
@@ -208,7 +209,7 @@ cmdRunEval printResult runOpts = do
         | otherwise = textLogSink writeErr
   tracker <- newAsyncTracker
   secrets <- newSecretResolver
-  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner logSink tracker (readEnvVar secrets))
+  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner sessions logSink tracker (readEnvVar secrets))
   let sink
         | optJsonFormat opts = writeErr . encodeEvent
         | otherwise = noSink
@@ -711,6 +712,9 @@ commandRows core table = do
       ResolvedLocal -> ("local", "local")
       ResolvedDocker image _ -> ("docker", image)
       ResolvedRecipe r _ -> ("docker", "recipe " <> recipeSource (rcDockerfile r))
+      -- A command declaration cannot start a container (spec ch. 5);
+      -- were one given a session, it would run in its image.
+      ResolvedSession _ origin -> describeResolved origin
 
 -- | Whether the image a command needs is on the target daemon. No
 -- network access and no build (spec 11.8, 10.3).
@@ -721,4 +725,5 @@ imagePresent backend pins baseDir resolved = case resolved of
   ResolvedRecipe r _ -> do
     tagE <- recipeTag baseDir r
     either (const (pure False)) (imageExists backend) tagE
+  ResolvedSession _ origin -> imagePresent backend pins baseDir origin
 

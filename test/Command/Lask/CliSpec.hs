@@ -8,6 +8,7 @@ module Command.Lask.CliSpec (spec) where
 import Command.Lask.Complete (Opt (..), Plan (..), classify)
 import Command.Lask.Harness
 import Control.Concurrent (threadDelay)
+import Control.Monad (void)
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as BL8
@@ -67,6 +68,34 @@ spec = beforeAll findLask $ do
           resOut r `shouldContain` "hi lask"
           h <- runLaskEnv lask dir [] ["run", "--help"] ""
           resOut h `shouldContain` "py.greet"
+
+    it "runs the commands of a with_container body in one container, removed afterwards (spec 15.5)" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ( "main.lask",
+              "f(): String = with_container(#alpine:3.22.2{memory: \"1g\"}, \\(box) -> do {\n\
+              \  a = $[box] first\n\
+              \  b = $[box] second\n\
+              \  \"#{trim(a)}, #{trim(b)}\"\n\
+              \})\n"
+            )
+          ]
+          $ \dir -> do
+            void (runLaskEnv lask dir extra ["sync"] "")
+            r <- runLaskEnv lask dir extra ["eval", "f"] ""
+            resExit r `shouldBe` 0
+            resOut r `shouldContain` "exec: first, exec: second"
+            cs <- calls state
+            let runs = [c | c <- cs, "run " `isPrefixOf` c]
+                execs = [c | c <- cs, "exec " `isPrefixOf` c]
+                name = case dropWhile (/= "--name") (words (concat runs)) of
+                  _ : n : _ -> n
+                  _ -> "--name missing"
+            length runs `shouldBe` 1
+            concat runs `shouldContain` "--memory 1g"
+            length execs `shouldBe` 2
+            execs `shouldSatisfy` all ((" " <> name <> " /bin/sh -c ") `isInfixOf`)
+            [c | c <- cs, "rm " `isPrefixOf` c] `shouldSatisfy` any (name `isInfixOf`)
 
     it "probes the declared command words on sync and records them in the lock (spec 11.7)" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do

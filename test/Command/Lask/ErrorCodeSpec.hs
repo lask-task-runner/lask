@@ -103,6 +103,11 @@ trigger c = case c of
   -- Giving up on waiting is code 124, as GNU timeout exits.
   ERuntimeTimeout -> Invoke "slow(): String = $[#local] sleep 5\nf() = timeout(0.2, \\() -> slow())\n" ["eval", "f"] 124
   ERuntimeUntilExhausted -> Invoke "f() = until([0], \\(v: String) -> v == \"y\", \\() -> \"n\")\n" ["eval", "f"] 124
+  -- A session returned from its body has had its container removed.
+  ERuntimeSessionClosed -> Scripted 2 $ \lask ->
+    withFakeDocker $ \_ extra -> withProject leaked $ \dir -> do
+      void (runLaskEnv lask dir extra ["sync"] "")
+      runLaskEnv lask dir extra ["eval", "f"] ""
   -- External I/O errors (spec 14.6) default to exit 3.
   EIoStdinRead -> Scripted 3 $ \lask ->
     withProject [("main.lask", "f(): String = stdin\n")] $ \dir -> do
@@ -157,6 +162,7 @@ trigger c = case c of
           runLaskEnv lask dir (extra <> [("LASK_SECRETS", "vault"), ("VAULT_ADDR", fvAddr fv), ("VAULT_TOKEN", t)]) ["eval", "f"] ""
     unreachable = [("LASK_SECRETS", "vault"), ("VAULT_ADDR", "http://127.0.0.1:1"), ("VAULT_TOKEN", "root")]
     pinned = [("main.lask", "command { \"cat\" } on #alpine:3.22.2\nhi(): String = $ cat x\n")]
+    leaked = [("main.lask", "f() = do {\n  b = with_container(#alpine:3.22.2, \\(box) -> box)\n  $[b] echo hi\n}\n")]
 
 -- | A project depending on a single-file module published at a
 -- @file://@ URL. The action receives the published file, the project

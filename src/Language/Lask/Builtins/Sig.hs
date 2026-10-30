@@ -156,6 +156,9 @@ builtinSchemes =
       -- elaborator against the options of 10.2 (spec 15.5).
       ("runnable", mono [TyEnvironment] TyRunnable),
       ("shell_quote", mono [TyString] TyString),
+      -- The body is given the session as a runnable: a command run
+      -- with it runs in the one container (spec 15.5).
+      ("with_container", poly ["T"] [TyRunnable, TyFun [TyRunnable] (tv "T")] (tv "T")),
       -- 15.6 parallel/async
       ("spawn", poly ["T"] [TyFun [] (tv "T")] (TyAsync (tv "T"))),
       ("all", poly ["T"] [TyArray (TyAsync (tv "T"))] (TyArray (tv "T"))),

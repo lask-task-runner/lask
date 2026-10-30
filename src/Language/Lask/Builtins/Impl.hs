@@ -11,6 +11,7 @@ module Language.Lask.Builtins.Impl
     CommandRunner,
     FileOp (..),
     FileRunner,
+    SessionOpener,
     RtHooks (..),
     callBuiltin,
   )
@@ -79,6 +80,13 @@ data FileOp
 -- one its environment argument names, never an ambient host one.
 type FileRunner = EnvValue -> FileOp -> IO (Either LaskFailure Value)
 
+-- | Open a container session on an environment for the extent of a
+-- body (spec 15.5): the body is given the session, and the container
+-- is removed when the body is done, however it ends. The first
+-- argument reports the session starting and ending to the execution
+-- log (12.2).
+type SessionOpener = (Text -> IO ()) -> EnvValue -> (EnvValue -> IO Value) -> IO Value
+
 -- | The effectful services the built-in library needs from the host.
 -- They are injected rather than imported so that the evaluator stays
 -- free of a module cycle, and so that tests can run the whole library
@@ -86,6 +94,8 @@ type FileRunner = EnvValue -> FileOp -> IO (Either LaskFailure Value)
 data RtHooks = RtHooks
   { hookRunCommand :: CommandRunner,
     hookRunFile :: FileRunner,
+    -- | Containers kept for the body of @with_container@ (15.5).
+    hookSession :: SessionOpener,
     hookLog :: LogSink,
     -- | Which computations were started and which were awaited
     -- (spec 6.3).
@@ -279,6 +289,8 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
             ("stderr", VString err)
           ]
   ("shell_quote", [VString v]) -> pure (VString (shellQuote v))
+  ("with_container", [VEnv env, body]) ->
+    hookSession hooks (\m -> maskSecrets m >>= hookLog hooks) env (\session -> apply body [VEnv session] [])
   -- A hole of a command string marked as substituted as it is (6.6).
   (n, [VString v]) | n == rawBuiltin -> pure (VString v)
   -- The escaping 6.6 gives every other hole, for the quoting it is in.

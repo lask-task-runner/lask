@@ -34,7 +34,7 @@ import qualified Data.Text as T
 import Language.Lask.Deps.Lock
 import Language.Lask.Elaborate (CoreProgram (..), Key)
 import Language.Lask.ErrorCode (ErrorCode (..), codeText)
-import Control.Exception (try)
+import Control.Exception (throwIO, try)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Core.AST (Core)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
@@ -265,7 +265,7 @@ data Probed
 -- reference stays unresolved.
 evalCommandEnv :: (Text -> IO (Maybe Text)) -> CoreProgram -> Core -> IO (Either LaskFailure EnvValue)
 evalCommandEnv readEnv core c = do
-  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile (const (pure ())) noAsyncTracker readEnv)
+  ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile refuseSession (const (pure ())) noAsyncTracker readEnv)
   r <- try (evalCore ctx Map.empty c)
   pure $ case r of
     Left lf -> Left lf
@@ -274,6 +274,7 @@ evalCommandEnv readEnv core c = do
   where
     refuseCommand _ _ = pure (Left (refusal "the environment of a command declaration tried to run a command"))
     refuseFile _ _ = pure (Left (refusal "the environment of a command declaration tried to access a file"))
+    refuseSession _ _ _ = throwIO (refusal "the environment of a command declaration tried to start a container")
     refusal = ioFailure EIoEnvResolve
 
 -- | The image a declared command word runs in (spec ch. 5): the lock

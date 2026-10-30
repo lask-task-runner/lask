@@ -118,6 +118,9 @@ spec = do
       case resolveEnv (env "docker" []) of
         Left lf -> lfCode lf `shouldBe` Just EIoEnvResolve
         Right r -> expectationFailure (show r)
+    it "resolves a session to its container and the environment it was started on (spec 15.5)" $
+      resolveEnv (env "session" [("container", VString "lask-1"), ("origin", VEnv (env "docker" [("image", VString "alpine:3.20")]))])
+        `shouldBe` Right (ResolvedSession "lask-1" (ResolvedDocker "alpine:3.20" Map.empty))
     it "fails on unknown kinds" $
       resolveEnv (env "remote" [("host", VString "h")]) `shouldSatisfy` isLeft
 
@@ -171,6 +174,14 @@ spec = do
                      "alpine:3.20",
                      "-c", "uname -a"
                    ]
+
+  describe "commands in a session (spec 15.5)" $ do
+    it "runs a command in the container with no run option given again" $
+      execArgs (ExecSpec "lask-1" False Nothing [("LASK_SESSION_EXEC", "lask-2")] ["/bin/sh", "-c", "make"])
+        `shouldBe` ["exec", "--env", "LASK_SESSION_EXEC=lask-2", "lask-1", "/bin/sh", "-c", "make"]
+    it "attaches stdin and names a user when asked" $
+      execArgs (ExecSpec "lask-1" True (Just "0") [] ["true"])
+        `shouldBe` ["exec", "-i", "--user", "0", "lask-1", "true"]
 
   describe "container options (spec 10.2)" $ do
     let opts ps = dockerArgs "/proj" "lask-0" "alpine:3.20" (Map.fromList ps) "uname -a"

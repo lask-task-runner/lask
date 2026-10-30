@@ -51,6 +51,10 @@ valueToJson v = case v of
         ("name", A.String name)
       ]
   VAsync _ -> A.object [("$type", A.String "AsyncHandle")]
+  -- A session is written as the environment it was started on (spec
+  -- 13.1): its container is not a value outside the run.
+  VEnv (EnvValue "session" params)
+    | Just origin@(VEnv _) <- Map.lookup "origin" params -> valueToJson origin
   VEnv (EnvValue kind params) ->
     A.object
       -- A value with a run option is a runnable (spec 13.1); one with

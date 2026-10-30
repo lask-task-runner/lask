@@ -164,12 +164,16 @@ fakeDocker =
       -- environment, as docker takes it; @env@ records what it found.
       "  run) prev=''",
       "    [ -f \"$S/run-fails\" ] && { cat \"$S/run-fails\" >&2; exit \"$(cat \"$S/run-exit\")\"; }",
+      -- The container of a with_container session: ready at once, and
+      -- running until its stdin ends.
+      "    case \"$*\" in *lask-session-ready*) echo lask-session-ready; cat > /dev/null; exit 0 ;; esac",
       "    case \"$*\" in *'command -v'*) w=0; for a in \"$@\"; do if [ $w = 1 ]; then if [ -f \"$S/missing/$a\" ]; then echo \"-$a\"; else echo \"+$a\"; fi; fi; [ \"$a\" = sh ] && w=1; done; exit 0 ;; esac",
       "    for a in \"$@\"; do",
       "      if [ \"$prev\" = --env ]; then case \"$a\" in *=*) ;; *) eval \"v=\\${$a-UNSET}\"; echo \"$a=$v\" >> \"$S/env\" ;; esac; fi",
       "      prev=\"$a\"",
       "    done",
       "    case \"$*\" in *'sleep 30'*) sleep 30 ;; esac; echo ran ;;",
+      "  exec) for a in \"$@\"; do last=\"$a\"; done; echo \"exec: $last\" ;;",
       "  stop|rm) ;;",
       "  *) echo \"fake docker: unsupported: $*\" >&2; exit 2 ;;",
       "esac"

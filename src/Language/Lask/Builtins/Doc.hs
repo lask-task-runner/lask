@@ -243,6 +243,13 @@ builtinDocs =
             "A hole of a command execution expression is already escaped (6.6), so `$ cp #{src} .` needs no `shell_quote`; one there quotes the value twice."
           ]
       ),
+      ( "with_container",
+        doc
+          "15.5"
+          [ "`with_container(env, \\(box) -> ...)` starts one container of `env` and gives the body `box`, a runnable whose commands all run in it: `$[box] apt-get install -y jq` leaves `jq` for the next `$[box]`. Files outside `/work` and background processes last until the body returns; the working directory and variables of a shell do not, since each command is a shell of its own.",
+            "The container is removed when the body returns, fails or is abandoned. A command still running in it then fails, as does one run with `box` afterwards (`E-RUNTIME-SESSION-CLOSED`). For `#local`, and for a `box` already open, the body is given `env` itself."
+          ]
+      ),
       -- 15.6 parallel/async
       ("spawn", doc "15.6" ["`spawn(f)` starts `f` concurrently and returns a handle. Get the result with `await h`."]),
       ( "all",
