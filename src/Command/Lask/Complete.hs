@@ -649,6 +649,9 @@ rootCommands =
     envsSubs =
       [ (plain "list" "List the environments, what the lock resolves them to, what requires them, and whether each image is on the container engine" commonOpts)
           { cmdPos = [PosFunction]
+          },
+        (plain "commands" "List the programs tasks run in each environment" (commonOpts <> [switchOpt "verbose" "List each command, where it is written, in place of its programs"]))
+          { cmdPos = [PosFunction]
           }
       ]
 

@@ -48,7 +48,7 @@ data RunOpts = RunOpts
     runArgs :: [Text]
   }
 
--- | @lask envs list@ (spec 11.4).
+-- | @lask envs list@ and @lask envs commands@ (spec 11.4).
 data EnvsOpts = EnvsOpts
   { envsCommon :: CommonOpts,
     envsFunction :: Maybe Text
@@ -92,6 +92,8 @@ data RootCommand
   | CmdEval RunOpts
   | CmdRepl CommonOpts
   | CmdEnvsList EnvsOpts
+  | -- | @lask envs commands@, and whether @--verbose@ was given.
+    CmdEnvsCommands EnvsOpts Bool
   | -- | @--frozen@, @--prune@.
     CmdSync CommonOpts Bool Bool
   | CmdDepsList CommonOpts
@@ -308,6 +310,12 @@ pEnvsCommand =
             (CmdEnvsList <$> pEnvsOpts)
             (progDesc "List the environments, what the lock resolves them to, what requires them, and whether each image is on the container engine")
         )
+        <> command
+          "commands"
+          ( info
+              (CmdEnvsCommands <$> pEnvsOpts <*> switch (long "verbose" <> help "List each command, where it is written, in place of its programs"))
+              (progDesc "List the programs tasks run in each environment")
+          )
     )
 
 pSecretsCommand :: Parser RootCommand

@@ -9,7 +9,7 @@ where
 
 import Command.Lask.ArgCodec
 import Command.Lask.Common
-import Command.Lask.Project (cmdDepsAdd, cmdDepsGraph, cmdDepsList, cmdDepsRm, cmdEnvsList, cmdSync)
+import Command.Lask.Project (cmdDepsAdd, cmdDepsGraph, cmdDepsList, cmdDepsRm, cmdEnvsCommands, cmdEnvsList, cmdSync)
 import Command.Lask.Complete (completionScript)
 import Command.Lask.Fmt (cmdFmt)
 import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, reachableDecls, readsStdin)
@@ -78,6 +78,7 @@ runRootCommand cmd = case cmd of
   CmdEval runOpts -> cmdRunEval True runOpts
   CmdRepl opts -> cmdRepl opts
   CmdEnvsList envsOpts -> cmdEnvsList (envsCommon envsOpts) (envsFunction envsOpts)
+  CmdEnvsCommands envsOpts verbose -> cmdEnvsCommands (envsCommon envsOpts) (envsFunction envsOpts) verbose
   CmdSync opts frozen prune -> cmdSync opts frozen prune
   CmdDepsList opts -> cmdDepsList opts
   CmdDepsGraph opts name depth -> cmdDepsGraph opts name depth

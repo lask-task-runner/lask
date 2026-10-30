@@ -77,6 +77,7 @@ The thing to take away: an environment is a value. A command that names none is 
 **Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation and its escaping, the raw hole `#!{...}`, `run`, the `command ... on ...` declarations that dispatch a bare `$`, and what is checked before a command runs: its shell syntax, the options a command schema describes, and whether the image has the programs declared on it.
 
 ```bash
+lask envs commands           # the programs each environment runs, and which tasks run them
 lask sync
 lask eval probe --path /etc/os-release
 lask eval inspect            # a command that exits 3, without raising

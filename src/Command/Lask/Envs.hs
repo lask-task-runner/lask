@@ -8,7 +8,9 @@ module Command.Lask.Envs
     HeadImage (..),
     Requirer (..),
     HeadUse (..),
+    CommandSite (..),
     collectHeadUses,
+    collectCommandSites,
     collectEnvRefs,
     collectEnvRefsFrom,
     collectRecipes,
@@ -27,9 +29,10 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Core.AST
-import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key)
+import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticParams (..))
 import Language.Lask.Runtime.Image (Recipe (..), recipeSource)
 import Language.Lask.Span (Span (..))
+import Language.Lask.Types (Field (..), Type (..))
 
 data EnvRef = EnvRef
   { refLabel :: Text,
@@ -276,3 +279,147 @@ defaultContext df =
   let parts = T.splitOn "/" df
    in if length parts <= 1 then "." else T.intercalate "/" (init parts)
 
+
+-- Commands -------------------------------------------------------------------
+
+-- | One command execution the program can reach (spec 11.4): a command
+-- execution expression, or a call of @run@, with the heads its
+-- environment may be and whether a caller can supply it.
+data CommandSite = CommandSite
+  { csModule :: FilePath,
+    csDecl :: Text,
+    -- | The span of the expression, which the elaborator's record of
+    -- the command string is keyed by.
+    csSpan :: Span,
+    -- | The environment expression: the one written, or the one
+    -- dispatch copied from a command declaration (10.9).
+    csEnv :: Core,
+    csHeads :: Set HeadImage,
+    csDynamic :: Bool
+  }
+  deriving (Show)
+
+-- | What an expression can evaluate to, as far as environments go: the
+-- heads it reaches, and whether a parameter that can hold an
+-- environment flows into it.
+data Reach = Reach (Set HeadImage) Bool
+
+instance Semigroup Reach where
+  Reach a x <> Reach b y = Reach (Set.union a b) (x || y)
+
+instance Monoid Reach where
+  mempty = Reach Set.empty False
+
+-- | Every command execution reachable from the entry module, or with a
+-- declaration, from it, in the declarations of 'collectHeadUses'.
+collectCommandSites :: CoreProgram -> Maybe Key -> [CommandSite]
+collectCommandSites core scope = concatMap declSites decls
+  where
+    decls = case scope of
+      Just key -> reachableDecls core key
+      Nothing -> reachableFrom core [k | k@(p, _) <- Map.keys (cpDecls core), p == cpEntry core]
+
+    declSites cd = case coreF (cdCore cd) of
+      CLam lam -> walkLam cd (cdParams cd) Map.empty lam
+      _ -> walk cd Map.empty (cdCore cd)
+
+    walk cd env c = case coreF c of
+      CApp (Core _ (CVar (BuiltinRef "run"))) (envC : rest) kws ->
+        let Reach heads dyn = reach Set.empty env envC
+         in CommandSite (cdModule cd) (cdName cd) (coreSpan c) envC heads dyn
+              : concatMap (walk cd env) (envC : rest <> map snd kws)
+      CLam lam -> walkLam cd Nothing env lam
+      CDo stmts -> walkStmts cd env stmts
+      _ -> concatMap (walk cd env) (children c)
+
+    walkStmts _ _ [] = []
+    walkStmts cd env (CSBind x e : more) = walk cd env e <> walkStmts cd (Map.insert x (reach Set.empty env e) env) more
+    walkStmts cd env (CSExpr e : more) = walk cd env e <> walkStmts cd env more
+
+    walkLam cd params env lam =
+      concatMap (walk cd env . snd) (lamKeywords lam)
+        <> walk cd (bindParams params env lam) (lamBody lam)
+
+    -- What each parameter of a lambda can hold. A parameter whose type
+    -- can hold an environment is supplied by a caller, which is not
+    -- followed; its default is. A keyword parameter of a lambda that is
+    -- not a declaration has no type here, and counts as one when its
+    -- default names an environment.
+    bindParams params env lam =
+      Map.union
+        ( Map.fromList $
+            [(n, Reach Set.empty (holdsEnv t)) | (n, t) <- positional]
+              <> [(n, Reach Set.empty (holdsEnv t)) | Just (n, t) <- [variadic]]
+              <> [ (k, Reach heads (maybe (not (Set.null heads)) holdsEnv (lookup k keywordTypes)))
+                 | (k, d) <- lamKeywords lam,
+                   let Reach heads _ = reach Set.empty env d
+                 ]
+        )
+        env
+      where
+        (positional, variadic, keywordTypes) = case params of
+          Just sp -> (spPositional sp, fmap (fmap TyArray) (spVariadic sp), spKeywords sp)
+          Nothing -> case lamType lam of
+            TyFun ts _ -> (zip (lamPositional lam) ts, Nothing, [])
+            _ -> ([], Nothing, [])
+
+    reach seen env c = case coreF c of
+      CEnv "local" _ -> Reach (Set.singleton HeadLocal) False
+      CEnv "docker" args -> Reach (maybe Set.empty Set.singleton (headImage args)) False
+      CVar (LocalRef x) -> Map.findWithDefault mempty x env
+      -- A value binding reaches what its expression does; a function
+      -- named as a value, everything it can reach.
+      CVar (TopRef p n)
+        | Just cd <- Map.lookup (p, n) (cpDecls core),
+          not (isLam (cdCore cd)),
+          (p, n) `Set.notMember` seen ->
+            reach (Set.insert (p, n) seen) Map.empty (cdCore cd)
+        | otherwise -> topReach (p, n)
+      -- A call of a top-level function reaches what its arguments do,
+      -- and what the function does with the defaults the call leaves.
+      CApp (Core _ (CVar (TopRef p n))) pos kws
+        | Just cd <- Map.lookup (p, n) (cpDecls core),
+          CLam lam <- coreF (cdCore cd),
+          (p, n) `Set.notMember` seen ->
+            let seen' = Set.insert (p, n) seen
+             in foldMap (reach seen env) (pos <> map snd kws)
+                  <> mconcat [reach seen' Map.empty d | (k, d) <- lamKeywords lam, k `notElem` map fst kws]
+                  <> reach seen' Map.empty (lamBody lam)
+      -- An entry of a top-level map or record named by a literal key
+      -- reaches only what that entry does.
+      CIndex _ (Core _ (CVar (TopRef p n))) (Core _ (CStrLit k))
+        | Just e <- entry (p, n) k -> reach seen env e
+      CDot (Core _ (CVar (TopRef p n))) k
+        | Just e <- entry (p, n) k -> reach seen env e
+      CDo stmts -> reachStmts seen env stmts
+      _ -> foldMap (reach seen env) (children c)
+
+    entry key k = case coreF . cdCore <$> Map.lookup key (cpDecls core) of
+      Just (CMapLit kvs) -> lookup k kvs
+      Just (CRecordLit kvs) -> lookup k kvs
+      _ -> Nothing
+
+    reachStmts _ _ [] = mempty
+    reachStmts seen env (CSBind x e : more) = let r = reach seen env e in r <> reachStmts seen (Map.insert x r env) more
+    reachStmts seen env (CSExpr e : more) = reach seen env e <> reachStmts seen env more
+
+    isLam c = case coreF c of
+      CLam _ -> True
+      _ -> False
+
+    topReach key = Reach (Set.fromList (map huImage (collectHeadUses core (Just key)))) False
+
+-- | Whether a value of a type can be, or contain, an environment.
+holdsEnv :: Type -> Bool
+holdsEnv t = case t of
+  TyAny -> True
+  TyEnvironment -> True
+  TyRunnable -> True
+  TyVar _ -> True
+  TyArray e -> holdsEnv e
+  TyMap e -> holdsEnv e
+  TyAsync e -> holdsEnv e
+  TyRecord fs -> any (holdsEnv . fieldType) (Map.elems fs)
+  TyFun _ r -> holdsEnv r
+  TyUnion ts -> any holdsEnv ts
+  _ -> False
