@@ -328,6 +328,12 @@ collectCommandSites core scope = concatMap declSites decls
         let Reach heads dyn = reach Set.empty env envC
          in CommandSite (cdModule cd) (cdName cd) (coreSpan c) envC heads dyn
               : concatMap (walk cd env) (envC : rest <> map snd kws)
+      -- The session a with_container body is given runs in the
+      -- environment the call opens it on (spec 15.5).
+      CApp (Core _ (CVar (BuiltinRef "with_container"))) [envC, Core _ (CLam lam)] []
+        | box : _ <- lamPositional lam ->
+            walk cd env envC
+              <> walk cd (Map.insert box (reach Set.empty env envC) env) (lamBody lam)
       CLam lam -> walkLam cd Nothing env lam
       CDo stmts -> walkStmts cd env stmts
       _ -> concatMap (walk cd env) (children c)

@@ -3185,6 +3185,7 @@ Environment rules:
 - Every head the expression reaches is an environment the command may run in: a head written in it; what the expression of a top-level value binding it references reaches; and every head reachable from a function it references. An entry of a top-level map or record named by a literal key reaches only what that entry does, and a call of a top-level function does not reach the default of a keyword parameter the call supplies.
 - A parameter whose type can hold an environment — `Environment`, `Runnable`, `Any`, or a type containing one of them — makes a command whose environment expression can take its value **dynamic**: what a caller passes is not enumerated. A local binding takes what its expression reaches. The default of a keyword parameter is still reached, and its head is listed.
 - A dynamic command is listed under `(dynamic)` in addition to the heads it reaches.
+- The session a `with_container` body receives as its parameter (15.5) reaches what the call's first argument reaches, so a command run with it is listed under the environment the session is opened on.
 
 Program rules:
 

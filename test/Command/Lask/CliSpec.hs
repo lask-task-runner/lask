@@ -1290,7 +1290,10 @@ spec = beforeAll findLask $ do
             \fixed() = $[envs[\"b\"]] ls\n\
             \on(image: Environment) = $[image] cat x\n\
             \with(--image: Environment = #busybox:1.37) = $[image] wc -l x\n\
-            \needs(--image: Environment) = $[image] head x\n"
+            \needs(--image: Environment) = $[image] head x\n\
+            \session() = with_container(#alpine:3.20, \\(box) -> do {\n\
+            \  $[box] tar xf x\n\
+            \})\n"
           )
         ]
         $ \dir -> do
@@ -1308,14 +1311,15 @@ spec = beforeAll findLask $ do
                   ]
           programsOf "#local" `shouldBe` ["echo", "rm"]
           programsOf "#golang:1.22" `shouldBe` ["go"]
-          programsOf "#alpine:3.20" `shouldBe` ["make"]
+          -- A session runs in the environment it was opened on.
+          programsOf "#alpine:3.20" `shouldBe` ["make", "tar"]
           programsOf "#debian:13" `shouldBe` ["ls", "make"]
           programsOf "#busybox:1.37" `shouldBe` ["wc"]
           -- A required keyword parameter has no default to follow.
           programsOf "(dynamic)" `shouldBe` ["cat", "head", "wc"]
           text <- runLask lask dir ["envs", "commands"] ""
           resOut text `shouldSatisfy` isInfixOf "main.lask: pick (envs[env])"
-          resOut text `shouldSatisfy` isInfixOf "5 environments and (dynamic): 8 programs in 7 commands"
+          resOut text `shouldSatisfy` isInfixOf "5 environments and (dynamic): 9 programs in 8 commands"
           verbose <- runLask lask dir ["envs", "commands", "--verbose", "build"] ""
           resExit verbose `shouldBe` 0
           resOut verbose `shouldSatisfy` isInfixOf "main.lask:4  build  go build ./...  ← command \"go\""
