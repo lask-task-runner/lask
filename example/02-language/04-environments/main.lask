@@ -9,6 +9,7 @@
 //   lask eval alpine_version
 //   lask eval tool_versions
 //   lask eval uname_in --env built
+//   lask eval kept_in_session
 
 // The host itself. There is no default environment, so `#local` is
 // something you write — a command that names no environment at all is
@@ -119,6 +120,25 @@ uname_in(--env: String = "alpine"): String = $[envs[env]] uname -s
 // with a type like any other.
 release_of(e: Environment): String = $[e] sh -c 'cat /etc/alpine-release 2>/dev/null || echo n/a'
   |> trim
+
+// Every `$[alpine]` above starts a container of its own, so nothing a
+// command leaves outside /work is there for the next one, and commands
+// that need each other end up joined with && on one line.
+// with_container keeps one container for the length of its body, and
+// every command run with `box` runs in it: a file written by one line
+// is there for the next, and so is a process left in the background.
+// The container is removed when the body is done, however it ends.
+// Each command is still a shell of its own, so a `cd` or an `export`
+// ends with it; the working directory and variables go in the run
+// options, given once where the container is opened.
+//
+// @return What the second and third commands found the first left.
+kept_in_session(): String = with_container(#alpine:3.22.2{workdir: "/tmp", env: { "STEP": "3" }}, \(box) -> do {
+  $[box] echo written-by-step-1 > note
+  $[box] sleep 60 > /dev/null 2>&1 &
+  found = $[box] echo "$(cat note), $(pgrep sleep | wc -l) background process, step $STEP"
+  trim(found)
+})
 
 // What every environment here reports about itself.
 //
