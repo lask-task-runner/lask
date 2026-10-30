@@ -1260,7 +1260,8 @@ spec = beforeAll findLask $ do
             \pick(--env: String = \"a\") = $[envs[env]] make\n\
             \fixed() = $[envs[\"b\"]] ls\n\
             \on(image: Environment) = $[image] cat x\n\
-            \with(--image: Environment = #busybox:1.37) = $[image] wc -l x\n"
+            \with(--image: Environment = #busybox:1.37) = $[image] wc -l x\n\
+            \needs(--image: Environment) = $[image] head x\n"
           )
         ]
         $ \dir -> do
@@ -1281,10 +1282,11 @@ spec = beforeAll findLask $ do
           programsOf "#alpine:3.20" `shouldBe` ["make"]
           programsOf "#debian:13" `shouldBe` ["ls", "make"]
           programsOf "#busybox:1.37" `shouldBe` ["wc"]
-          programsOf "(dynamic)" `shouldBe` ["cat", "wc"]
+          -- A required keyword parameter has no default to follow.
+          programsOf "(dynamic)" `shouldBe` ["cat", "head", "wc"]
           text <- runLask lask dir ["envs", "commands"] ""
           resOut text `shouldSatisfy` isInfixOf "main.lask: pick (envs[env])"
-          resOut text `shouldSatisfy` isInfixOf "5 environments and (dynamic): 7 programs in 6 commands"
+          resOut text `shouldSatisfy` isInfixOf "5 environments and (dynamic): 8 programs in 7 commands"
           verbose <- runLask lask dir ["envs", "commands", "--verbose", "build"] ""
           resExit verbose `shouldBe` 0
           resOut verbose `shouldSatisfy` isInfixOf "main.lask:4  build  go build ./...  ← command \"go\""
