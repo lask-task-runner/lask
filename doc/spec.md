@@ -369,7 +369,7 @@ This chapter defines the types of values that Lask handles, type annotations, ty
   - `Null`: Absence of a value
   - `Void`: Absence of a return value
   - `Environment`: The execution environment of commands (Chapter 10): where a command runs, and in which image. It holds a special position distinct from the other base types in that its values are constructed only by environment expressions (6.7) and its serialization is limited to a metadata representation (4.5, 13.1).
-  - `Runnable`: An environment together with the run options it is run with (10.2): what a command execution needs. Its values are constructed only by `runnable` (15.5) and its sugar `#head{...}` (6.7). `Environment` conforms to it (4.4); serialization is as for `Environment`.
+  - `Runnable`: An environment together with the run options it is run with (10.2): what a command execution needs. Its values are constructed only by `runnable` (15.5) and its sugar `#head{...}` (6.7), and as the session `with_container` gives its body (15.5). `Environment` conforms to it (4.4); serialization is as for `Environment`.
 - Composite types
   - `Array<T>`: An array whose element type is `T`
   - `Map<T>`: A map with string keys and value type `T`
@@ -2298,7 +2298,7 @@ Error value conversion of failures caused by non-zero exit (carrying over the ex
 Stopping an abandoned command:
 
 - The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
-- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed. The container runs under an init process unless its environment turns that off (10.2), so the request reaches a command that is not written to handle it.
+- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed. A command running in the container of a session (15.5) is stopped without it: its own processes in the container are stopped, and the container and the session's other processes stay. The container runs under an init process unless its environment turns that off (10.2), so the request reaches a command that is not written to handle it.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
 
@@ -2585,7 +2585,7 @@ This chapter defines the execution environments that can be specified when invok
 
 ### 10.1 The `Environment` Type and Environment Expressions
 
-`Environment` is a built-in primitive type (4.1) representing an execution target: where a command runs, and in which image. `Runnable` (4.1) is an environment together with the run options it is run with (10.2), and is what `run` (6.6) receives as its first positional argument. `Environment` values are constructed only by evaluating an environment expression (6.7), and `Runnable` values only by `runnable` (15.5) and its sugar `#head{...}` (6.7). An `Environment` conforms to `Runnable` (4.4): it is a runnable with no run options.
+`Environment` is a built-in primitive type (4.1) representing an execution target: where a command runs, and in which image. `Runnable` (4.1) is an environment together with the run options it is run with (10.2), and is what `run` (6.6) receives as its first positional argument. `Environment` values are constructed only by evaluating an environment expression (6.7), and `Runnable` values only by `runnable` (15.5) and its sugar `#head{...}` (6.7), and as the session `with_container` gives its body (15.5). An `Environment` conforms to `Runnable` (4.4): it is a runnable with no run options.
 
 Rules:
 
@@ -3185,6 +3185,7 @@ Environment rules:
 - Every head the expression reaches is an environment the command may run in: a head written in it; what the expression of a top-level value binding it references reaches; and every head reachable from a function it references. An entry of a top-level map or record named by a literal key reaches only what that entry does, and a call of a top-level function does not reach the default of a keyword parameter the call supplies.
 - A parameter whose type can hold an environment — `Environment`, `Runnable`, `Any`, or a type containing one of them — makes a command whose environment expression can take its value **dynamic**: what a caller passes is not enumerated. A local binding takes what its expression reaches. The default of a keyword parameter is still reached, and its head is listed.
 - A dynamic command is listed under `(dynamic)` in addition to the heads it reaches.
+- The session a `with_container` body receives as its parameter (15.5) reaches what the call's first argument reaches, so a command run with it is listed under the environment the session is opened on.
 
 Program rules:
 
@@ -3901,7 +3902,7 @@ For `json` / `pretty-json`, the following mapping rules must be satisfied.
 - `Bool`: maps to a JSON boolean.
 - `Null`: maps to JSON null.
 - `Void`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Void"}` (treated equivalently to `FunctionRef` in 13.2).
-- `Environment`, `Runnable`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Environment","kind":"<environment kind>","params":{...}}`. `kind` is the environment kind name, and `params` is the normalized parameter set: the image with its image options, and the run options that are set (e.g., `{"$type":"Environment","kind":"docker","params":{"image":"alpine:3.20"}}`). A value with at least one run option set is tagged `"$type":"Runnable"` instead; a runnable with none is its environment (8.8). Parameters containing secret information are masked according to the rules in Chapter 12.
+- `Environment`, `Runnable`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Environment","kind":"<environment kind>","params":{...}}`. `kind` is the environment kind name, and `params` is the normalized parameter set: the image with its image options, and the run options that are set (e.g., `{"$type":"Environment","kind":"docker","params":{"image":"alpine:3.20"}}`). A value with at least one run option set is tagged `"$type":"Runnable"` instead; a runnable with none is its environment (8.8). A session (15.5) is converted as the environment it was started on. Parameters containing secret information are masked according to the rules in Chapter 12.
 - `Array<T>`: maps to a JSON array preserving element order.
 - `Map<T>`: maps to a JSON object with string keys.
 - `Record<...>`: maps to a JSON object with field names as keys. An optional field (4.2) that is absent contributes no key at all; one that is present contributes its key, including when its value is null. This is where the difference between an absent key and a null value is written down.
@@ -4111,6 +4112,7 @@ Representative codes:
 - `E-RUNTIME-REGEX`
 - `E-RUNTIME-TIMEOUT`
 - `E-RUNTIME-UNTIL-EXHAUSTED`
+- `E-RUNTIME-SESSION-CLOSED`
 - `E-IO-STDIN-READ`
 - `E-IO-ENV-RESOLVE`
 - `E-IO-FS`
@@ -4252,6 +4254,7 @@ Representative examples:
 - `E-RUNTIME-REGEX`: a malformed regular expression pattern (15.3)
 - `E-RUNTIME-TIMEOUT`: the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10).
 - `E-RUNTIME-UNTIL-EXHAUSTED`: the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10).
+- `E-RUNTIME-SESSION-CLOSED`: a command was run with the session of a `with_container` whose body had returned, or was running in it when it did (15.5).
 
 Rules:
 
@@ -4551,6 +4554,7 @@ The built-in library provides at least the following functions.
 - `run`: `Function<Runnable, String, CommandResult>`
 - `runnable`: `Function<Environment, Runnable>`, with the run options of 10.2 as keyword parameters
 - `shell_quote`: `Function<String, String>`
+- `with_container`: `Function<Runnable, Function<Runnable, T>, T>`
 
 Contract:
 
@@ -4583,6 +4587,36 @@ upload(env: Runnable, src: String, dst: String): CommandResult =
 
 - `shell_quote` is a pure function, and is placed here rather than among the string operations of 15.3 because its contract is about command construction. There is no function that marks a hole to be substituted unescaped: that is the raw hole `#!{e}` of 6.6.
 - Masking (12.8) matches registered values as exact substrings. Escaping a value rewrites the characters it escapes, so a registered secret is also registered in each form the escaping of 6.6 and `shell_quote` write it (every `'` as `'\''`; every `\`, `"`, `$` and `` ` `` preceded by `\`), and the command line that carries it is masked as well.
+
+Container sessions:
+
+- `with_container(env, body)` evaluates `body(session)` with one container of `env` kept running for the extent of the call, and returns what the body returns, or fails as it fails. `session` is a `Runnable`: a command run with it — by a command execution expression (6.6), by `run`, or by a filesystem function (15.11) — runs in that container rather than in a container of its own.
+- It exists so that commands that depend on each other can be written one per line. A container environment starts a container for each command (10.2), so without a session such commands are joined into one command string with `&&`.
+- The container is started as the container of a command is: the image the lock pins (10.3, 10.4), the run options of `env` (10.2), the base directory mounted at `/work` (10.5), and an init process unless `init` is `false`. It is started at the call, before the body is evaluated: an image that is not materialized is `E-IO-IMAGE-MISSING`, and an engine that cannot start the container is `E-IO-ENV-RESOLVE`.
+- What lasts from one command to the next is the container: its filesystem, including the files outside `/work`, and the processes a command leaves running in the background. The state of a shell does not: each command is run by a `/bin/sh` of its own, so a `cd` or an `export` ends with its command. Every command starts with the working directory, the user and the variables of the run options of `env` (`workdir`, `user`, `env`; 10.2), which are given once, where the session is opened.
+- The container is removed when the body is done: when it returns, when it fails, and when it is abandoned (8.7, 15.7). Its removal stops every process in it.
+- The session is closed before its container is removed. A command run with a closed session — by a computation the body started that runs on after it (6.3), or with a session the body returned — fails without running, with the diagnostic code `E-RUNTIME-SESSION-CLOSED`. A command still running in the session when it closes is stopped with the container, and fails the same way. A computation of the body that does not use the session runs on as usual.
+- A session ends with the run that opened it, however the run ends: an implementation must not leave its container running once lask has exited, killed or not.
+- Given `#local`, or a session that is open, `with_container` evaluates `body(env)`: the host keeps its state already, and a session is one already. A function can therefore take any runnable and open a session on it, and a session can be given to a function that opens one.
+- A command in a session is logged with the environment summary of `env` (12.3). The execution log (12.2) records at `info` the start of the session, naming its container and `env`, and the removal of its container.
+- A session is serialized as the environment `env` it was started on (13.1).
+- This implementation starts the container with a `/bin/sh` that reads its standard input to the end, and holds the other end of that input: closing it ends the container, which is removed then, and lask's exit closes it however lask exits. A command is run with the engine client's `exec` as `/bin/sh -c <command string>`, marked by a variable of its own, `LASK_SESSION_EXEC`, which the processes it starts inherit; an abandoned command is stopped by sending its marked processes the termination request of 8.7.
+
+```lask
+// Install a tool outside /work, start a server in the background, and
+// test against it: three steps, each on a line of its own.
+test_api(): String = with_container(#node:24.21.0-alpine3.24{workdir: "/work/api"}, \(box) -> do {
+  $[box] apk add --no-cache curl
+  $[box] npm ci
+  $[box] npm start > /tmp/server.log 2>&1 &
+  until(backoff_fixed(1, 30), \(r: CommandResult) -> r.code == 0, \() -> do {
+    $*[box] curl -fs localhost:3000/health
+  })
+  $[box] npm test
+})
+```
+
+- A command execution expression runs to the end of its line (6.6), so the body is written as a `do` block whose closing `})` stands on a line of its own.
 
 ### 15.6 Parallel and Asynchronous Helper Functions
 

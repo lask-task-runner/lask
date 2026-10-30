@@ -19,9 +19,11 @@ module Language.Lask.Runtime.Container
     ContainerBackend (..),
     BuildSpec (..),
     RunSpec (..),
+    ExecSpec (..),
     resolveBackend,
     cliBackend,
     runArgs,
+    execArgs,
     clientEnv,
     containerWorkdir,
   )
@@ -92,6 +94,21 @@ data RunSpec = RunSpec
     runCommand :: [Text]
   }
 
+-- | One command run in a container already running (spec 15.5): the
+-- run options were given when it was started, so only what tells this
+-- command apart is given here.
+data ExecSpec = ExecSpec
+  { execContainer :: Text,
+    -- | Keep stdin attached.
+    execStdin :: Bool,
+    -- | Run as this user rather than the container's.
+    execUser :: Maybe Text,
+    -- | Variables this command alone is given, on the command line:
+    -- none of them is a value of the program.
+    execEnv :: [(Text, Text)],
+    execCommand :: [Text]
+  }
+
 -- | What lask asks of a container engine. A failure is a short
 -- message, as the engine gave it.
 data ContainerBackend = ContainerBackend
@@ -111,6 +128,8 @@ data ContainerBackend = ContainerBackend
     cbBuild :: (Text -> IO ()) -> BuildSpec -> IO (Either Text ()),
     -- | The client process that runs a container.
     cbRunProcess :: RunSpec -> IO CreateProcess,
+    -- | The client process that runs a command in a running container.
+    cbExecProcess :: ExecSpec -> CreateProcess,
     -- | Given the exit code and stderr of a run, the engine's own
     -- failure — the container never ran — rather than the command's.
     cbRunFailure :: Int -> Text -> Maybe Text,
@@ -151,6 +170,7 @@ unusableBackend msg =
       cbPull = \_ _ _ -> pure (Left msg),
       cbBuild = \_ _ -> pure (Left msg),
       cbRunProcess = \_ -> pure (proc "sh" ["-c", "echo \"$0\" >&2; exit 125", T.unpack msg]),
+      cbExecProcess = \_ -> proc "sh" ["-c", "echo \"$0\" >&2; exit 125", T.unpack msg],
       cbRunFailure = \_ _ -> Just msg,
       cbStop = \_ _ -> pure ()
     }
@@ -190,6 +210,7 @@ cliBackend engine =
             inherited <- getEnvironment
             let names = map fst extra
             pure cp {env = Just (extra <> [kv | kv@(k, _) <- inherited, k `notElem` names])},
+      cbExecProcess = proc program . execArgs,
       cbRunFailure = runFailure,
       cbStop = \grace name -> do
         _ <- client ["stop", "-t", show grace, T.unpack name]
@@ -383,6 +404,19 @@ runArgs engine spec =
     <> optionArgs engine (runOptions spec)
     <> [T.unpack (runImage spec)]
     <> map T.unpack (runCommand spec)
+
+-- | The arguments of the client's @exec@. The working directory, the
+-- user and the variables of the container's run options are those its
+-- commands start with, so they are not given again. The three clients
+-- take the same ones.
+execArgs :: ExecSpec -> [String]
+execArgs spec =
+  ["exec"]
+    <> (if execStdin spec then ["-i"] else [])
+    <> maybe [] (\u -> ["--user", T.unpack u]) (execUser spec)
+    <> concat [["--env", T.unpack (k <> "=" <> v)] | (k, v) <- execEnv spec]
+    <> [T.unpack (execContainer spec)]
+    <> map T.unpack (execCommand spec)
 
 -- | Mount the base directory as the container working directory
 -- (spec 10.5).

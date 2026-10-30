@@ -62,7 +62,7 @@ runWith runner src name = do
       Right scopes -> case elaborateProgram prog scopes of
         Left ds -> pure (Left (Nothing, T.pack (show (map diagCode ds))))
         Right cp -> do
-          ctx <- mkRtCtx cp "in-data\n" (RtHooks runner mockFileRunner noLogSink noAsyncTracker (fmap (fmap T.pack) . lookupEnv . T.unpack))
+          ctx <- mkRtCtx cp "in-data\n" (RtHooks runner mockFileRunner (\_ env body -> body env) noLogSink noAsyncTracker (fmap (fmap T.pack) . lookupEnv . T.unpack))
           out <- try $ do
             v <- topValue ctx ("main.lask", name)
             case v of

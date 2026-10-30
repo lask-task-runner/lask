@@ -54,6 +54,7 @@ data ErrorCode
   | ERuntimeRegex
   | ERuntimeTimeout
   | ERuntimeUntilExhausted
+  | ERuntimeSessionClosed
   | EIoStdinRead
   | EIoEnvResolve
   | EIoImageMissing
@@ -132,6 +133,7 @@ codeText c = case c of
   ERuntimeRegex -> "E-RUNTIME-REGEX"
   ERuntimeTimeout -> "E-RUNTIME-TIMEOUT"
   ERuntimeUntilExhausted -> "E-RUNTIME-UNTIL-EXHAUSTED"
+  ERuntimeSessionClosed -> "E-RUNTIME-SESSION-CLOSED"
   EIoStdinRead -> "E-IO-STDIN-READ"
   EIoEnvResolve -> "E-IO-ENV-RESOLVE"
   EIoImageMissing -> "E-IO-IMAGE-MISSING"
