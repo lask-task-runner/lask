@@ -878,8 +878,8 @@ reifyDecl sp name def =
           cdName = name,
           cdTypeVars = [],
           cdType = funTy,
-          cdCore = Core sp (CLam (Lam name file (map fst pos) Nothing kwCores bodyCore funTy)),
-          cdParams = Just (StaticParams pos Nothing [(ksName s, ksType s) | s <- specs]),
+          cdCore = Core sp (CLam (Lam name file (map fst pos) Nothing (map (fmap Just) kwCores) bodyCore funTy)),
+          cdParams = Just (StaticParams pos Nothing [(ksName s, ksType s) | s <- specs] []),
           cdBounds = Map.empty
         }
 

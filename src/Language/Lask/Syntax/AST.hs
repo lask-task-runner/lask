@@ -113,8 +113,9 @@ data ParamF
     PPositional Text Secrecy (Maybe SType)
   | -- | @...name : Array\<T\>@. Cannot be marked @!!@ (spec 6.1).
     PVariadic Text (Maybe SType)
-  | -- | @--name[!!] : T = default@
-    PKeyword Text Secrecy (Maybe SType) Expr
+  | -- | @--name[!!] : T = default@, or @--name[!!] : T@ for a
+    -- required keyword parameter, which has no default (spec 7.5).
+    PKeyword Text Secrecy (Maybe SType) (Maybe Expr)
   deriving (Show, Eq)
 
 -- | A type parameter as declared, with its bound if it has one
@@ -329,7 +330,7 @@ stripParam :: Param -> Param
 stripParam (Param _ f) = Param NoSpan $ case f of
   PPositional n sec t -> PPositional n sec (fmap stripSpansType t)
   PVariadic n t -> PVariadic n (fmap stripSpansType t)
-  PKeyword n sec t d -> PKeyword n sec (fmap stripSpansType t) (stripSpansExpr d)
+  PKeyword n sec t d -> PKeyword n sec (fmap stripSpansType t) (fmap stripSpansExpr d)
 
 stripSpansType :: SType -> SType
 stripSpansType (SType _ f) = SType NoSpan $ case f of

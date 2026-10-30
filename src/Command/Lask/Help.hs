@@ -27,6 +27,7 @@ where
 
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
+import Command.Lask.ArgCodec (isFlagType)
 import Command.Lask.Envs (EnvRef (..))
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -48,6 +49,12 @@ data ParamHelp = ParamHelp
     -- determine it; rendered as @?@.
     phType :: Maybe Text,
     phDefault :: Maybe Text,
+    -- | A keyword parameter without a default, which a call has to
+    -- give (spec 7.5).
+    phRequired :: Bool,
+    -- | A keyword parameter written alone on the command line to bind
+    -- @true@ (spec 11.2).
+    phFlag :: Bool,
     phSecret :: Bool,
     phDoc :: Maybe Text
   }
@@ -132,11 +139,24 @@ buildFunctionHelp path src decl mCore doc envs =
 
     paramHelp p = case AST.paramF p of
       AST.PPositional n sec ann ->
-        ParamHelp n ParamPositional (typeOf spPositional n ann) Nothing (isSecret sec) (docOf n)
+        ParamHelp n ParamPositional (typeOf spPositional n ann) Nothing False False (isSecret sec) (docOf n)
       AST.PVariadic n ann ->
-        ParamHelp n ParamVariadic (variadicType ann) Nothing False (docOf n)
+        ParamHelp n ParamVariadic (variadicType ann) Nothing False False False (docOf n)
       AST.PKeyword n sec ann dflt ->
-        ParamHelp n ParamKeyword (typeOf spKeywords n ann) (defaultOf sec dflt) (isSecret sec) (docOf n)
+        ParamHelp
+          n
+          ParamKeyword
+          (typeOf spKeywords n ann)
+          (defaultOf sec =<< dflt)
+          (null dflt)
+          (isFlag n ann)
+          (isSecret sec)
+          (docOf n)
+
+    -- From the elaborated type, or the annotation as written.
+    isFlag n ann = case params of
+      Just sp -> maybe False isFlagType (lookup n (spKeywords sp))
+      Nothing -> (AST.renderSType <$> ann) `elem` [Just "Bool", Just "Bool | Null"]
 
     -- The elaborated type, or the annotation as written when the
     -- declaration did not elaborate.
@@ -236,7 +256,13 @@ renderHelpText subcommand fh =
     usageParam p = case phKind p of
       ParamPositional -> "<" <> cliName p <> ">"
       ParamVariadic -> "[<" <> cliName p <> "> ...]"
-      ParamKeyword -> "[--" <> cliName p <> " <" <> typeText p <> ">]"
+      ParamKeyword
+        | phRequired p -> keywordUsage p
+        | otherwise -> "[" <> keywordUsage p <> "]"
+
+    keywordUsage p
+      | phFlag p = "--" <> cliName p
+      | otherwise = "--" <> cliName p <> " <" <> typeText p <> ">"
 
     cliName = snakeToKebab . phName
 
@@ -249,8 +275,9 @@ renderHelpText subcommand fh =
     paramLines p = paramSignature p : maybe [] (map indentDoc . T.lines) (phDoc p)
 
     paramSignature p =
-      prefix <> cliName p <> " : " <> typeText p <> maybe "" (" = " <>) (phDefault p)
+      prefix <> cliName p <> " : " <> typeText p <> maybe "" (" = " <>) (phDefault p) <> required
       where
+        required = if phRequired p then "  (required)" else ""
         prefix = case phKind p of
           ParamPositional -> ""
           ParamVariadic -> "..."
@@ -342,6 +369,7 @@ renderHelpJson fh =
           ("kind", A.String (kindText (phKind p))),
           ("type", maybeText (phType p)),
           ("default", maybeText (phDefault p)),
+          ("required", A.Bool (phRequired p)),
           ("secret", A.Bool (phSecret p)),
           ("doc", maybeText (phDoc p))
         ]

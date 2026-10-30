@@ -844,6 +844,43 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["eval", "show", "--access-key-id", "123456789012"] ""
         r `shouldBe` Result 0 "\"123456789012\"\n" ""
 
+  describe "required keyword arguments and flags (spec 11.2)" $ do
+    let src =
+          "deploy(name: String, --target: String, --dry_run: Bool = false, --force: Bool | Null = null, --n = 1): String =\n\
+          \  \"#{name} #{target} #{dry_run} #{force == true} #{n}\"\n\
+          \tags(...xs: Array<String>, --all: Bool = false): String = \"#{join(xs, \",\")} #{all}\"\n"
+    it "binds a required keyword argument and refuses a call without it" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "deploy", "a", "--target", "prod"] ""
+        r `shouldBe` Result 0 "\"a prod false false 1\"\n" ""
+        m <- runLask lask dir ["eval", "deploy", "a"] ""
+        m `shouldBe` Result 4 "" "E-CLI-USAGE: missing keyword argument: '--target'\n"
+    it "binds true to a Bool keyword argument written without a value" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        end <- runLask lask dir ["eval", "deploy", "a", "--target", "prod", "--dry-run"] ""
+        end `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
+        before <- runLask lask dir ["eval", "deploy", "--dry-run", "a", "--target", "prod", "--force"] ""
+        before `shouldBe` Result 0 "\"a prod true true 1\"\n" ""
+        text <- runLask lask dir ["eval", "--arg-decode", "text", "deploy", "a", "--target", "prod", "--dry-run"] ""
+        text `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
+    it "still takes true or false after a Bool keyword argument as its value" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "deploy", "a", "--dry-run", "true", "--force", "false", "--target", "prod"] ""
+        r `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
+        e <- runLask lask dir ["eval", "deploy", "a", "--dry-run=false", "--target=prod"] ""
+        e `shouldBe` Result 0 "\"a prod false false 1\"\n" ""
+    it "leaves any other word after a flag to the positional arguments" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "tags", "--all", "x", "y"] ""
+        r `shouldBe` Result 0 "\"x,y true\"\n" ""
+    it "marks required keyword parameters and flags in the help" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "deploy", "--help"] ""
+        resOut r `shouldContain` "lask eval deploy <name> --target <String> [--dry-run] [--force] [--n <Number>]"
+        resOut r `shouldContain` "--target : String  (required)"
+        j <- runLask lask dir ["eval", "--format", "json", "deploy", "--help"] ""
+        resOut j `shouldContain` "\"name\":\"target\",\"required\":true"
+
   describe "spec 16.3: function values" $ do
     let src =
           "inc(x: Number): Number = x + 1\n\

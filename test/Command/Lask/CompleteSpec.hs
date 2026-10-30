@@ -254,6 +254,14 @@ spec = do
       cs <- describesAs ["run", "build", ""]
       cs `shouldBe` [(activeHelpMarker, Just "target : String - Build target name.")]
 
+    -- Spec 11.2: a flag takes the next word only when it is true or
+    -- false, so any other word there is a positional argument.
+    it "counts a word after a flag as a positional unless it is true or false" $ do
+      afterValue <- describesAs ["run", "build", "--publish", "true", ""]
+      afterValue `shouldBe` [(activeHelpMarker, Just "target : String - Build target name.")]
+      afterPositional <- describesAs ["run", "build", "--publish", "release", ""]
+      afterPositional `shouldBe` []
+
   describe "re-exported functions (spec 5, 11.2)" $ do
     let reexporting =
           [ ("main.lask", "export { deploy, rollout as ship } from \"./lib/ops.lask\"\nlocal() = $ echo hi\n"),
