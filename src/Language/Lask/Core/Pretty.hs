@@ -24,7 +24,7 @@ renderDecl cd = case coreF (cdCore cd) of
   where
     params lam =
       zipWith (\n t -> n <> ": " <> renderType t) (lamPositional lam) (argTys (lamType lam))
-        <> ["--" <> n <> " = " <> renderCore 1 d | (n, d) <- lamKeywords lam]
+        <> ["--" <> n <> maybe "" (\d -> " = " <> renderCore 1 d) md | (n, md) <- lamKeywords lam]
     argTys (TyFun as _) = as
     argTys _ = []
     ret (TyFun _ r) = renderType r

@@ -224,7 +224,7 @@ usesIn by c = case coreF c of
   CEnv "local" _ -> [Found (coreSpan c) (HeadUse HeadLocal by)]
   CEnv "docker" args -> maybe [] (\i -> [Found (coreSpan c) (HeadUse i by)]) (headImage args) <> concatMap (usesIn by . snd) args
   CLam lam ->
-    concat [usesIn by {rqDefault = Just k} d | (k, d) <- lamKeywords lam]
+    concat [usesIn by {rqDefault = Just k} d | (k, Just d) <- lamKeywords lam]
       <> usesIn by (lamBody lam)
   _ -> concatMap (usesIn by) (children c)
 

@@ -34,7 +34,7 @@ normalise c0 = evalState (norm Map.empty c0) (0 :: Int)
         let named = not ("<" `T.isPrefixOf` lamName lam)
         ps <- if named then pure (lamPositional lam) else mapM (const freshName) (lamPositional lam)
         let env' = Map.union (Map.fromList (zip (lamPositional lam) ps)) env
-        kws <- mapM (\(k, d) -> (,) k <$> norm env' d) (lamKeywords lam)
+        kws <- mapM (\(k, d) -> (,) k <$> traverse (norm env') d) (lamKeywords lam)
         b <- norm env' (lamBody lam)
         pure
           ( CLam

@@ -179,7 +179,7 @@ boundArguments cd posVals kwVals =
     zip positionalNames (map Just posVals)
       <> [(n, Just v) | (n, v) <- kwVals]
       <> [ (n, literal d)
-         | (n, d) <- defaults,
+         | (n, Just d) <- defaults,
            n `notElem` map fst kwVals
          ]
   where

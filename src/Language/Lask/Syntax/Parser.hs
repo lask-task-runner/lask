@@ -475,12 +475,13 @@ pParam =
   choice
     [ do
         s <- sym TDashDash
-        Spanned _ n <- lowerId
+        Spanned sp n <- lowerId
         sec <- pSecrecy
         t <- optional (sym TColon *> pType)
-        _ <- sym TAssign
-        d <- pExpr
-        pure (Param (s <> exprSpan d) (PKeyword n sec t d)),
+        -- Without a default the parameter is required (spec 7.5).
+        d <- optional (sym TAssign *> pExpr)
+        let end = maybe (maybe sp stypeSpan t) exprSpan d
+        pure (Param (s <> end) (PKeyword n sec t d)),
       do
         s <- sym TEllipsis
         Spanned sp n <- lowerId

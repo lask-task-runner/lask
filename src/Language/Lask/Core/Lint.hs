@@ -59,7 +59,7 @@ lintDecl cp cd = map ((cdName cd <> ": ") <>) (nub (go Set.empty (cdCore cd)))
       CLam lam ->
         let params = Set.fromList (lamPositional lam <> maybe [] pure (lamVariadic lam)) <> scope
             -- A keyword default sees the parameters before it (spec 8.3).
-            defaults = zipWith (\earlier (_, d) -> go (Set.fromList earlier <> params) d) (inits' (map fst (lamKeywords lam))) (lamKeywords lam)
+            defaults = zipWith (\earlier (_, d) -> maybe [] (go (Set.fromList earlier <> params)) d) (inits' (map fst (lamKeywords lam))) (lamKeywords lam)
             inner = Set.fromList (map fst (lamKeywords lam)) <> params
          in concat defaults <> go inner (lamBody lam)
       CRecordLit kvs -> duplicateKeys kvs <> concatMap (go scope . snd) kvs

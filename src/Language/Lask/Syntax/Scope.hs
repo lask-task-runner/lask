@@ -156,7 +156,7 @@ paramName (Param _ f) = case f of
   PKeyword n _ _ _ -> n
 
 paramDefaults :: [Param] -> [Expr]
-paramDefaults ps = [d | Param _ (PKeyword _ _ _ d) <- ps]
+paramDefaults ps = [d | Param _ (PKeyword _ _ _ (Just d)) <- ps]
 
 -- | Whether a span covers a position. The end is exclusive (spans end
 -- just past their last character), matching hover; an inclusive end

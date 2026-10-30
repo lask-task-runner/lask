@@ -10,6 +10,8 @@ module Command.Lask.ArgCodec
     parseArgDecodeMode,
     parseStdoutEncode,
     parseCliArgs,
+    isFlagType,
+    flagNames,
     decodeArgValue,
     bindCliArgs,
     instantiateForCli,
@@ -36,6 +38,7 @@ import Language.Lask.Types
     Field (..),
     Type (..),
     applySubst,
+    mkUnion,
     renderNamedBound,
     renderType,
     requiredField,
@@ -64,15 +67,29 @@ parseStdoutEncode s = case s of
   "pretty-json" -> Just EncodePrettyJson
   _ -> Nothing
 
-data CliArg = CliPos Text | CliKw Text Text
+-- | An argument as the command line gives it: a positional one, a
+-- keyword one with its value, or a flag written without one, which
+-- binds @true@ (spec 11.2).
+data CliArg = CliPos Text | CliKw Text Text | CliFlag Text
   deriving (Show, Eq)
+
+-- | Whether a keyword parameter of this type is a flag on the command
+-- line (spec 11.2): @Bool@, or @Bool | Null@.
+isFlagType :: Type -> Bool
+isFlagType t = t == TyBool || t == mkUnion TyBool [TyNull]
+
+-- | The keyword parameters that are flags.
+flagNames :: StaticParams -> [Text]
+flagNames ps = [n | (n, t) <- spKeywords ps, isFlagType t]
 
 -- | Split raw tokens after the function name into positional and
 -- keyword arguments: @--name value@, @--name=value@, and @-c value@
 -- for single-character names (spec 11.2). No identifier starts with a
 -- digit (3.2), so @-1@ is a negative number rather than a short form.
-parseCliArgs :: [Text] -> Either Text [CliArg]
-parseCliArgs = go
+-- A flag (the parameter names given) takes the next token as its
+-- value only when it is @true@ or @false@, and is otherwise @true@.
+parseCliArgs :: [Text] -> [Text] -> Either Text [CliArg]
+parseCliArgs flags = go
   where
     go [] = Right []
     go (tok : rest)
@@ -85,6 +102,11 @@ parseCliArgs = go
     named body rest = case T.breakOn "=" body of
       (name, valueEq)
         | Just v <- T.stripPrefix "=" valueEq -> (CliKw (kebabToSnake name) v :) <$> go rest
+      (name, "")
+        | kebabToSnake name `elem` flags -> case rest of
+            (v : rest')
+              | v `elem` ["true", "false"] -> (CliKw (kebabToSnake name) v :) <$> go rest'
+            _ -> (CliFlag (kebabToSnake name) :) <$> go rest
       (name, "") -> case rest of
         (v : rest') -> (CliKw (kebabToSnake name) v :) <$> go rest'
         [] -> Left ("keyword argument '--" <> name <> "' needs a value")
@@ -115,7 +137,7 @@ bindCliArgs ::
   Either (Text, [Text]) ([Value], [(Text, Value)])
 bindCliArgs params mode cliArgs =
   let posRaw = [v | CliPos v <- cliArgs]
-      kwRaw = [(n, v) | CliKw n v <- cliArgs]
+      kwRaw = [(n, a) | a <- cliArgs, n <- case a of CliKw k _ -> [k]; CliFlag k -> [k]; CliPos _ -> []]
       positional = spPositional params
       nPos = length positional
    in if any (\(_, t) -> t `elem` [TyEnvironment, TyRunnable]) positional
@@ -145,7 +167,7 @@ bindCliArgs params mode cliArgs =
                             Nothing -> []
                    in (,)
                         <$> plain (mapM (decodeAndCheck "argument") posTyped)
-                        <*> bindKw [] kwRaw
+                        <*> (bindKw [] kwRaw >>= requireAll)
   where
     tshow :: Show a => a -> Text
     tshow = T.pack . show
@@ -157,8 +179,13 @@ bindCliArgs params mode cliArgs =
     -- A failure with no correction to offer.
     plain = first (\m -> (m, []))
 
+    -- A keyword parameter without a default has to be given (7.5).
+    requireAll kws = case [n | n <- spRequired params, n `notElem` map fst kws] of
+      n : _ -> plain (Left ("missing keyword argument: '" <> flag n <> "'"))
+      [] -> Right kws
+
     bindKw acc [] = Right (reverse acc)
-    bindKw acc ((n, raw) : rest)
+    bindKw acc ((n, arg) : rest)
       | n `elem` map fst acc = plain (Left ("duplicate keyword argument: '" <> flag n <> "'"))
       | otherwise = case lookup n kwTypes of
           Nothing ->
@@ -170,7 +197,11 @@ bindCliArgs params mode cliArgs =
             | t `elem` [TyEnvironment, TyRunnable] ->
                 plain (Left ("keyword parameter '" <> flag n <> "' has type " <> renderType t <> " and cannot be set from the CLI"))
             | otherwise -> do
-                v <- plain (decodeAndCheck ("keyword argument '" <> flag n <> "'") (raw, t))
+                v <- case arg of
+                  CliKw _ raw -> plain (decodeAndCheck ("keyword argument '" <> flag n <> "'") (raw, t))
+                  -- Only a flag parses without a value, whatever the
+                  -- decoding mode.
+                  _ -> Right (VBool True)
                 bindKw ((n, v) : acc) rest
 
     decodeAndCheck what (raw, ty) = do
@@ -206,6 +237,7 @@ instantiateForCli vs bounds ps
         [(n, at t) | (n, t) <- spPositional ps]
         (fmap (fmap at) (spVariadic ps))
         [(n, at t) | (n, t) <- spKeywords ps]
+        (spRequired ps)
   where
     at = applySubst (Map.fromList [(v, widest v) | v <- vs])
     widest v = case Map.lookup v bounds of

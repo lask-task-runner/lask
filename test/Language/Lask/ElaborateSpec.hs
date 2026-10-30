@@ -131,6 +131,24 @@ spec = do
       rejects "f(a: Number) = a\nx = f(a = 1)" ETypeKeyword
     it "rejects duplicate keyword arguments" $
       rejects "inc(--x = 0) = x + 1\na = inc(x = 1, x = 2)" ETypeKeyword
+    it "accepts a call that gives a required keyword parameter" $
+      accepts "f(--x: Number, --y = x + 1) = x + y\na = f(x = 1)"
+    it "types an unannotated required keyword parameter as Any" $
+      accepts "f(--x) = x\na = f(x = \"s\")\nb = f(x = 1)"
+    it "rejects a call that leaves out a required keyword parameter" $
+      rejects "f(--x: Number) = x\na = f()" ETypeKeyword
+    it "rejects a pipe into a function with a required keyword parameter" $
+      rejects "f(s: String, --x: Number) = s\na = \"s\" |> f" ETypeKeyword
+    it "rejects a function with a required keyword parameter as a value" $
+      rejects "f(--x: Number) = x\na = map([1], f)" ETypeKeyword
+    it "rejects a lambda with a required keyword parameter as a value" $
+      rejects "a = map([1], \\(n: Number, --x: Number) -> n)" ETypeKeyword
+    it "accepts calling a lambda with a required keyword parameter directly" $
+      accepts "a = (\\(--x: Number) -> x)(x = 1)"
+    it "accepts a recursive call that gives a required keyword parameter" $
+      accepts "f(n: Number, --acc: Number): Number = if (n == 0) { acc } else { f(n - 1, acc = acc + n) }"
+    it "rejects a recursive call that leaves out a required keyword parameter" $
+      rejects "f(n: Number, --acc: Number): Number = if (n == 0) { acc } else { f(n - 1) }" ETypeKeyword
     it "rejects missing positional arguments" $
       rejects "f(a: Number, b: Number) = a\nx = f(1)" ETypeArity
     it "rejects excess arguments without variadic" $

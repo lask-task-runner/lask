@@ -40,6 +40,7 @@ module Command.Lask.Complete
     ValueSpec (..),
     PathKind (..),
     classify,
+    classifyWith,
 
     -- * The completion index
     CompleteIndex (..),
@@ -180,7 +181,31 @@ fileResolver =
 -- | Answer one request. Never throws: an unreadable module or a
 -- missing directory costs candidates, not the response.
 complete :: Resolver -> [Text] -> IO Response
-complete r ws = case classify ws of
+complete r ws = do
+  -- Whether a word after a keyword parameter is its value depends on
+  -- the parameter's type (spec 11.2), so a line inside a function's
+  -- arguments is walked again with the module's flags.
+  plan <- case planModule (classify ws) of
+    Just modPath -> do
+      idx <- loadIndex r modPath
+      pure (classifyWith (isFlagParam idx) ws)
+    Nothing -> pure (classify ws)
+  answer r plan
+
+-- | The module whose function a plan is inside the arguments of.
+planModule :: Plan -> Maybe FilePath
+planModule plan = case plan of
+  PFnFlags m _ _ _ -> Just m
+  PFnValue m _ _ _ _ -> Just m
+  PFnArg m _ _ -> Just m
+  _ -> Nothing
+
+-- | A keyword parameter written alone to bind @true@ (spec 11.2).
+isFlagParam :: CompleteIndex -> Text -> Text -> Bool
+isFlagParam idx fn param = maybe False ipFlag (paramOf idx fn param)
+
+answer :: Resolver -> Plan -> IO Response
+answer r plan = case plan of
   PCommands cmds pfx ->
     pure (noFiles [Candidate n (Just d) | (n, d) <- cmds, matches pfx n])
   POptions opts used pfx ->
@@ -671,7 +696,12 @@ data St = St
     stAfterSep :: Bool,
     -- | Everything from here on belongs to a program lask only
     -- launches (spec 11.8).
-    stOpaque :: Bool
+    stOpaque :: Bool,
+    -- | Whether a keyword parameter of a function is a flag.
+    stIsFlag :: Text -> Text -> Bool,
+    -- | 'stPendingFn' is a flag, whose value the next word is only
+    -- when it is @true@ or @false@; it is still offered those two.
+    stAfterFlag :: Bool
   }
 
 -- | Where the request is, in the grammar above.
@@ -679,8 +709,13 @@ data St = St
 -- @ws@ are the words after the program name; the last one is the word
 -- under the cursor, and may be empty.
 classify :: [Text] -> Plan
-classify [] = atCursor initialSt ""
-classify ws = walk initialSt (init ws) (last ws)
+classify = classifyWith (\_ _ -> False)
+
+-- | 'classify', knowing which keyword parameters of a function are
+-- flags.
+classifyWith :: (Text -> Text -> Bool) -> [Text] -> Plan
+classifyWith isFlag [] = atCursor initialSt {stIsFlag = isFlag} ""
+classifyWith isFlag ws = walk initialSt {stIsFlag = isFlag} (init ws) (last ws)
 
 initialSt :: St
 initialSt =
@@ -697,7 +732,9 @@ initialSt =
       stFnPos = 0,
       stPendingFn = Nothing,
       stAfterSep = False,
-      stOpaque = False
+      stOpaque = False,
+      stIsFlag = \_ _ -> False,
+      stAfterFlag = False
     }
 
 cmdSummary :: Cmd -> (Text, Text)
@@ -723,18 +760,21 @@ walk st (w : rest) cur = case stFn st of
 -- the word being typed /is/ that value.
 inFunctionArgs :: St -> Text -> St
 inFunctionArgs st w
-  | w == "--" = st {stAfterSep = True, stPendingFn = Nothing}
+  | w == "--" = st {stAfterSep = True, stPendingFn = Nothing, stAfterFlag = False}
   | stAfterSep st = positional
   | otherwise = case optWord w of
       Nothing
-        | Just _ <- stPendingFn st -> st {stPendingFn = Nothing}
+        | stAfterFlag st, w `notElem` ["true", "false"] -> positional
+        | Just _ <- stPendingFn st -> st {stPendingFn = Nothing, stAfterFlag = False}
         | otherwise -> positional
       Just (name, Just _) -> keyword name Nothing
-      Just (name, Nothing) -> keyword name (Just (kebabToSnake name))
+      Just (name, Nothing) ->
+        (keyword name (Just (kebabToSnake name))) {stAfterFlag = isFlag name}
   where
-    positional = st {stFnPos = stFnPos st + 1, stPendingFn = Nothing}
+    positional = st {stFnPos = stFnPos st + 1, stPendingFn = Nothing, stAfterFlag = False}
     keyword name pending =
-      st {stFnUsed = kebabToSnake name : stFnUsed st, stPendingFn = pending}
+      st {stFnUsed = kebabToSnake name : stFnUsed st, stPendingFn = pending, stAfterFlag = False}
+    isFlag name = maybe False (\fn -> stIsFlag st fn (kebabToSnake name)) (stFn st)
 
 optionWord :: St -> Text -> Maybe Text -> [Text] -> Text -> Plan
 optionWord st name inline rest cur = case (inline, optValue =<< lookupOpt (stOpts st) name) of
@@ -878,7 +918,11 @@ data IndexParam = IndexParam
     ipEnvironment :: Bool,
     ipTypeText :: Maybe Text,
     ipDoc :: Maybe Text,
-    ipValues :: ParamValues
+    ipValues :: ParamValues,
+    -- | A keyword parameter that is a flag on the command line: it
+    -- takes the next word only when that is @true@ or @false@ (spec
+    -- 11.2).
+    ipFlag :: Bool
   }
   deriving (Show, Eq)
 
@@ -962,19 +1006,30 @@ fromModule path src m =
           }
 
     param doc p = case AST.paramF p of
-      AST.PPositional n _ ty -> build n ParamPositional ty
-      AST.PVariadic n ty -> build n ParamVariadic ty
-      AST.PKeyword n _ ty _ -> build n ParamKeyword ty
+      AST.PPositional n _ ty -> build n ParamPositional ty False
+      AST.PVariadic n ty -> build n ParamVariadic ty False
+      AST.PKeyword n _ ty d -> build n ParamKeyword ty (isFlagAnnot ty d)
       where
-        build n kind ty =
+        build n kind ty flag =
           IndexParam
             { ipName = n,
               ipKind = kind,
               ipEnvironment = isEnvType ty,
               ipTypeText = typeText <$> ty,
               ipDoc = lookup n (docParams doc),
-              ipValues = valuesFor doc n ty
+              ipValues = valuesFor doc n ty,
+              ipFlag = flag
             }
+
+    -- Read from the annotation, or from a Bool literal default.
+    isFlagAnnot ty d = case ty of
+      Just (AST.SType _ AST.SBool) -> True
+      Just (AST.SType _ (AST.SUnion [AST.SType _ AST.SBool, AST.SType _ AST.SNull])) -> True
+      Just (AST.SType _ (AST.SUnion [AST.SType _ AST.SNull, AST.SType _ AST.SBool])) -> True
+      Just _ -> False
+      Nothing -> case d of
+        Just (AST.Expr _ (AST.EBool _)) -> True
+        _ -> False
 
     valuesFor doc n ty = case lookup n (docComplete doc) of
       Just spec -> completeTag spec
@@ -1150,7 +1205,8 @@ scanIndex src =
           ipEnvironment = False,
           ipTypeText = Nothing,
           ipDoc = Nothing,
-          ipValues = PvSpec VShellFile
+          ipValues = PvSpec VShellFile,
+          ipFlag = False
         }
 
     -- A declaration head starts in column 1 with a lower identifier.

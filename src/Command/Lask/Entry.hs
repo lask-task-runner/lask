@@ -139,10 +139,12 @@ cmdRunEval printResult runOpts = do
     Just found -> pure found
     Nothing -> noSuchFunction opts rawName (publicNames compiled)
 
+  -- Which keyword arguments are flags depends on their types, so the
+  -- tokens are split against the parameters (spec 11.2).
   let (optionArgs, plainArgs) = splitArgSeparator (runArgs runOpts)
-  cliArgs <- case parseCliArgs optionArgs of
-    Right as -> pure (as <> map CliPos plainArgs)
-    Left e -> usageError opts e
+      parseArgs ps = case parseCliArgs (flagNames ps) optionArgs of
+        Right as -> pure (as <> map CliPos plainArgs)
+        Left e -> usageError opts e
 
   let orUsageError = either (usageError opts) pure
       orBindError = either (uncurry (usageErrorSuggesting opts)) pure
@@ -152,20 +154,18 @@ cmdRunEval printResult runOpts = do
     -- against what was decoded (spec 11.2): a bounded parameter is not
     -- opaque inside the body, which may compare or sort it (4.4).
     Just params -> do
-      bound <-
-        orBindError
-          (bindCliArgs (instantiateForCli (cdTypeVars cd) (cdBounds cd) params) (runArgDecode runOpts) cliArgs)
+      let cliParams = instantiateForCli (cdTypeVars cd) (cdBounds cd) params
+      cliArgs <- parseArgs cliParams
+      bound <- orBindError (bindCliArgs cliParams (runArgDecode runOpts) cliArgs)
       orUsageError (uncurry (checkCliBounds (cdBounds cd) params) bound)
       pure bound
     Nothing -> case cdType cd of
-      TyFun paramTys _ ->
+      TyFun paramTys _ -> do
         -- A function-typed value declaration: positional only
         -- (spec 11.2, example 16.3).
-        orBindError $
-          bindCliArgs
-            (StaticParams (zip (map (const "arg") paramTys) paramTys) Nothing [])
-            (runArgDecode runOpts)
-            cliArgs
+        let valueParams = StaticParams (zip (map (const "arg") paramTys) paramTys) Nothing [] []
+        cliArgs <- parseArgs valueParams
+        orBindError (bindCliArgs valueParams (runArgDecode runOpts) cliArgs)
       _ -> usageError opts ("'" <> fnName <> "' is not a callable function")
 
   -- A declared program its image lacks fails every command that runs
