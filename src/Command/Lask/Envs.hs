@@ -337,12 +337,13 @@ collectCommandSites core scope = concatMap declSites decls
     walkStmts cd env (CSExpr e : more) = walk cd env e <> walkStmts cd env more
 
     walkLam cd params env lam =
-      concatMap (walk cd env . snd) (lamKeywords lam)
+      concatMap (walk cd env) [d | (_, Just d) <- lamKeywords lam]
         <> walk cd (bindParams params env lam) (lamBody lam)
 
     -- What each parameter of a lambda can hold. A parameter whose type
     -- can hold an environment is supplied by a caller, which is not
-    -- followed; its default is. A keyword parameter of a lambda that is
+    -- followed; its default is, and a required keyword parameter has
+    -- none, so its type alone decides. A keyword parameter of a lambda that is
     -- not a declaration has no type here, and counts as one when its
     -- default names an environment.
     bindParams params env lam =
@@ -352,7 +353,7 @@ collectCommandSites core scope = concatMap declSites decls
               <> [(n, Reach Set.empty (holdsEnv t)) | Just (n, t) <- [variadic]]
               <> [ (k, Reach heads (maybe (not (Set.null heads)) holdsEnv (lookup k keywordTypes)))
                  | (k, d) <- lamKeywords lam,
-                   let Reach heads _ = reach Set.empty env d
+                   let Reach heads _ = maybe mempty (reach Set.empty env) d
                  ]
         )
         env
@@ -383,7 +384,7 @@ collectCommandSites core scope = concatMap declSites decls
           (p, n) `Set.notMember` seen ->
             let seen' = Set.insert (p, n) seen
              in foldMap (reach seen env) (pos <> map snd kws)
-                  <> mconcat [reach seen' Map.empty d | (k, d) <- lamKeywords lam, k `notElem` map fst kws]
+                  <> mconcat [reach seen' Map.empty d | (k, Just d) <- lamKeywords lam, k `notElem` map fst kws]
                   <> reach seen' Map.empty (lamBody lam)
       -- An entry of a top-level map or record named by a literal key
       -- reaches only what that entry does.
