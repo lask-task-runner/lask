@@ -369,7 +369,7 @@ This chapter defines the types of values that Lask handles, type annotations, ty
   - `Null`: Absence of a value
   - `Void`: Absence of a return value
   - `Environment`: The execution environment of commands (Chapter 10): where a command runs, and in which image. It holds a special position distinct from the other base types in that its values are constructed only by environment expressions (6.7) and its serialization is limited to a metadata representation (4.5, 13.1).
-  - `Runnable`: An environment together with the run options it is run with (10.2): what a command execution needs. Its values are constructed only by `runnable` (15.5) and its sugar `#head{...}` (6.7). `Environment` conforms to it (4.4); serialization is as for `Environment`.
+  - `Runnable`: An environment together with the run options it is run with (10.2): what a command execution needs. Its values are constructed only by `runnable` (15.5) and its sugar `#head{...}` (6.7), and as the session `with_container` gives its body (15.5). `Environment` conforms to it (4.4); serialization is as for `Environment`.
 - Composite types
   - `Array<T>`: An array whose element type is `T`
   - `Map<T>`: A map with string keys and value type `T`
@@ -635,7 +635,7 @@ The meaning of types is defined by the following rules.
 - `T1 | T2 | ...` denotes the values of any one member. A value of a union type carries no tag of its own: it is a value of exactly one member type at runtime, and which one is observed by the runtime type check of `cast` (15.8) or by `case` type dispatch (6.4).
 - `AsyncHandle<T>` is a runtime handle managing the lifecycle of an asynchronous computation, and is resolved to `T` by `await`.
 - Conformance between function types `Function<T1, T2, ..., R>` follows the conformance relation at the beginning of this section, and holds only when the number of positional parameters, each parameter type, and the return type are all identical (promotion to `Any` occurs only in positions requiring a top-level `Any`).
-- Parameter names, keyword parameters, and variadicity are not part of a function type. Because declared parameter information cannot be consulted when a function is applied after being passed around as a function value, binding is performed with positional arguments only, and all keyword parameters are completed with their default values (7.5).
+- Parameter names, keyword parameters, and variadicity are not part of a function type. Because declared parameter information cannot be consulted when a function is applied after being passed around as a function value, binding is performed with positional arguments only, and all keyword parameters are completed with their default values (7.5). A function with a required keyword parameter has no such completion, and cannot be a function value (6.1).
 - Because overloading is not permitted, multiple function types must not be assigned to a single function symbol at the same time.
 - A `NamedType` is treated as equivalent to the type obtained after expanding the corresponding `TypeAliasDecl`.
 
@@ -1100,7 +1100,7 @@ PositionalParameters  = PositionalParameter { "," PositionalParameter } .
 PositionalParameter   = lower_id [ "!!" ] [ ":" Type ] .
 VariadicParameter     = "..." lower_id [ ":" ArrayType ] .
 KeywordParameters     = KeywordParameter { "," KeywordParameter } .
-KeywordParameter      = "--" lower_id [ "!!" ] [ ":" Type ] "=" Expression .
+KeywordParameter      = "--" lower_id [ "!!" ] [ ":" Type ] [ "=" Expression ] .
 LambdaExpr            = "\\" "(" [ FunctionParameterList ] ")" [ ":" Type ] "->" Expression .
 ```
 
@@ -1108,7 +1108,8 @@ Meaning of the parameter notation:
 
 - At declaration time, each parameter is clearly distinguished as a positional parameter (`name`), a variadic parameter (`...name`), or a keyword parameter (`--name`). The declaration order is: the sequence of positional parameters, the variadic parameter (at most one), then the sequence of keyword parameters (enforced by the grammar).
 - Positional parameters are bound only by positional arguments. All are required and cannot have default values.
-- Keyword parameters are bound only by name (`name = expression` in in-language calls, `--name <value>` on the CLI; 11.2). They must have a default value expression, and when unspecified they are completed with the default value.
+- Keyword parameters are bound only by name (`name = expression` in in-language calls, `--name <value>` on the CLI; 11.2). A keyword parameter with a default value expression is optional: when unspecified, it is completed with the default value. One without a default value expression is **required**: every call must bind it, and a call that does not is a static error (`E-TYPE-KEYWORD`). Like a positional parameter, a required keyword parameter without a type annotation has type `Any`.
+- Required and optional keyword parameters may be declared in any order among the keyword parameters. A default value expression may refer to a required keyword parameter declared before it (8.3): `deploy(--target: String, --url = "https://#{target}.example.com")`.
 - A default value expression is checked once, at the declaration, against the declared type of its parameter. Where the declaration has type parameters (4.2) they are opaque during that check, as everywhere else in the declaration (4.4), so the default has to be one that holds for every instantiation. This admits `--y: T = x` where `x` is a preceding parameter of type `T` (the evaluation environment of a default includes the parameters bound before it, 8.3), `--xs: Array<T> = []`, `--m: Map<T> = {}`, `--y: T | Null = null` and an identity lambda, and rejects `--y: T = 1`, whose type would otherwise depend on the instantiation. No rule forbids a default on a parameter whose type mentions a type parameter; conformance decides it.
 - Binding a positional parameter by name, and binding a keyword parameter by position, are not possible (`E-TYPE-KEYWORD`).
 - `--` is a lexeme that appears only as the declaration marker of a keyword parameter, and is not interpreted as a sequence of the operator `-`.
@@ -1121,6 +1122,8 @@ Keyword arguments:
 - Positional arguments must be placed before all keyword arguments.
 - The name of a keyword argument must match a keyword parameter name of the callee (the declaration parameter information of 7.5). Unknown names, naming of positional or variadic parameters, and duplicate bindings to the same parameter are static errors (`E-TYPE-KEYWORD`).
 - Keyword arguments can be used only when the callee resolves statically to a function declaration or a lambda expression. Calls that resolve only to a value of function type (7.5) cannot consult the declaration parameter information, so they accept only positional arguments, and all keyword parameters are completed with their default values.
+- A function declaration or lambda expression with a required keyword parameter therefore cannot become a function value: a call through the value could not bind it. Referring to such a declaration other than as the callee of a call (`map(xs, f)`, `g = f`, `ns.f` as an argument), and writing such a lambda anywhere but as the callee of a call, is a static error (`E-TYPE-KEYWORD`). A pipe (`x |> f`) is a call that gives no keyword arguments, so piping into such a function is a static error as well.
+- A recursive call of a function with a required keyword parameter binds it like any other call. Since the declaration is still being checked, its parameter information is taken from its annotations: every keyword parameter with a default must then have a type annotation, and a recursive call otherwise is a static error (`E-TYPE-KEYWORD`).
 - Keyword arguments may be written in any order (e.g. `f(1, c = 3, b = 2)`).
 
 Variadic parameters:
@@ -1590,7 +1593,7 @@ A command execution expression is syntactic sugar for concisely writing shell co
 Definition as a function:
 
 - `run` is a core function that executes a command in the specified execution environment and returns the entire result (exit code, standard output, standard error).
-- Its signature is `run(env: Runnable, cmd: String): CommandResult`; an `Environment` conforms to `Runnable` (4.4). The execution environment is a required positional parameter: there is no default execution environment (10.1), and a keyword parameter cannot express a required argument because 6.1 requires one to have a default value.
+- Its signature is `run(env: Runnable, cmd: String): CommandResult`; an `Environment` conforms to `Runnable` (4.4). The execution environment is a required positional parameter: there is no default execution environment (10.1).
 - `run` succeeds regardless of the exit code as long as the command completes (8.7). Failures occur only for execution infrastructure faults (unresolvable environment, inability to connect, inability to launch the command, etc.).
 
 The `CommandResult` type:
@@ -2039,7 +2042,7 @@ A call `f(a1, ..., an)` is typable only when `f` resolves to `Function<T1, ..., 
 
 Declaration parameter information:
 
-- The parameters of a function declaration or lambda expression consist of positional parameters (all required; let their count be `m`), at most one variadic parameter, and a set of keyword parameters (name, type, and default-value expression) (6.1).
+- The parameters of a function declaration or lambda expression consist of positional parameters (all required; let their count be `m`), at most one variadic parameter, and a set of keyword parameters (name, type, and a default-value expression, which a required keyword parameter does not have) (6.1).
 - Only positional parameters (and the array type of the variadic parameter) appear in the type argument sequence of the function type `Function<T1, ..., Tm, R>`. Parameter names, keyword parameters, and variadicity are not included in the function type; they are retained as static information attached to the declaration (declaration parameter information). Keyword binding, default-value completion, and variadic collection all depend on this information and are available only when the callee can be statically resolved to a declaration.
 
 Verification items (argument binding):
@@ -2048,8 +2051,8 @@ Verification items (argument binding):
   1. Positional arguments are bound to the positional parameters in declaration order, from the front. If there are fewer than `m` positional arguments, it is `E-TYPE-ARITY`.
   2. Positional arguments beyond `m` are collected in written order into a single array and bound if a variadic parameter exists (variadic collection); otherwise it is `E-TYPE-ARITY`. If there are zero positional arguments corresponding to the variadic parameter, an empty array is bound.
   3. Keyword arguments are bound to keyword parameters whose names match. Unknown names, name-based specification of positional or variadic parameters, and duplicate bindings are `E-TYPE-KEYWORD` (6.1).
-  4. Keyword parameters left unbound are completed at call time with their default-value expressions according to the rules of 8.3 (default-value completion).
-- When `f` resolves only as a value of function type (application to a function-typed parameter, application of the result of evaluating an expression, values with only a `Function<...>` annotation, etc.), the declaration parameter information cannot be referenced, so only positional arguments are permitted and all positional parameters must be given explicitly (`n = m`). Use of keyword arguments is `E-TYPE-KEYWORD`, and all keyword parameters are completed with their defaults.
+  4. Keyword parameters left unbound are completed at call time with their default-value expressions according to the rules of 8.3 (default-value completion). A required keyword parameter left unbound is `E-TYPE-KEYWORD` (6.1).
+- When `f` resolves only as a value of function type (application to a function-typed parameter, application of the result of evaluating an expression, values with only a `Function<...>` annotation, etc.), the declaration parameter information cannot be referenced, so only positional arguments are permitted and all positional parameters must be given explicitly (`n = m`). Use of keyword arguments is `E-TYPE-KEYWORD`, and all keyword parameters are completed with their defaults. A function with a required keyword parameter never becomes such a value (6.1).
 
 Verification items (types and result):
 
@@ -2295,7 +2298,7 @@ Error value conversion of failures caused by non-zero exit (carrying over the ex
 Stopping an abandoned command:
 
 - The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
-- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed. The container runs under an init process unless its environment turns that off (10.2), so the request reaches a command that is not written to handle it.
+- An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed. A command running in the container of a session (15.5) is stopped without it: its own processes in the container are stopped, and the container and the session's other processes stay. The container runs under an init process unless its environment turns that off (10.2), so the request reaches a command that is not written to handle it.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
 
@@ -2582,7 +2585,7 @@ This chapter defines the execution environments that can be specified when invok
 
 ### 10.1 The `Environment` Type and Environment Expressions
 
-`Environment` is a built-in primitive type (4.1) representing an execution target: where a command runs, and in which image. `Runnable` (4.1) is an environment together with the run options it is run with (10.2), and is what `run` (6.6) receives as its first positional argument. `Environment` values are constructed only by evaluating an environment expression (6.7), and `Runnable` values only by `runnable` (15.5) and its sugar `#head{...}` (6.7). An `Environment` conforms to `Runnable` (4.4): it is a runnable with no run options.
+`Environment` is a built-in primitive type (4.1) representing an execution target: where a command runs, and in which image. `Runnable` (4.1) is an environment together with the run options it is run with (10.2), and is what `run` (6.6) receives as its first positional argument. `Environment` values are constructed only by evaluating an environment expression (6.7), and `Runnable` values only by `runnable` (15.5) and its sugar `#head{...}` (6.7), and as the session `with_container` gives its body (15.5). An `Environment` conforms to `Runnable` (4.4): it is a runnable with no run options.
 
 Rules:
 
@@ -2813,6 +2816,7 @@ Regions and segmentation:
 - **Quoted regions.** A `'` opens a region ending at the next `'`; a `"` opens a region ending at the next unescaped `"`. A character preceded by `\` is literal. Nothing inside a quoted region is a separator or opens a region.
 - **Nested regions.** A command substitution `$(` to its matching `)`, a backquoted substitution `` ` `` to the next `` ` ``, and a grouping `(` to its matching `)` each open a nested region. Its content is segmented by these same rules and contributes its own command words; in the enclosing text the region occupies part of one word.
 - **Separators.** Outside quoted and nested regions, `&&`, `||`, `|`, `;`, `&`, and a newline are separators, matched longest-first. The text between two separators, before the first, or after the last, is a **segment**.
+- **Redirection operators.** An `&` that immediately follows `>` or `<`, or immediately precedes `>`, and a `|` that immediately follows `>`, belong to a redirection operator (`>&`, `<&`, `&>`, `>|`, as in `2>&1`) and are not separators: they are ordinary characters of the word they stand in. Nothing else of a redirection is given meaning.
 - If a quoted or nested region is not closed before the end of the string, the command string is not analysable: dispatch selects nothing, and the diagnostic must state that the string could not be segmented rather than that no command was declared. Such a string is usually already `E-TYPE-COMMAND-SYNTAX` (6.6), which is reported first; dispatch reaches it only where the shell syntax check does not, as with a quotation character in a comment.
 
 Words and command words:
@@ -2846,6 +2850,7 @@ Examples, given `command { "go" } on #golang:1.25`, `command { "node", "npm", "n
 | command string | command words | selection |
 | --- | --- | --- |
 | `go test -v ./...` | `go` | `#golang:1.25` |
+| `go test ./... 2>&1 \| tee log` | `go`, `tee` | `#golang:1.25` |
 | `cd web && npm ci && npm test` | `cd`, `npm`, `npm` | the Node image |
 | `pip install -r req.txt && python -m unittest` | `pip`, `python` | the Python image |
 | `FOO=1 PATH=/x npm ci` | `npm` | the Node image |
@@ -2898,7 +2903,7 @@ Set up the project:
 
 - `sync`: fetches and verifies the external dependencies, materializes the container images the program requires, and writes the lock file, reporting its progress and listing what it resolved (11.7).
 - `deps`: lists, graphs, adds and removes external dependencies (11.5).
-- `envs`: lists the execution environments used by tasks, what the lock file resolves them to, what requires them, and whether each image is present (11.4).
+- `envs`: lists the execution environments used by tasks, what the lock file resolves them to, what requires them, and whether each image is present, and which programs tasks run in each (11.4).
 - `secrets`: lists the secret references in the environment and checks that the stores they name can be read from (11.10).
 
 Develop:
@@ -2936,6 +2941,7 @@ lask run [--module <path>] [<function>] --help
 lask eval [--module <path>] [<function>] --help
 lask repl [--module <path>]
 lask envs list [--module <path>] [<function>]
+lask envs commands [--module <path>] [--verbose] [<function>]
 lask sync [--module <path>] [--frozen] [--prune]
 lask deps list [--module <path>]
 lask deps graph [--module <path>] [<name>] [--depth <n>]
@@ -2988,12 +2994,19 @@ Keyword argument forms:
 - If the parameter name is a single character, the short form `-p <value>` may also be used. Since no identifier begins with a digit (3.2), a token such as `-1` is never a short form: it is a positional argument (a negative number under `auto` or `json` decoding).
 - Example: for `retry(cmd: String, --n: Number = 3)`, `lask run retry "make test" -n 5` corresponds to the function call `retry("make test", n = 5)`.
 
+Flags:
+
+- A keyword parameter of type `Bool` or `Bool | Null` is a **flag**. Written without a value (`--dry-run`, or `-v` for a single-character name), it binds `true`, whatever the decoding mode.
+- A flag takes the token after it as its value only when that token is exactly `true` or `false`, so `--dry-run true` and `--dry-run false` keep their meaning. Any other token after a flag is read as if the flag were not there: `lask run tag --all v1` binds `all = true` and the positional argument `v1`.
+- `--flag=<value>` gives the value in the token itself, as for any keyword argument, and is the form to use for `null`.
+- A positional argument that is the text `true` or `false` cannot directly follow a flag; it is written before the flag, or after `--`.
+
 Binding rules:
 
 1. Resolve the target module (`--module`, default `main.lask`) and obtain the function specified by the first positional argument, among the public symbols of that module: those it declares, and those it re-exports under the name it publishes them by (Chapter 5). A re-exported function is invoked as the declaration it names, with its parameter list intact. A declaration marked `internal` is not reachable.
 2. Bind the positional arguments after the function name, from left to right, to the positional parameters in declaration order. Positional arguments exceeding the number of positional parameters are collected into the variadic parameter (variadic collection in 7.5).
 3. Bind keyword arguments to parameters with matching names. Unknown names and duplicate bindings are pre-execution errors (corresponding to `E-TYPE-KEYWORD` in 7.5).
-4. Keyword parameters that were not bound are completed with the default values from the function definition (default-value completion in 7.5).
+4. Keyword parameters that were not bound are completed with the default values from the function definition (default-value completion in 7.5). A required keyword parameter (6.1) that was not bound is a pre-execution error (`missing keyword argument: '--target'`).
 5. If the number of positional arguments does not match the number of positional parameters (excluding collection by a variadic parameter), it is a pre-execution error.
 
 Argument decoding modes:
@@ -3152,6 +3165,75 @@ ENVIRONMENT                  KIND      PINNED               REQUIRED BY         
 4 environments (1 local, 2 registry, 1 recipe): 1 ok, 2 present, 1 missing; 3 pinned in lask.lock.json
 ```
 
+`envs commands` enumerates the command executions reachable from the module and reports, for each execution environment, the programs they run.
+
+Syntax:
+
+```text
+lask envs commands [--module <path>] [--verbose] [<function>]
+```
+
+Enumeration rules:
+
+- What is enumerated is every command execution expression (6.6), and every call of `run` (15.5), in the declarations reachable by the rules of `envs list`; with `<function>`, on the call graph reachable from that function. Reachability over-approximates in the same way.
+- A command word declared on an environment (Chapter 5) that no reachable command runs is not enumerated: it is listed by `lask cmd --help` (11.8). Nor are the built-in functions that take an environment without running a command (15.11).
+- Nothing is evaluated, no command runs, and the container engine is not contacted.
+
+Environment rules:
+
+- The environments a command may run in are determined statically from its environment expression — for a command whose environment dispatch selected (10.9), the environment of the command declaration that supplied it — and over-approximate, as enumeration does.
+- Every head the expression reaches is an environment the command may run in: a head written in it; what the expression of a top-level value binding it references reaches; and every head reachable from a function it references. An entry of a top-level map or record named by a literal key reaches only what that entry does, and a call of a top-level function does not reach the default of a keyword parameter the call supplies.
+- A parameter whose type can hold an environment — `Environment`, `Runnable`, `Any`, or a type containing one of them — makes a command whose environment expression can take its value **dynamic**: what a caller passes is not enumerated. A local binding takes what its expression reaches. The default of a keyword parameter is still reached, and its head is listed.
+- A dynamic command is listed under `(dynamic)` in addition to the heads it reaches.
+- The session a `with_container` body receives as its parameter (15.5) reaches what the call's first argument reaches, so a command run with it is listed under the environment the session is opened on.
+
+Program rules:
+
+- The programs of a command are read from its command string as written, before interpolation, by the segmentation of 10.9: the command word of each segment, nested regions included, in order of occurrence.
+- Unlike dispatch, every command word is a program, candidate or not. A path is shown as written (`tools/report.sh`), and so is a word containing a hole (`#{bin}/lask`).
+- A shell reserved word in command position is not a program. When the command word is `!`, `{`, `}`, `if`, `then`, `elif`, `else`, `fi`, `while`, `until`, `do`, `done` or `esac`, it is skipped, together with the assignment words after it, and the next word is the command word; a redirection in command position (`> out`, `2>&1`) is skipped in the same way, with its target; a segment whose command word is `for`, `case`, `select` or `in` contributes nothing. These rules apply only to this listing, and change nothing in dispatch, which gives no meaning to a reserved word, nor to a redirection in command position.
+- A command string that cannot be segmented has the one program `(unanalysable)`. A command line passed to `run` is a value, not written text, and has the one program `(computed)`.
+
+Columns:
+
+- `ENVIRONMENT`: the head, in the notation of `envs list`, or `(dynamic)`. Environments are listed `#local` first, then registry references and recipes in order of their notation, then `(dynamic)`.
+- `PROGRAM`: one row for each program run in the environment, in order of its text.
+- `USED BY`: the declarations whose commands run it, in the notation of `envs list`, two shown and how many more. A declaration whose command may run in more than one environment, or is dynamic, is followed by its environment expression as written in parentheses (`main.lask: test (envs[env])`).
+
+Rules (`--verbose`):
+
+- With `--verbose`, each environment is followed by one line for each command that may run in it: where it is written (`<module>:<line>`), the declaration it is in, the command string as written, with its continuation lines joined, and, when it is not the head of the environment it is listed under, its environment expression as written, or `command "<word>"` for a command whose environment dispatch selected.
+
+Output and exit codes:
+
+- The table is on stdout, followed by one line counting the environments, the programs and the commands.
+- With `--format json` the output is the same whether or not `--verbose` is given: an array with one object per environment: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `programs` (an array of `program` and `used_by`, every place in full) and `commands` (an array of `command`, `programs`, `module`, `line`, `declaration` and `via`, the environment expression, `null` when it is the head of the environment).
+- Exit codes: as for `envs list`.
+
+Execution example:
+
+```text
+$ lask envs commands
+ENVIRONMENT               PROGRAM  USED BY
+#local                    rm       main.lask: clean
+#alpine:3.20              make     main.lask: pick (envs[env])
+#debian:13                make     main.lask: pick (envs[env])
+#golang:1.22              go       main.lask: build, main.lask: test
+#node:24.21.0-alpine3.24  cd       main.lask: test_web
+#node:24.21.0-alpine3.24  npm      main.lask: test_web
+(dynamic)                 cat      main.lask: show
+
+5 environments and (dynamic): 6 programs in 6 commands
+
+$ lask envs commands --verbose pick
+#alpine:3.20
+  main.lask:9  pick  make  ← envs[env]
+#debian:13
+  main.lask:9  pick  make  ← envs[env]
+
+2 environments: 1 program in 1 command
+```
+
 ### 11.5 Dependency Management (`deps`)
 
 `deps` lists, graphs, edits and removes the external dependencies declared in the project file (Chapter 5). Fetching the declared dependencies and writing the lock file is `sync` (11.7).
@@ -3247,7 +3329,8 @@ Sources of help information:
 Rendering rules:
 
 - Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
-- In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`.
+- In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`. A required keyword parameter (6.1) is rendered without the brackets, `--name <Type>`, and a flag (11.2) without the type, `[--name]`.
+- In the parameter list, a required keyword parameter is marked `(required)` after its type, in place of a default value.
 - A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
 - The function list holds the module's functions — declarations written as functions, and bindings whose value is a function — whether it declares them or re-exports them (Chapter 5). Plain value bindings are callable (11.2) and have help of their own, but are not listed.
 - A re-exported function is listed and described under the name the module publishes, from the declaration it names: the documentation comment, parameters and location are those of the file that declares it.
@@ -3276,7 +3359,7 @@ build(target: String, --out_dir: String = "dist", --publish: Bool = false): Stri
 build - Build the project and publish the artifact.
 
 Usage:
-  lask run build <target> [--out-dir <String>] [--publish <Bool>]
+  lask run build <target> [--out-dir <String>] [--publish]
 
 The build runs in the `builder` environment; the artifact is
 uploaded only when `--publish` is set.
@@ -3325,11 +3408,11 @@ JSON output (`--format json`) is the structured form of the same information, in
   "description": "The build runs in the `builder` environment; the artifact is\nuploaded only when `--publish` is set.",
   "params": [
     {"name": "target", "kind": "positional", "type": "String",
-     "default": null, "secret": false, "doc": "Build target name."},
+     "default": null, "required": false, "secret": false, "doc": "Build target name."},
     {"name": "out_dir", "kind": "keyword", "type": "String",
-     "default": "\"dist\"", "secret": false, "doc": "Directory the artifact is written to."},
+     "default": "\"dist\"", "required": false, "secret": false, "doc": "Directory the artifact is written to."},
     {"name": "publish", "kind": "keyword", "type": "Bool",
-     "default": "false", "secret": false, "doc": "Whether to upload the artifact."}
+     "default": "false", "required": false, "secret": false, "doc": "Whether to upload the artifact."}
   ],
   "returns": {"type": "String", "doc": "The path of the produced artifact."},
   "environments": [{"name": "builder", "kind": "docker", "target": "golang:1.22"}],
@@ -3340,6 +3423,7 @@ JSON output (`--format json`) is the structured form of the same information, in
 - `kind` is `function-help` for the help of a single function, and `function-list` for the function list. The latter holds `functions`, an array of objects with `name`, `summary`, and `signature`.
 - `kind` for a parameter is one of `positional` / `variadic` / `keyword`.
 - `default` is `null` for a parameter that has no default value, and `"<secret>"` for a parameter marked `!!`.
+- `required` is `true` for a required keyword parameter (6.1), and `false` for every other parameter. A positional parameter is always required by its kind, so the field speaks only of keyword parameters.
 - A field whose information is unavailable is `null`; a section that is omitted in text output is an empty array.
 
 Output destination and exit codes:
@@ -3818,7 +3902,7 @@ For `json` / `pretty-json`, the following mapping rules must be satisfied.
 - `Bool`: maps to a JSON boolean.
 - `Null`: maps to JSON null.
 - `Void`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Void"}` (treated equivalently to `FunctionRef` in 13.2).
-- `Environment`, `Runnable`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Environment","kind":"<environment kind>","params":{...}}`. `kind` is the environment kind name, and `params` is the normalized parameter set: the image with its image options, and the run options that are set (e.g., `{"$type":"Environment","kind":"docker","params":{"image":"alpine:3.20"}}`). A value with at least one run option set is tagged `"$type":"Runnable"` instead; a runnable with none is its environment (8.8). Parameters containing secret information are masked according to the rules in Chapter 12.
+- `Environment`, `Runnable`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Environment","kind":"<environment kind>","params":{...}}`. `kind` is the environment kind name, and `params` is the normalized parameter set: the image with its image options, and the run options that are set (e.g., `{"$type":"Environment","kind":"docker","params":{"image":"alpine:3.20"}}`). A value with at least one run option set is tagged `"$type":"Runnable"` instead; a runnable with none is its environment (8.8). A session (15.5) is converted as the environment it was started on. Parameters containing secret information are masked according to the rules in Chapter 12.
 - `Array<T>`: maps to a JSON array preserving element order.
 - `Map<T>`: maps to a JSON object with string keys.
 - `Record<...>`: maps to a JSON object with field names as keys. An optional field (4.2) that is absent contributes no key at all; one that is present contributes its key, including when its value is null. This is where the difference between an absent key and a null value is written down.
@@ -4028,6 +4112,7 @@ Representative codes:
 - `E-RUNTIME-REGEX`
 - `E-RUNTIME-TIMEOUT`
 - `E-RUNTIME-UNTIL-EXHAUSTED`
+- `E-RUNTIME-SESSION-CLOSED`
 - `E-IO-STDIN-READ`
 - `E-IO-ENV-RESOLVE`
 - `E-IO-FS`
@@ -4080,7 +4165,7 @@ Additional requirements related to commands:
 Additional requirements related to reporting several errors:
 
 - Independent errors are all reported; an error that only follows from another is not. A top-level declaration, a type alias, a command declaration and a command import are each checked on their own, and each reports at most its first error.
-- A declaration that uses one that failed is still checked when the failed one's annotations give all of its type: a function declaration with its return type and the type of every keyword parameter written, or a value declaration with its type written. Otherwise the declaration that uses it reports nothing. Likewise, a type that refers to a failed type alias, and a command string whose command words include one whose declaration or import failed, report nothing.
+- A declaration that uses one that failed is still checked when the failed one's annotations give all of its type: a function declaration with its return type and the type of every keyword parameter with a default written (a required one without an annotation is `Any`, 6.1), or a value declaration with its type written. Otherwise the declaration that uses it reports nothing. Likewise, a type that refers to a failed type alias, and a command string whose command words include one whose declaration or import failed, report nothing.
 - A declaration that holds an error of name resolution (7.1-7.3) is not type checked; the declarations that do not are.
 - A syntax error is reported for each top-level declaration that has one: parsing resumes at the next token in column 1. A module with a syntax error is not checked further. A lexical error is the only error reported for its module.
 - Diagnostics are reported in order of file and position, each once. Text output shows at most 50 errors and then the number left out; JSON output carries every one.
@@ -4169,6 +4254,7 @@ Representative examples:
 - `E-RUNTIME-REGEX`: a malformed regular expression pattern (15.3)
 - `E-RUNTIME-TIMEOUT`: the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10).
 - `E-RUNTIME-UNTIL-EXHAUSTED`: the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10).
+- `E-RUNTIME-SESSION-CLOSED`: a command was run with the session of a `with_container` whose body had returned, or was running in it when it did (15.5).
 
 Rules:
 
@@ -4468,6 +4554,7 @@ The built-in library provides at least the following functions.
 - `run`: `Function<Runnable, String, CommandResult>`
 - `runnable`: `Function<Environment, Runnable>`, with the run options of 10.2 as keyword parameters
 - `shell_quote`: `Function<String, String>`
+- `with_container`: `Function<Runnable, Function<Runnable, T>, T>`
 
 Contract:
 
@@ -4500,6 +4587,36 @@ upload(env: Runnable, src: String, dst: String): CommandResult =
 
 - `shell_quote` is a pure function, and is placed here rather than among the string operations of 15.3 because its contract is about command construction. There is no function that marks a hole to be substituted unescaped: that is the raw hole `#!{e}` of 6.6.
 - Masking (12.8) matches registered values as exact substrings. Escaping a value rewrites the characters it escapes, so a registered secret is also registered in each form the escaping of 6.6 and `shell_quote` write it (every `'` as `'\''`; every `\`, `"`, `$` and `` ` `` preceded by `\`), and the command line that carries it is masked as well.
+
+Container sessions:
+
+- `with_container(env, body)` evaluates `body(session)` with one container of `env` kept running for the extent of the call, and returns what the body returns, or fails as it fails. `session` is a `Runnable`: a command run with it — by a command execution expression (6.6), by `run`, or by a filesystem function (15.11) — runs in that container rather than in a container of its own.
+- It exists so that commands that depend on each other can be written one per line. A container environment starts a container for each command (10.2), so without a session such commands are joined into one command string with `&&`.
+- The container is started as the container of a command is: the image the lock pins (10.3, 10.4), the run options of `env` (10.2), the base directory mounted at `/work` (10.5), and an init process unless `init` is `false`. It is started at the call, before the body is evaluated: an image that is not materialized is `E-IO-IMAGE-MISSING`, and an engine that cannot start the container is `E-IO-ENV-RESOLVE`.
+- What lasts from one command to the next is the container: its filesystem, including the files outside `/work`, and the processes a command leaves running in the background. The state of a shell does not: each command is run by a `/bin/sh` of its own, so a `cd` or an `export` ends with its command. Every command starts with the working directory, the user and the variables of the run options of `env` (`workdir`, `user`, `env`; 10.2), which are given once, where the session is opened.
+- The container is removed when the body is done: when it returns, when it fails, and when it is abandoned (8.7, 15.7). Its removal stops every process in it.
+- The session is closed before its container is removed. A command run with a closed session — by a computation the body started that runs on after it (6.3), or with a session the body returned — fails without running, with the diagnostic code `E-RUNTIME-SESSION-CLOSED`. A command still running in the session when it closes is stopped with the container, and fails the same way. A computation of the body that does not use the session runs on as usual.
+- A session ends with the run that opened it, however the run ends: an implementation must not leave its container running once lask has exited, killed or not.
+- Given `#local`, or a session that is open, `with_container` evaluates `body(env)`: the host keeps its state already, and a session is one already. A function can therefore take any runnable and open a session on it, and a session can be given to a function that opens one.
+- A command in a session is logged with the environment summary of `env` (12.3). The execution log (12.2) records at `info` the start of the session, naming its container and `env`, and the removal of its container.
+- A session is serialized as the environment `env` it was started on (13.1).
+- This implementation starts the container with a `/bin/sh` that reads its standard input to the end, and holds the other end of that input: closing it ends the container, which is removed then, and lask's exit closes it however lask exits. A command is run with the engine client's `exec` as `/bin/sh -c <command string>`, marked by a variable of its own, `LASK_SESSION_EXEC`, which the processes it starts inherit; an abandoned command is stopped by sending its marked processes the termination request of 8.7.
+
+```lask
+// Install a tool outside /work, start a server in the background, and
+// test against it: three steps, each on a line of its own.
+test_api(): String = with_container(#node:24.21.0-alpine3.24{workdir: "/work/api"}, \(box) -> do {
+  $[box] apk add --no-cache curl
+  $[box] npm ci
+  $[box] npm start > /tmp/server.log 2>&1 &
+  until(backoff_fixed(1, 30), \(r: CommandResult) -> r.code == 0, \() -> do {
+    $*[box] curl -fs localhost:3000/health
+  })
+  $[box] npm test
+})
+```
+
+- A command execution expression runs to the end of its line (6.6), so the body is written as a `do` block whose closing `})` stands on a line of its own.
 
 ### 15.6 Parallel and Asynchronous Helper Functions
 
@@ -4750,7 +4867,7 @@ The built-in library provides at least the following functions.
 The environment argument:
 
 - Every function in this section takes the target `Environment` as its last positional argument, and acts on the filesystem that environment sees: the host's filesystem for `#local`, and the container's filesystem for a container environment. There is no filesystem access that does not name an environment, and there is no default one (10.1) — an unqualified read would otherwise mean the host, which is exactly the silent fall back to the host that this specification rejects for commands (10.1, 10.4).
-- The argument is positional and required. It is not a keyword parameter, because a keyword parameter must have a default (6.1) and no default is admissible here.
+- The argument is positional and required.
 - Command dispatch (10.9) never applies to these functions. Dispatch selects an environment from the program a command string invokes, and these calls contain no command word, so the environment is always written out.
 - Relative paths resolve against the working directory of the given environment (10.5).
 - Every access is bounded by that environment's permission boundary (10.7). A container environment reaches only what was mounted into it, so a path that exists on the host is not readable through a container environment unless it was mounted there.

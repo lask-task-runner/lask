@@ -209,11 +209,16 @@ applyValue ctx fv pos kw = case fv of
         pure scope1
     scope3 <-
       foldM
-        ( \sc (name, defCore) -> case lookup name kw of
-            Just v -> pure (Map.insert name v sc)
-            Nothing -> do
-              v <- evalCore ctx sc defCore
+        ( \sc (name, defCore) -> case (lookup name kw, defCore) of
+            (Just v, _) -> pure (Map.insert name v sc)
+            (Nothing, Just d) -> do
+              v <- evalCore ctx sc d
               pure (Map.insert name v sc)
+            -- The checker binds a required keyword parameter at every
+            -- call (7.5), so only a call it did not see can get here.
+            (Nothing, Nothing) ->
+              throwIO . runtimeFailure ERuntimeAccess $
+                "missing keyword argument '" <> name <> "' for " <> lamName lam
         )
         scope2
         (lamKeywords lam)

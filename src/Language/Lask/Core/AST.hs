@@ -112,8 +112,9 @@ data Lam = Lam
     lamPositional :: [Text],
     lamVariadic :: Maybe Text,
     -- | Keyword parameters with their default expressions, evaluated
-    -- at call time when unbound (8.3).
-    lamKeywords :: [(Text, Core)],
+    -- at call time when unbound (8.3). A required keyword parameter
+    -- has none: every call binds it (7.5).
+    lamKeywords :: [(Text, Maybe Core)],
     lamBody :: Core,
     -- | The function type ('Language.Lask.Types.TyFun').
     lamType :: Type
@@ -129,7 +130,7 @@ coreChildren c = case coreF c of
   CArray es -> es
   CMapLit kvs -> map snd kvs
   CRecordLit kvs -> map snd kvs
-  CLam lam -> map snd (lamKeywords lam) <> [lamBody lam]
+  CLam lam -> [d | (_, Just d) <- lamKeywords lam] <> [lamBody lam]
   CApp fn pos kw -> fn : pos <> map snd kw
   CDot e _ -> [e]
   CIndex _ a b -> [a, b]

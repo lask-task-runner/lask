@@ -389,7 +389,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
           let (n, t, d) = case f of
                 PPositional n' _ t' -> (n', t', Nothing)
                 PVariadic n' t' -> (n', t', Nothing)
-                PKeyword n' _ t' d' -> (n', t', Just d')
+                PKeyword n' _ t' d' -> (n', t', d')
            in [dupDiag sp n | n `Set.member` seen]
                 <> [coreDiag sp n | isUnbindableName n]
                 <> maybe [] checkType t

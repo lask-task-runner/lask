@@ -80,7 +80,10 @@ data StaticParams = StaticParams
   { spPositional :: [(Text, Type)],
     -- | Variadic parameter with its element type.
     spVariadic :: Maybe (Text, Type),
-    spKeywords :: [(Text, Type)]
+    spKeywords :: [(Text, Type)],
+    -- | The keyword parameters without a default, which every call
+    -- has to bind (7.5).
+    spRequired :: [Text]
   }
   deriving (Show, Eq)
 
@@ -140,7 +143,10 @@ data CommandUse = CommandUse
     cuEnv :: Maybe Text,
     -- | The command words that selected it, empty when the expression
     -- carried an explicit environment specification.
-    cuWords :: [Spanned Text]
+    cuWords :: [Spanned Text],
+    -- | The command string as written, for listing the programs it
+    -- runs (spec 11.4).
+    cuParts :: [TextPart]
   }
   deriving (Show, Eq)
 
@@ -312,9 +318,9 @@ data Failure
 type TC = StateT St (Either (Failure, Failures))
 
 -- | Record how one command execution expression got its environment.
-recordCommandUse :: Span -> Maybe Text -> [Spanned Text] -> TC ()
-recordCommandUse sp env ws =
-  modify (\s -> s {stCommandUses = CommandUse sp env ws : stCommandUses s})
+recordCommandUse :: Span -> Maybe Text -> [Spanned Text] -> [TextPart] -> TC ()
+recordCommandUse sp env ws parts =
+  modify (\s -> s {stCommandUses = CommandUse sp env ws parts : stCommandUses s})
 
 -- | An environment in the notation of environment expressions (6.7),
 -- for display.
@@ -717,16 +723,27 @@ standIn ctx key@(path, name) = case lookupDeclAst ctx key of
     _ -> pure Nothing
   Nothing -> pure Nothing
   where
-    annotated ps = and [isJust ann | Param _ (PKeyword _ _ ann _) <- ps]
     stub sp vs t params bounds = CoreDecl path name vs t (Core sp (CVar (TopRef path name))) params bounds
     funType params ret =
       TyFun (map snd (spPositional params) <> [TyArray e | Just (_, e) <- [spVariadic params]]) ret
-    headerParams c ps = do
-      pos <- sequence [(,) n <$> maybe (pure TyAny) (typeFromS c path) ann | Param _ (PPositional n _ ann) <- ps]
-      var <- sequence [(,) n <$> variadicElem c ann | Param _ (PVariadic n ann) <- ps]
-      kws <- sequence [(,) n <$> typeFromS c path ann | Param _ (PKeyword n _ (Just ann) _) <- ps]
-      pure (StaticParams pos (listToMaybe var) kws)
-    variadicElem c ann = do
+    headerParams c = headerStaticParams c path
+
+-- | Whether the annotations give the type of every keyword parameter:
+-- one with a default and no annotation is typed by its default. A
+-- required one without an annotation is @Any@, as a positional one is.
+annotated :: [Param] -> Bool
+annotated ps = and [isJust ann | Param _ (PKeyword _ _ ann (Just _)) <- ps]
+
+-- | The declaration parameter information the annotations give, for a
+-- parameter list that is 'annotated'.
+headerStaticParams :: Ctx -> FilePath -> [Param] -> TC StaticParams
+headerStaticParams c path ps = do
+  pos <- sequence [(,) n <$> maybe (pure TyAny) (typeFromS c path) ann | Param _ (PPositional n _ ann) <- ps]
+  var <- sequence [(,) n <$> variadicElem ann | Param _ (PVariadic n ann) <- ps]
+  kws <- sequence [(,) n <$> maybe (pure TyAny) (typeFromS c path) ann | Param _ (PKeyword n _ ann _) <- ps]
+  pure (StaticParams pos (listToMaybe var) kws [n | Param _ (PKeyword n _ _ Nothing) <- ps])
+  where
+    variadicElem ann = do
       t <- maybe (pure (TyArray TyAny)) (typeFromS c path) ann
       case t of
         TyArray e -> pure e
@@ -1005,12 +1022,12 @@ elabParams ::
   FilePath ->
   Locals ->
   [Param] ->
-  TC (StaticParams, [(Text, Core)], Locals, [Text])
+  TC (StaticParams, [(Text, Maybe Core)], Locals, [Text])
 elabParams ctx path outer = go [] Nothing [] [] [] outer
   where
     go pos var kws defaults secrets locals [] =
       pure
-        ( StaticParams (reverse pos) var (reverse kws),
+        ( StaticParams (reverse pos) var (reverse kws) [n | (n, Nothing) <- reverse defaults],
           reverse defaults,
           Map.union locals outer,
           reverse secrets
@@ -1028,13 +1045,15 @@ elabParams ctx path outer = go [] Nothing [] [] [] outer
           _ -> abort (diag ETypeIllformed psp "variadic parameter type must be Array<T>")
         go pos (Just (n, elemTy)) kws defaults secrets (Map.insert n t locals) rest
       PKeyword n sec ann dflt -> do
-        (dCore, dTy) <- case ann of
-          Just a -> do
+        (dCore, dTy) <- case (ann, dflt) of
+          (Just a, _) -> do
             t <- typeFromS ctx path a
             checkParamType psp t
-            c <- check ctx path (Map.union locals outer) dflt t
+            c <- traverse (\d -> check ctx path (Map.union locals outer) d t) dflt
             pure (c, t)
-          Nothing -> infer ctx path (Map.union locals outer) dflt
+          (Nothing, Just d) -> first Just <$> infer ctx path (Map.union locals outer) d
+          -- Required and unannotated: Any, as a positional parameter.
+          (Nothing, Nothing) -> pure (Nothing, TyAny)
         secrets' <- addSecret psp n sec dTy secrets
         go pos var ((n, dTy) : kws) ((n, dCore) : defaults) secrets' (Map.insert n dTy locals) rest
 
@@ -1069,6 +1088,7 @@ infer ctx path locals (Expr sp f) = case f of
     let recTy = TyRecord (Map.fromList [(k, requiredField t) | (k, _, t) <- fields])
     pure (Core sp (CRecordLit [(k, c) | (k, c, _) <- fields]), recTy)
   ELambda ps rt body -> do
+    requiredAsValue sp "a lambda" ps
     (lam, ty, _) <- elabLambda ctx path locals sp Nothing ps rt body
     pure (lam, ty)
   ECall fn args -> elabCall ctx path locals sp fn args Nothing
@@ -1242,6 +1262,7 @@ check ctx path locals e@(Expr sp f) expected = case f of
   EVar n
     | not (Map.member n locals),
       Just (VTopLevel defPath defName) <- lookupValueTarget ctx path n -> do
+        declAsValue ctx sp n (defPath, defName)
         -- A declaration with type parameters, referenced as a value:
         -- the expected type has to determine every one of them (4.4).
         (bounds, t) <- declTypeBounds ctx (defPath, defName)
@@ -1307,6 +1328,7 @@ elabLambdaAgainst ::
   [Type] ->
   TC (Core, Type, StaticParams)
 elabLambdaAgainst ctx path locals sp ps rt body expPs = do
+  requiredAsValue sp "a lambda" ps
   let positionals = [p | p@(Param _ (PPositional _ _ _)) <- ps]
   ps' <-
     if length positionals == length expPs && length positionals == length ps
@@ -1343,6 +1365,21 @@ lookupValueTarget :: Ctx -> FilePath -> Text -> Maybe ValueTarget
 lookupValueTarget ctx path n =
   Map.lookup path (ctxScopes ctx) >>= Map.lookup n . gsValues
 
+-- | A declaration referenced other than as the callee of a call is a
+-- function value, which cannot have a required keyword parameter
+-- (7.5): a call through a value binds no names.
+declAsValue :: Ctx -> Span -> Text -> Key -> TC ()
+declAsValue ctx sp n key = case lookupDeclAst ctx key of
+  Just (Decl _ (DFunction _ _ ps _ _)) -> requiredAsValue sp ("'" <> n <> "'") ps
+  Just (Decl _ (DValue _ _ _ (Expr _ (ELambda ps _ _)))) -> requiredAsValue sp ("'" <> n <> "'") ps
+  _ -> pure ()
+
+requiredAsValue :: Span -> Text -> [Param] -> TC ()
+requiredAsValue sp what ps = case [k | Param _ (PKeyword k _ _ Nothing) <- ps] of
+  k : _ ->
+    () <$ abort (diag ETypeKeyword sp (what <> " has the required keyword parameter '" <> k <> "', so it can only be called, not used as a value"))
+  [] -> pure ()
+
 inferVar :: Ctx -> FilePath -> Locals -> Span -> Text -> TC (Core, Type)
 inferVar ctx path locals sp n = case Map.lookup n locals of
   Just t -> do
@@ -1350,6 +1387,7 @@ inferVar ctx path locals sp n = case Map.lookup n locals of
     pure (Core sp (CVar (LocalRef n)), t)
   Nothing -> case lookupValueTarget ctx path n of
     Just (VTopLevel defPath defName) -> do
+      declAsValue ctx sp n (defPath, defName)
       t <- declType ctx (defPath, defName)
       -- A function value carries no type variables of its own (spec
       -- 4.4), so a polymorphic declaration referenced as one has to be
@@ -1490,6 +1528,7 @@ elabDot ctx path locals sp inner fsp fld = case namespaceExpr ctx path locals in
         -- Namespace member (resolution rank 4, spec 7.2), followed to
         -- its declaration when the module re-exports it.
         let target@(defPath, defName) = namespaceMember (ctxScopes ctx) key fld
+        declAsValue ctx sp fld target
         t <- declType ctx target
         recordVar fsp fld t (Just target)
         pure (Core sp (CVar (TopRef defPath defName)), t)
@@ -2074,7 +2113,7 @@ elabCommand ctx path locals sp stream mEnv parts = do
   when hostIsWindows $ do
     container <- runsInContainer ctx envCore
     when container (checkShellSyntax sp reading)
-  recordCommandUse sp shownEnv viaWords
+  recordCommandUse sp shownEnv viaWords parts
   let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run"))) [envCore, cmdCore] [])
   case stream of
     StreamAll -> pure (call, commandResultType)
@@ -2821,8 +2860,19 @@ elabCall ctx path locals sp fn args mExpected = do
           -- Still being elaborated: its parameter information is not
           -- available yet, so the call is checked against the header
           -- type as a value. A recursive call of a generic keeps its
-          -- variables, which the header does carry.
-          pure (Just (Core (exprSpan fn) (CVar (TopRef p n)), map fst vs, boundMap vs, t, Nothing))
+          -- variables, which the header does carry. A function with a
+          -- required keyword parameter cannot be called as a value
+          -- (7.5), so its annotations have to give the parameters.
+          params <- case lookupDeclAst ctx key of
+            Just (Decl _ (DFunction _ _ ps _ _))
+              | not (null [k | Param _ (PKeyword k _ _ Nothing) <- ps]) ->
+                  if annotated ps
+                    then Just <$> headerStaticParams (withTypeVars vs ctx) p ps
+                    else
+                      abort . diag ETypeKeyword (exprSpan fn) $
+                        "a recursive call of '" <> n <> "', which has a required keyword parameter, needs every keyword parameter annotated"
+            _ -> pure Nothing
+          pure (Just (Core (exprSpan fn) (CVar (TopRef p n)), map fst vs, boundMap vs, t, params))
         else do
           cd <- demandOrStandIn ctx key
           recordVar (exprSpan fn) n (cdType cd) (Just key)
@@ -2832,7 +2882,7 @@ elabCall ctx path locals sp fn args mExpected = do
     -- binds type variables (spec 4.2) is instantiated here, through
     -- the same two passes a built-in call uses, so a call of a generic
     -- declaration keeps keyword arguments and variadic collection.
-    bindStatic tvs bounds ret (StaticParams positional variadic keywords) = do
+    bindStatic tvs bounds ret (StaticParams positional variadic keywords required) = do
       -- Keyword-name violations (binding positional/variadic
       -- parameters by name) report E-TYPE-KEYWORD before arity.
       let nonKeywordNames =
@@ -2852,6 +2902,9 @@ elabCall ctx path locals sp fn args mExpected = do
       when (isNothing variadic && not (null extra)) $
         () <$ abort (diag ETypeArity sp ("too many positional arguments: expected " <> tshow nPos <> ", got " <> tshow (length posExprs)))
       kwSlots <- keywordSlots keywords
+      case [n | n <- required, n `notElem` [k | (k, _, _) <- kwSlots]] of
+        n : _ -> () <$ abort (diag ETypeKeyword sp ("missing keyword argument: '" <> n <> "'"))
+        [] -> pure ()
       let (declVs, ren) = freshen tvs
           posSlots =
             zip bound (map (ren . snd) positional)

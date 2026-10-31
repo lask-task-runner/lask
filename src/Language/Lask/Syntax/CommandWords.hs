@@ -16,6 +16,7 @@ module Language.Lask.Syntax.CommandWords
   ( CommandWord (..),
     Analysis (..),
     commandWords,
+    programWords,
     validCommandName,
   )
 where
@@ -24,7 +25,7 @@ import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Span (Position (..), Span (..))
-import Language.Lask.Syntax.AST (TextPart (..))
+import Language.Lask.Syntax.AST (Expr, TextPart (..))
 
 -- | A word found in command position.
 data CommandWord = CommandWord
@@ -52,15 +53,16 @@ data Analysis
 -- around it without depending on spans being present.
 data Atom
   = AChar Int Span Char
-  | AHole Int Span
+  | -- | A hole, with the text it is shown as.
+    AHole Int Span Text
 
 atomSpan :: Atom -> Span
 atomSpan (AChar _ sp _) = sp
-atomSpan (AHole _ sp) = sp
+atomSpan (AHole _ sp _) = sp
 
 atomIndex :: Atom -> Int
 atomIndex (AChar i _ _) = i
-atomIndex (AHole i _) = i
+atomIndex (AHole i _ _) = i
 
 -- | Words accumulate their atoms and whether they remain plain, i.e.
 -- still eligible to be a candidate.
@@ -71,7 +73,19 @@ emptyWord = Word' [] True
 
 -- | Scan a command string for its command words, in source order.
 commandWords :: [TextPart] -> Analysis
-commandWords parts = case scan (atoms parts) of
+commandWords = analyse segment (\_ _ -> "")
+
+-- | The programs a command string runs, for @lask envs commands@
+-- (spec 11.4): the command words of 'commandWords', except that a
+-- shell reserved word or a redirection in command position is looked
+-- past, and that each hole is part of a word's text, as the given
+-- function shows it ('True' for a raw hole). Dispatch gives neither a
+-- meaning (10.9), so this is for listing only.
+programWords :: (Bool -> Expr -> Text) -> [TextPart] -> Analysis
+programWords = analyse programSegment
+
+analyse :: ([Word'] -> [(Int, CommandWord)]) -> (Bool -> Expr -> Text) -> [TextPart] -> Analysis
+analyse seg shown parts = case scan seg (atoms shown parts) of
   Left (sp, why) -> NotAnalysable sp why
   Right ws -> Analysed (map snd (sortOn fst ws))
 
@@ -89,12 +103,12 @@ validCommandName t = case commandWords [TPChunk NoSpan t] of
 -- chunk are recovered by walking its text from the chunk span's start;
 -- see the note on 'Language.Lask.Lexer.Token.Chunk' for the one case
 -- where the walk is approximate.
-atoms :: [TextPart] -> [Atom]
-atoms = go 0
+atoms :: (Bool -> Expr -> Text) -> [TextPart] -> [Atom]
+atoms shown = go 0
   where
     go _ [] = []
-    go i (TPInterp _ : ps) = AHole i NoSpan : go (i + 1) ps
-    go i (TPRaw _ : ps) = AHole i NoSpan : go (i + 1) ps
+    go i (TPInterp e : ps) = AHole i NoSpan (shown False e) : go (i + 1) ps
+    go i (TPRaw e : ps) = AHole i NoSpan (shown True e) : go (i + 1) ps
     go i (TPChunk sp t : ps) =
       let cs = T.unpack t
        in walk i (startOf sp) cs <> go (i + length cs) ps
@@ -116,15 +130,15 @@ atoms = go 0
 -- | Walk the atoms, accumulating words and segments and recursing into
 -- nested regions. Each result carries its first atom's index, so the
 -- caller can restore source order. 'Left' reports an unclosed region.
-scan :: [Atom] -> Either (Span, Text) [(Int, CommandWord)]
-scan = go emptyWord [] []
+scan :: ([Word'] -> [(Int, CommandWord)]) -> [Atom] -> Either (Span, Text) [(Int, CommandWord)]
+scan segmentOf = go emptyWord [] []
   where
     -- cur: the word being accumulated
     -- seg: words of the current segment, in reverse
     -- acc: command words found so far
-    go cur seg acc [] = Right (acc <> segment (finish cur seg))
+    go cur seg acc [] = Right (acc <> segmentOf (finish cur seg))
     go cur seg acc (a : rest) = case a of
-      AHole _ _ -> go (push a cur {wPlain = False}) seg acc rest
+      AHole {} -> go (push a cur {wPlain = False}) seg acc rest
       AChar _ sp c
         | c == '\'' -> quoted sp '\'' False cur seg acc rest
         | c == '"' -> quoted sp '"' True cur seg acc rest
@@ -134,11 +148,22 @@ scan = go emptyWord [] []
         | c == '$', (open@(AChar _ _ '(') : rest') <- rest -> nested sp cur seg acc rest' [a, open]
         | c == '(' -> nested sp cur seg acc rest [a]
         | c == '`' -> backquoted sp cur seg acc rest
+        -- The & or | of a redirection operator joins the word (10.9).
+        | c `elem` ("&|" :: String), inRedirection c cur rest -> go (push a cur) seg acc rest
         | c `elem` ("&|;" :: String) ->
-            go emptyWord [] (acc <> segment (finish cur seg)) (dropDoubled c rest)
-        | c == '\n' || c == '\r' -> go emptyWord [] (acc <> segment (finish cur seg)) rest
+            go emptyWord [] (acc <> segmentOf (finish cur seg)) (dropDoubled c rest)
+        | c == '\n' || c == '\r' -> go emptyWord [] (acc <> segmentOf (finish cur seg)) rest
         | c == ' ' || c == '\t' -> go emptyWord (finish cur seg) acc rest
         | otherwise -> go (push a cur) seg acc rest
+
+    -- @>&@, @<&@ and @>|@ follow a redirection character in the same
+    -- word; @&>@ precedes one.
+    inRedirection c cur rest =
+      case wAtoms cur of
+        AChar _ _ prev : _ | prev == '>' || (c == '&' && prev == '<') -> True
+        _ -> c == '&' && case rest of
+          AChar _ _ '>' : _ -> True
+          _ -> False
 
     dropDoubled c (AChar _ _ c' : rest) | c == c', c /= ';' = rest
     dropDoubled _ rest = rest
@@ -173,7 +198,7 @@ scan = go emptyWord [] []
           AChar _ _ '(' -> walkN (d + 1) (push a cur') (a : inner) more
           AChar _ _ ')'
             | d == 1 -> do
-                ws <- scan (reverse inner)
+                ws <- scan segmentOf (reverse inner)
                 go (push a cur') seg (acc <> ws) more
             | otherwise -> walkN (d - 1) (push a cur') (a : inner) more
           _ -> walkN d (push a cur') (a : inner) more
@@ -184,7 +209,7 @@ scan = go emptyWord [] []
         walkB _ _ [] = Left (sp, "unterminated nested region")
         walkB cur' inner (a : more) = case a of
           AChar _ _ '`' -> do
-            ws <- scan (reverse inner)
+            ws <- scan segmentOf (reverse inner)
             go (push a cur') seg (acc <> ws) more
           _ -> walkB (push a cur') (a : inner) more
 
@@ -194,14 +219,44 @@ segment :: [Word'] -> [(Int, CommandWord)]
 segment revWords = case dropWhile isAssignment (reverse revWords) of
   (w : _) -> [(wordIndex w, toCommandWord w)]
   [] -> []
+
+-- | The program of one segment (spec 11.4): its command word, looking
+-- past a reserved word that a command follows and a redirection, and
+-- nothing for a reserved word that only words that are not commands
+-- follow.
+programSegment :: [Word'] -> [(Int, CommandWord)]
+programSegment = go . reverse
   where
-    isAssignment w =
-      let t = wordText w
-          (name, rest) = T.breakOn "=" t
-       in not (T.null rest)
-            && not (T.null name)
-            && T.all identChar name
-            && identStart (T.head name)
+    go ws = case dropWhile isAssignment ws of
+      (w : rest)
+        | wordText w `elem` passed -> go rest
+        -- An operator standing alone takes the next word as its target.
+        | Just target <- redirection (wordText w) -> go (if T.null target then drop 1 rest else rest)
+        | wordText w `elem` stops -> []
+        | otherwise -> [(wordIndex w, toCommandWord w)]
+      [] -> []
+    passed = ["!", "{", "}", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac"]
+    stops = ["for", "case", "select", "in"]
+
+-- | A redirection word (@>out@, @2>&1@, @<@), with the target written
+-- in it, empty when the target is the next word.
+redirection :: Text -> Maybe Text
+redirection t =
+  let rest = T.dropWhile (`elem` ['0' .. '9']) t
+      (op, target) = T.span (`elem` ("<>&|" :: String)) rest
+   in if T.any (`elem` ("<>" :: String)) op && (T.take 1 op /= "|") then Just target else Nothing
+
+-- | A word naming a variable to assign, which stands before a command
+-- word rather than being one (10.9).
+isAssignment :: Word' -> Bool
+isAssignment w =
+  let t = wordText w
+      (name, rest) = T.breakOn "=" t
+   in not (T.null rest)
+        && not (T.null name)
+        && T.all identChar name
+        && identStart (T.head name)
+  where
     identStart c = c `elem` ['a' .. 'z'] || c `elem` ['A' .. 'Z'] || c == '_'
     identChar c = identStart c || c `elem` ['0' .. '9']
 
@@ -223,7 +278,10 @@ wordIndex w = case [i | i <- map atomIndex (wAtoms w), i >= 0] of
   is -> minimum is
 
 wordText :: Word' -> Text
-wordText w = T.pack [c | AChar _ _ c <- reverse (wAtoms w)]
+wordText w = T.concat (map piece (reverse (wAtoms w)))
+  where
+    piece (AChar _ _ c) = T.singleton c
+    piece (AHole _ _ t) = t
 
 wordSpan :: Word' -> Span
 wordSpan w = foldr ((<>) . atomSpan) NoSpan (wAtoms w)

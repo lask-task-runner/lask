@@ -83,7 +83,9 @@ runTask prog hooks name args kws = do
   applyValue ctx f args kws
 
 -- | Hooks that run commands with the given runner. The file built-ins
--- (spec 15.11) fail, @log@ output is dropped, computations nobody
+-- (spec 15.11) fail, @with_container@ gives its body the environment
+-- it was given, so the runner runs each of its commands as it runs any
+-- other, @log@ output is dropped, computations nobody
 -- awaited are not reported, and @get_env@ reads the process
 -- environment as it is, without resolving secret references.
 commandHooks :: CommandRunner -> RtHooks
@@ -91,6 +93,7 @@ commandHooks runner =
   RtHooks
     { hookRunCommand = runner,
       hookRunFile = \_ _ -> pure (Left (runtimeFailure ERuntimeValue "the file built-ins are not available to an embedded program")),
+      hookSession = \_ env body -> body env,
       hookLog = noLogSink,
       hookAsync = noAsyncTracker,
       hookReadEnv = fmap (fmap T.pack) . lookupEnv . T.unpack

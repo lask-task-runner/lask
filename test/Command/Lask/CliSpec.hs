@@ -8,6 +8,11 @@ module Command.Lask.CliSpec (spec) where
 import Command.Lask.Complete (Opt (..), Plan (..), classify)
 import Command.Lask.Harness
 import Control.Concurrent (threadDelay)
+import Control.Monad (void)
+import qualified Data.Aeson as A
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString.Lazy.Char8 as BL8
+import Data.Foldable (toList)
 import Data.IORef (readIORef)
 import Data.List (isInfixOf, isPrefixOf, nub, sort)
 import qualified Data.Text as T
@@ -63,6 +68,34 @@ spec = beforeAll findLask $ do
           resOut r `shouldContain` "hi lask"
           h <- runLaskEnv lask dir [] ["run", "--help"] ""
           resOut h `shouldContain` "py.greet"
+
+    it "runs the commands of a with_container body in one container, removed afterwards (spec 15.5)" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ( "main.lask",
+              "f(): String = with_container(#alpine:3.22.2{memory: \"1g\"}, \\(box) -> do {\n\
+              \  a = $[box] first\n\
+              \  b = $[box] second\n\
+              \  \"#{trim(a)}, #{trim(b)}\"\n\
+              \})\n"
+            )
+          ]
+          $ \dir -> do
+            void (runLaskEnv lask dir extra ["sync"] "")
+            r <- runLaskEnv lask dir extra ["eval", "f"] ""
+            resExit r `shouldBe` 0
+            resOut r `shouldContain` "exec: first, exec: second"
+            cs <- calls state
+            let runs = [c | c <- cs, "run " `isPrefixOf` c]
+                execs = [c | c <- cs, "exec " `isPrefixOf` c]
+                name = case dropWhile (/= "--name") (words (concat runs)) of
+                  _ : n : _ -> n
+                  _ -> "--name missing"
+            length runs `shouldBe` 1
+            concat runs `shouldContain` "--memory 1g"
+            length execs `shouldBe` 2
+            execs `shouldSatisfy` all ((" " <> name <> " /bin/sh -c ") `isInfixOf`)
+            [c | c <- cs, "rm " `isPrefixOf` c] `shouldSatisfy` any (name `isInfixOf`)
 
     it "probes the declared command words on sync and records them in the lock (spec 11.7)" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
@@ -840,6 +873,43 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["eval", "show", "--access-key-id", "123456789012"] ""
         r `shouldBe` Result 0 "\"123456789012\"\n" ""
 
+  describe "required keyword arguments and flags (spec 11.2)" $ do
+    let src =
+          "deploy(name: String, --target: String, --dry_run: Bool = false, --force: Bool | Null = null, --n = 1): String =\n\
+          \  \"#{name} #{target} #{dry_run} #{force == true} #{n}\"\n\
+          \tags(...xs: Array<String>, --all: Bool = false): String = \"#{join(xs, \",\")} #{all}\"\n"
+    it "binds a required keyword argument and refuses a call without it" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "deploy", "a", "--target", "prod"] ""
+        r `shouldBe` Result 0 "\"a prod false false 1\"\n" ""
+        m <- runLask lask dir ["eval", "deploy", "a"] ""
+        m `shouldBe` Result 4 "" "E-CLI-USAGE: missing keyword argument: '--target'\n"
+    it "binds true to a Bool keyword argument written without a value" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        end <- runLask lask dir ["eval", "deploy", "a", "--target", "prod", "--dry-run"] ""
+        end `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
+        before <- runLask lask dir ["eval", "deploy", "--dry-run", "a", "--target", "prod", "--force"] ""
+        before `shouldBe` Result 0 "\"a prod true true 1\"\n" ""
+        text <- runLask lask dir ["eval", "--arg-decode", "text", "deploy", "a", "--target", "prod", "--dry-run"] ""
+        text `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
+    it "still takes true or false after a Bool keyword argument as its value" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "deploy", "a", "--dry-run", "true", "--force", "false", "--target", "prod"] ""
+        r `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
+        e <- runLask lask dir ["eval", "deploy", "a", "--dry-run=false", "--target=prod"] ""
+        e `shouldBe` Result 0 "\"a prod false false 1\"\n" ""
+    it "leaves any other word after a flag to the positional arguments" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "tags", "--all", "x", "y"] ""
+        r `shouldBe` Result 0 "\"x,y true\"\n" ""
+    it "marks required keyword parameters and flags in the help" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "deploy", "--help"] ""
+        resOut r `shouldContain` "lask eval deploy <name> --target <String> [--dry-run] [--force] [--n <Number>]"
+        resOut r `shouldContain` "--target : String  (required)"
+        j <- runLask lask dir ["eval", "--format", "json", "deploy", "--help"] ""
+        resOut j `shouldContain` "\"name\":\"target\",\"required\":true"
+
   describe "spec 16.3: function values" $ do
     let src =
           "inc(x: Number): Number = x + 1\n\
@@ -1208,6 +1278,51 @@ spec = beforeAll findLask $ do
           resOut r `shouldNotContain` "node:20"
           whole <- runLask lask dir ["envs", "list"] ""
           resOut whole `shouldSatisfy` isInfixOf "node:20"
+    it "lists the programs run in each environment (spec 11.4)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "command { \"go\" } on golang\n\
+            \golang = #golang:1.22\n\
+            \envs: Map<Environment> = { \"a\": #alpine:3.20, \"b\": #debian:13 }\n\
+            \build() = $ go build ./...\n\
+            \clean() = $[#local] rm -rf dist && { echo done >&2; }\n\
+            \pick(--env: String = \"a\") = $[envs[env]] make\n\
+            \fixed() = $[envs[\"b\"]] ls\n\
+            \on(image: Environment) = $[image] cat x\n\
+            \with(--image: Environment = #busybox:1.37) = $[image] wc -l x\n\
+            \needs(--image: Environment) = $[image] head x\n\
+            \session() = with_container(#alpine:3.20, \\(box) -> do {\n\
+            \  $[box] tar xf x\n\
+            \})\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["envs", "commands", "--format", "json"] ""
+          resExit r `shouldBe` 0
+          let envs = maybe [] id (A.decode (BL8.pack (resOut r)) :: Maybe [A.Value])
+              programsOf e =
+                sort
+                  [ p
+                  | A.Object o <- envs,
+                    KM.lookup "environment" o == Just (A.String e),
+                    Just (A.Array ps) <- [KM.lookup "programs" o],
+                    A.Object po <- toList ps,
+                    Just (A.String p) <- [KM.lookup "program" po]
+                  ]
+          programsOf "#local" `shouldBe` ["echo", "rm"]
+          programsOf "#golang:1.22" `shouldBe` ["go"]
+          -- A session runs in the environment it was opened on.
+          programsOf "#alpine:3.20" `shouldBe` ["make", "tar"]
+          programsOf "#debian:13" `shouldBe` ["ls", "make"]
+          programsOf "#busybox:1.37" `shouldBe` ["wc"]
+          -- A required keyword parameter has no default to follow.
+          programsOf "(dynamic)" `shouldBe` ["cat", "head", "wc"]
+          text <- runLask lask dir ["envs", "commands"] ""
+          resOut text `shouldSatisfy` isInfixOf "main.lask: pick (envs[env])"
+          resOut text `shouldSatisfy` isInfixOf "5 environments and (dynamic): 9 programs in 8 commands"
+          verbose <- runLask lask dir ["envs", "commands", "--verbose", "build"] ""
+          resExit verbose `shouldBe` 0
+          resOut verbose `shouldSatisfy` isInfixOf "main.lask:4  build  go build ./...  ← command \"go\""
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""

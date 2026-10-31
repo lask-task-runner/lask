@@ -495,7 +495,8 @@ params open ps = list "(" ")" False open TRParen (map item ps)
     item (Param sp f) = Item (startOf sp) (endOf sp) $ case f of
       PPositional n sec t -> (\dt -> text n <> secrecy sec <> annot dt) <$> traverse ty t
       PVariadic n t -> (\dt -> "..." <> text n <> annot dt) <$> traverse ty t
-      PKeyword n sec t d -> do
+      PKeyword n sec t Nothing -> (\dt -> "--" <> text n <> secrecy sec <> annot dt) <$> traverse ty t
+      PKeyword n sec t (Just d) -> do
         dt <- traverse ty t
         joinAfter ("--" <> text n <> secrecy sec <> annot dt) "=" (startOf (exprSpan d)) (exprOn d)
 

@@ -49,6 +49,16 @@ spec = do
       words' "a ; b" `shouldBe` ["a", "b"]
       words' "a & b" `shouldBe` ["a", "b"]
 
+    it "does not split at the & or | of a redirection operator" $ do
+      words' "go test 2>&1" `shouldBe` ["go"]
+      words' "go test 2>&1 | tee log" `shouldBe` ["go", "tee"]
+      words' "go test &> log" `shouldBe` ["go"]
+      words' "cat <&3 && echo >| out" `shouldBe` ["cat", "echo"]
+      words' "go test >& log" `shouldBe` ["go"]
+
+    it "still splits at a background & after a redirection target" $
+      words' "go run . > log & npm start" `shouldBe` ["go", "npm"]
+
     it "skips leading assignment words" $
       words' "FOO=1 PATH=/x npm ci" `shouldBe` ["npm"]
 
@@ -107,6 +117,39 @@ spec = do
 
     it "finds nothing in an empty command string" $
       words' "" `shouldBe` []
+
+  describe "programs (spec 11.4)" $ do
+    let programs t = case programWords (\_ _ -> "#{x}") [TPChunk NoSpan t] of
+          Analysed ws -> map cwText ws
+          NotAnalysable {} -> ["(unanalysable)"]
+        programsWithHole pre post = case programWords (\raw _ -> if raw then "#!{x}" else "#{x}") [TPChunk NoSpan pre, TPInterp (Expr NoSpan (EVar "x")), TPChunk NoSpan post] of
+          Analysed ws -> map cwText ws
+          NotAnalysable {} -> []
+
+    it "takes every command word, candidate or not" $
+      programs "cd web && tools/build.sh && /usr/bin/npm ci" `shouldBe` ["cd", "tools/build.sh", "/usr/bin/npm"]
+
+    it "shows a hole in a word as written" $
+      programsWithHole "" "/lask sync && go test" `shouldBe` ["#{x}/lask", "go"]
+
+    it "looks past a reserved word to the command after it" $ do
+      programs "git diff --quiet || { echo changed >&2; exit 1; }" `shouldBe` ["git", "echo", "exit"]
+      programs "if test -f x; then make; else FOO=1 cc x.c; fi" `shouldBe` ["test", "make", "cc"]
+      programs "! grep -q x f" `shouldBe` ["grep"]
+      programs "while read l; do echo $l; done < f" `shouldBe` ["read", "echo"]
+      programs "{ make; } >out 2>&1 && 2> err go vet" `shouldBe` ["make", "go"]
+
+    it "takes nothing from a segment that starts with for or case" $
+      programs "for f in *.go; do gofmt $f; done" `shouldBe` ["gofmt"]
+
+    it "does not split at the & or | of a redirection" $ do
+      programs "go test 2>&1 | tee log" `shouldBe` ["go", "tee"]
+      programs "make &> log" `shouldBe` ["make"]
+      programs "cat <&3 && echo >| out" `shouldBe` ["cat", "echo"]
+
+
+    it "reports an unterminated region as not analysable" $
+      programs "echo 'x" `shouldBe` ["(unanalysable)"]
 
   describe "command name validity (spec chapter 5)" $ do
     it "accepts names that a command string could carry" $

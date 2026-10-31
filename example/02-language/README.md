@@ -61,13 +61,14 @@ The thing to take away: every `case` needs an `else`, last, always — exhaustiv
 
 ## 04-environments
 
-**Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits and other container options, an image built from the local `Dockerfile`, and environments held in a `Map<Environment>` and chosen at run time.
+**Docker.** `#local`, a tag-pinned image, a digest-pinned one, resource limits and other container options, an image built from the local `Dockerfile`, environments held in a `Map<Environment>` and chosen at run time, and `with_container`, which runs several commands in one container.
 
 ```bash
 lask envs list               # every image, and whether each is on the container engine
 lask sync
 lask eval tool-versions
 lask eval uname-in --env built
+lask eval kept-in-session
 ```
 
 The thing to take away: an environment is a value. A command that names none is a static error, never a quiet fall back to the host.
@@ -77,6 +78,7 @@ The thing to take away: an environment is a value. A command that names none is 
 **Docker.** `$`, `$1`, `$2` and `$*`, explicit `$[env]`, interpolation and its escaping, the raw hole `#!{...}`, `run`, the `command ... on ...` declarations that dispatch a bare `$`, and what is checked before a command runs: its shell syntax, the options a command schema describes, and whether the image has the programs declared on it.
 
 ```bash
+lask envs commands           # the programs each environment runs, and which tasks run them
 lask sync
 lask eval probe --path /etc/os-release
 lask eval inspect            # a command that exits 3, without raising

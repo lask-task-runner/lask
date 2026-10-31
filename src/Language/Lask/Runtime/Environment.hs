@@ -17,6 +17,7 @@ module Language.Lask.Runtime.Environment
     resolveEnv,
     mkCommandRunner,
     mkFileRunner,
+    mkSessionOpener,
     runLoggedProcess,
     runDeclaredCommand,
     envLogInfo,
@@ -24,9 +25,12 @@ module Language.Lask.Runtime.Environment
 where
 
 import Control.Concurrent.Async (concurrently)
-import Control.Exception (IOException, try)
-import Control.Monad (forM, unless)
-import Data.IORef (atomicModifyIORef', newIORef)
+import Control.Exception (IOException, bracket, throwIO, try, uninterruptibleMask_)
+import Control.Monad (forM, unless, void)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.Set (Set)
+import qualified Data.Set as Set
+import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import Data.List (sort)
@@ -58,10 +62,10 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.IO as TIO
 import Data.Time.Clock (getCurrentTime)
-import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner)
+import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner, SessionOpener)
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
-import Language.Lask.Runtime.Container (ContainerBackend (..), RunSpec (..), engineName)
+import Language.Lask.Runtime.Container (ContainerBackend (..), ExecSpec (..), RunSpec (..), engineName)
 import Language.Lask.Runtime.ProcessStop
   ( newContainerName,
     stopGraceSeconds,
@@ -72,7 +76,7 @@ import Language.Lask.Runtime.Secrets (maskSecrets, maskSecretsJson)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (valueToJson)
 import System.Exit (ExitCode (..))
-import System.IO (Handle, hClose, hIsTerminalDevice, stderr, stdin, stdout)
+import System.IO (Handle, hClose, hGetLine, hIsTerminalDevice, stderr, stdin, stdout)
 import System.Process
   ( CreateProcess (cwd, delegate_ctlc, std_err, std_in, std_out),
     ProcessHandle,
@@ -80,6 +84,7 @@ import System.Process
     createProcess,
     getPid,
     proc,
+    readCreateProcessWithExitCode,
     shell,
     waitForProcess,
   )
@@ -90,6 +95,9 @@ data ResolvedEnv
     ResolvedDocker Text (Map Text Value)
   | -- | The recipe and the remaining options (spec 10.2 recipe form).
     ResolvedRecipe Recipe (Map Text Value)
+  | -- | The container of a session (spec 15.5), and the environment it
+    -- was started on.
+    ResolvedSession Text ResolvedEnv
   deriving (Show, Eq)
 
 -- | Resolve an environment value to a concrete configuration
@@ -109,6 +117,9 @@ resolveEnv (EnvValue kind params) = case kind of
               recipe = Recipe df ctx (recipeBuildArgs params) (platformOf params)
            in Right (ResolvedRecipe recipe (Map.delete "dockerfile" (Map.delete "context" params)))
     _ -> Left (ioFailure EIoEnvResolve "docker environment requires an image reference or a recipe")
+  "session" -> case (Map.lookup "container" params, Map.lookup "origin" params) of
+    (Just (VString name), Just (VEnv origin)) -> ResolvedSession name <$> resolveEnv origin
+    _ -> Left (ioFailure EIoEnvResolve "internal: a container session without its container")
   other -> Left (ioFailure EIoEnvResolve ("unknown environment kind: '" <> other <> "'"))
 
 -- | The build arguments a recipe environment declares (spec 10.2),
@@ -131,9 +142,14 @@ platformOf opts = case Map.lookup "platform" opts of
 -- execution logs (spec 12.3). The summary follows environment
 -- expression notation: @#local@, @#\<image\>@ for a registry
 -- reference, and @#.\/\<path\>@ for a recipe.
+--
+-- A command in a session is logged with the environment the session
+-- was started on: it is that environment's image that runs it.
 envLogInfo :: EnvValue -> ResolvedEnv -> (Text, A.Value)
+envLogInfo ev (ResolvedSession _ origin) = envLogInfo ev origin
 envLogInfo _ resolved = (summary, json)
   where
+    -- Sessions are taken by the equation above.
     summary = case resolved of
       ResolvedLocal -> "#local"
       ResolvedDocker img _ -> "#" <> img
@@ -300,15 +316,185 @@ mkCommandRunner backend pins baseDir0 sink = do
                 Right (code, out, errOut)
                   | Just msg <- engineFailure code errOut -> Left (ioFailure EIoEnvResolve msg)
                   | otherwise -> Right (code, out, errOut)
-        img <- materializedImage backend pins baseDir resolved
+        img <- case resolved of
+          ResolvedSession _ _ -> pure (Right Nothing)
+          _ -> materializedImage backend pins baseDir resolved
         case img of
           Left failure -> pure (Left failure)
+          Right Nothing
+            | ResolvedSession name _ <- resolved ->
+                inSession name $ \marker ->
+                  -- No exit code is the engine's own here: the
+                  -- session's container is known to be running, and
+                  -- one that stops under the command ends the session.
+                  run
+                    (stopSessionCommand backend name marker)
+                    (cbExecProcess backend (sessionExec name False marker cmd))
+                    (\_ _ -> Nothing)
           Right Nothing ->
             run (pure ()) ((shell (T.unpack cmd)) {cwd = Just baseDir}) (\_ _ -> Nothing)
           Right (Just (image, opts)) -> do
             name <- newContainerName
             cp <- cbRunProcess backend (shellRun baseDir name image opts False cmd)
             run (cbStop backend stopGraceSeconds name) cp (cbRunFailure backend)
+
+-- Container sessions (spec 15.5) -------------------------------------------
+
+-- | The containers of the sessions whose body has not returned. A
+-- session value can outlive its body — returned from it, or held by a
+-- computation it started — and a command run with it then is told
+-- apart from one whose container stopped on its own.
+openSessions :: IORef (Set Text)
+openSessions = unsafePerformIO (newIORef Set.empty)
+{-# NOINLINE openSessions #-}
+
+-- | Run a command in a session's container, if the session is open;
+-- it fails as closed if the session ends while the command runs, since
+-- its container went with it. The action is given the marker the
+-- command's processes carry, by which they are stopped (8.7).
+inSession :: Text -> (Text -> IO (Either LaskFailure a)) -> IO (Either LaskFailure a)
+inSession name act = do
+  open <- Set.member name <$> readIORef openSessions
+  if not open
+    then pure (Left sessionClosed)
+    else do
+      marker <- newContainerName
+      r <- act marker
+      still <- Set.member name <$> readIORef openSessions
+      pure (if still then r else Left sessionClosed)
+
+sessionClosed :: LaskFailure
+sessionClosed =
+  runtimeFailure ERuntimeSessionClosed $
+    "the container of this with_container has been removed: its body has returned, "
+      <> "so a command cannot run in it any more"
+
+-- | A command string run through @/bin/sh@ in a session's container,
+-- its processes marked as this command's (see 'stopSessionCommand').
+sessionExec :: Text -> Bool -> Text -> Text -> ExecSpec
+sessionExec name wantStdin marker cmd =
+  ExecSpec
+    { execContainer = name,
+      execStdin = wantStdin,
+      execUser = Nothing,
+      execEnv = [(sessionMarkerVar, marker)],
+      execCommand = ["/bin/sh", "-c", cmd]
+    }
+
+-- | The variable that marks the processes of one command in a
+-- session. A process inherits it from the one that started it, so it
+-- finds every process of the command, where the process tree of the
+-- client on the host reaches none of them.
+sessionMarkerVar :: Text
+sessionMarkerVar = "LASK_SESSION_EXEC"
+
+-- | Stop an abandoned command in a session (spec 8.7): a termination
+-- request to every process that carries its marker, then, for those
+-- still there after the grace period, a kill. The container is the
+-- session's and stays. Run as root, which can read the environment of
+-- every process whatever user the session runs as.
+stopSessionCommand :: ContainerBackend -> Text -> Text -> IO ()
+stopSessionCommand backend name marker =
+  void . (try :: IO a -> IO (Either IOException a)) $
+    readCreateProcessWithExitCode
+      ( cbExecProcess
+          backend
+          ExecSpec
+            { execContainer = name,
+              execStdin = False,
+              execUser = Just "0",
+              execEnv = [],
+              execCommand = ["/bin/sh", "-c", script, "sh", sessionMarkerVar <> "=" <> marker, T.pack (show stopGraceSeconds)]
+            }
+      )
+      ""
+  where
+    -- An environment is read whole, its NUL separators dropped, so a
+    -- marker is matched as a substring; markers are all one length,
+    -- so none is found inside another.
+    script =
+      T.unlines
+        [ "procs() { for d in /proc/[0-9]*; do case \"$(cat \"$d/environ\")\" in *\"$1\"*) printf '%s ' \"${d#/proc/}\";; esac; done; }",
+          "p=$(procs \"$1\" 2>/dev/null); [ -n \"$p\" ] || exit 0",
+          "kill -TERM $p 2>/dev/null",
+          "i=0",
+          "while [ \"$i\" -lt \"$2\" ]; do sleep 1; p=$(procs \"$1\" 2>/dev/null); [ -n \"$p\" ] || exit 0; i=$((i + 1)); done",
+          "kill -KILL $p 2>/dev/null",
+          "exit 0"
+        ]
+
+-- | The line the process a session's container runs writes once it
+-- has started.
+sessionReady :: Text
+sessionReady = "lask-session-ready"
+
+-- | Open container sessions for @with_container@ (spec 15.5).
+--
+-- The container runs a shell that reads its stdin until the end, and
+-- lask holds the other end. Closing it ends the container, which is
+-- removed then (@--rm@); and so does lask's exit, however it exits, so
+-- a session never outlives the run that opened it.
+mkSessionOpener :: ContainerBackend -> ImagePins -> FilePath -> IO SessionOpener
+mkSessionOpener backend pins baseDir0 = do
+  baseDir <- makeAbsolute baseDir0
+  pure $ \say envValue body -> case resolveEnv envValue of
+    Left failure -> throwIO failure
+    -- The host keeps its state already, and a session is already one.
+    Right ResolvedLocal -> body envValue
+    Right (ResolvedSession _ _) -> body envValue
+    Right resolved -> do
+      img <- materializedImage backend pins baseDir resolved
+      case img of
+        Left failure -> throwIO failure
+        Right Nothing -> body envValue
+        Right (Just (image, opts)) -> do
+          name <- newContainerName
+          let (summary, _) = envLogInfo envValue resolved
+          cp <-
+            cbRunProcess
+              backend
+              (shellRun baseDir name image opts True ("echo " <> sessionReady <> "; while read -r _; do :; done"))
+          bracket (start cp name) (close say name) $ \p -> do
+            awaitReady p
+            say ("container " <> name <> " started on " <> summary <> " for with_container")
+            body (EnvValue "session" (Map.fromList [("container", VString name), ("origin", VEnv envValue)]))
+  where
+    start cp name = do
+      r <- try (createProcess cp {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe})
+      case r of
+        Left e -> throwIO (ioFailure EIoEnvResolve ("cannot launch " <> engineName (cbEngine backend) <> ": " <> T.pack (show (e :: IOException))))
+        Right p -> do
+          atomicModifyIORef' openSessions (\ss -> (Set.insert name ss, ()))
+          pure p
+
+    -- The ready line, or the reason the container did not start.
+    awaitReady (_, Just out, Just err, ph) = do
+      line <- try (hGetLine out) :: IO (Either IOException String)
+      case line of
+        Right l | T.strip (T.pack l) == sessionReady -> pure ()
+        _ -> do
+          code <- waitForProcess ph
+          errText <- TE.decodeUtf8With TEE.lenientDecode <$> BS.hGetContents err
+          let n = case code of
+                ExitSuccess -> 0
+                ExitFailure c -> c
+          throwIO . ioFailure EIoEnvResolve $
+            maybe ("the container of with_container did not start: " <> T.strip errText) id (cbRunFailure backend n errText)
+    awaitReady _ = pure ()
+
+    -- Closed before the container is removed, so a command it stops
+    -- fails as closed rather than with the exit code the removal gave
+    -- it. Not interrupted: a second cancellation must not leave the
+    -- container behind.
+    close say name (mIn, mOut, mErr, ph) = uninterruptibleMask_ $ do
+      atomicModifyIORef' openSessions (\ss -> (Set.delete name ss, ()))
+      mapM_ closeQuietly mIn
+      cbStop backend 0 name
+      stopProcessTree stopGraceSeconds ph
+      mapM_ (mapM_ closeQuietly) [mOut, mErr]
+      say ("container " <> name <> " of with_container removed")
+
+    closeQuietly h = void (try (hClose h) :: IO (Either IOException ()))
 
 -- | A container run of a command string through @/bin/sh@, named so
 -- that it can be stopped if the command is abandoned (8.7); with stdin
@@ -341,6 +527,7 @@ materializedImage ::
   IO (Either LaskFailure (Maybe (Text, Map Text Value)))
 materializedImage backend pins baseDir resolved = case resolved of
   ResolvedLocal -> pure (Right Nothing)
+  ResolvedSession _ _ -> pure (Left (ioFailure EIoEnvResolve "internal: a container session has no image of its own"))
   ResolvedDocker ref opts -> fmap (\image -> Just (image, opts)) <$> resolveRegistry backend pins ref
   ResolvedRecipe r opts -> do
     let df = rcDockerfile r
@@ -452,15 +639,32 @@ mkFileRunner backend pins baseDir0 = do
     case resolveEnv envValue of
       Left failure -> pure (Left failure)
       Right resolved -> do
-        img <- materializedImage backend pins baseDir resolved
+        img <- case resolved of
+          ResolvedSession _ _ -> pure (Right Nothing)
+          _ -> materializedImage backend pins baseDir resolved
         -- The environment belongs in the diagnostic (spec 15.11): a
         -- path that is absent in a container is often present on the
         -- host, and the message has to say which filesystem was read.
         let (summary, _) = envLogInfo envValue resolved
         case img of
           Left failure -> pure (Left failure)
+          Right Nothing
+            | ResolvedSession name _ <- resolved ->
+                inSession name $ \marker ->
+                  let launch wantStdin cmd =
+                        pure
+                          ( cbExecProcess backend (sessionExec name wantStdin marker cmd),
+                            stopSessionCommand backend name marker,
+                            \_ _ -> Nothing
+                          )
+                   in containerFileOp backend summary launch op
           Right Nothing -> localFileOp summary baseDir op
-          Right (Just (image, opts)) -> containerFileOp backend summary baseDir image opts op
+          Right (Just (image, opts)) ->
+            let launch wantStdin cmd = do
+                  name <- newContainerName
+                  cp <- cbRunProcess backend (shellRun baseDir name image opts wantStdin cmd)
+                  pure (cp, cbStop backend stopGraceSeconds name, cbRunFailure backend)
+             in containerFileOp backend summary launch op
 
 -- | Resolve a path written by the program against the base directory
 -- (spec 10.5). An absolute path is taken as it stands.
@@ -551,12 +755,12 @@ walkTree root = go ""
 containerFileOp ::
   ContainerBackend ->
   Text ->
-  FilePath ->
-  Text ->
-  Map Text Value ->
+  -- | The process that runs a command string, given whether it is fed
+  -- on stdin; how to stop it; and which of its exits are the engine's.
+  (Bool -> Text -> IO (CreateProcess, IO (), Int -> Text -> Maybe Text)) ->
   FileOp ->
   IO (Either LaskFailure Value)
-containerFileOp backend summary baseDir image opts op = case op of
+containerFileOp backend summary launch op = case op of
   FileRead p ->
     interpret p (shCmd ["cat", "--", shQuote p]) Nothing $ \_ out ->
       case TE.decodeUtf8' out of
@@ -590,14 +794,13 @@ containerFileOp backend summary baseDir image opts op = case op of
           Right (globResult pat (map stripDot (lines' out)))
   where
     run cmd mStdin = do
-      name <- newContainerName
-      cp <- cbRunProcess backend (shellRun baseDir name image opts (mStdin /= Nothing) cmd)
-      r <- try (runQuietProcess (cbStop backend stopGraceSeconds name) cp mStdin)
+      (cp, stopC, engineFailure) <- launch (mStdin /= Nothing) cmd
+      r <- try (runQuietProcess stopC cp mStdin)
       pure $ case r of
         Left e ->
           Left (ioFailure EIoEnvResolve ("cannot launch " <> engineName (cbEngine backend) <> ": " <> T.pack (show (e :: IOException))))
         Right (code, _, err)
-          | Just msg <- cbRunFailure backend code err -> Left (ioFailure EIoEnvResolve msg)
+          | Just msg <- engineFailure code err -> Left (ioFailure EIoEnvResolve msg)
         Right ok -> Right ok
 
     -- Run, and turn a non-zero exit into E-IO-FS carrying the

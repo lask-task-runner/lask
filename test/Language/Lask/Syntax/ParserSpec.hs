@@ -118,10 +118,22 @@ spec = do
               "f"
               [ Param NoSpan (PPositional "a" Public Nothing),
                 Param NoSpan (PVariadic "xs" (Just (ty (SArray (ty SNumber))))),
-                Param NoSpan (PKeyword "n" Public (Just (ty SNumber)) (num 3))
+                Param NoSpan (PKeyword "n" Public (Just (ty SNumber)) (Just (num 3)))
               ]
               Nothing
               (var "a")
+          ]
+
+    it "parses a required keyword parameter, which has no default (spec 7.5)" $
+      pModule "f(--target: String, --n = 3) = target"
+        `shouldBe` Right
+          [ dfun
+              "f"
+              [ Param NoSpan (PKeyword "target" Public (Just (ty SString)) Nothing),
+                Param NoSpan (PKeyword "n" Public Nothing (Just (num 3)))
+              ]
+              Nothing
+              (var "target")
           ]
 
     it "rejects keyword parameters before positional ones" $
@@ -140,7 +152,7 @@ spec = do
           [ dfun
               "f"
               [ Param NoSpan (PPositional "a" Secret (Just (ty SString))),
-                Param NoSpan (PKeyword "n" Secret (Just (ty SString)) (str "d"))
+                Param NoSpan (PKeyword "n" Secret (Just (ty SString)) (Just (str "d")))
               ]
               Nothing
               (var "a")
