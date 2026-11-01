@@ -33,6 +33,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Language.Lask.Access (Mode (..), accessTable, parseMode, validateBaseMount)
 import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Shell (escapeCommand, rawBuiltin)
 import Language.Lask.CommandSchema (Finding (..), Schema, Static (..), StaticF (..), checkCommand, fromStatic)
@@ -492,7 +493,7 @@ elaborateRecovering prog scopes nameErrors =
           n <- declValueName f
         ]
     declValueName (DValue n _ _ _) = [n]
-    declValueName (DFunction n _ _ _ _) = [n]
+    declValueName (DFunction n _ _ _ _ _) = [n]
     declValueName _ = []
 
 -- | The top-level units that hold an error of name resolution: the
@@ -518,7 +519,7 @@ unitsHolding prog ds =
       ]
     unit path (Decl _ f) = case f of
       DValue n _ _ _ -> ([(path, n)], [], [])
-      DFunction n _ _ _ _ -> ([(path, n)], [], [])
+      DFunction n _ _ _ _ _ -> ([(path, n)], [], [])
       DTypeAlias n _ _ -> ([], [(path, n)], [])
       DCommand ns _ _ -> ([], [], [(path, n) | Spanned _ n <- ns])
       DImportCommands ns _ -> ([], [], [(path, n) | Spanned _ n <- ns])
@@ -527,6 +528,7 @@ unitsHolding prog ds =
       DExportFrom specs _ -> imported path specs
       DImportNamespace alias _ -> ([(path, alias)], [], [])
       DExportNamespace alias _ -> ([(path, alias)], [], [])
+      DWithin _ -> ([], [], [])
     imported path specs =
       ([(path, v) | (v, False) <- bad], [(path, v) | (v, True) <- bad], [])
       where
@@ -546,7 +548,7 @@ lookupDeclAst ctx (path, name) = do
   lm <- Map.lookup path (progModules (ctxProg ctx))
   let match d = case declF d of
         DValue n _ _ _ -> n == name
-        DFunction n _ _ _ _ -> n == name
+        DFunction n _ _ _ _ _ -> n == name
         _ -> False
   case filter match (moduleDecls (lmModule lm)) of
     (d : _) -> Just d
@@ -627,7 +629,7 @@ sTypeNames (SType _ f) = case f of
 headerType :: Ctx -> Key -> TC ([(Text, Maybe Bound)], Type)
 headerType ctx key@(path, name) = case lookupDeclAst ctx key of
   Just (Decl sp f) -> case f of
-    DFunction _ tps ps (Just rt) _ -> do
+    DFunction _ tps ps (Just rt) _ _ -> do
       vs <- typeVarsOf ctx path tps
       let ctx' = withTypeVars vs ctx
       posTys <- paramHeaderTypes ctx' path ps
@@ -704,7 +706,7 @@ tryDemandDecl ctx key@(path, name) = do
 standIn :: Ctx -> Key -> TC (Maybe CoreDecl)
 standIn ctx key@(path, name) = case lookupDeclAst ctx key of
   Just (Decl sp f) -> case f of
-    DFunction _ tps ps (Just rt) _
+    DFunction _ tps ps (Just rt) _ _
       | annotated ps -> do
           vs <- typeVarsOf ctx path tps
           let ctx' = withTypeVars vs ctx
@@ -751,7 +753,7 @@ headerStaticParams c path ps = do
 
 elabDecl :: Ctx -> FilePath -> Decl -> TC CoreDecl
 elabDecl ctx0 path (Decl sp f) = case f of
-  DFunction name tps ps rt body -> do
+  DFunction name tps ps rt _ body -> do
     vs <- typeVarsOf ctx0 path tps
     let ctx = withTypeVars vs ctx0
     (lam, ty, params) <- elabLambda ctx path Map.empty sp (Just name) ps rt body
@@ -1370,7 +1372,7 @@ lookupValueTarget ctx path n =
 -- (7.5): a call through a value binds no names.
 declAsValue :: Ctx -> Span -> Text -> Key -> TC ()
 declAsValue ctx sp n key = case lookupDeclAst ctx key of
-  Just (Decl _ (DFunction _ _ ps _ _)) -> requiredAsValue sp ("'" <> n <> "'") ps
+  Just (Decl _ (DFunction _ _ ps _ _ _)) -> requiredAsValue sp ("'" <> n <> "'") ps
   Just (Decl _ (DValue _ _ _ (Expr _ (ELambda ps _ _)))) -> requiredAsValue sp ("'" <> n <> "'") ps
   _ -> pure ()
 
@@ -2596,7 +2598,10 @@ dockerRunOptions =
     ("dns_search", list),
     ("add_hosts", table),
     ("publish", list),
-    -- Host filesystem beyond the base directory mount (10.5).
+    -- Host filesystem: where the base directory is mounted and what
+    -- the mount permits (10.5), and what is mounted beyond it.
+    ("base_mount", text),
+    ("base_access", mkUnion TyString [TyMap TyString, TyNull]),
     ("volumes", list)
   ]
   where
@@ -2708,8 +2713,39 @@ elabRunnable ctx path locals sp env args = do
     CEnv "local" _
       | not (null opts) -> abort (diag ETypeEnvConstruct sp "#local takes no run options")
     _ -> pure ()
+  checkBaseOptions opts
   pure (Core sp (CRunnable env opts), TyRunnable)
   where
+    -- What the mount of the base directory is given as a literal is
+    -- checked here (10.2); anything else, when the command runs.
+    checkBaseOptions opts = do
+      mount <- case lookup "base_mount" opts of
+        Just c@(Core _ (CStrLit t)) -> Just c <$ either (optionErr c) pure (validateBaseMount t)
+        Just c | not (isNullLit c) -> pure (Just c)
+        _ -> pure Nothing
+      case lookup "base_access" opts of
+        Just c@(Core _ (CStrLit t)) -> do
+          m <- either (optionErr c) pure (parseMode t)
+          case mount of
+            Just mc
+              | m == ModeNone ->
+                  optionErr mc "'base_mount' is given with base_access \"none\", which mounts nothing"
+            _ -> pure ()
+        Just c@(Core _ (CMapLit kvs))
+          | Just pairs <- mapM literalValue kvs -> () <$ either (optionErr c) pure (accessTable pairs)
+        _ -> pure ()
+
+    literalValue (k, v) = case coreF v of
+      CStrLit t -> Just (k, t)
+      _ -> Nothing
+
+    isNullLit c = case coreF c of
+      CNull -> True
+      _ -> False
+
+    optionErr :: Core -> Text -> TC a
+    optionErr c = abort . diag ETypeEnvConstruct (coreSpan c)
+
     unknown n
       | n `elem` ["image", "dockerfile"] = "a runnable cannot change the image; name it by the head, as #alpine:3.20"
       | n `elem` imageOptionNames =
@@ -2864,7 +2900,7 @@ elabCall ctx path locals sp fn args mExpected = do
           -- required keyword parameter cannot be called as a value
           -- (7.5), so its annotations have to give the parameters.
           params <- case lookupDeclAst ctx key of
-            Just (Decl _ (DFunction _ _ ps _ _))
+            Just (Decl _ (DFunction _ _ ps _ _ _))
               | not (null [k | Param _ (PKeyword k _ _ Nothing) <- ps]) ->
                   if annotated ps
                     then Just <$> headerStaticParams (withTypeVars vs ctx) p ps

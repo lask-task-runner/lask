@@ -94,6 +94,10 @@ data RootCommand
   | CmdEnvsList EnvsOpts
   | -- | @lask envs commands@, and whether @--verbose@ was given.
     CmdEnvsCommands EnvsOpts Bool
+  | -- | @lask envs files@, and whether @--verbose@ was given.
+    CmdEnvsFiles EnvsOpts Bool
+  | CmdEnvsNetwork EnvsOpts
+  | CmdEnvsAccess EnvsOpts
   | -- | @--frozen@, @--prune@.
     CmdSync CommonOpts Bool Bool
   | CmdDepsList CommonOpts
@@ -315,6 +319,24 @@ pEnvsCommand =
           ( info
               (CmdEnvsCommands <$> pEnvsOpts <*> switch (long "verbose" <> help "List each command, where it is written, in place of its programs"))
               (progDesc "List the programs tasks run in each environment")
+          )
+        <> command
+          "files"
+          ( info
+              (CmdEnvsFiles <$> pEnvsOpts <*> switch (long "verbose" <> help "Also list the files read and written by path"))
+              (progDesc "List the host files each environment's commands may reach")
+          )
+        <> command
+          "network"
+          ( info
+              (CmdEnvsNetwork <$> pEnvsOpts)
+              (progDesc "List the networks each environment's commands may reach")
+          )
+        <> command
+          "access"
+          ( info
+              (CmdEnvsAccess <$> pEnvsOpts)
+              (progDesc "List the host files and networks each environment's commands may reach")
           )
     )
 

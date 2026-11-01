@@ -20,7 +20,7 @@ import Language.Lask.Runtime.Value
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (async, cancel)
 import Language.Lask.Runtime.ProcessStop (stopProcessTree)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (canonicalizePath, createDirectoryIfMissing, createDirectoryLink, doesFileExist)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Process (createProcess, getPid, proc, readProcessWithExitCode)
@@ -40,7 +40,7 @@ docker = cliBackend Docker
 -- command runner makes it.
 dockerShellArgs :: FilePath -> Text -> Text -> Map.Map Text Value -> Bool -> Text -> [String]
 dockerShellArgs baseDir name image opts wantStdin cmd =
-  runArgs Docker (RunSpec baseDir (Just name) image opts wantStdin False "/bin/sh" ["-c", cmd])
+  runArgs Docker (RunSpec baseDir (Just name) image opts wantStdin False "/bin/sh" ["-c", cmd] (defaultBaseMounts baseDir))
 
 dockerArgs :: FilePath -> Text -> Text -> Map.Map Text Value -> Text -> [String]
 dockerArgs baseDir name image opts = dockerShellArgs baseDir name image opts False
@@ -175,6 +175,79 @@ spec = do
                      "-c", "uname -a"
                    ]
 
+  describe "the mount of the base directory (spec 10.2, 10.5)" $ do
+    let mountedArgs opts mounts =
+          runArgs Docker (RunSpec "/proj" Nothing "alpine:3.20" (Map.fromList opts) False False "/bin/sh" [] mounts)
+        mountsIn args = [m | ("--mount", m) <- zip args (drop 1 args)]
+        workdirsIn args = [w | ("-w", w) <- zip args (drop 1 args)]
+    it "mounts a key over the shorter path it is under, read-only where the table says, and hides what it gives none" $
+      mountsIn
+        ( mountedArgs
+            []
+            [ BaseBind "/proj" "/work" True,
+              BaseHideFile "/work/.env",
+              BaseHideDir "/work/secrets",
+              BaseBind "/proj/dist" "/work/dist" False
+            ]
+        )
+        `shouldBe` [ "type=bind,source=/proj,target=/work,readonly",
+                     "type=bind,source=/dev/null,target=/work/.env,readonly",
+                     "type=tmpfs,destination=/work/secrets",
+                     "type=bind,source=/proj/dist,target=/work/dist"
+                   ]
+    it "starts in the path the base directory is mounted at, which workdir still overrides" $ do
+      workdirsIn (mountedArgs [("base_mount", VString "/src")] []) `shouldBe` ["/src"]
+      workdirsIn (mountedArgs [("base_mount", VString "/src"), ("workdir", VString "/src/api")] []) `shouldBe` ["/src", "/src/api"]
+      workdirsIn (mountedArgs [] []) `shouldBe` ["/work"]
+
+    it "reads base_mount and base_access from the run options (real filesystem)" $
+      withSystemTempDirectory "lask-mounts" $ \tmp0 -> do
+        tmp <- canonicalizePath tmp0
+        createDirectoryIfMissing True (tmp </> "dist")
+        createDirectoryIfMissing True (tmp </> "secrets")
+        writeFile (tmp </> ".env") "TOKEN=1"
+        resolveBaseMounts tmp Map.empty `shouldReturn` Right [BaseBind tmp "/work" False]
+        resolveBaseMounts tmp (Map.fromList [("base_mount", VString "/src"), ("base_access", VString "ro")])
+          `shouldReturn` Right [BaseBind tmp "/src" True]
+        resolveBaseMounts tmp (Map.fromList [("base_access", VString "none")]) `shouldReturn` Right []
+        resolveBaseMounts
+          tmp
+          (Map.fromList [("base_access", VMap (Map.fromList [(".", VString "ro"), ("dist", VString "rw"), (".env", VString "none"), ("secrets", VString "none"), ("absent", VString "none")]))])
+          `shouldReturn` Right
+            [ BaseBind tmp "/work" True,
+              BaseHideFile "/work/.env",
+              BaseBind (tmp </> "dist") "/work/dist" False,
+              BaseHideDir "/work/secrets"
+            ]
+
+    it "refuses a path the host does not have, or one that leads out of the base directory (real filesystem)" $
+      withSystemTempDirectory "lask-mounts" $ \tmp -> do
+        createDirectoryIfMissing True (tmp </> "base")
+        createDirectoryIfMissing True (tmp </> "outside")
+        createDirectoryLink (tmp </> "outside") (tmp </> "base" </> "escape")
+        let table kvs = Map.fromList [("base_access", VMap (Map.fromList [(k, VString v) | (k, v) <- kvs]))]
+        missing <- resolveBaseMounts (tmp </> "base") (table [(".", "ro"), ("nope", "rw")])
+        missing `shouldSatisfy` \r -> case r of
+          Left (MountUnresolved _) -> True
+          _ -> False
+        escaped <- resolveBaseMounts (tmp </> "base") (table [(".", "ro"), ("escape", "ro")])
+        escaped `shouldSatisfy` \r -> case r of
+          Left (MountUnresolved m) -> "outside the base directory" `T.isInfixOf` m
+          _ -> False
+        -- Hiding what leads out reaches nothing, so it is allowed.
+        hidden <- resolveBaseMounts (tmp </> "base") (table [(".", "ro"), ("escape", "none")])
+        hidden `shouldSatisfy` isRight
+
+    it "refuses a value no option takes, which the elaborator could not see (spec 10.2)" $
+      withSystemTempDirectory "lask-mounts" $ \tmp -> do
+        let invalid r = case r of
+              Left (MountInvalid _) -> True
+              _ -> False
+        resolveBaseMounts tmp (Map.fromList [("base_mount", VString "/")]) >>= (`shouldSatisfy` invalid)
+        resolveBaseMounts tmp (Map.fromList [("base_access", VString "readonly")]) >>= (`shouldSatisfy` invalid)
+        resolveBaseMounts tmp (Map.fromList [("base_access", VMap (Map.fromList [("dist", VString "rw")]))]) >>= (`shouldSatisfy` invalid)
+        resolveBaseMounts tmp (Map.fromList [("base_access", VString "none"), ("base_mount", VString "/src")]) >>= (`shouldSatisfy` invalid)
+
   describe "commands in a session (spec 15.5)" $ do
     it "runs a command in the container with no run option given again" $
       execArgs (ExecSpec "lask-1" False Nothing [("LASK_SESSION_EXEC", "lask-2")] ["/bin/sh", "-c", "make"])
@@ -237,7 +310,7 @@ spec = do
     it "keeps on the command line a variable the podman or nerdctl client reads itself (spec 10.10)" $ do
       let options = Map.fromList [("env", VMap (Map.fromList [(k, VString "v") | k <- ["CONTAINER_HOST", "CONTAINERD_ADDRESS", "XDG_RUNTIME_DIR", "TOKEN"]]))]
           envValues e =
-            let args = runArgs e (RunSpec "/p" Nothing "i" options False False "/bin/sh" [])
+            let args = runArgs e (RunSpec "/p" Nothing "i" options False False "/bin/sh" [] (defaultBaseMounts "/p"))
              in [a | ("--env", a) <- zip args (drop 1 args)]
       envValues Podman `shouldBe` ["CONTAINERD_ADDRESS", "CONTAINER_HOST=v", "TOKEN", "XDG_RUNTIME_DIR=v"]
       map fst (clientEnv Podman options) `shouldBe` ["CONTAINERD_ADDRESS", "TOKEN"]

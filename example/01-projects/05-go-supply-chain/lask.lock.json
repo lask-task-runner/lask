@@ -1,14 +1,14 @@
 {
     "images": {
-        "#.lask/deps/sha256-7e14e99c6c3e58a541aa6820d0c9d300b64ca9bf7afea0d0d7b8cca2f6500760/lib/images/anchore/Dockerfile": {
+        "#.lask/deps/sha256-0cad5065e2ade9091dbb5845b18a23b94591aa091e60f6a33063bb250bef2d35/lib/images/anchore/Dockerfile": {
             "commands": {
                 "grype": "present",
                 "syft": "present"
             },
             "kind": "recipe",
-            "tag": "lask/1b83885230e0046b0e78790a9fd966c92a0a55a169c08f12c0415c6ba35c9620"
+            "tag": "lask/424169686a2d81d5e845506fcc0a98740a08b1e4f47b00192c87809cd4a0451f"
         },
-        "#.lask/deps/sha256-7e14e99c6c3e58a541aa6820d0c9d300b64ca9bf7afea0d0d7b8cca2f6500760/lib/images/unix/Dockerfile": {
+        "#.lask/deps/sha256-0cad5065e2ade9091dbb5845b18a23b94591aa091e60f6a33063bb250bef2d35/lib/images/unix/Dockerfile": {
             "commands": {
                 "bzip2": "present",
                 "curl": "present",
@@ -27,16 +27,16 @@
                 "zip": "present"
             },
             "kind": "recipe",
-            "tag": "lask/3612d2ffc615efce21ad551e355a07b056beae9027cc315e7f7cb56e96325eab"
+            "tag": "lask/9e46282b825947b502364939174a02062cc2cf0daaf68ff59c9a3652a2e8a22b"
         },
-        "#golang:1.27.1-trixie": {
+        "#golang:1.27.2-trixie": {
             "commands": {
                 "go": "present",
                 "gofmt": "present"
             },
-            "digest": "sha256:8f58fd67ea075142d947a60e0caa4317746a55118d312f027793d382c7741734",
+            "digest": "sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e",
             "kind": "registry",
-            "ref": "golang:1.27.1-trixie"
+            "ref": "golang:1.27.2-trixie"
         },
         "#tools/cosign.Dockerfile": {
             "commands": {
@@ -50,9 +50,9 @@
     "modules": {
         "tools": {
             "git": "https://github.com/lask-task-runner/lask-module-tools.git",
-            "hash": "sha256-7e14e99c6c3e58a541aa6820d0c9d300b64ca9bf7afea0d0d7b8cca2f6500760",
-            "requested": "v0.6.0",
-            "rev": "cb004a9f0105cec405b5e83814299a89ae6c60e3"
+            "hash": "sha256-0cad5065e2ade9091dbb5845b18a23b94591aa091e60f6a33063bb250bef2d35",
+            "requested": "v0.7.0",
+            "rev": "c942e7cacd2ae9dfce077530521e3d25103d950b"
         }
     }
 }

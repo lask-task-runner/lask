@@ -397,7 +397,7 @@ lexSemanticTokensWith commandWordSpans fileName src =
   case lexTokensWithComments fileName src of
     Left e -> Left $ T.pack $ pretty e
     Right (ts, comments) ->
-      let onSpans = commandOnSpans ts
+      let onSpans = commandOnSpans ts <> withinSpans ts
           keywordOn (sp, typ)
             | sp `elem` onSpans = (sp, SemanticTokenTypes_Keyword)
             | otherwise = (sp, typ)
@@ -437,6 +437,15 @@ lexSemanticTokensWith commandWordSpans fileName src =
               | tok `elem` [Tok.TRParen, Tok.TRBracket, Tok.TRBrace] = max 0 (d - 1)
               | otherwise = d
         schema [] = []
+
+    -- @within@ is a keyword only directly before the brace of an
+    -- access constraint (spec 3.3, 5), where no identifier can stand:
+    -- a name is never followed by @{@.
+    withinSpans toks =
+      [ sp
+      | (prev, Tok.Spanned sp (Tok.TLowerId "within"), Tok.Spanned _ Tok.TLBrace) <- zip3 (Nothing : map Just toks) toks (drop 1 toks),
+        fmap Tok.spannedValue prev /= Just Tok.TDot
+      ]
 
     spanStart (S.Span s _) = Just s
     spanStart S.NoSpan = Nothing
@@ -736,7 +745,7 @@ typeParamsOf _ Nothing = ""
 typeParamsOf compiled (Just (declPath, name)) =
   case [ tps
        | lm <- maybeToList (Map.lookup key modules),
-         AST.Decl _ (AST.DFunction n tps _ _ _) <- AST.moduleDecls (lmModule lm),
+         AST.Decl _ (AST.DFunction n tps _ _ _ _) <- AST.moduleDecls (lmModule lm),
          n == name,
          not (null tps)
        ] of
@@ -769,7 +778,7 @@ declDocs compiled docPath docSrc (Just (declPath, name)) = do
       lm <- Map.lookup (normalisedKey declPath) modules
       let matches d = case AST.declF d of
             AST.DValue n _ _ _ -> n == name
-            AST.DFunction n _ _ _ _ -> n == name
+            AST.DFunction n _ _ _ _ _ -> n == name
             _ -> False
       case [AST.declSpan d | d <- AST.moduleDecls (lmModule lm), matches d] of
         (S.Span (S.Position _ l _) _ : _) -> Just l
@@ -1156,7 +1165,7 @@ languageCompletion path src (Position pl pc)
 
     declParams m declName =
       listToMaybe $
-        [ps | AST.Decl _ (AST.DFunction n _ ps _ _) <- AST.moduleDecls m, n == declName]
+        [ps | AST.Decl _ (AST.DFunction n _ ps _ _ _) <- AST.moduleDecls m, n == declName]
           <> [ ps
              | AST.Decl _ (AST.DValue n _ _ (AST.Expr _ (AST.ELambda ps _ _))) <- AST.moduleDecls m,
                n == declName
@@ -1167,7 +1176,7 @@ languageCompletion path src (Position pl pc)
       | AST.Decl _ f <- AST.moduleDecls m,
         n <- case f of
           AST.DValue n' _ _ _ -> [n']
-          AST.DFunction n' _ _ _ _ -> [n']
+          AST.DFunction n' _ _ _ _ _ -> [n']
           _ -> []
       ]
 

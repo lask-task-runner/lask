@@ -133,7 +133,7 @@ buildFunctionHelp path src decl mCore doc envs =
       -- was annotated with (spec 11.6: only a type that cannot be
       -- determined is shown as `?`).
       Nothing -> case AST.declF decl of
-        AST.DFunction _ _ _ ann _ -> AST.renderSType <$> ann
+        AST.DFunction _ _ _ ann _ _ -> AST.renderSType <$> ann
         AST.DValue _ _ ann _ | null (declParams decl) -> AST.renderSType <$> ann
         _ -> Nothing
 
@@ -187,7 +187,7 @@ buildFunctionHelp path src decl mCore doc envs =
 -- bound as written: @T@, @T: orderable@.
 declTypeParams :: AST.Decl -> [Text]
 declTypeParams d = case AST.declF d of
-  AST.DFunction _ tps _ _ _ -> [T.drop 1 (T.dropEnd 1 (AST.renderTypeParams [tp])) | tp <- tps]
+  AST.DFunction _ tps _ _ _ _ -> [T.drop 1 (T.dropEnd 1 (AST.renderTypeParams [tp])) | tp <- tps]
   _ -> []
 
 -- | The declaration's name with its type parameters, for the places
@@ -202,7 +202,7 @@ declaredAs fh
 declName :: AST.Decl -> Text
 declName d = case AST.declF d of
   AST.DValue n _ _ _ -> n
-  AST.DFunction n _ _ _ _ -> n
+  AST.DFunction n _ _ _ _ _ -> n
   _ -> ""
 
 declLine :: AST.Decl -> Maybe Int
@@ -222,7 +222,7 @@ isFunctionDecl d = case AST.declF d of
 -- function declaration, or of a directly lambda-valued binding.
 declParams :: AST.Decl -> [AST.Param]
 declParams d = case AST.declF d of
-  AST.DFunction _ _ ps _ _ -> ps
+  AST.DFunction _ _ ps _ _ _ -> ps
   AST.DValue _ _ _ (AST.Expr _ (AST.ELambda ps _ _)) -> ps
   _ -> []
 

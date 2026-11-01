@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           lask
-version:        0.14.0
+version:        0.15.0
 description:    Please see the README on GitHub at <https://github.com/lask-task-runner/lask#readme>
 homepage:       https://github.com/lask-task-runner/lask#readme
 bug-reports:    https://github.com/lask-task-runner/lask/issues
@@ -38,6 +38,7 @@ library
       Command.Lask.Secrets
       Command.Lask.Table
       Language.Lask
+      Language.Lask.Access
       Language.Lask.Builtins.Doc
       Language.Lask.Builtins.Format
       Language.Lask.Builtins.Impl
@@ -48,6 +49,7 @@ library
       Language.Lask.Builtins.Sig
       Language.Lask.CommandSchema
       Language.Lask.Confirm
+      Language.Lask.Core.Access
       Language.Lask.Core.AST
       Language.Lask.Core.Compare
       Language.Lask.Core.Lint

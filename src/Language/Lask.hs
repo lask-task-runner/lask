@@ -4,6 +4,7 @@ module Language.Lask
   ( Compiled (..),
     Partial (..),
     compileFile,
+    compileFileUnconstrained,
     compileFilePartial,
     compileWith,
     compileText,
@@ -21,6 +22,7 @@ import Data.Text (Text)
 import Language.Lask.Deps.File (defaultDepsFileName)
 import Language.Lask.Deps.Lock (defaultLockFileName)
 import Language.Lask.Confirm (validateConfirm)
+import Language.Lask.Core.Access (checkWithin, withinConstraints)
 import Language.Lask.Diagnostic (Diagnostic, settleDiagnostics)
 import Language.Lask.Elaborate (CoreProgram, elaborateRecovering)
 import Language.Lask.Module.Loader (LoadedModule (..), LoaderEnv (..), ModuleReader, Program (..), collapseDots, defaultLoaderEnv, fileReader, loadProgramEnv, loadProgramWith)
@@ -49,6 +51,16 @@ data Partial = Partial
 compileFile :: FilePath -> IO (Either [Diagnostic] Compiled)
 compileFile = compileWith fileReader
 
+-- | 'compileFile' without checking the access constraints (spec
+-- 10.11): for @envs files | network | access@, which report what the
+-- constraints find rather than fail on it (11.4).
+compileFileUnconstrained :: FilePath -> IO (Either [Diagnostic] Compiled)
+compileFileUnconstrained entry = do
+  r <- loadProgramWith fileReader entry
+  pure $ case r of
+    Left ds -> Left (settleDiagnostics ds)
+    Right prog -> checkedWith prog (checkProgramWith False prog)
+
 compileWith :: ModuleReader -> FilePath -> IO (Either [Diagnostic] Compiled)
 compileWith reader entry = do
   r <- loadProgramWith reader entry
@@ -72,10 +84,19 @@ checkedWith prog result = case result of
 -- an error of name resolution is not elaborated, and the others still
 -- are. The core program holds the declarations that did elaborate.
 checkProgram :: Program -> ([Diagnostic], Map FilePath GlobalScope, CoreProgram)
-checkProgram prog =
+checkProgram = checkProgramWith True
+
+checkProgramWith :: Bool -> Program -> ([Diagnostic], Map FilePath GlobalScope, CoreProgram)
+checkProgramWith constrained prog =
   let (nameDs, scopes) = resolveProgram prog
       (typeDs, core) = elaborateRecovering prog scopes nameDs
-   in (settleDiagnostics (nameDs <> typeDs), scopes, core)
+      -- The access constraints are checked over the whole program
+      -- (spec 10.11), which only a program that elaborated is.
+      (specDs, cons) = withinConstraints prog
+      withinDs
+        | constrained && null (nameDs <> typeDs <> specDs) = checkWithin cons core
+        | otherwise = []
+   in (settleDiagnostics (nameDs <> typeDs <> specDs <> withinDs), scopes, core)
 
 -- | Compile an in-editor document: the entry module's text is
 -- provided directly; imported modules are read from disk.

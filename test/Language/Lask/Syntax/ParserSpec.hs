@@ -71,7 +71,7 @@ celse = CaseArm NoSpan Nothing
 -- | A function declaration with no type parameters, and a plain type
 -- alias: the shapes almost every test wants (spec 4.2).
 dfun :: Text -> [Param] -> Maybe SType -> Expr -> DeclF
-dfun n = DFunction n []
+dfun n ps rt = DFunction n [] ps rt Nothing
 
 tparam :: Text -> TypeParam
 tparam v = TypeParam (Spanned NoSpan v) Nothing
@@ -296,6 +296,7 @@ spec = do
               [tparam "T"]
               [Param NoSpan (PPositional "xs" Public (Just (ty (SArray (ty (named Nothing "T"))))))]
               (Just (ty (named Nothing "T")))
+              Nothing
               (ex (EIndex (var "xs") (num 0)))
           ]
 
@@ -309,7 +310,28 @@ spec = do
                 Param NoSpan (PPositional "b" Public (Just (ty (named Nothing "B"))))
               ]
               (Just (ty (named Nothing "A")))
+              Nothing
               (var "a")
+          ]
+
+    it "parses an access constraint on a function, after its return type (spec 5)" $
+      pModule "f(): String within { network: \"none\" } = \"x\""
+        `shouldBe` Right
+          [ DFunction
+              "f"
+              []
+              []
+              (Just (ty SString))
+              (Just (AccessSpec NoSpan [(Spanned NoSpan "network", ex (EString [TPChunk NoSpan "none"]))]))
+              (ex (EString [TPChunk NoSpan "x"]))
+          ]
+
+    it "parses a module constraint, and keeps within usable as a name (spec 3.3, 5)" $
+      pModule "within { volumes: false }\nwithin = 1\nwithin(x) = x"
+        `shouldBe` Right
+          [ DWithin (AccessSpec NoSpan [(Spanned NoSpan "volumes", ex (EBool False))]),
+            DValue "within" Public Nothing (num 1),
+            dfun "within" [Param NoSpan (PPositional "x" Public Nothing)] Nothing (var "x")
           ]
 
     it "parses type parameters on a type alias, and arguments on a reference" $ do
@@ -337,6 +359,7 @@ spec = do
               [TypeParam (Spanned NoSpan "T") (Just (SBoundNamed (Spanned NoSpan "orderable")))]
               [Param NoSpan (PPositional "xs" Public (Just (ty (SArray (ty (named Nothing "T"))))))]
               (Just (ty (named Nothing "T")))
+              Nothing
               (ex (EIndex (var "xs") (num 0)))
           ]
       pModule "type Box<K: Number | String, V> = Map<V>"

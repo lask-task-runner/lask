@@ -10,6 +10,7 @@ module Language.Lask.Syntax.AST
   ( Module (..),
     Decl (..),
     DeclF (..),
+    AccessSpec (..),
     TypeParam (..),
     SBound (..),
     typeParamNames,
@@ -71,9 +72,12 @@ data DeclF
     DTypeAlias Text [TypeParam] SType
   | -- | @name[!!] [: Type] = expr@
     DValue Text Secrecy (Maybe SType) Expr
-  | -- | @name(params) [: Type] = expr@ (sugar for a lambda binding),
-    -- with the type parameters it declares (spec 4.2).
-    DFunction Text [TypeParam] [Param] (Maybe SType) Expr
+  | -- | @name(params) [: Type] [within { ... }] = expr@ (sugar for a
+    -- lambda binding), with the type parameters it declares (spec 4.2)
+    -- and its access constraint (spec 5, 10.11).
+    DFunction Text [TypeParam] [Param] (Maybe SType) (Maybe AccessSpec) Expr
+  | -- | @within { ... }@ (spec 5): the module constraint.
+    DWithin AccessSpec
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
@@ -91,6 +95,11 @@ data DeclF
   | -- | @export command { "go" } from "path"@ (spec 5): an import of
     -- command words that also exports them.
     DExportCommandsFrom [Spanned Text] Text
+  deriving (Show, Eq)
+
+-- | An access constraint as written (spec 5, 10.11): the span of its
+-- braces, and each field with its value. The braces build no value.
+data AccessSpec = AccessSpec Span [(Spanned Text, Expr)]
   deriving (Show, Eq)
 
 -- | Whether a binding carries the @!!@ secret marker (spec 6.10).
@@ -312,17 +321,20 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DExportNamespace a p -> DExportNamespace a p
   DTypeAlias n ps t -> DTypeAlias n (map stripTypeParam ps) (stripSpansType t)
   DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
-  DFunction n tps ps t e ->
+  DFunction n tps ps t w e ->
     DFunction
       n
       (map stripTypeParam tps)
       (map stripParam ps)
       (fmap stripSpansType t)
+      (fmap stripAccess w)
       (stripSpansExpr e)
+  DWithin w -> DWithin (stripAccess w)
   DCommand ns e sch -> DCommand (map stripWord ns) (stripSpansExpr e) (fmap stripSpansExpr sch)
   DImportCommands ns path -> DImportCommands (map stripWord ns) path
   DExportCommandsFrom ns path -> DExportCommandsFrom (map stripWord ns) path
   where
+    stripAccess (AccessSpec _ fs) = AccessSpec NoSpan [(Spanned NoSpan k, stripSpansExpr v) | (Spanned _ k, v) <- fs]
     stripWord (Spanned _ n) = Spanned NoSpan n
     stripSpec (ImportSpec _ n a) = ImportSpec NoSpan n a
 
