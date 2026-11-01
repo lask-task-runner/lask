@@ -12,11 +12,15 @@ module Command.Lask.Project
     cmdDepsRm,
     cmdEnvsList,
     cmdEnvsCommands,
+    cmdEnvsFiles,
+    cmdEnvsNetwork,
+    cmdEnvsAccess,
   )
 where
 
 import Command.Lask.Common
 import Command.Lask.DepUse (ImportSite (..), projectImports)
+import Command.Lask.EnvAccess (OptVal (..), SVal (..), Target (..), UseKind (..), UseSite (..), collectUseSites)
 import Command.Lask.Envs (CommandSite (..), HeadImage (..), HeadUse (..), Requirer (..), collectCommandSites, collectHeadUses)
 import Command.Lask.Images
 import Language.Lask.Runtime.Container (ContainerBackend (..), resolveBackend)
@@ -44,6 +48,7 @@ import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
+import Language.Lask.Access (AccessTable, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume)
 import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Core.AST (Core (..))
 import Language.Lask.Elaborate (CommandUse (..), CoreProgram (..))
@@ -990,3 +995,324 @@ headLabel h = case h of
   HeadRegistry ref Nothing -> ("#" <> ref, "registry")
   HeadRegistry ref (Just p) -> ("#" <> ref <> " (" <> p <> ")", "registry")
   HeadRecipe r -> ("#" <> recipeSource (rcDockerfile r), "recipe")
+
+-- envs files | network | access --------------------------------------------------
+
+-- | Which of @envs files@, @envs network@ and @envs access@ is listing.
+data AccessListing = ListFiles | ListNetwork | ListAccess
+  deriving (Eq)
+
+-- | The run options a listing shows, which are also what tells its
+-- rows apart (spec 11.4).
+listingOptions :: AccessListing -> [Text]
+listingOptions l = case l of
+  ListFiles -> ["base_mount", "base_access", "volumes", "read_only", "tmpfs"]
+  ListNetwork -> ["network", "publish", "dns", "dns_search", "add_hosts"]
+  ListAccess -> ["base_access", "volumes", "network", "publish"]
+
+-- | One row: a head, or @(dynamic)@, with the options the listing
+-- shows, and the uses in it.
+data AccessRow = AccessRow
+  { arHead :: Maybe HeadImage,
+    arOpts :: Map.Map Text OptVal,
+    arBy :: [Text],
+    arSites :: [UseSite]
+  }
+
+cmdEnvsFiles :: CommonOpts -> Maybe Text -> Bool -> IO ()
+cmdEnvsFiles opts function verbose = cmdEnvsAccessListing ListFiles opts function verbose
+
+cmdEnvsNetwork :: CommonOpts -> Maybe Text -> IO ()
+cmdEnvsNetwork opts function = cmdEnvsAccessListing ListNetwork opts function False
+
+cmdEnvsAccess :: CommonOpts -> Maybe Text -> IO ()
+cmdEnvsAccess opts function = cmdEnvsAccessListing ListAccess opts function False
+
+-- | @lask envs files | network | access@ (spec 11.4): what the uses of
+-- environments may reach past their containers, read statically. No
+-- access constraint is checked yet, so every row's CHECK is @—@.
+cmdEnvsAccessListing :: AccessListing -> CommonOpts -> Maybe Text -> Bool -> IO ()
+cmdEnvsAccessListing listing opts function verbose = do
+  compiledE <- compileFile (optModule opts)
+  compiled <- case compiledE of
+    Right c -> pure c
+    Left _ -> compileOrExit opts
+  paths <- projectPaths opts
+  let core = compiledCore compiled
+  scope <- case function of
+    Nothing -> pure Nothing
+    Just fn ->
+      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
+        k : _ -> pure (Just k)
+        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+  lock <- loadLockMaybe paths
+  let sites = collectUseSites core scope
+      shown = listingOptions listing
+      -- A use a call resolved is shown under the declaration of the
+      -- call, unless that is where the use is written.
+      label site via = case via of
+        Just (vm, vd)
+          | (vm, vd) /= (usModule site, usDecl site) ->
+              moduleLabel paths lock vm <> ": " <> vd <> " → " <> usDecl site
+        _ -> moduleLabel paths lock (usModule site) <> ": " <> usDecl site
+      entries =
+        [ ((Just (tHead t), Map.filterWithKey (\k _ -> k `elem` shown) (tOpts t)), (label s (tVia t), s))
+        | s <- sites,
+          t <- Set.toList (usTargets s)
+        ]
+          <> [((Nothing, Map.empty), (label s Nothing, s)) | s <- sites, usDynamic s]
+      grouped = Map.fromListWith (flip (<>)) [(k, [v]) | (k, v) <- entries]
+      rows =
+        sortOn rowOrder
+          [ AccessRow h o (nub (sort (map fst vs))) (map snd vs)
+          | ((h, o), vs) <- Map.toList grouped
+          ]
+      rowOrder r = (kindOrder (rowKind r), rowLabel r)
+      kindOrder k = case k of
+        "local" -> 0 :: Int
+        "dynamic" -> 2
+        _ -> 1
+  if optJsonFormat opts
+    then printJson (A.toJSON (map (rowJson listing verbose) rows))
+    else
+      if null rows
+        then TIO.putStrLn "no environments"
+        else do
+          color <- colorFor (optNoColor opts) stdout
+          case (listing, scope) of
+            (ListAccess, Just _) -> TIO.putStrLn "within: none"
+            _ -> pure ()
+          let (header, cellsOf) = case listing of
+                ListFiles ->
+                  ( ["ENVIRONMENT", "TARGET", "SOURCE", "ACCESS", "CHECK", "REQUIRED BY"],
+                    \r ->
+                      [ (if i == 0 then [plain (rowLabel r)] else [plain ""])
+                          <> [plain t, plain s, plain a]
+                          <> (if i == 0 then [plain "—", plain (requiredCell (arBy r))] else [plain "", plain ""])
+                      | (i, (t, s, a)) <- zip [0 :: Int ..] (fileLines r)
+                      ]
+                  )
+                ListNetwork ->
+                  ( ["ENVIRONMENT", "NETWORK", "INBOUND", "NAME RESOLUTION", "CHECK", "REQUIRED BY"],
+                    \r -> [[plain (rowLabel r), plain (networkCell r), plain (inboundCell r), plain (nameResolutionCell r), plain "—", plain (requiredCell (arBy r))]]
+                  )
+                ListAccess ->
+                  ( ["ENVIRONMENT", "FILES", "NETWORK", "CHECK", "REQUIRED BY"],
+                    \r -> [[plain (rowLabel r), plain (filesSummary r), plain (networkCell r <> (if hasInbound r then " + inbound !" else "")), plain "—", plain (requiredCell (arBy r))]]
+                  )
+              groups = map cellsOf rows
+              rendered = renderTable color header (concat groups)
+              -- Each row is followed by its literal file reads with
+              -- --verbose, after the lines the row takes in the table.
+              interleave ls [] = ls
+              interleave ls ((r, g) : more) =
+                let (mine, rest) = splitAt (length g) ls
+                 in mine <> (if verbose then readLines r else []) <> interleave rest more
+              readLines r =
+                [ "  " <> moduleLabel paths lock (usModule s) <> ":" <> T.pack (show (spanLine (usSpan s))) <> "  " <> usDecl s <> "  " <> fn <> "  " <> p
+                | s <- sortOn (\s -> (usModule s, spanLine (usSpan s))) (nubOn usSpan (arSites r)),
+                  UseFile fn (Just p) <- [usKind s]
+                ]
+          mapM_ TIO.putStrLn (take 1 rendered <> interleave (drop 1 rendered) (zip rows groups))
+          TIO.putStrLn ""
+          TIO.putStrLn $
+            plural (length rows) "row"
+              <> " ("
+              <> tally (map rowKind rows)
+              <> "): "
+              <> tally (map (const "unconstrained") rows)
+  exitSuccess
+  where
+    spanLine sp = case sp of
+      Span (Position _ l _) _ -> l
+      NoSpan -> 0
+    nubOn f = Map.elems . Map.fromList . map (\x -> (f x, x))
+
+-- | The kind of a row, as @envs list@ names kinds.
+rowKind :: AccessRow -> Text
+rowKind r = maybe "dynamic" (snd . headLabel) (arHead r)
+
+-- | A row's ENVIRONMENT: the head, with the names of the options it
+-- is given among those the listing shows.
+rowLabel :: AccessRow -> Text
+rowLabel r = case arHead r of
+  Nothing -> "(dynamic)"
+  Just h ->
+    shortPath (fst (headLabel h))
+      <> (if Map.null (arOpts r) then "" else "{" <> T.intercalate "," (Map.keys (arOpts r)) <> "}")
+
+-- | An option of a row: 'Nothing' when it is not given, or given null.
+rowOpt :: AccessRow -> Text -> Maybe OptVal
+rowOpt r k = case Map.lookup k (arOpts r) of
+  Just (Known SNull) -> Nothing
+  other -> other
+
+-- | The strings of a list option; 'Nothing' when it is computed.
+rowStrings :: AccessRow -> Text -> Maybe [Text]
+rowStrings r k = case rowOpt r k of
+  Nothing -> Just []
+  Just (Known (SArr xs)) -> Just [t | SStr t <- xs]
+  Just (Known (SStr t)) -> Just [t]
+  _ -> Nothing
+
+isLocalRow :: AccessRow -> Bool
+isLocalRow r = arHead r == Just HeadLocal
+
+-- | The mount of the base directory: where, and each key with its
+-- mode; 'Nothing' for the table when it is computed.
+baseMountOf :: AccessRow -> (Text, Maybe AccessTable)
+baseMountOf r = (target, table)
+  where
+    target = case rowOpt r "base_mount" of
+      Nothing -> defaultBaseMount
+      Just (Known (SStr t)) -> t
+      _ -> "(computed)"
+    table = case rowOpt r "base_access" of
+      Nothing -> Just (accessScalar ModeRw)
+      Just (Known (SStr m)) -> either (const Nothing) (Just . accessScalar) (parseMode m)
+      Just (Known (SMap kvs)) -> either (const Nothing) Just (accessTable [(k, v) | (k, SStr v) <- kvs])
+      _ -> Nothing
+
+-- | The lines of a row in @envs files@: target, source and access.
+fileLines :: AccessRow -> [(Text, Text, Text)]
+fileLines r
+  | isLocalRow r = [("/", "(host)", "rw !")]
+  | Nothing <- arHead r = [("(unknown)", "—", "—")]
+  | otherwise = base <> volumes <> rootfs <> tmpfs
+  where
+    (target, table) = baseMountOf r
+    base = case table of
+      Just t -> [(if k == "." then target else target <> "/" <> k, k, modeText m) | (k, m) <- t]
+      Nothing -> [(target, ".", "(computed)")]
+    volumes = case rowStrings r "volumes" of
+      Just vs ->
+        [ (volTarget v, source (volSource v), modeText (volMode v) <> " !")
+        | Just v <- map parseVolume vs
+        ]
+      Nothing -> [("(computed)", "(volumes)", "(computed) !")]
+    source s = case s of
+      VolumeHost p -> p
+      VolumeNamed n -> "volume:" <> n
+    rootfs = case rowOpt r "read_only" of
+      Just (Known (SBool True)) -> [("/", "(image)", "ro")]
+      Just Computed -> [("/", "(image)", "(computed)")]
+      _ -> [("/", "(image)", "rw")]
+    tmpfs = case rowStrings r "tmpfs" of
+      Just ts -> [(T.takeWhile (/= ':') t, "(tmpfs)", "rw") | t <- ts]
+      Nothing -> [("(computed)", "(tmpfs)", "rw")]
+
+-- | The class of a row's network, and how it is written.
+networkCell :: AccessRow -> Text
+networkCell r
+  | isLocalRow r = "host (unbounded) !"
+  | Nothing <- arHead r = "(unknown)"
+  | otherwise = case rowOpt r "network" of
+      Nothing -> "default !"
+      Just (Known (SStr v)) -> case classifyNetwork (Just v) of
+        NetNone -> "none"
+        NetDefault
+          | v `elem` ["bridge", "default"] -> "default !"
+          | otherwise -> v <> " (default) !"
+        NetHost
+          | v == "host" -> "host !"
+          | otherwise -> v <> " (host) !"
+      _ -> "(computed)"
+
+inboundCell :: AccessRow -> Text
+inboundCell r
+  | Nothing <- arHead r = "(unknown)"
+  | otherwise = case rowStrings r "publish" of
+      Just [] -> "—"
+      Just ps -> T.intercalate ", " ps <> " !"
+      Nothing -> "(computed) !"
+
+hasInbound :: AccessRow -> Bool
+hasInbound r = arHead r /= Nothing && rowStrings r "publish" /= Just []
+
+nameResolutionCell :: AccessRow -> Text
+nameResolutionCell r
+  | Nothing <- arHead r = "(unknown)"
+  | otherwise = case nameResolution r of
+      Just [] -> "default"
+      Just es -> T.intercalate ", " es
+      Nothing -> "(computed)"
+
+-- | The entries of @dns@, @dns_search@ and @add_hosts@; 'Nothing' when
+-- one of them is computed.
+nameResolution :: AccessRow -> Maybe [Text]
+nameResolution r = do
+  dns <- rowStrings r "dns"
+  search <- rowStrings r "dns_search"
+  hs <- hosts
+  pure (map ("dns " <>) dns <> map ("search " <>) search <> hs)
+  where
+    hosts = case rowOpt r "add_hosts" of
+      Nothing -> Just []
+      Just (Known (SMap kvs)) -> Just [k <> "=" <> v | (k, SStr v) <- kvs]
+      _ -> Nothing
+
+-- | A row's FILES in @envs access@.
+filesSummary :: AccessRow -> Text
+filesSummary r
+  | isLocalRow r = "host (unbounded) !"
+  | Nothing <- arHead r = "(unknown)"
+  | otherwise = base <> volumes
+  where
+    base = case snd (baseMountOf r) of
+      Just t -> T.intercalate ", " [k <> " " <> modeText m | (k, m) <- t]
+      Nothing -> "(computed)"
+    volumes = case rowStrings r "volumes" of
+      Just vs -> case length [() | Just _ <- map parseVolume vs] of
+        0 -> ""
+        n -> "; " <> plural n "volume" <> " !"
+      Nothing -> "; volumes (computed) !"
+
+rowJson :: AccessListing -> Bool -> AccessRow -> A.Value
+rowJson listing verbose r =
+  A.object $
+    [ ("environment", A.String (rowLabel r)),
+      ("kind", A.String (rowKind r)),
+      ("check", A.Null),
+      ("required_by", A.toJSON (arBy r))
+    ]
+      <> [("files", files) | listing /= ListNetwork]
+      <> [("reads", fileReads) | verbose]
+      <> [("network", network) | listing /= ListFiles]
+  where
+    cell t
+      | t == "(computed)" || t == "(computed) !" = A.Null
+      | otherwise = A.String (T.strip (fromMaybe t (T.stripSuffix " !" t)))
+    files =
+      A.toJSON
+        [ A.object [("target", cell t), ("source", A.String s), ("access", cell a)]
+        | (t, s, a) <- fileLines r
+        ]
+    fileReads =
+      A.toJSON
+        [ A.object [("function", A.String fn), ("path", A.String p), ("declaration", A.String (usDecl s))]
+        | s <- arSites r,
+          UseFile fn (Just p) <- [usKind s]
+        ]
+    network =
+      A.object
+        [ ("class", A.String (netClass r)),
+          ("name", maybe A.Null A.String (netName r)),
+          ("inbound", entries (rowStrings r "publish")),
+          ("name_resolution", entries (nameResolution r))
+        ]
+    -- What the row gives, as written; null when it is computed or the
+    -- environment is not known.
+    entries es
+      | Nothing <- arHead r = A.Null
+      | isLocalRow r = A.toJSON ([] :: [Text])
+      | otherwise = maybe A.Null A.toJSON es
+    netClass row
+      | isLocalRow row = "host"
+      | Nothing <- arHead row = "dynamic"
+      | otherwise = case rowOpt row "network" of
+          Nothing -> "default"
+          Just (Known (SStr v)) -> netClassText (classifyNetwork (Just v))
+          _ -> "computed"
+    netName row = case rowOpt row "network" of
+      Just (Known (SStr v)) -> Just v
+      _ -> Nothing

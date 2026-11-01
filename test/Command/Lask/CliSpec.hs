@@ -16,6 +16,8 @@ import Data.Foldable (toList)
 import Data.IORef (readIORef)
 import Data.List (isInfixOf, isPrefixOf, nub, sort)
 import qualified Data.Text as T
+import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.Encoding as TLE
 import Language.Lask.SecretStore.FakeVault (FakeVault (..), requestsTo, withFakeVault)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive)
 import System.FilePath ((</>))
@@ -1323,6 +1325,60 @@ spec = beforeAll findLask $ do
           verbose <- runLask lask dir ["envs", "commands", "--verbose", "build"] ""
           resExit verbose `shouldBe` 0
           resOut verbose `shouldSatisfy` isInfixOf "main.lask:4  build  go build ./...  ← command \"go\""
+    it "lists what each environment's commands may reach past the container (spec 11.4)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "host = #local\n\
+            \alpine = #alpine:3.20\n\
+            \sealed = #alpine:3.20{network: \"none\"}\n\
+            \node = #node:24{base_access: { \".\": \"ro\", \"dist\": \"rw\" }, network: \"none\", read_only: true}\n\
+            \deploy() = $[host] echo deploy\n\
+            \build(): String = do {\n\
+            \  $[node] npm run build\n\
+            \  read_file(\"dist/out.json\", node)\n\
+            \}\n\
+            \release_of(e: Runnable): String = $[e] cat /etc/alpine-release\n\
+            \ok(): String = release_of(sealed)\n\
+            \bad(): String = release_of(alpine)\n\
+            \ship() = $[#docker:27{volumes: [\"/var/run/docker.sock:/var/run/docker.sock\"]}] docker ps\n\
+            \serve() = $[#nginx:1.27{publish: [\"8080:80\"]}] nginx\n\
+            \probe() = $[runnable(alpine, network = get_env(\"NET\"))] true\n\
+            \moved() = $[#alpine:3.20{base_mount: \"/src\"}] pwd\n"
+          )
+        ]
+        $ \dir -> do
+          files <- runLask lask dir ["envs", "files", "--verbose", "build"] ""
+          resExit files `shouldBe` 0
+          resOut files `shouldSatisfy` isInfixOf "#node:24{base_access,read_only}"
+          resOut files `shouldSatisfy` isInfixOf "/work/dist"
+          resOut files `shouldSatisfy` isInfixOf "main.lask:8  build  read_file  dist/out.json"
+          resOut files `shouldSatisfy` isInfixOf "1 row (1 registry): 1 unconstrained"
+          whole <- runLask lask dir ["envs", "files"] ""
+          resOut whole `shouldSatisfy` isInfixOf "/var/run/docker.sock  rw !"
+          resOut whole `shouldSatisfy` isInfixOf "(host)"
+          resOut whole `shouldSatisfy` isInfixOf "/src "
+          network <- runLask lask dir ["envs", "network"] ""
+          resExit network `shouldBe` 0
+          -- An environment a caller passes is listed at that caller.
+          resOut network `shouldSatisfy` isInfixOf "main.lask: ok → release_of"
+          resOut network `shouldSatisfy` isInfixOf "main.lask: bad → release_of"
+          resOut network `shouldSatisfy` isInfixOf "(computed)"
+          resOut network `shouldSatisfy` isInfixOf "8080:80 !"
+          json <- runLask lask dir ["envs", "access", "--format", "json"] ""
+          resExit json `shouldBe` 0
+          -- REQUIRED BY holds an arrow, so the output is read as UTF-8.
+          let rows = maybe [] id (A.decode (TLE.encodeUtf8 (TL.pack (resOut json))) :: Maybe [A.Value])
+              classOf e =
+                [ c
+                | A.Object o <- rows,
+                  KM.lookup "environment" o == Just (A.String e),
+                  Just (A.Object n) <- [KM.lookup "network" o],
+                  Just (A.String c) <- [KM.lookup "class" n]
+                ]
+          classOf "#local" `shouldBe` ["host"]
+          classOf "#node:24{base_access,network}" `shouldBe` ["none"]
+          sort (classOf "#alpine:3.20{network}") `shouldBe` ["computed", "none"]
+          classOf "(dynamic)" `shouldBe` ["dynamic"]
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""

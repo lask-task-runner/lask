@@ -2668,7 +2668,7 @@ The run options this implementation provides:
   - `"ro"`: it is mounted read-only.
   - `"none"`: it is not mounted. `base_mount` given with it is `E-TYPE-ENV-CONSTRUCT`, since there is then nothing to mount; the default working directory is still `/work`, an empty directory.
   - A table maps paths to those three modes. A key is a path relative to the base directory, normalized as for `base_mount` and written without a leading `./`, or `"."` for the base directory itself; `"."` must be present, so that what a path no key names is given is written out rather than guessed. A path takes the mode of the longest key that is it or one of its ancestors, so `{".": "ro", "dist": "rw"}` mounts the base directory read-only with `dist` writable in it. A path whose mode is `"none"` is hidden: a directory appears empty, and a file appears empty.
-  - A key that is `..` or begins with it, or an absolute path, is `E-TYPE-ENV-CONSTRUCT`, as is a mode other than the three. Both are found statically when the value is written as a literal, and are `E-RUNTIME-VALUE` when the command runs otherwise.
+  - A key that is `..` or begins with it, an absolute path, or one containing a comma (which `--mount` would split, below), is `E-TYPE-ENV-CONSTRUCT`, as is a mode other than the three. Both are found statically when the value is written as a literal, and are `E-RUNTIME-VALUE` when the command runs otherwise.
   - When a command runs, a path given `"rw"` or `"ro"` must exist on the host and must resolve, symbolic links followed, inside the base directory; otherwise the command does not run (`E-IO-ENV-RESOLVE`), so no mount reaches past the base directory. A path given `"none"` that does not exist has nothing to hide, and is passed over.
 - This implementation mounts each key of `base_access` with the client's `--mount`, from the shortest path to the longest, so that the longer is mounted over the shorter: a path given `"rw"` or `"ro"` as a bind mount of the host path, a directory given `"none"` as an empty `tmpfs`, and a file given `"none"` as a bind mount of an empty read-only file. `--mount` splits its fields on commas, so a `base_mount` containing a comma is `E-TYPE-ENV-CONSTRUCT`.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7, and so do `base_access` and `network = "none"`; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written. What they permit, and what an access constraint permits, is compared as 10.11 describes.
@@ -2919,7 +2919,7 @@ Engines:
 
 An access constraint bounds the host files and the networks that the commands of what it covers may reach. It is written on a function or on a module (Chapter 5), and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
 
-```lask
+```lask fragment
 within { network: "none", volumes: false }
 
 node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: "none"}
@@ -2985,11 +2985,11 @@ Checking:
 - For every declaration covered by a constraint, every use it reaches is checked against the constraint the declaration is checked against. A use whose access set is resolved and is not within it is `E-TYPE-WITHIN-EXCEEDED`. A use whose access set is unresolved is `E-TYPE-WITHIN-UNPROVEN`: a constraint holds only of what is shown to hold it.
 - A parametric use is checked at each call that resolves it, and at the invocation that resolves it from the command line.
 
-```lask
+```lask fragment
 alpine = #alpine:3.22.2
 sealed = #alpine:3.22.2{network: "none"}
 
-release_of(e: Environment): String within { network: "none" } =
+release_of(e: Runnable): String within { network: "none" } =
   $[e] cat /etc/alpine-release
 
 ok(): String = release_of(sealed)
@@ -3369,15 +3369,15 @@ lask envs access [--module <path>] [<function>]
 Enumeration rules:
 
 - What is enumerated is every use of an environment (10.11) in the declarations reachable by the rules of `envs list`; with `<function>`, on the call graph reachable from that function. Reachability over-approximates in the same way.
-- Environments and options are resolved as 10.11 resolves them, parameters included: with `<function>`, a parametric use is resolved at the calls on its call graph, and at the function itself from the defaults of its keyword parameters. A use whose environment is unresolved is listed under `(dynamic)`; an option that enters the access set and is not static is shown as `(computed)`.
-- Uses are grouped by their **access row**: the head of their environment together with the components of its access set. Two uses of one head with different access sets are two rows; uses whose run options differ only in options that do not enter the access set are one.
+- Environments and options are resolved as 10.11 resolves them, parameters included: a parametric use is resolved at each call on the enumerated call graph. A function enumerated from, being one the command line may invoke, resolves its own parameters as an invocation would: a parameter of type `Environment` or `Runnable` from its default, since none can be given there (11.2), and is `(dynamic)` without one; any other parameter may be given, so an option it supplies is `(computed)`. A use whose environment is unresolved is listed under `(dynamic)`; an option that is not static is shown as `(computed)`.
+- Uses are grouped into rows by the head of their environment together with the values of the run options the listing shows: `base_mount`, `base_access`, `volumes`, `read_only` and `tmpfs` for `envs files`; `network`, `publish`, `dns`, `dns_search` and `add_hosts` for `envs network`; and `base_access`, `volumes`, `network` and `publish`, those that enter the access set, for `envs access`. Two uses of one head that differ in one of these options are two rows; uses that differ only in other options are one.
 - Nothing is evaluated, no command runs, and the container engine is not contacted.
 
 Common columns:
 
-- `ENVIRONMENT`: the head, in the notation of `envs list`, followed in braces by the names of the options that enter its access set and are given (`#node:24.21.0-alpine3.24{base_access,network}`), or `(dynamic)`. Rows are ordered as `envs commands` orders environments.
+- `ENVIRONMENT`: the head, in the notation of `envs list`, followed in braces by the names of the options the listing shows that are given (`#node:24.21.0-alpine3.24{base_access,network}`), or `(dynamic)`. Rows are ordered as `envs commands` orders environments.
 - `CHECK`: what the constraints covering the uses of the row (10.11) find: `ok`, `exceeded` or `unproven`, the worst of them when they differ, or `—` when no use of the row is covered by one.
-- `REQUIRED BY`: the declarations whose uses are in the row, in the notation of `envs list`, two shown and how many more. A parametric use resolved at a call is shown as the declaration of the call, `→`, and the declaration the use is written in (`main.lask: ok → release_of`).
+- `REQUIRED BY`: the declarations whose uses are in the row, in the notation of `envs list`, two shown and how many more. A parametric use resolved at a call is shown as the declaration of the call, `→`, and the declaration the use is written in (`main.lask: ok → release_of`), unless the call is in the declaration the use is written in.
 - An entry that reaches past what the base directory alone gives is marked `!`: the host for `#local`, a volume, a `default` or `host` network, and a published port.
 
 Columns (`envs files`):
@@ -3402,18 +3402,22 @@ Columns (`envs access`):
 
 Output and exit codes:
 
-- The table is on stdout, followed by one line counting the rows by kind and by `CHECK`.
-- With `--format json` each is an array with one object per row: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `check`, `required_by` (every place, in full), and `files` (an array of `target`, `source`, `access` and, for `envs files --verbose`, `reads`, the calls of filesystem functions), `network` (`class`, `name`, `inbound`, `name_resolution`), or both for `envs access`. An option shown as `(computed)` is `null`, with `computed: true`.
+- The table is on stdout, followed by one line counting the rows by kind and by `CHECK`, where `—` is counted as `unconstrained`.
+- With `--format json` each is an array with one object per row: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `check` (`null` for `—`), `required_by` (every place, in full), and `files`, `network`, or both for `envs access`:
+  - `files`: an array with one object per line of `envs files`, `target`, `source` and `access`, without the `!` mark.
+  - `network`: `class` (`none`, `default`, `host`, `computed`, or `dynamic`), `name` (the value of `network`, or `null`), `inbound` (the entries of `publish`) and `name_resolution` (the entries of the `NAME RESOLUTION` column).
+  - `reads`, for `envs files --verbose`: an array of `function`, `path` and `declaration`, the calls of filesystem functions with a literal path.
+  - A value shown as `(computed)` is `null`, and so are `inbound` and `name_resolution` for `(dynamic)`.
 - `envs files`, `envs network` and `envs access` report; they do not fail. A use that exceeds its constraint or cannot be shown to stay within it is a `CHECK`, and the exit code is `0`; `check` (11.3) is what fails on it. Otherwise, exit codes are as for `envs list`.
 
 Execution example:
 
 ```text
 $ lask envs files build
-ENVIRONMENT                                    TARGET       SOURCE    ACCESS  CHECK  REQUIRED BY
-#node:24.21.0-alpine3.24{base_access,network}  /work        .         ro      ok     main.lask: build
-                                               /work/dist   dist      rw
-                                               /            (image)   rw
+ENVIRONMENT                            TARGET       SOURCE    ACCESS  CHECK  REQUIRED BY
+#node:24.21.0-alpine3.24{base_access}  /work        .         ro      ok     main.lask: build
+                                       /work/dist   dist      rw
+                                       /            (image)   rw
 
 1 row (1 registry): 1 ok
 
@@ -3423,8 +3427,9 @@ ENVIRONMENT              NETWORK             INBOUND    NAME RESOLUTION  CHECK  
 #alpine:3.22.2           default !           —          default          exceeded  main.lask: bad → release_of
 #alpine:3.22.2{network}  none                —          default          ok        main.lask: ok → release_of
 #nginx:1.27{publish}     default !           8080:80 !  default          —         main.lask: serve
+(dynamic)                (unknown)           (unknown)  (unknown)        —         main.lask: release_of
 
-4 rows (1 local, 3 registry): 1 ok, 1 exceeded, 2 —
+5 rows (1 local, 3 registry, 1 dynamic): 1 ok, 1 exceeded, 3 unconstrained
 
 $ lask envs access build
 within { network: "none", volumes: false, files: { ".": "ro", "dist": "rw" } }

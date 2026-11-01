@@ -33,6 +33,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Language.Lask.Access (Mode (..), accessTable, parseMode, validateBaseMount)
 import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Shell (escapeCommand, rawBuiltin)
 import Language.Lask.CommandSchema (Finding (..), Schema, Static (..), StaticF (..), checkCommand, fromStatic)
@@ -2596,7 +2597,10 @@ dockerRunOptions =
     ("dns_search", list),
     ("add_hosts", table),
     ("publish", list),
-    -- Host filesystem beyond the base directory mount (10.5).
+    -- Host filesystem: where the base directory is mounted and what
+    -- the mount permits (10.5), and what is mounted beyond it.
+    ("base_mount", text),
+    ("base_access", mkUnion TyString [TyMap TyString, TyNull]),
     ("volumes", list)
   ]
   where
@@ -2708,8 +2712,39 @@ elabRunnable ctx path locals sp env args = do
     CEnv "local" _
       | not (null opts) -> abort (diag ETypeEnvConstruct sp "#local takes no run options")
     _ -> pure ()
+  checkBaseOptions opts
   pure (Core sp (CRunnable env opts), TyRunnable)
   where
+    -- What the mount of the base directory is given as a literal is
+    -- checked here (10.2); anything else, when the command runs.
+    checkBaseOptions opts = do
+      mount <- case lookup "base_mount" opts of
+        Just c@(Core _ (CStrLit t)) -> Just c <$ either (optionErr c) pure (validateBaseMount t)
+        Just c | not (isNullLit c) -> pure (Just c)
+        _ -> pure Nothing
+      case lookup "base_access" opts of
+        Just c@(Core _ (CStrLit t)) -> do
+          m <- either (optionErr c) pure (parseMode t)
+          case mount of
+            Just mc
+              | m == ModeNone ->
+                  optionErr mc "'base_mount' is given with base_access \"none\", which mounts nothing"
+            _ -> pure ()
+        Just c@(Core _ (CMapLit kvs))
+          | Just pairs <- mapM literalValue kvs -> () <$ either (optionErr c) pure (accessTable pairs)
+        _ -> pure ()
+
+    literalValue (k, v) = case coreF v of
+      CStrLit t -> Just (k, t)
+      _ -> Nothing
+
+    isNullLit c = case coreF c of
+      CNull -> True
+      _ -> False
+
+    optionErr :: Core -> Text -> TC a
+    optionErr c = abort . diag ETypeEnvConstruct (coreSpan c)
+
     unknown n
       | n `elem` ["image", "dockerfile"] = "a runnable cannot change the image; name it by the head, as #alpine:3.20"
       | n `elem` imageOptionNames =

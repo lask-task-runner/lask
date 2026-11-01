@@ -28,6 +28,7 @@ library
       Command.Lask.Complete
       Command.Lask.DepUse
       Command.Lask.Entry
+      Command.Lask.EnvAccess
       Command.Lask.Envs
       Command.Lask.Fmt
       Command.Lask.Help
@@ -38,6 +39,7 @@ library
       Command.Lask.Secrets
       Command.Lask.Table
       Language.Lask
+      Language.Lask.Access
       Language.Lask.Builtins.Doc
       Language.Lask.Builtins.Format
       Language.Lask.Builtins.Impl

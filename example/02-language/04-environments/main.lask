@@ -5,6 +5,7 @@
 //
 //   lask envs list             # every image this module can reach for,
 //                              # and whether each is on the container engine
+//   lask envs access           # the host files and networks each may reach
 //   lask sync                  # materialize them (run/eval never pull)
 //   lask eval alpine_version
 //   lask eval tool_versions
@@ -35,10 +36,17 @@ small = #alpine:3.22.2{memory: "256m", cpus: 1}
 // network, and what the container may write to. These are ordinary
 // arguments — literals here, but they may be computed like any other.
 // Variable names are not `lower_id`, so they are written as strings.
+//
+// The base directory is mounted read-write at /work unless
+// `base_access` narrows it: "ro", "none", or a table of paths, as in
+// `{ ".": "ro", "dist": "rw" }`. `base_mount` mounts it elsewhere.
+// `lask envs files` and `lask envs network` list what each
+// environment's commands may reach.
 sealed = #alpine:3.22.2{
   env: { "LANG": "C.UTF-8" },
   network: "none",
   read_only: true,
+  base_access: "ro",
   tmpfs: ["/tmp"],
   cap_drop: ["ALL"]
 }

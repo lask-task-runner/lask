@@ -19,6 +19,8 @@ module Command.Lask.Envs
     collectEnvReadsFrom,
     readsStdin,
     reachableDecls,
+    headImage,
+    holdsEnv,
   )
 where
 
