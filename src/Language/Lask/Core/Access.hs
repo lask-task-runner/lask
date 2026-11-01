@@ -44,6 +44,7 @@ module Language.Lask.Core.Access
 where
 
 import Control.Applicative ((<|>))
+import Control.Exception (SomeException, evaluate, throwIO, try)
 import Control.Monad.State.Strict (State, evalState, gets, modify')
 import Data.List (nub, sortOn)
 import qualified Data.Map.Strict as Map
@@ -55,16 +56,25 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Access
+import Language.Lask.Builtins.Impl (RtHooks (..))
+import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Core.AST
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticParams (..))
 import Language.Lask.ErrorCode (ErrorCode (..), Stage (..))
 import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
+import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
+import Language.Lask.Runtime.Eval (evalCore, mkRtCtx)
 import Language.Lask.Runtime.Image (Recipe (..))
+import Language.Lask.Runtime.Value (Value (..), ioFailure)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Field (..), Type (..))
+import System.IO.Unsafe (unsafePerformIO)
+import System.Timeout (timeout)
+import Text.Read (readMaybe)
+import qualified Data.Vector as V
 
 -- Heads ---------------------------------------------------------------
 
@@ -130,6 +140,7 @@ data SVal
   | SNull
   | SArr [SVal]
   | SMap [(Text, SVal)]
+  | SRec [(Text, SVal)]
   deriving (Show, Eq, Ord)
 
 -- | A run option as the reading finds it: its static value, a value
@@ -238,12 +249,15 @@ data AVal = AVal
     avParam :: Bool,
     avStatic :: Maybe SVal,
     avVia :: Maybe Via,
-    avFuns :: [FunRef]
+    avFuns :: [FunRef],
+    -- | What each field of a record or map literal can be, so that a
+    -- static field is static even where the rest is not.
+    avFields :: Maybe (Map Text AVal)
   }
   deriving (Show, Eq, Ord)
 
 unknownV :: AVal
-unknownV = AVal Set.empty False False Nothing Nothing []
+unknownV = AVal Set.empty False False Nothing Nothing [] Nothing
 
 dynV :: AVal
 dynV = unknownV {avDyn = True}
@@ -264,6 +278,7 @@ joinV a b =
     (if avStatic a == avStatic b then avStatic a else Nothing)
     (avVia a <|> avVia b)
     (nub (avFuns a <> avFuns b))
+    (if avFields a == avFields b then avFields a else Nothing)
 
 -- | The environments of several values, none of their static values.
 unionV :: [AVal] -> AVal
@@ -482,13 +497,13 @@ reach core here seen binds c = case coreF c of
   CArray es ->
     let vs = map go es
      in (unionV vs) {avStatic = SArr <$> mapM avStatic vs, avVia = firstVia vs}
-  CMapLit kvs -> literal kvs
-  CRecordLit kvs -> literal kvs
+  CMapLit kvs -> literal SMap kvs
+  CRecordLit kvs -> literal SRec kvs
   CEnv "local" _ -> unknownV {avTargets = Set.singleton (Target HeadLocal Map.empty Nothing)}
   CEnv "docker" args -> unknownV {avTargets = maybe Set.empty (\h -> Set.singleton (Target h Map.empty Nothing)) (headImage args)}
   CRunnable envC opts ->
     let env = go envC
-        vals = [(k, go o) | (k, o) <- opts, k `elem` listedOptions]
+        vals = [(k, evaluated o (go o)) | (k, o) <- opts, k `elem` listedOptions]
         shown = Map.fromList [(k, optVal v) | (k, v) <- vals]
         via = listToMaybe [w | (_, v) <- vals, isJust (avStatic v), Just w <- [avVia v]]
      in env {avTargets = Set.map (\t -> t {tOpts = shown, tVia = tVia t <|> via}) (avTargets env), avStatic = Nothing}
@@ -506,23 +521,30 @@ reach core here seen binds c = case coreF c of
       (p, n) `Set.notMember` seen ->
         let seen' = Set.insert (p, n) seen
             call = Via (fst here) (snd here) (coreSpan c)
-         in reach core (p, n) seen' (callBinds core here call seen binds lam pos kws) (lamBody lam)
+         in evaluated c (reach core (p, n) seen' (callBinds core here call seen binds lam pos kws) (lamBody lam))
   CIndex _ (Core _ (CVar (TopRef p n))) (Core _ (CStrLit k))
     | Just e <- entry (p, n) k -> go e
   CDot (Core _ (CVar (TopRef p n))) k
     | Just e <- entry (p, n) k -> go e
+  CDot e k
+    | Just v <- Map.lookup k =<< avFields (go e) -> v
   CIf _ a b -> joinV (go a) (go b)
   CDo stmts -> doStmts binds unknownV stmts
   _ -> unionV (map go (coreChildren c))
   where
     go = reach core here seen binds
+    -- An option the rules above leave unresolved is still static when
+    -- evaluating it can do nothing but compute (spec 10.11).
+    evaluated o v
+      | isJust (avStatic v) || avParam v = v
+      | otherwise = maybe v (\sv -> v {avStatic = Just sv}) (staticEval core binds o)
     optVal v
       | Just s <- avStatic v = Known s
       | avParam v = FromParam
       | otherwise = Computed
-    literal kvs =
+    literal mk kvs =
       let vs = map (go . snd) kvs
-       in (unionV vs) {avStatic = SMap . zip (map fst kvs) <$> mapM avStatic vs, avVia = firstVia vs}
+       in (unionV vs) {avStatic = mk . zip (map fst kvs) <$> mapM avStatic vs, avVia = firstVia vs, avFields = Just (Map.fromList (zip (map fst kvs) vs))}
     firstVia vs = listToMaybe [w | v <- vs, Just w <- [avVia v]]
     doStmts _ acc [] = acc
     doStmts bs acc (CSBind x e : more) =
@@ -530,12 +552,88 @@ reach core here seen binds c = case coreF c of
        in doStmts (Map.insert x v bs) (accumulate acc v) more
     doStmts bs acc (CSExpr e : more) =
       let v = reach core here seen bs e
-       in doStmts bs (if null more then (accumulate acc v) {avStatic = avStatic v, avVia = avVia v} else accumulate acc v) more
+       in doStmts bs (if null more then (accumulate acc v) {avStatic = avStatic v, avVia = avVia v, avFields = avFields v} else accumulate acc v) more
     accumulate acc v = acc {avTargets = Set.union (avTargets acc) (avTargets v), avDyn = avDyn acc || avDyn v, avParam = avParam acc || avParam v}
     entry key k = case coreF . cdCore <$> Map.lookup key (cpDecls core) of
       Just (CMapLit kvs) -> lookup k kvs
       Just (CRecordLit kvs) -> lookup k kvs
       _ -> Nothing
+
+-- | The value of an expression that can only compute (spec 10.11):
+-- it reaches no effect, no variable of the process and no @await@,
+-- and every local it reads is static. It is evaluated as a run would
+-- evaluate it, with hooks that refuse anything else; one that fails,
+-- or does not finish in a second, is not static.
+staticEval :: CoreProgram -> Map Text AVal -> Core -> Maybe SVal
+staticEval core binds c
+  | not (computesOnly core c) = Nothing
+  | otherwise = do
+      scope <- traverse (\x -> knownValue =<< Map.lookup x binds) (Map.fromSet id locals)
+      unsafePerformIO $ do
+        ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile refuseSession (const (pure ())) noAsyncTracker refuseEnv)
+        r <- timeout 1000000 (try (evaluate . forceValue =<< evalCore ctx scope c))
+        pure $ case r of
+          Just (Right v) -> fromValue v
+          Just (Left e) -> const Nothing (e :: SomeException)
+          Nothing -> Nothing
+  where
+    -- The locals the expression reads that the walk has a value for;
+    -- any other is bound inside it, by a lambda.
+    locals = Set.fromList [x | CVar (LocalRef x) <- map coreF (c : coreDescendants c), Map.member x binds]
+    refuseCommand _ _ = pure (Left refusal)
+    refuseFile _ _ = pure (Left refusal)
+    refuseSession _ _ _ = throwIO refusal
+    refuseEnv _ = throwIO refusal
+    refusal = ioFailure EIoEnvResolve "not evaluated statically"
+    forceValue v = length (show (fromValue v)) `seq` v
+
+-- | Whether an expression, and every top-level declaration it reaches,
+-- can only compute: no effect (Chapter 5), no variable of the process,
+-- no @await@.
+computesOnly :: CoreProgram -> Core -> Bool
+computesOnly core = go Set.empty . pure
+  where
+    go _ [] = True
+    go seen (e : rest) = case coreF e of
+      CVar (BuiltinRef n) | n `Set.member` forbidden -> False
+      CAwait _ -> False
+      CVar (TopRef p n)
+        | (p, n) `Set.member` seen -> go seen rest
+        | Just cd <- Map.lookup (p, n) (cpDecls core) -> go (Set.insert (p, n) seen) (cdCore cd : rest)
+      _ -> go seen (coreChildren e <> rest)
+    forbidden = effectfulBuiltinNames <> Set.fromList ["get_env", "find_env", "get_env_or"]
+
+coreDescendants :: Core -> [Core]
+coreDescendants e = let cs = coreChildren e in cs <> concatMap coreDescendants cs
+
+-- | A value as far as it is static: a record or map of which only some
+-- fields are holds those, and reading another fails.
+knownValue :: AVal -> Maybe Value
+knownValue v = case (avStatic v, avFields v) of
+  (Just sv, _) -> toValue sv
+  (Nothing, Just fs) -> Just (VRecord (Map.mapMaybe knownValue fs))
+  _ -> Nothing
+
+toValue :: SVal -> Maybe Value
+toValue v = case v of
+  SStr t -> Just (VString t)
+  SBool b -> Just (VBool b)
+  SNull -> Just VNull
+  SNum t -> VNumber <$> readMaybe (T.unpack t)
+  SArr xs -> VArray . V.fromList <$> mapM toValue xs
+  SMap kvs -> VMap . Map.fromList <$> mapM (traverse toValue) kvs
+  SRec kvs -> VRecord . Map.fromList <$> mapM (traverse toValue) kvs
+
+fromValue :: Value -> Maybe SVal
+fromValue v = case v of
+  VString t -> Just (SStr t)
+  VBool b -> Just (SBool b)
+  VNull -> Just SNull
+  VNumber n -> Just (SNum (T.pack (formatScientific Generic Nothing n)))
+  VArray xs -> SArr <$> mapM fromValue (V.toList xs)
+  VMap m -> SMap <$> mapM (traverse fromValue) (Map.toAscList m)
+  VRecord m -> SRec <$> mapM (traverse fromValue) (Map.toAscList m)
+  _ -> Nothing
 
 -- | Whether what a target reaches waits on a parameter of the
 -- declaration walked on its own.
@@ -747,7 +845,7 @@ siteFindings _ u = case usKind u of
       let (code, msg) = case f of
             Exceeds k what -> (ETypeWithinExceeded, what <> ", which " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " does not allow (" <> k <> ")")
             Unproven "environment" -> (ETypeWithinUnproven, "the environment here is not known without running the program, so " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " cannot be shown to hold")
-            Unproven k -> (ETypeWithinUnproven, "'" <> option k <> "' is not a literal here, so " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " cannot be shown to hold")
+            Unproven k -> (ETypeWithinUnproven, "'" <> option k <> "' is not known here without running the program, so " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " cannot be shown to hold")
        in withNote ("reached through " <> T.intercalate " → " (usPath u <> [usDecl u | lastMay (usPath u) /= Just (usDecl u)]) <> ", at " <> location (usSpan u)) $
             withNote ("the constraint is at " <> location (cvSpan cv)) $
               mkDiagnostic code StageStatic sp msg

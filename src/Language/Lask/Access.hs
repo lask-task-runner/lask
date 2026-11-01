@@ -333,13 +333,9 @@ checkAccess c a = case a of
 
     volumesWithin bound vs =
       take 1
-        [ Exceeds "volumes" (q (sourceText (volSource v)) <> " is mounted " <> q (modeText (volMode v)) <> admitted)
+        [ Exceeds "volumes" (q (sourceText (volSource v)) <> " is mounted " <> q (modeText (volMode v)))
         | v <- vs,
-          let allowed = [m | (k, m) <- bound, covers k (volSource v)],
-          not (any (>= volMode v) allowed),
-          let admitted = case allowed of
-                [] -> ", which the constraint does not admit"
-                ms -> ", wider than " <> q (modeText (maximum ms))
+          not (any (>= volMode v) [m | (k, m) <- bound, covers k (volSource v)])
         ]
 
     covers k src = case (k, src) of

@@ -1404,9 +1404,9 @@ spec = beforeAll findLask $ do
           out `shouldSatisfy` isInfixOf "reached through bad → release_of"
           out `shouldNotSatisfy` isInfixOf "main.lask:5:"
           out `shouldSatisfy` isInfixOf "main.lask:7:"
-          out `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-UNPROVEN [static]: 'network' is not a literal here"
+          out `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-UNPROVEN [static]: 'network' is not known here without running the program"
           out `shouldSatisfy` isInfixOf "#local reaches the whole host"
-          out `shouldSatisfy` isInfixOf "\"/var/run/docker.sock\" is mounted \"rw\", which the constraint does not admit"
+          out `shouldSatisfy` isInfixOf "\"/var/run/docker.sock\" is mounted \"rw\", which within { volumes: false } of the module does not allow"
           out `shouldSatisfy` isInfixOf "'release_of' is named as a value"
           -- The listings report what the constraints find, and do not fail.
           network <- runLask lask dir ["envs", "network"] ""
@@ -1416,6 +1416,38 @@ spec = beforeAll findLask $ do
           resOut network `shouldSatisfy` isInfixOf "unproven  main.lask: probe"
           access <- runLask lask dir ["envs", "access", "release-of"] ""
           resOut access `shouldSatisfy` isInfixOf "within { volumes: false } and within { network: \"none\" }"
+    it "evaluates run options that can only compute, as a library builds them (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "lib.lask",
+            "export mount(dir: String | Null, target: String): Array<String> = case (dir) {\n\
+            \  Null -> []\n\
+            \  else -> [\"#{dir}:#{target}\"]\n\
+            \}\n\
+            \export setup(--region: String | Null = null, --config_dir: String | Null = null): Record<env: Map<String | Null>, volumes: Array<String>> = {\n\
+            \  env: { \"REGION\": region },\n\
+            \  volumes: mount(config_dir, \"/root/.cfg:ro\")\n\
+            \}\n\
+            \export env(--region: String | Null = null, --config_dir: String | Null = null): Runnable = do {\n\
+            \  own = setup(region = region, config_dir = config_dir)\n\
+            \  runnable(#alpine:3.20, volumes = concat_array(own.volumes, []))\n\
+            \}\n"
+          ),
+          ( "main.lask",
+            "within { volumes: false }\n\
+            \import { env } from \"./lib.lask\"\n\
+            \plain() = $[env(region = get_env(\"REGION\"))] true\n\
+            \mounted() = $[env(config_dir = \"/home/me/.cfg\")] true\n\
+            \unknown() = $[env(config_dir = get_env(\"CFG\"))] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          let out = resOut r
+          -- A field that only computes is known even where another
+          -- field of the same record is read from the process.
+          out `shouldNotSatisfy` isInfixOf "main.lask:3:"
+          out `shouldSatisfy` isInfixOf "main.lask:4:13-4:54: E-TYPE-WITHIN-EXCEEDED [static]: \"/home/me/.cfg\" is mounted \"ro\""
+          out `shouldSatisfy` isInfixOf "main.lask:5:13-5:53: E-TYPE-WITHIN-UNPROVEN"
     it "checks what an invocation gives a parameter before anything runs (spec 10.11)" $ \lask ->
       withProject
         [ ( "main.lask",

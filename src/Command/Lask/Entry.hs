@@ -261,6 +261,7 @@ staticOf v = case v of
   VNumber n -> Just (SNum (T.pack (formatScientific Generic Nothing n)))
   VArray xs -> SArr <$> mapM staticOf (V.toList xs)
   VMap m -> SMap <$> mapM (traverse staticOf) (Map.toAscList m)
+  VRecord m -> SRec <$> mapM (traverse staticOf) (Map.toAscList m)
   _ -> Nothing
 
 -- | A computation's outcome with the failure it ended in masked, for
