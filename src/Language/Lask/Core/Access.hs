@@ -217,7 +217,10 @@ data UseSite = UseSite
     -- | The declarations it is reached through, outermost first.
     usPath :: [Text],
     -- | The declaration the walk that found it started from.
-    usRoot :: Key
+    usRoot :: Key,
+    -- | The calls it is reached through, outermost first: each in the
+    -- declaration it is written in.
+    usCalls :: [(Key, Span)]
   }
   deriving (Show, Eq, Ord)
 
@@ -318,7 +321,7 @@ collectUseSites cons core scope = walkRoots cons core roots
 walkRoots :: Constraints -> CoreProgram -> [Key] -> [UseSite]
 walkRoots cons core roots =
   Set.toList . Set.fromList $
-    evalState (concat <$> mapM (\k -> maybe (pure []) (\cd -> walkDecl cons core [] [] cd Nothing) (Map.lookup k (cpDecls core))) roots) Map.empty
+    evalState (concat <$> mapM (\k -> maybe (pure []) (\cd -> walkDecl cons core [] [] Nothing cd Nothing) (Map.lookup k (cpDecls core))) roots) Map.empty
 
 -- | A declaration, walked with what a call binds its parameters to, or
 -- on its own. Walks are remembered by what they were given, except a
@@ -327,8 +330,8 @@ walkRoots cons core roots =
 -- declarations it is reached through (@outer@, innermost first) are
 -- added to each use as it is returned. @guard@ is every declaration
 -- being walked, which a call of one does not walk again.
-walkDecl :: Constraints -> CoreProgram -> [Key] -> [Key] -> CoreDecl -> Maybe [(Text, AVal)] -> Walk [UseSite]
-walkDecl cons core guard outer cd given = map (liftSite cons outer) <$> do
+walkDecl :: Constraints -> CoreProgram -> [Key] -> [Key] -> Maybe (Key, Span) -> CoreDecl -> Maybe [(Text, AVal)] -> Walk [UseSite]
+walkDecl cons core guard outer at cd given = map (liftSite cons outer at) <$> do
   let key = (cdModule cd, cdName cd)
       memoKey = (key, given)
       remembered = all (null . avFuns . snd) (maybe [] id given)
@@ -349,14 +352,19 @@ walkDecl cons core guard outer cd given = map (liftSite cons outer) <$> do
 
 -- | A use a declaration reaches, as reached through the declarations
 -- that lead to it.
-liftSite :: Constraints -> [Key] -> UseSite -> UseSite
-liftSite _ [] u = u
-liftSite cons outer u =
-  u
-    { usUnder = nub (usUnder u <> concatMap (coveringsOf cons) outer),
-      usPath = reverse (map snd outer) <> usPath u,
-      usRoot = last outer
-    }
+--
+-- @at@ is the call it is reached by, in the declaration that makes it.
+liftSite :: Constraints -> [Key] -> Maybe (Key, Span) -> UseSite -> UseSite
+liftSite cons outer at u0 =
+  let u = u0 {usCalls = maybe [] pure at <> usCalls u0}
+   in case outer of
+        [] -> u
+        _ ->
+          u
+            { usUnder = nub (usUnder u <> concatMap (coveringsOf cons) outer),
+              usPath = reverse (map snd outer) <> usPath u,
+              usRoot = last outer
+            }
 
 -- | What a declaration walked on its own binds its parameters to: a
 -- parameter, which each call resolves, except a keyword parameter of a
@@ -408,7 +416,7 @@ walk cons core guard scope here binds c = case coreF c of
         inner <-
           if (p, n) `elem` guard
             then pure []
-            else walkDecl cons core guard scope callee (Just (Map.toAscList (callBinds core here (call c) Set.empty binds lam pos kws)))
+            else walkDecl cons core guard scope (Just (here, coreSpan c)) callee (Just (Map.toAscList (callBinds core here (call c) Set.empty binds lam pos kws)))
         pure (args <> inner)
   -- A call of a function a parameter or a binding holds: the body of
   -- each function it may be, with what this call gives it.
@@ -426,7 +434,7 @@ walk cons core guard scope here binds c = case coreF c of
         let escape = case coreF (cdCore callee) of
               CLam _ -> [use (UseEscape (p, n)) unknownV]
               _ -> []
-        inner <- if (p, n) `elem` guard then pure [] else walkDecl cons core guard scope callee Nothing
+        inner <- if (p, n) `elem` guard then pure [] else walkDecl cons core guard scope (Just (here, coreSpan c)) callee Nothing
         pure (escape <> inner)
   CLam lam -> do
     let params = case lamType lam of
@@ -454,6 +462,7 @@ walk cons core guard scope here binds c = case coreF c of
         (nub (concatMap (coveringsOf cons) (here : scope)))
         (reverse (map snd scope))
         (last scope)
+        []
     namesFunction a = case coreF a of
       CVar (TopRef p n) | Just cd <- Map.lookup (p, n) (cpDecls core), CLam _ <- coreF (cdCore cd) -> True
       _ -> False
@@ -462,7 +471,7 @@ walk cons core guard scope here binds c = case coreF c of
         | Just callee <- Map.lookup k (cpDecls core),
           CLam lam <- coreF (cdCore callee),
           k `notElem` guard ->
-            walkDecl cons core guard scope callee (Just (Map.toAscList (callBinds core here (call c) Set.empty binds lam pos kws)))
+            walkDecl cons core guard scope (Just (here, coreSpan c)) callee (Just (Map.toAscList (callBinds core here (call c) Set.empty binds lam pos kws)))
       FunTop _ -> pure []
       FunLam lam closure origin -> do
         let given = callBinds core here (call c) Set.empty binds lam pos kws
@@ -833,14 +842,26 @@ siteFindings _ u = case usKind u of
     [ ((Just (cvSpan cv), sp, findingField f), finding cv sp f)
     | cv <- usUnder u,
       (sp, f) <-
-        [ (maybe (usSpan u) viaSpan (tVia t), f)
+        [ (maybe (inCovered cv) viaSpan (tVia t), f)
         | t <- Set.toList (usTargets u),
           not (targetParametric t),
           f <- checkAccess (cvConstraint cv) (targetAccess t)
         ]
-          <> [(usSpan u, Unproven "environment") | usDynamic u]
+          <> [(inCovered cv, Unproven "environment") | usDynamic u]
     ]
   where
+    -- Where a constraint is broken: in what it covers. A use written
+    -- there is reported where it is written; one reached through a
+    -- call, at the call that leads out of what the constraint covers,
+    -- since what the callee does is within its own constraints.
+    inCovered cv = case cvFunction cv of
+      Just n
+        | (usModule u, usDecl u) == (cvModule cv, n) -> usSpan u
+        | (_, sp) : _ <- [x | x@(k, _) <- usCalls u, k == (cvModule cv, n)] -> sp
+      Nothing
+        | usModule u == cvModule cv -> usSpan u
+        | (_, sp) : _ <- reverse [x | x@((m, _), _) <- usCalls u, m == cvModule cv] -> sp
+      _ -> usSpan u
     finding cv sp f =
       let (code, msg) = case f of
             Exceeds k what -> (ETypeWithinExceeded, what <> ", which " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " does not allow (" <> k <> ")")
@@ -880,7 +901,7 @@ checkInvocation cons core key args = case Map.lookup key (cpDecls core) of
                 (\acc (k, d) -> if Map.member k acc then acc else Map.insert k (maybe unknownV (reach core key Set.empty acc) d) acc)
                 given
                 (lamKeywords lam)
-            found = evalState (walkDecl cons core [] [] cd (Just (Map.toAscList binds))) Map.empty
+            found = evalState (walkDecl cons core [] [] Nothing cd (Just (Map.toAscList binds))) Map.empty
          in map (withNote "with the arguments the command line gives, and the defaults of those it does not") (settle (concatMap (siteFindings core) found))
   _ -> []
 
@@ -892,6 +913,6 @@ checkCommandEnv cons core declaring word env =
     Just (Just cv, _)
       | bounds (cvConstraint cv) ->
           let v = reach core (declaring, "") Set.empty Map.empty env
-              site = UseSite declaring ("command \"" <> word <> "\"") (coreSpan env) UseCommand (avTargets v) (avDyn v) (avParam v) [cv] [] (declaring, "")
+              site = UseSite declaring ("command \"" <> word <> "\"") (coreSpan env) UseCommand (avTargets v) (avDyn v) (avParam v) [cv] [] (declaring, "") []
            in settle (siteFindings core site)
     _ -> []
