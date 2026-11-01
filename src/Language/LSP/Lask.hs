@@ -397,7 +397,7 @@ lexSemanticTokensWith commandWordSpans fileName src =
   case lexTokensWithComments fileName src of
     Left e -> Left $ T.pack $ pretty e
     Right (ts, comments) ->
-      let onSpans = commandOnSpans ts
+      let onSpans = commandOnSpans ts <> withinSpans ts
           keywordOn (sp, typ)
             | sp `elem` onSpans = (sp, SemanticTokenTypes_Keyword)
             | otherwise = (sp, typ)
@@ -437,6 +437,15 @@ lexSemanticTokensWith commandWordSpans fileName src =
               | tok `elem` [Tok.TRParen, Tok.TRBracket, Tok.TRBrace] = max 0 (d - 1)
               | otherwise = d
         schema [] = []
+
+    -- @within@ is a keyword only directly before the brace of an
+    -- access constraint (spec 3.3, 5), where no identifier can stand:
+    -- a name is never followed by @{@.
+    withinSpans toks =
+      [ sp
+      | (prev, Tok.Spanned sp (Tok.TLowerId "within"), Tok.Spanned _ Tok.TLBrace) <- zip3 (Nothing : map Just toks) toks (drop 1 toks),
+        fmap Tok.spannedValue prev /= Just Tok.TDot
+      ]
 
     spanStart (S.Span s _) = Just s
     spanStart S.NoSpan = Nothing
