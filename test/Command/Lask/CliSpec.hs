@@ -1448,6 +1448,25 @@ spec = beforeAll findLask $ do
           out `shouldNotSatisfy` isInfixOf "main.lask:3:"
           out `shouldSatisfy` isInfixOf "main.lask:4:13-4:54: E-TYPE-WITHIN-EXCEEDED [static]: \"/home/me/.cfg\" is mounted \"ro\""
           out `shouldSatisfy` isInfixOf "main.lask:5:13-5:53: E-TYPE-WITHIN-UNPROVEN"
+    it "reports a broken constraint in what it covers, at the call that leads out of it (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "c() within { files: \"ro\" } = do {\n\
+            \  b()\n\
+            \}\n\
+            \b() within { files: \"rw\" } = do {\n\
+            \  $[#alpine:3.20] touch x\n\
+            \  $[#alpine:3.20] touch y\n\
+            \}\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          -- b keeps to its own constraint; c's is broken by calling it.
+          resOut r `shouldSatisfy` isInfixOf "main.lask:2:3-2:6: E-TYPE-WITHIN-EXCEEDED"
+          resOut r `shouldNotSatisfy` isInfixOf "main.lask:5:"
+          length (filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))) `shouldBe` 1
     it "checks what an invocation gives a parameter before anything runs (spec 10.11)" $ \lask ->
       withProject
         [ ( "main.lask",
