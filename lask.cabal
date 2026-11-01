@@ -38,6 +38,7 @@ library
       Command.Lask.Secrets
       Command.Lask.Table
       Language.Lask
+      Language.Lask.Access
       Language.Lask.Builtins.Doc
       Language.Lask.Builtins.Format
       Language.Lask.Builtins.Impl
@@ -48,6 +49,7 @@ library
       Language.Lask.Builtins.Sig
       Language.Lask.CommandSchema
       Language.Lask.Confirm
+      Language.Lask.Core.Access
       Language.Lask.Core.AST
       Language.Lask.Core.Compare
       Language.Lask.Core.Lint

@@ -224,7 +224,7 @@ pModule = do
   where
     declaredName d = case declF d of
       DValue n _ _ _ -> Just n
-      DFunction n _ _ _ _ -> Just n
+      DFunction n _ _ _ _ _ -> Just n
       DTypeAlias n _ _ -> Just n
       _ -> Nothing
 
@@ -275,6 +275,7 @@ pTopLevel :: P (Decl, Bool)
 pTopLevel =
   choice
     [ (\d -> (d, False)) <$> pCommandDecl,
+      (\d -> (d, False)) <$> pModuleWithin,
       do
         s <- kw KExport
         choice [pExportFrom s, pExportNamespace s, pExportCommand s, plain],
@@ -439,17 +440,19 @@ pValueOrFunction = do
         ps <- pParamList
         _ <- sym TRParen
         rt <- optional (sym TColon *> pType)
+        w <- optional pWithin
         _ <- sym TAssign
         e <- pExpr
-        pure (Decl (sp <> exprSpan e) (DFunction name tps ps rt e)),
+        pure (Decl (sp <> exprSpan e) (DFunction name tps ps rt w e)),
       do
         _ <- sym TLParen
         ps <- pParamList
         _ <- sym TRParen
         rt <- optional (sym TColon *> pType)
+        w <- optional pWithin
         _ <- sym TAssign
         e <- pExpr
-        pure (Decl (sp <> exprSpan e) (DFunction name [] ps rt e)),
+        pure (Decl (sp <> exprSpan e) (DFunction name [] ps rt w e)),
       do
         sec <- pSecrecy
         t <- optional (sym TColon *> pType)
@@ -457,6 +460,40 @@ pValueOrFunction = do
         e <- pExpr
         pure (Decl (sp <> exprSpan e) (DValue name sec t e))
     ]
+
+-- | An access constraint, @within { field: value, ... }@ (spec 5).
+-- @within@ is a contextual keyword: where it is read, no identifier
+-- can stand, so it stays usable as one everywhere else (spec 3.3).
+pWithin :: P AccessSpec
+pWithin = snd <$> pWithinSpanned
+
+pWithinSpanned :: P (Span, AccessSpec)
+pWithinSpanned = do
+  Spanned s () <- withinKw
+  open <- sym TLBrace
+  fs <- sepBy field (sym TComma)
+  close <- sym TRBrace
+  pure (s <> close, AccessSpec (open <> close) fs)
+  where
+    field = do
+      k <- lowerId
+      _ <- sym TColon
+      v <- pExpr
+      pure (k, v)
+
+withinKw :: P (Spanned ())
+withinKw = matchTok "within" $ \t -> case t of
+  TLowerId "within" -> Just ()
+  _ -> Nothing
+
+-- | A module constraint (spec 5): @within@ at the start of a
+-- declaration, followed by @{@, which no declaration named @within@
+-- can be.
+pModuleWithin :: P Decl
+pModuleWithin = do
+  _ <- try (lookAhead (withinKw *> sym TLBrace))
+  (sp, w) <- pWithinSpanned
+  pure (Decl sp (DWithin w))
 
 -- | The optional @!!@ secret marker following a bound name (spec 6.10).
 pSecrecy :: P Secrecy

@@ -65,7 +65,7 @@ import Data.Time.Clock (getCurrentTime)
 import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner, SessionOpener)
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
-import Language.Lask.Runtime.Container (ContainerBackend (..), ExecSpec (..), RunSpec (..), engineName)
+import Language.Lask.Runtime.Container (BaseMount, ContainerBackend (..), ExecSpec (..), MountError (..), RunSpec (..), engineName, resolveBaseMounts)
 import Language.Lask.Runtime.ProcessStop
   ( newContainerName,
     stopGraceSeconds,
@@ -212,7 +212,7 @@ runDeclaredCommand backend pins baseDir0 sink forceRelay envValue prog argv = do
             -- stdin is that of @lask cmd@ whether or not it is a
             -- terminal; a terminal is allocated only when all three
             -- streams are one.
-            Right (Just (image, opts)) ->
+            Right (Just (image, opts, mounts)) ->
               launch
                 =<< cbRunProcess
                   backend
@@ -224,7 +224,8 @@ runDeclaredCommand backend pins baseDir0 sink forceRelay envValue prog argv = do
                       runStdin = True,
                       runTty = interactive,
                       runEntrypoint = prog,
-                      runCommand = argv
+                      runCommand = argv,
+                      runMounts = mounts
                     }
   where
     allTerminals =
@@ -333,9 +334,9 @@ mkCommandRunner backend pins baseDir0 sink = do
                     (\_ _ -> Nothing)
           Right Nothing ->
             run (pure ()) ((shell (T.unpack cmd)) {cwd = Just baseDir}) (\_ _ -> Nothing)
-          Right (Just (image, opts)) -> do
+          Right (Just (image, opts, mounts)) -> do
             name <- newContainerName
-            cp <- cbRunProcess backend (shellRun baseDir name image opts False cmd)
+            cp <- cbRunProcess backend (shellRun baseDir name image opts mounts False cmd)
             run (cbStop backend stopGraceSeconds name) cp (cbRunFailure backend)
 
 -- Container sessions (spec 15.5) -------------------------------------------
@@ -447,13 +448,13 @@ mkSessionOpener backend pins baseDir0 = do
       case img of
         Left failure -> throwIO failure
         Right Nothing -> body envValue
-        Right (Just (image, opts)) -> do
+        Right (Just (image, opts, mounts)) -> do
           name <- newContainerName
           let (summary, _) = envLogInfo envValue resolved
           cp <-
             cbRunProcess
               backend
-              (shellRun baseDir name image opts True ("echo " <> sessionReady <> "; while read -r _; do :; done"))
+               (shellRun baseDir name image opts mounts True ("echo " <> sessionReady <> "; while read -r _; do :; done"))
           bracket (start cp name) (close say name) $ \p -> do
             awaitReady p
             say ("container " <> name <> " started on " <> summary <> " for with_container")
@@ -501,8 +502,8 @@ mkSessionOpener backend pins baseDir0 = do
 -- kept open when the shell is to be fed on it (the filesystem runner
 -- writes a file that way, so no file content has to fit on a command
 -- line).
-shellRun :: FilePath -> Text -> Text -> Map Text Value -> Bool -> Text -> RunSpec
-shellRun baseDir name image opts wantStdin cmd =
+shellRun :: FilePath -> Text -> Text -> Map Text Value -> [BaseMount] -> Bool -> Text -> RunSpec
+shellRun baseDir name image opts mounts wantStdin cmd =
   RunSpec
     { runBaseDir = baseDir,
       runName = Just name,
@@ -511,7 +512,8 @@ shellRun baseDir name image opts wantStdin cmd =
       runStdin = wantStdin,
       runTty = False,
       runEntrypoint = "/bin/sh",
-      runCommand = ["-c", cmd]
+      runCommand = ["-c", cmd],
+      runMounts = mounts
     }
 
 -- | The image a resolved environment runs in, or 'Nothing' for the
@@ -519,28 +521,45 @@ shellRun baseDir name image opts wantStdin cmd =
 -- lock pins it to, a recipe to its content-addressed tag. Neither is
 -- pulled or built here (10.3): an image that is not on the daemon is a
 -- failure that names the command that materializes it.
+--
+-- The mounts of the base directory its run options ask for come with
+-- it (10.2): a value no option takes is @E-RUNTIME-VALUE@, and a path
+-- the host does not have, or that leads out of the base directory,
+-- keeps the command from running (@E-IO-ENV-RESOLVE@).
 materializedImage ::
   ContainerBackend ->
   ImagePins ->
   FilePath ->
   ResolvedEnv ->
-  IO (Either LaskFailure (Maybe (Text, Map Text Value)))
-materializedImage backend pins baseDir resolved = case resolved of
-  ResolvedLocal -> pure (Right Nothing)
-  ResolvedSession _ _ -> pure (Left (ioFailure EIoEnvResolve "internal: a container session has no image of its own"))
-  ResolvedDocker ref opts -> fmap (\image -> Just (image, opts)) <$> resolveRegistry backend pins ref
-  ResolvedRecipe r opts -> do
-    let df = rcDockerfile r
-    tagE <- recipeTag baseDir r
-    case tagE of
-      Left e -> pure (Left (ioFailure EIoImageMissing e))
-      Right tag -> do
-        ok <- imageExists backend tag
-        if not ok
-          then
-            Left
-              <$> absentImage backend ("image for recipe '" <> df <> "' is not materialized; run 'lask sync'")
-          else pure (Right (Just (tag, opts)))
+  IO (Either LaskFailure (Maybe (Text, Map Text Value, [BaseMount])))
+materializedImage backend pins baseDir resolved = do
+  img <- imageOf
+  case img of
+    Right (Just (image, opts)) -> do
+      mounts <- resolveBaseMounts baseDir opts
+      pure $ case mounts of
+        Right ms -> Right (Just (image, opts, ms))
+        Left (MountInvalid e) -> Left (runtimeFailure ERuntimeValue e)
+        Left (MountUnresolved e) -> Left (ioFailure EIoEnvResolve e)
+    Right Nothing -> pure (Right Nothing)
+    Left failure -> pure (Left failure)
+  where
+    imageOf = case resolved of
+      ResolvedLocal -> pure (Right Nothing)
+      ResolvedSession _ _ -> pure (Left (ioFailure EIoEnvResolve "internal: a container session has no image of its own"))
+      ResolvedDocker ref opts -> fmap (\image -> Just (image, opts)) <$> resolveRegistry backend pins ref
+      ResolvedRecipe r opts -> do
+        let df = rcDockerfile r
+        tagE <- recipeTag baseDir r
+        case tagE of
+          Left e -> pure (Left (ioFailure EIoImageMissing e))
+          Right tag -> do
+            ok <- imageExists backend tag
+            if not ok
+              then
+                Left
+                  <$> absentImage backend ("image for recipe '" <> df <> "' is not materialized; run 'lask sync'")
+              else pure (Right (Just (tag, opts)))
 
 -- | Run a process, relaying its output line by line to the command
 -- execution log (spec 12.3) while capturing both streams verbatim.
@@ -659,10 +678,10 @@ mkFileRunner backend pins baseDir0 = do
                           )
                    in containerFileOp backend summary launch op
           Right Nothing -> localFileOp summary baseDir op
-          Right (Just (image, opts)) ->
+          Right (Just (image, opts, mounts)) ->
             let launch wantStdin cmd = do
                   name <- newContainerName
-                  cp <- cbRunProcess backend (shellRun baseDir name image opts wantStdin cmd)
+                  cp <- cbRunProcess backend (shellRun baseDir name image opts mounts wantStdin cmd)
                   pure (cp, cbStop backend stopGraceSeconds name, cbRunFailure backend)
              in containerFileOp backend summary launch op
 

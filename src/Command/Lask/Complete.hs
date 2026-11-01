@@ -677,6 +677,15 @@ rootCommands =
           },
         (plain "commands" "List the programs tasks run in each environment" (commonOpts <> [switchOpt "verbose" "List each command, where it is written, in place of its programs"]))
           { cmdPos = [PosFunction]
+          },
+        (plain "files" "List the host files each environment's commands may reach" (commonOpts <> [switchOpt "verbose" "Also list the files read and written by path"]))
+          { cmdPos = [PosFunction]
+          },
+        (plain "network" "List the networks each environment's commands may reach" commonOpts)
+          { cmdPos = [PosFunction]
+          },
+        (plain "access" "List the host files and networks each environment's commands may reach" commonOpts)
+          { cmdPos = [PosFunction]
           }
       ]
 
@@ -1095,7 +1104,7 @@ globKind ws = case ws of
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
   AST.DValue n _ _ _ -> Just n
-  AST.DFunction n _ _ _ _ -> Just n
+  AST.DFunction n _ _ _ _ _ -> Just n
   _ -> Nothing
 
 isEnvType :: Maybe AST.SType -> Bool

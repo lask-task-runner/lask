@@ -20,6 +20,11 @@ module Language.Lask.Runtime.Container
     BuildSpec (..),
     RunSpec (..),
     ExecSpec (..),
+    BaseMount (..),
+    MountError (..),
+    defaultBaseMounts,
+    resolveBaseMounts,
+    baseMountTarget,
     resolveBackend,
     cliBackend,
     runArgs,
@@ -44,8 +49,10 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
+import Language.Lask.Access (Mode (..), accessScalar, accessTable, defaultBaseMount, parseMode, validateBaseMount)
 import Language.Lask.Runtime.Value (Value (..))
-import System.Directory (findExecutable)
+import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable)
+import System.FilePath (isRelative, makeRelative, splitDirectories, (</>))
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (hGetLine, hIsEOF)
@@ -91,8 +98,27 @@ data RunSpec = RunSpec
     -- | Allocate a terminal.
     runTty :: Bool,
     runEntrypoint :: Text,
-    runCommand :: [Text]
+    runCommand :: [Text],
+    -- | The mounts of the base directory, as 'resolveBaseMounts' read
+    -- them from the run options.
+    runMounts :: [BaseMount]
   }
+
+-- | One mount of the base directory (spec 10.2, 10.5).
+data BaseMount
+  = -- | A host path at a path in the container, read-only or not.
+    BaseBind FilePath Text Bool
+  | -- | A directory hidden under an empty @tmpfs@.
+    BaseHideDir Text
+  | -- | A file hidden under an empty read-only file.
+    BaseHideFile Text
+  deriving (Show, Eq)
+
+-- | Why the run options do not say how to mount the base directory: a
+-- value that is not one the option takes, or a path the host does not
+-- have, or that leads out of the base directory.
+data MountError = MountInvalid Text | MountUnresolved Text
+  deriving (Show, Eq)
 
 -- | One command run in a container already running (spec 15.5): the
 -- run options were given when it was started, so only what tells this
@@ -384,9 +410,82 @@ streamProcess cannot cp onOut onErr = do
 
 -- Running a container -----------------------------------------------------------
 
--- | The path the base directory is mounted at inside the container.
+-- | The path the base directory is mounted at inside the container
+-- when @base_mount@ does not move it.
 containerWorkdir :: String
-containerWorkdir = "/work"
+containerWorkdir = T.unpack defaultBaseMount
+
+-- | Where the run options mount the base directory, which is also the
+-- default working directory (spec 10.5).
+baseMountTarget :: Map Text Value -> Text
+baseMountTarget opts = case Map.lookup "base_mount" opts of
+  Just (VString t) -> t
+  _ -> defaultBaseMount
+
+-- | The base directory, read-write at @/work@: what a run with no
+-- option about it mounts.
+defaultBaseMounts :: FilePath -> [BaseMount]
+defaultBaseMounts baseDir = [BaseBind baseDir defaultBaseMount False]
+
+-- | The mounts @base_mount@ and @base_access@ ask for (spec 10.2),
+-- shortest path first, so that a longer one is mounted over the
+-- shorter it is under. A path given @rw@ or @ro@ must exist and must
+-- resolve inside the base directory, so no mount reaches past it; a
+-- path given @none@ that does not exist has nothing to hide. The path
+-- is resolved only to check where it leads; the client is given it
+-- under the base directory, as the base directory itself is given.
+resolveBaseMounts :: FilePath -> Map Text Value -> IO (Either MountError [BaseMount])
+resolveBaseMounts baseDir opts = case options of
+  Left e -> pure (Left (MountInvalid e))
+  Right (target, table) -> do
+    realBase <- canonicalizePath baseDir
+    fmap (fmap concat . sequence) . mapM (mountOf realBase target) $ table
+  where
+    options = do
+      target <- case Map.lookup "base_mount" opts of
+        Nothing -> Right defaultBaseMount
+        Just VNull -> Right defaultBaseMount
+        Just (VString t) -> validateBaseMount t
+        Just _ -> Left "'base_mount' must be a string"
+      table <- case Map.lookup "base_access" opts of
+        Nothing -> Right (accessScalar ModeRw)
+        Just VNull -> Right (accessScalar ModeRw)
+        Just (VString t) -> accessScalar <$> parseMode t
+        Just (VMap m) -> accessTable =<< mapM entry (Map.toAscList m)
+        Just _ -> Left "'base_access' must be a mode or a table of modes"
+      case (table, Map.lookup "base_mount" opts) of
+        ([(".", ModeNone)], Just (VString _)) ->
+          Left "'base_mount' is given with base_access \"none\", which mounts nothing"
+        _ -> Right (target, table)
+
+    entry (k, v) = case v of
+      VString t -> Right (k, t)
+      _ -> Left ("the mode of '" <> k <> "' in 'base_access' must be a string")
+
+    mountOf realBase target (key, mode) = do
+      let host = if key == "." then baseDir else baseDir </> T.unpack key
+          inside = if key == "." then target else target <> "/" <> key
+      case mode of
+        ModeNone
+          | key == "." -> pure (Right [])
+          | otherwise -> do
+              isDir <- doesDirectoryExist host
+              isFile <- doesFileExist host
+              pure . Right $
+                if isDir
+                  then [BaseHideDir inside]
+                  else [BaseHideFile inside | isFile]
+        _ -> do
+          exists <- doesPathExist host
+          if not exists
+            then pure (Left (MountUnresolved ("'" <> key <> "' in 'base_access' does not exist in the base directory")))
+            else do
+              real <- canonicalizePath host
+              let rel = makeRelative realBase real
+              pure $
+                if real == realBase || (isRelative rel && ".." `notElem` splitDirectories rel)
+                  then Right [BaseBind host inside (mode == ModeRo)]
+                  else Left (MountUnresolved ("'" <> key <> "' in 'base_access' resolves outside the base directory"))
 
 -- | The arguments of the client's @run@ (spec 10.5): the base
 -- directory mounted as the working directory, an init process, the run
@@ -399,7 +498,8 @@ runArgs engine spec =
     <> (if runStdin spec then ["-i"] else [])
     <> (if runTty spec then ["-t"] else [])
     <> initArgs (runOptions spec)
-    <> workdirMountArgs (runBaseDir spec)
+    <> mountArgs (runMounts spec)
+    <> ["-w", T.unpack (baseMountTarget (runOptions spec))]
     <> ["--entrypoint", T.unpack (runEntrypoint spec)]
     <> optionArgs engine (runOptions spec)
     <> [T.unpack (runImage spec)]
@@ -418,8 +518,7 @@ execArgs spec =
     <> [T.unpack (execContainer spec)]
     <> map T.unpack (execCommand spec)
 
--- | Mount the base directory as the container working directory
--- (spec 10.5).
+-- | Mount the base directory (spec 10.2, 10.5).
 --
 -- @--mount@ rather than @-v@, because @-v@ packs source, target and
 -- mode into one colon-separated field. A Windows base directory such
@@ -435,13 +534,17 @@ execArgs spec =
 -- better failure for a base directory. And its fields are split on
 -- commas, so a base directory containing one is still out of reach;
 -- that is rarer than a drive letter, which every Windows path has.
-workdirMountArgs :: FilePath -> [String]
-workdirMountArgs baseDir =
-  [ "--mount",
-    "type=bind,source=" <> baseDir <> ",target=" <> containerWorkdir,
-    "-w",
-    containerWorkdir
-  ]
+--
+-- A file is hidden under @/dev/null@, read-only: it reads as empty,
+-- and nothing written to it goes anywhere.
+mountArgs :: [BaseMount] -> [String]
+mountArgs = concatMap one
+  where
+    one m = case m of
+      BaseBind src target ro ->
+        ["--mount", "type=bind,source=" <> src <> ",target=" <> T.unpack target <> (if ro then ",readonly" else "")]
+      BaseHideDir target -> ["--mount", "type=tmpfs,destination=" <> T.unpack target]
+      BaseHideFile target -> ["--mount", "type=bind,source=/dev/null,target=" <> T.unpack target <> ",readonly"]
 
 -- | An init process as PID 1, unless the environment sets @init@ to
 -- @false@ (spec 10.2). A program that is PID 1 itself gets no default
@@ -457,9 +560,8 @@ initArgs opts = case Map.lookup "init" opts of
 --
 -- Options are emitted in name order, so one environment value always
 -- produces the same argument vector however its arguments were
--- written. @workdir@ is emitted here rather than in
--- 'workdirMountArgs', which is why it overrides the default @-w@: the
--- later @-w@ is the one the daemon takes, and 10.5 gives an explicit
+-- written. @workdir@ is emitted here, after the default @-w@ of
+-- 'runArgs', which is why it overrides it: the later @-w@ is the one the daemon takes, and 10.5 gives an explicit
 -- working directory precedence over the default.
 --
 -- The image reference, the recipe and its build arguments are not run

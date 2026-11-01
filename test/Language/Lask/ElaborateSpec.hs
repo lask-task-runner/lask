@@ -655,6 +655,26 @@ spec = do
       rejects "f(e: Environment): Environment = e\nx = f(#alpine:3.12{memory: \"1g\"})" ETypeMismatch
     it "rejects run options in a head's parentheses" $
       rejects "e = #alpine:3.20(memory = \"1g\")" ETypeEnvConstruct
+    it "accepts base_mount and base_access, as a mode or a table (spec 10.2)" $ do
+      accepts "e = #alpine:3.12{base_mount: \"/src\", base_access: \"ro\"}"
+      accepts "e = #alpine:3.12{base_access: {\".\": \"ro\", \"dist\": \"rw\", \".env\": \"none\"}}"
+      accepts "f(--m: String = \"ro\"): Runnable = runnable(#alpine:3.12, base_access = m)"
+    it "rejects a base_mount that is not an absolute, normalized path inside the container's own tree" $ do
+      rejects "e = #alpine:3.12{base_mount: \"src\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/src/\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/a/../b\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/proc/x\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/a,b\"}" ETypeEnvConstruct
+    it "rejects a base_access that gives no mode, or a table without \".\" or with a path outside the base directory" $ do
+      rejects "e = #alpine:3.12{base_access: \"readonly\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: {\"dist\": \"rw\"}}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: {\".\": \"ro\", \"../x\": \"rw\"}}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: {\".\": \"ro\", \"/etc\": \"rw\"}}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: {\".\": \"ro\", \"./dist\": \"rw\"}}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: 1}" ETypeMismatch
+    it "rejects a base_mount given with base_access \"none\", which mounts nothing" $
+      rejects "e = #alpine:3.12{base_access: \"none\", base_mount: \"/src\"}" ETypeEnvConstruct
     it "rejects image options given to runnable" $ do
       rejects "e = runnable(#alpine:3.20, platform = \"linux/amd64\")" ETypeEnvConstruct
       rejects "e = runnable(#alpine:3.20, image = \"node:24\")" ETypeEnvConstruct

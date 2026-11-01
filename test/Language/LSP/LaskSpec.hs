@@ -229,6 +229,16 @@ spec = do
     it "marks `command` in an import as a keyword" $
       hasAtom "import command { \"go\" } from \"./tools.lask\"" (0, 7, 7, SemanticTokenTypes_Keyword)
 
+  -- `within` is a contextual keyword (spec 3.3): a keyword before the
+  -- brace of an access constraint, an identifier anywhere else.
+  describe "the contextual keyword `within`" $ do
+    it "marks a module constraint and a function's as keywords" $ do
+      hasAtom "within { volumes: false }" (0, 0, 6, SemanticTokenTypes_Keyword)
+      hasAtom "f(): String within { network: \"none\" } = \"x\"" (0, 12, 6, SemanticTokenTypes_Keyword)
+    it "leaves `within` an identifier elsewhere" $ do
+      hasAtom "within = 1" (0, 0, 6, SemanticTokenTypes_Variable)
+      hasAtom "f(within: Number) = within" (0, 20, 6, SemanticTokenTypes_Variable)
+
   describe "command schemas (spec ch. 5)" $ do
     let decl =
           "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { closed: true, style: \"single-dash\", description: \"the Go tool\" }, \

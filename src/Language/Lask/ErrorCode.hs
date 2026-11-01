@@ -32,6 +32,9 @@ data ErrorCode
   | ETypeCommandSchema
   | ETypeCommandOption
   | ETypeEnvConstruct
+  | ETypeWithinSpec
+  | ETypeWithinExceeded
+  | ETypeWithinUnproven
   | ETypeAccess
   | ETypeFieldDuplicate
   | ETypeCaseDuplicate
@@ -111,6 +114,9 @@ codeText c = case c of
   ETypeCommandSchema -> "E-TYPE-COMMAND-SCHEMA"
   ETypeCommandOption -> "E-TYPE-COMMAND-OPTION"
   ETypeEnvConstruct -> "E-TYPE-ENV-CONSTRUCT"
+  ETypeWithinSpec -> "E-TYPE-WITHIN-SPEC"
+  ETypeWithinExceeded -> "E-TYPE-WITHIN-EXCEEDED"
+  ETypeWithinUnproven -> "E-TYPE-WITHIN-UNPROVEN"
   ETypeAccess -> "E-TYPE-ACCESS"
   ETypeFieldDuplicate -> "E-TYPE-FIELD-DUPLICATE"
   ETypeCaseDuplicate -> "E-TYPE-CASE-DUPLICATE"

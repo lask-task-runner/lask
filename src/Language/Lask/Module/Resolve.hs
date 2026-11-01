@@ -142,7 +142,7 @@ modulePublics lm =
     reTypes = Set.fromList (filter startsUpper reexported)
     startsUpper t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
     valueName (DValue n _ _ _) = Just n
-    valueName (DFunction n _ _ _ _) = Just n
+    valueName (DFunction n _ _ _ _ _) = Just n
     valueName _ = Nothing
     typeName (DTypeAlias n _ _) = Just n
     typeName _ = Nothing
@@ -178,7 +178,7 @@ entryPublicValues prog scopes = publicValuesOf (0 :: Int) "" (progEntry prog)
         | Decl _ f <- moduleDecls (lmModule lm),
           n <- case f of
             DValue n' _ _ _ -> [n']
-            DFunction n' _ _ _ _ -> [n']
+            DFunction n' _ _ _ _ _ -> [n']
             DExportFrom specs _ -> [maybe n' id a | ImportSpec _ n' a <- specs]
             _ -> [],
           not (startsUpper n),
@@ -211,7 +211,7 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
     go gs ds [] = (gs, reverse ds)
     go gs ds (Decl sp f : rest) = case f of
       DValue n _ _ _ -> goValue gs ds rest sp n
-      DFunction n _ _ _ _ -> goValue gs ds rest sp n
+      DFunction n _ _ _ _ _ -> goValue gs ds rest sp n
       DTypeAlias n _ _ ->
         let dups =
               [ dupDiag sp n
@@ -233,6 +233,8 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
       DCommand {} -> go gs ds rest
       DImportCommands {} -> go gs ds rest
       DExportCommandsFrom {} -> go gs ds rest
+      -- A module constraint binds nothing (spec 5).
+      DWithin {} -> go gs ds rest
       DImportNamespace alias path -> goNamespace gs ds rest sp alias path
       -- A namespace re-export binds the namespace locally exactly as a
       -- namespace import does; being public as well is 'modulePublics'.
@@ -331,7 +333,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
         [ v
         | Decl _ f <- moduleDecls (lmModule lm),
           v <- case f of
-            DFunction _ tps _ _ _ -> typeParamNames tps
+            DFunction _ tps _ _ _ _ -> typeParamNames tps
             DTypeAlias _ tps _ -> typeParamNames tps
             _ -> []
         ]
@@ -343,7 +345,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
 
     checkDecl (Decl _ f) = case f of
       DValue _ _ t e -> maybe [] checkType t <> checkExpr [] e
-      DFunction _ tps ps t body ->
+      DFunction _ tps ps t _ body ->
         concatMap checkBound tps
           <> checkParams [] ps
           <> maybe [] checkType t
@@ -359,6 +361,9 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       DExportFrom {} -> []
       DImportNamespace {} -> []
       DExportNamespace {} -> []
+      -- The values of an access constraint are literals, read without
+      -- names (spec 10.11); one that is not is reported as such.
+      DWithin {} -> []
 
     -- A command word can be imported only if the target exports it.
     -- A missing module is reported by the loader, not here.
