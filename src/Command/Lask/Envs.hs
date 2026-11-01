@@ -24,17 +24,17 @@ module Command.Lask.Envs
   )
 where
 
-import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Language.Lask.Core.Access (HeadImage (..), headImage, holdsEnv)
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticParams (..))
 import Language.Lask.Runtime.Image (Recipe (..), recipeSource)
 import Language.Lask.Span (Span (..))
-import Language.Lask.Types (Field (..), Type (..))
+import Language.Lask.Types (Type (..))
 
 data EnvRef = EnvRef
   { refLabel :: Text,
@@ -157,15 +157,6 @@ descendants c = let cs = children c in cs <> concatMap descendants cs
 children :: Core -> [Core]
 children = coreChildren
 
--- | The image a head names (spec 6.7, 10.2): the host, a registry
--- reference for a platform ('Nothing' is the daemon's own), or a
--- recipe.
-data HeadImage
-  = HeadLocal
-  | HeadRegistry Text (Maybe Text)
-  | HeadRecipe Recipe
-  deriving (Show, Eq, Ord)
-
 -- | Where a head is written, for the REQUIRED BY column of
 -- @lask envs list@ and @lask sync@: the module, the declaration (or
 -- the command words of the entry module whose environment it is), and
@@ -233,21 +224,6 @@ usesIn by c = case coreF c of
       <> usesIn by (lamBody lam)
   _ -> concatMap (usesIn by) (children c)
 
-headImage :: [(Text, Core)] -> Maybe HeadImage
-headImage args = case (lookup "image" args, lookup "dockerfile" args) of
-  (Just (Core _ (CStrLit ref)), _) -> Just (HeadRegistry ref (literalArg "platform" args))
-  (_, Just (Core _ (CStrLit df))) ->
-    Just . HeadRecipe $
-      Recipe
-        { rcDockerfile = df,
-          rcContext = maybe (defaultContext df) id (literalArg "context" args),
-          rcBuildArgs = case lookup "build_args" args of
-            Just (Core _ (CMapLit kvs)) -> sortOn fst [(k, v) | (k, Core _ (CStrLit v)) <- kvs]
-            _ -> [],
-          rcPlatform = literalArg "platform" args
-        }
-  _ -> Nothing
-
 -- | Every registry reference the program requires (spec 10.3): those
 -- named by the heads reachable from its entry module. Every reference
 -- is written as a head (6.7), so none is left out.
@@ -268,18 +244,6 @@ collectRecipes :: CoreProgram -> [Recipe]
 collectRecipes core =
   Set.toList (Set.fromList [r | HeadUse (HeadRecipe r) _ <- collectHeadUses core Nothing])
 
--- | An image option, which is always a literal (spec 6.7).
-literalArg :: Text -> [(Text, Core)] -> Maybe Text
-literalArg k args = case lookup k args of
-  Just (Core _ (CStrLit v)) -> Just v
-  _ -> Nothing
-
--- | The context of a recipe that names none: the Dockerfile's
--- directory (spec 10.2).
-defaultContext :: Text -> Text
-defaultContext df =
-  let parts = T.splitOn "/" df
-   in if length parts <= 1 then "." else T.intercalate "/" (init parts)
 
 
 -- Commands -------------------------------------------------------------------
@@ -417,18 +381,3 @@ collectCommandSites core scope = concatMap declSites decls
       _ -> False
 
     topReach key = Reach (Set.fromList (map huImage (collectHeadUses core (Just key)))) False
-
--- | Whether a value of a type can be, or contain, an environment.
-holdsEnv :: Type -> Bool
-holdsEnv t = case t of
-  TyAny -> True
-  TyEnvironment -> True
-  TyRunnable -> True
-  TyVar _ -> True
-  TyArray e -> holdsEnv e
-  TyMap e -> holdsEnv e
-  TyAsync e -> holdsEnv e
-  TyRecord fs -> any (holdsEnv . fieldType) (Map.elems fs)
-  TyFun _ r -> holdsEnv r
-  TyUnion ts -> any holdsEnv ts
-  _ -> False

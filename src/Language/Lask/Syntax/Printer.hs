@@ -445,12 +445,14 @@ decl sp f = case f of
   DValue n sec t e -> do
     dt <- traverse ty t
     joinAfter (text n <> secrecy sec <> annot dt) "=" (startOf (exprSpan e)) (exprOn e)
-  DFunction n tps ps rt e -> do
+  DFunction n tps ps rt w e -> do
     dtp <- typeParams tps
     open <- tokFrom TLParen start
     dps <- params open ps
     drt <- traverse ty rt
-    joinAfter (text n <> dtp <> dps <> annot drt) "=" (startOf (exprSpan e)) (exprOn e)
+    dw <- traverse accessSpec w
+    joinAfter (text n <> dtp <> dps <> annot drt <> maybe mempty (" within " <>) dw) "=" (startOf (exprSpan e)) (exprOn e)
+  DWithin w -> ("within " <>) <$> accessSpec w
   DCommand ns e sch -> do
     -- @export command { ... } on e@ is the only declaration whose span
     -- starts at its @export@.
@@ -485,6 +487,13 @@ decl sp f = case f of
 secrecy :: Secrecy -> Doc
 secrecy Public = mempty
 secrecy Secret = "!!"
+
+-- | The braces of an access constraint (spec 5), spaced as an object
+-- literal is.
+accessSpec :: AccessSpec -> P Doc
+accessSpec (AccessSpec sp fs) = do
+  open <- tokFrom TLBrace (startOf sp)
+  list "{" "}" True open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) ((\dv -> text k <> ": " <> dv) <$> expr v) | (Spanned ksp k, v) <- fs]
 
 annot :: Maybe Doc -> Doc
 annot = maybe mempty (": " <>)

@@ -2919,7 +2919,7 @@ Engines:
 
 An access constraint bounds the host files and the networks that the commands of what it covers may reach. It is written on a function or on a module (Chapter 5), and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
 
-```lask fragment
+```lask
 within { network: "none", volumes: false }
 
 node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: "none"}
@@ -2978,7 +2978,7 @@ Resolution:
 - A use whose environment or static options depend on a parameter of the declaration it is written in is **parametric**. It is resolved at each call of the declaration from the argument given there, or the default of a keyword parameter not given, by the same rules; an argument that is a parameter of the calling declaration leaves it parametric in that one, so resolution proceeds outward through the calls.
 - A call of a parameter of function type — directly, or by a built-in function that calls the function it is given — reaches the uses of the argument given at each call: those of a lambda, of a top-level function named, or, for a parameter of the calling declaration, those resolved further out.
 - A use that reaches the function invoked by `run` or `eval` (11.2) still parametric is resolved from the command line, before anything is evaluated: the arguments given there, and the defaults of the keyword parameters not given. A parameter of type `Environment` or `Runnable` takes its default, since none can be given there (11.2).
-- A function whose uses are parametric, referenced other than by a call — stored in a value, returned, or given to something its uses are not resolved through — leaves them unresolved where they would be resolved.
+- A function whose uses are parametric, referenced other than by a call or as an argument of a call of a top-level function — stored in a value, returned, or given to a built-in function — leaves them unresolved where they would be resolved. When a constraint covers them, the reference is `E-TYPE-WITHIN-UNPROVEN`: the function is to be called by name.
 
 Checking:
 
@@ -2999,7 +2999,8 @@ bad(): String = release_of(alpine)   // E-TYPE-WITHIN-EXCEEDED: network default,
 probe(): String within { network: "none" } =
   $[runnable(alpine, network = get_env("NET"))] true
 ```
-- Checking is part of static verification (Chapter 7), and is made by `check`, `run`, `eval`, `repl`, `cmd` and `serve` before anything runs. The diagnostic names the constraint, the declaration covered by it, the declarations through which the use is reached (`build → stage → $[node]`), where the use is written, and the component that exceeds or cannot be determined, with its value as written.
+- Checking is part of static verification (Chapter 7), and is made by `check`, `run`, `eval`, `repl`, `cmd` and `serve` before anything runs. The diagnostic is placed at the call that resolved the use, for a parametric use, and where the use is written otherwise. It names the constraint, the declaration covered by it, the declarations through which the use is reached (`bad → release_of`), where the use is written, and the component that exceeds or cannot be determined, with its value as written.
+- `cmd` checks the environment of the command word it runs against the module constraint of the module that declares the word, before it runs; declaring the word is not a use, so `check` does not.
 - A constraint bounds the commands of a program. It does not bound `sync` (11.7), which runs no task: what a build of a recipe reaches is fixed by 10.3, and its probe runs only `command -v`.
 - What is not covered by a constraint is checked by nothing here, and any expression may give its options, as 10.2 allows.
 
@@ -3376,7 +3377,8 @@ Enumeration rules:
 Common columns:
 
 - `ENVIRONMENT`: the head, in the notation of `envs list`, followed in braces by the names of the options the listing shows that are given (`#node:24.21.0-alpine3.24{base_access,network}`), or `(dynamic)`. Rows are ordered as `envs commands` orders environments.
-- `CHECK`: what the constraints covering the uses of the row (10.11) find: `ok`, `exceeded` or `unproven`, the worst of them when they differ, or `—` when no use of the row is covered by one.
+- `CHECK`: what the constraints covering the uses of the row (10.11) find: `ok`, `exceeded` or `unproven`, the worst of them when they differ, or `—` when no use of the row is covered by one. A use left to a parameter of the function enumerated from is `—`: each call of it, and its invocation, is where it is checked.
+- The listings are made whether or not the program keeps to its constraints: they are where what a constraint finds is seen whole.
 - `REQUIRED BY`: the declarations whose uses are in the row, in the notation of `envs list`, two shown and how many more. A parametric use resolved at a call is shown as the declaration of the call, `→`, and the declaration the use is written in (`main.lask: ok → release_of`), unless the call is in the declaration the use is written in.
 - An entry that reaches past what the base directory alone gives is marked `!`: the host for `#local`, a volume, a `default` or `host` network, and a published port.
 

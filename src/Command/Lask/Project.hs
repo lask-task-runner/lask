@@ -20,7 +20,7 @@ where
 
 import Command.Lask.Common
 import Command.Lask.DepUse (ImportSite (..), projectImports)
-import Command.Lask.EnvAccess (OptVal (..), SVal (..), Target (..), UseKind (..), UseSite (..), collectUseSites)
+import Language.Lask.Core.Access (Covering (..), OptVal (..), SVal (..), Target (..), UseKind (..), UseSite (..), Via (..), collectUseSites, coveringsOf, targetAccess, targetParametric, withinConstraints)
 import Command.Lask.Envs (CommandSite (..), HeadImage (..), HeadUse (..), Requirer (..), collectCommandSites, collectHeadUses)
 import Command.Lask.Images
 import Language.Lask.Runtime.Container (ContainerBackend (..), resolveBackend)
@@ -43,12 +43,12 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
-import Language.Lask (Compiled (..), compileFile)
+import Language.Lask (Compiled (..), compileFile, compileFileUnconstrained)
 import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Access (AccessTable, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume)
+import Language.Lask.Access (AccessTable, Finding (..), Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume, renderConstraint)
 import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Core.AST (Core (..))
 import Language.Lask.Elaborate (CommandUse (..), CoreProgram (..))
@@ -1016,7 +1016,9 @@ data AccessRow = AccessRow
   { arHead :: Maybe HeadImage,
     arOpts :: Map.Map Text OptVal,
     arBy :: [Text],
-    arSites :: [UseSite]
+    arSites :: [UseSite],
+    -- | What the constraints covering its uses find (spec 10.11).
+    arCheck :: Text
   }
 
 cmdEnvsFiles :: CommonOpts -> Maybe Text -> Bool -> IO ()
@@ -1029,11 +1031,11 @@ cmdEnvsAccess :: CommonOpts -> Maybe Text -> IO ()
 cmdEnvsAccess opts function = cmdEnvsAccessListing ListAccess opts function False
 
 -- | @lask envs files | network | access@ (spec 11.4): what the uses of
--- environments may reach past their containers, read statically. No
--- access constraint is checked yet, so every row's CHECK is @—@.
+-- environments may reach past their containers, read statically, and
+-- what the access constraints covering them find (spec 10.11).
 cmdEnvsAccessListing :: AccessListing -> CommonOpts -> Maybe Text -> Bool -> IO ()
 cmdEnvsAccessListing listing opts function verbose = do
-  compiledE <- compileFile (optModule opts)
+  compiledE <- compileFileUnconstrained (optModule opts)
   compiled <- case compiledE of
     Right c -> pure c
     Left _ -> compileOrExit opts
@@ -1046,25 +1048,26 @@ cmdEnvsAccessListing listing opts function verbose = do
         k : _ -> pure (Just k)
         [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
   lock <- loadLockMaybe paths
-  let sites = collectUseSites core scope
+  let cons = snd (withinConstraints (compiledProgram compiled))
+      sites = collectUseSites cons core scope
       shown = listingOptions listing
       -- A use a call resolved is shown under the declaration of the
       -- call, unless that is where the use is written.
       label site via = case via of
-        Just (vm, vd)
+        Just (Via vm vd _)
           | (vm, vd) /= (usModule site, usDecl site) ->
               moduleLabel paths lock vm <> ": " <> vd <> " → " <> usDecl site
         _ -> moduleLabel paths lock (usModule site) <> ": " <> usDecl site
       entries =
-        [ ((Just (tHead t), Map.filterWithKey (\k _ -> k `elem` shown) (tOpts t)), (label s (tVia t), s))
+        [ ((Just (tHead t), Map.filterWithKey (\k _ -> k `elem` shown) (tOpts t)), (label s (tVia t), s, targetCheck s t))
         | s <- sites,
           t <- Set.toList (usTargets s)
         ]
-          <> [((Nothing, Map.empty), (label s Nothing, s)) | s <- sites, usDynamic s]
+          <> [((Nothing, Map.empty), (label s Nothing, s, dynamicCheck s)) | s <- sites, usDynamic s || usParam s]
       grouped = Map.fromListWith (flip (<>)) [(k, [v]) | (k, v) <- entries]
       rows =
         sortOn rowOrder
-          [ AccessRow h o (nub (sort (map fst vs))) (map snd vs)
+          [ AccessRow h o (nub (sort [b | (b, _, _) <- vs])) [x | (_, x, _) <- vs] (worstCheck [c | (_, _, c) <- vs])
           | ((h, o), vs) <- Map.toList grouped
           ]
       rowOrder r = (kindOrder (rowKind r), rowLabel r)
@@ -1080,7 +1083,9 @@ cmdEnvsAccessListing listing opts function verbose = do
         else do
           color <- colorFor (optNoColor opts) stdout
           case (listing, scope) of
-            (ListAccess, Just _) -> TIO.putStrLn "within: none"
+            (ListAccess, Just key) -> TIO.putStrLn $ case coveringsOf cons key of
+              [] -> "within: none"
+              cvs -> T.intercalate " and " (map (renderConstraint . cvConstraint) cvs)
             _ -> pure ()
           let (header, cellsOf) = case listing of
                 ListFiles ->
@@ -1088,17 +1093,17 @@ cmdEnvsAccessListing listing opts function verbose = do
                     \r ->
                       [ (if i == 0 then [plain (rowLabel r)] else [plain ""])
                           <> [plain t, plain s, plain a]
-                          <> (if i == 0 then [plain "—", plain (requiredCell (arBy r))] else [plain "", plain ""])
+                          <> (if i == 0 then [checkCell (arCheck r), plain (requiredCell (arBy r))] else [plain "", plain ""])
                       | (i, (t, s, a)) <- zip [0 :: Int ..] (fileLines r)
                       ]
                   )
                 ListNetwork ->
                   ( ["ENVIRONMENT", "NETWORK", "INBOUND", "NAME RESOLUTION", "CHECK", "REQUIRED BY"],
-                    \r -> [[plain (rowLabel r), plain (networkCell r), plain (inboundCell r), plain (nameResolutionCell r), plain "—", plain (requiredCell (arBy r))]]
+                    \r -> [[plain (rowLabel r), plain (networkCell r), plain (inboundCell r), plain (nameResolutionCell r), checkCell (arCheck r), plain (requiredCell (arBy r))]]
                   )
                 ListAccess ->
                   ( ["ENVIRONMENT", "FILES", "NETWORK", "CHECK", "REQUIRED BY"],
-                    \r -> [[plain (rowLabel r), plain (filesSummary r), plain (networkCell r <> (if hasInbound r then " + inbound !" else "")), plain "—", plain (requiredCell (arBy r))]]
+                    \r -> [[plain (rowLabel r), plain (filesSummary r), plain (networkCell r <> (if hasInbound r then " + inbound !" else "")), checkCell (arCheck r), plain (requiredCell (arBy r))]]
                   )
               groups = map cellsOf rows
               rendered = renderTable color header (concat groups)
@@ -1120,13 +1125,48 @@ cmdEnvsAccessListing listing opts function verbose = do
               <> " ("
               <> tally (map rowKind rows)
               <> "): "
-              <> tally (map (const "unconstrained") rows)
+              <> tally [if arCheck r == "—" then "unconstrained" else arCheck r | r <- rows]
   exitSuccess
   where
     spanLine sp = case sp of
       Span (Position _ l _) _ -> l
       NoSpan -> 0
     nubOn f = Map.elems . Map.fromList . map (\x -> (f x, x))
+
+-- | What the constraints covering a use find for one environment it
+-- may run in: @—@ when none covers it, or when what it reaches waits
+-- on a parameter, which each call checks.
+targetCheck :: UseSite -> Target -> Text
+targetCheck s t
+  | null (usUnder s) || targetParametric t = "—"
+  | otherwise = case concat [checkAccess (cvConstraint cv) (targetAccess t) | cv <- usUnder s] of
+      fs
+        | any isExceeds fs -> "exceeded"
+        | not (null fs) -> "unproven"
+        | otherwise -> "ok"
+  where
+    isExceeds f = case f of
+      Exceeds _ _ -> True
+      Unproven _ -> False
+
+-- | The same for an environment the program does not show.
+dynamicCheck :: UseSite -> Text
+dynamicCheck s
+  | null (usUnder s) || not (usDynamic s) = "—"
+  | otherwise = "unproven"
+
+-- | The worst of what the uses of a row find.
+worstCheck :: [Text] -> Text
+worstCheck cs = case [c | c <- ["exceeded", "unproven", "ok"], c `elem` cs] of
+  c : _ -> c
+  [] -> "—"
+
+checkCell :: Text -> Cell
+checkCell c = case c of
+  "ok" -> toned ToneOk c
+  "exceeded" -> toned ToneBad c
+  "unproven" -> toned ToneWarn c
+  _ -> plain c
 
 -- | The kind of a row, as @envs list@ names kinds.
 rowKind :: AccessRow -> Text
@@ -1195,8 +1235,9 @@ fileLines r
       VolumeNamed n -> "volume:" <> n
     rootfs = case rowOpt r "read_only" of
       Just (Known (SBool True)) -> [("/", "(image)", "ro")]
-      Just Computed -> [("/", "(image)", "(computed)")]
-      _ -> [("/", "(image)", "rw")]
+      Just (Known _) -> [("/", "(image)", "rw")]
+      Nothing -> [("/", "(image)", "rw")]
+      Just _ -> [("/", "(image)", "(computed)")]
     tmpfs = case rowStrings r "tmpfs" of
       Just ts -> [(T.takeWhile (/= ':') t, "(tmpfs)", "rw") | t <- ts]
       Nothing -> [("(computed)", "(tmpfs)", "rw")]
@@ -1272,7 +1313,7 @@ rowJson listing verbose r =
   A.object $
     [ ("environment", A.String (rowLabel r)),
       ("kind", A.String (rowKind r)),
-      ("check", A.Null),
+      ("check", if arCheck r == "—" then A.Null else A.String (arCheck r)),
       ("required_by", A.toJSON (arBy r))
     ]
       <> [("files", files) | listing /= ListNetwork]

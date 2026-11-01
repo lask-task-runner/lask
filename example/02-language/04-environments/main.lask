@@ -83,8 +83,14 @@ alpine_version(): String = $[alpine] cat /etc/alpine-release
 
 // A container that reaches no network and writes nowhere but /tmp.
 //
+// `within` says so of the function, and `lask check` holds it to it:
+// every command it can reach, in any module, must run where the base
+// directory is read-only and there is no network, or the program does
+// not run. A module can say the same of all its declarations with a
+// `within { ... }` of its own.
+//
 // @return The user the sealed container runs as.
-sealed_user(): String = $ id -un
+sealed_user(): String within { files: "ro", network: "none" } = $ id -un
   |> trim
 
 // The release of the digest-pinned image.

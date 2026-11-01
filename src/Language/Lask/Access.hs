@@ -28,11 +28,21 @@ module Language.Lask.Access
     NetClass (..),
     netClassText,
     classifyNetwork,
+
+    -- * Constraints
+    Constraint (..),
+    noConstraint,
+    bounds,
+    renderConstraint,
+    AccessSet (..),
+    Finding (..),
+    findingField,
+    checkAccess,
   )
 where
 
 import Data.Char (isAlphaNum)
-import Data.List (sortOn)
+import Data.List (nub, sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -210,3 +220,139 @@ classifyNetwork v = case v of
     isName n = case T.uncons n of
       Just (c, _) -> isAlphaNum c && T.all (\x -> isAlphaNum x || x `elem` ("_.-" :: String)) n
       Nothing -> False
+
+-- Constraints -----------------------------------------------------------
+
+-- | An access constraint (spec 10.11): the bound on each component,
+-- 'Nothing' where it gives none.
+data Constraint = Constraint
+  { conFiles :: Maybe AccessTable,
+    -- | The host paths and named volumes it admits, with the widest
+    -- mode each may be mounted with; @Just []@ for @false@.
+    conVolumes :: Maybe [(VolumeSource, Mode)],
+    conNetwork :: Maybe NetClass,
+    conPublish :: Maybe Bool
+  }
+  deriving (Show, Eq, Ord)
+
+-- | @within {}@.
+noConstraint :: Constraint
+noConstraint = Constraint Nothing Nothing Nothing Nothing
+
+-- | Whether a constraint gives any field.
+bounds :: Constraint -> Bool
+bounds c = c /= noConstraint
+
+-- | A constraint as it is written.
+--
+-- >>> renderConstraint (Constraint (Just [(".", ModeRo), ("dist", ModeRw)]) (Just []) (Just NetNone) Nothing)
+-- "within { files: { \".\": \"ro\", \"dist\": \"rw\" }, volumes: false, network: \"none\" }"
+renderConstraint :: Constraint -> Text
+renderConstraint c =
+  "within {"
+    <> (if null fields then "" else " " <> T.intercalate ", " fields <> " ")
+    <> "}"
+  where
+    fields =
+      [ "files: " <> files t | Just t <- [conFiles c]
+      ]
+        <> ["volumes: " <> volumes v | Just v <- [conVolumes c]]
+        <> ["network: " <> quote (netClassText n) | Just n <- [conNetwork c]]
+        <> ["publish: " <> (if p then "true" else "false") | Just p <- [conPublish c]]
+    files t = case t of
+      [(".", m)] -> quote (modeText m)
+      _ -> "{ " <> T.intercalate ", " [quote k <> ": " <> quote (modeText m) | (k, m) <- t] <> " }"
+    volumes v = case v of
+      [] -> "false"
+      _ -> "{ " <> T.intercalate ", " [quote (sourceText src) <> ": " <> quote (modeText m) | (src, m) <- v] <> " }"
+    quote t = "\"" <> t <> "\""
+
+sourceText :: VolumeSource -> Text
+sourceText s = case s of
+  VolumeHost p -> p
+  VolumeNamed n -> n
+
+-- | What a use reaches past its container (spec 10.11): each component
+-- as its run options give it, 'Nothing' where an option is computed;
+-- or the host, which is unbounded in every one.
+--
+-- 'AccessSet' holds files, volumes, the network's class with the value
+-- of @network@ as written, and whether a port is published.
+data AccessSet
+  = AccessSet (Maybe AccessTable) (Maybe [Volume]) (Maybe (NetClass, Maybe Text)) (Maybe Bool)
+  | HostAccess
+  deriving (Show, Eq)
+
+-- | Where an access set is not shown to be within a constraint: a
+-- component that exceeds it, with what it is, or one that cannot be
+-- determined.
+data Finding = Exceeds Text Text | Unproven Text
+  deriving (Show, Eq, Ord)
+
+findingField :: Finding -> Text
+findingField f = case f of
+  Exceeds k _ -> k
+  Unproven k -> k
+
+-- | What keeps an access set from being within a constraint (spec
+-- 10.11); none when it is within it.
+--
+-- >>> let c = noConstraint {conFiles = Just [(".", ModeRo), ("dist", ModeRw)], conNetwork = Just NetNone}
+-- >>> checkAccess c (AccessSet (Just [(".", ModeRo), ("dist", ModeRw)]) (Just []) (Just (NetNone, Just "none")) (Just False))
+-- []
+-- >>> checkAccess c (AccessSet (Just [(".", ModeRw)]) (Just []) (Just (NetDefault, Nothing)) (Just False))
+-- [Exceeds "files" "\".\" is \"rw\", wider than \"ro\"",Exceeds "network" "the network is \"default\""]
+-- >>> checkAccess c (AccessSet (Just [(".", ModeRo)]) Nothing Nothing (Just False))
+-- [Unproven "network"]
+-- >>> checkAccess c HostAccess
+-- [Exceeds "files" "#local reaches the whole host",Exceeds "network" "#local reaches the whole host"]
+checkAccess :: Constraint -> AccessSet -> [Finding]
+checkAccess c a = case a of
+  HostAccess ->
+    [ Exceeds k "#local reaches the whole host"
+    | (k, True) <- [("files", isJust' (conFiles c)), ("volumes", isJust' (conVolumes c)), ("network", isJust' (conNetwork c)), ("publish", isJust' (conPublish c))]
+    ]
+  AccessSet files vols net pub ->
+    concat
+      [ maybe [] (\bound -> maybe [Unproven "files"] (filesWithin bound) files) (conFiles c),
+        maybe [] (\bound -> maybe [Unproven "volumes"] (volumesWithin bound) vols) (conVolumes c),
+        maybe [] (\bound -> maybe [Unproven "network"] (networkWithin bound) net) (conNetwork c),
+        maybe [] (\bound -> maybe [Unproven "publish"] (publishWithin bound) pub) (conPublish c)
+      ]
+  where
+    isJust' = maybe False (const True)
+
+    filesWithin bound t =
+      take 1
+        [ Exceeds "files" (q p <> " is " <> q (modeText m) <> ", wider than " <> q (modeText b))
+        | p <- nub ("." : map fst t <> map fst bound),
+          let m = modeAt t p
+              b = modeAt bound p,
+          m > b
+        ]
+
+    volumesWithin bound vs =
+      take 1
+        [ Exceeds "volumes" (q (sourceText (volSource v)) <> " is mounted " <> q (modeText (volMode v)) <> admitted)
+        | v <- vs,
+          let allowed = [m | (k, m) <- bound, covers k (volSource v)],
+          not (any (>= volMode v) allowed),
+          let admitted = case allowed of
+                [] -> ", which the constraint does not admit"
+                ms -> ", wider than " <> q (modeText (maximum ms))
+        ]
+
+    covers k src = case (k, src) of
+      (VolumeHost kp, VolumeHost p) -> kp == p || (kp <> "/") `T.isPrefixOf` p || kp == "/"
+      (VolumeNamed kn, VolumeNamed n) -> kn == n
+      _ -> False
+
+    networkWithin bound (cls, written)
+      | cls > bound = [Exceeds "network" ("the network is " <> q (maybe (netClassText cls) id written))]
+      | otherwise = []
+
+    publishWithin bound p
+      | p && not bound = [Exceeds "publish" "a port is published"]
+      | otherwise = []
+
+    q t = "\"" <> t <> "\""

@@ -28,9 +28,10 @@ import Data.List (nub, sort)
 import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
-import Data.Scientific (toRealFloat)
+import Data.Scientific (FPFormat (Generic), formatScientific, toRealFloat)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Vector as V
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Version (showVersion)
@@ -40,6 +41,7 @@ import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (entryPublicValues)
 import Language.Lask.Diagnostic (Advisory (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
+import Language.Lask.Core.Access (SVal (..), checkCommandEnv, checkInvocation, withinConstraints)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer (lexTokensWithComments)
@@ -181,6 +183,17 @@ cmdRunEval printResult runOpts = do
     missing -> do
       traceId <- maybe newTraceId pure (optTraceId opts)
       failureExit opts traceId (ioFailure EIoCommandMissing (missingMessage missing))
+  -- What the function leaves to its parameters is checked against the
+  -- access constraints covering it with what the command line gives
+  -- them, before anything is evaluated (spec 10.11).
+  let positionalNames = maybe [] (map fst . spPositional) (cdParams cd)
+      given = [(n, sv) | (n, v) <- zip positionalNames posVals <> kwVals, Just sv <- [staticOf v]]
+      cons = snd (withinConstraints (compiledProgram compiled))
+  case checkInvocation cons core key given of
+    [] -> pure ()
+    ds -> do
+      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+      exitWith (ExitFailure 1)
   -- Before anything is evaluated, and before stdin is read: a refused
   -- confirmation leaves nothing half done (spec 11.2).
   confirmOrExit opts (runConfirm runOpts) compiled fnName key cd posVals kwVals
@@ -237,6 +250,18 @@ cmdRunEval printResult runOpts = do
         VVoid -> pure ()
         _ -> TIO.putStrLn (encodeResult (runStdoutEncode runOpts) v)
       exitSuccess
+
+-- | A value the command line gave, as the static reading of 10.11
+-- holds it.
+staticOf :: Value -> Maybe SVal
+staticOf v = case v of
+  VString t -> Just (SStr t)
+  VBool b -> Just (SBool b)
+  VNull -> Just SNull
+  VNumber n -> Just (SNum (T.pack (formatScientific Generic Nothing n)))
+  VArray xs -> SArr <$> mapM staticOf (V.toList xs)
+  VMap m -> SMap <$> mapM (traverse staticOf) (Map.toAscList m)
+  _ -> Nothing
 
 -- | A computation's outcome with the failure it ended in masked, for
 -- the advisory that reports it (spec 12.8).
@@ -413,7 +438,7 @@ publicNames compiled = map fst (entryPublicValues (compiledProgram compiled) (co
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
   AST.DValue n _ _ _ -> Just n
-  AST.DFunction n _ _ _ _ -> Just n
+  AST.DFunction n _ _ _ _ _ -> Just n
   _ -> Nothing
 
 -- | The documentation comment directly above a declaration (spec 3.1).
@@ -610,6 +635,17 @@ cmdCmd cmdOpts
               ("'" <> name <> "' is not a command of this module; try 'lask cmd --help'")
               (suggest name (Map.keys table))
           Just envCore -> do
+            -- The word runs where its declaration says, which the
+            -- constraint of the module declaring it covers (spec 5).
+            let declaring = case coreSpan envCore of
+                  Span (Position f _ _) _ -> f
+                  NoSpan -> cpEntry core
+                cons = snd (withinConstraints (compiledProgram compiled))
+            case checkCommandEnv cons core declaring name envCore of
+              [] -> pure ()
+              ds -> do
+                TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+                exitWith (ExitFailure 1)
             traceId <- maybe newTraceId pure (optTraceId opts)
             images <- lockedImages core
             img <- commandImage core envCore

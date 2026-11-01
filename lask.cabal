@@ -28,7 +28,6 @@ library
       Command.Lask.Complete
       Command.Lask.DepUse
       Command.Lask.Entry
-      Command.Lask.EnvAccess
       Command.Lask.Envs
       Command.Lask.Fmt
       Command.Lask.Help
@@ -50,6 +49,7 @@ library
       Language.Lask.Builtins.Sig
       Language.Lask.CommandSchema
       Language.Lask.Confirm
+      Language.Lask.Core.Access
       Language.Lask.Core.AST
       Language.Lask.Core.Compare
       Language.Lask.Core.Lint

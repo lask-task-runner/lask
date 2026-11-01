@@ -736,7 +736,7 @@ typeParamsOf _ Nothing = ""
 typeParamsOf compiled (Just (declPath, name)) =
   case [ tps
        | lm <- maybeToList (Map.lookup key modules),
-         AST.Decl _ (AST.DFunction n tps _ _ _) <- AST.moduleDecls (lmModule lm),
+         AST.Decl _ (AST.DFunction n tps _ _ _ _) <- AST.moduleDecls (lmModule lm),
          n == name,
          not (null tps)
        ] of
@@ -769,7 +769,7 @@ declDocs compiled docPath docSrc (Just (declPath, name)) = do
       lm <- Map.lookup (normalisedKey declPath) modules
       let matches d = case AST.declF d of
             AST.DValue n _ _ _ -> n == name
-            AST.DFunction n _ _ _ _ -> n == name
+            AST.DFunction n _ _ _ _ _ -> n == name
             _ -> False
       case [AST.declSpan d | d <- AST.moduleDecls (lmModule lm), matches d] of
         (S.Span (S.Position _ l _) _ : _) -> Just l
@@ -1156,7 +1156,7 @@ languageCompletion path src (Position pl pc)
 
     declParams m declName =
       listToMaybe $
-        [ps | AST.Decl _ (AST.DFunction n _ ps _ _) <- AST.moduleDecls m, n == declName]
+        [ps | AST.Decl _ (AST.DFunction n _ ps _ _ _) <- AST.moduleDecls m, n == declName]
           <> [ ps
              | AST.Decl _ (AST.DValue n _ _ (AST.Expr _ (AST.ELambda ps _ _))) <- AST.moduleDecls m,
                n == declName
@@ -1167,7 +1167,7 @@ languageCompletion path src (Position pl pc)
       | AST.Decl _ f <- AST.moduleDecls m,
         n <- case f of
           AST.DValue n' _ _ _ -> [n']
-          AST.DFunction n' _ _ _ _ -> [n']
+          AST.DFunction n' _ _ _ _ _ -> [n']
           _ -> []
       ]
 

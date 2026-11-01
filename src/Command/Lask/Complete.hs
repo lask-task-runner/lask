@@ -1104,7 +1104,7 @@ globKind ws = case ws of
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
   AST.DValue n _ _ _ -> Just n
-  AST.DFunction n _ _ _ _ -> Just n
+  AST.DFunction n _ _ _ _ _ -> Just n
   _ -> Nothing
 
 isEnvType :: Maybe AST.SType -> Bool

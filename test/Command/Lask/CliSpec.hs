@@ -1379,6 +1379,66 @@ spec = beforeAll findLask $ do
           classOf "#node:24{base_access,network}" `shouldBe` ["none"]
           sort (classOf "#alpine:3.20{network}") `shouldBe` ["computed", "none"]
           classOf "(dynamic)" `shouldBe` ["dynamic"]
+    it "checks access constraints statically, at the call that resolves a parameter (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "within { volumes: false }\n\
+            \alpine = #alpine:3.20\n\
+            \sealed = #alpine:3.20{network: \"none\"}\n\
+            \release_of(e: Runnable): String within { network: \"none\" } = $[e] cat /etc/alpine-release\n\
+            \ok(): String = release_of(sealed)\n\
+            \bad(): String = release_of(alpine)\n\
+            \probe() within { network: \"none\" } = $[runnable(alpine, network = get_env(\"NET\"))] true\n\
+            \host() within { files: \"ro\" } = $[#local] ls\n\
+            \ship() = $[#docker:27{volumes: [\"/var/run/docker.sock:/var/run/docker.sock\"]}] docker ps\n\
+            \twice(f: Function<String>): String within { network: \"none\" } = f()\n\
+            \pick = release_of\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let out = resOut r
+          -- The call that passes the environment is where it is reported.
+          out `shouldSatisfy` isInfixOf "main.lask:6:17-6:35: E-TYPE-WITHIN-EXCEEDED"
+          out `shouldSatisfy` isInfixOf "reached through bad → release_of"
+          out `shouldNotSatisfy` isInfixOf "main.lask:5:"
+          out `shouldSatisfy` isInfixOf "main.lask:7:"
+          out `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-UNPROVEN [static]: 'network' is not a literal here"
+          out `shouldSatisfy` isInfixOf "#local reaches the whole host"
+          out `shouldSatisfy` isInfixOf "\"/var/run/docker.sock\" is mounted \"rw\", which the constraint does not admit"
+          out `shouldSatisfy` isInfixOf "'release_of' is named as a value"
+          -- The listings report what the constraints find, and do not fail.
+          network <- runLask lask dir ["envs", "network"] ""
+          resExit network `shouldBe` 0
+          resOut network `shouldSatisfy` isInfixOf "exceeded  main.lask: bad → release_of"
+          resOut network `shouldSatisfy` isInfixOf "ok        main.lask: ok → release_of"
+          resOut network `shouldSatisfy` isInfixOf "unproven  main.lask: probe"
+          access <- runLask lask dir ["envs", "access", "release-of"] ""
+          resOut access `shouldSatisfy` isInfixOf "within { volumes: false } and within { network: \"none\" }"
+    it "checks what an invocation gives a parameter before anything runs (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "f(--net: String = \"none\"): String within { network: \"none\" } = $[runnable(#alpine:3.20, network = net)] echo hi\n"
+          )
+        ]
+        $ \dir -> do
+          static <- runLask lask dir ["check"] ""
+          resExit static `shouldBe` 0
+          widened <- runLask lask dir ["eval", "f", "--net", "bridge"] ""
+          resExit widened `shouldBe` 1
+          resErr widened `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED"
+          resErr widened `shouldSatisfy` isInfixOf "the network is \"bridge\""
+          kept <- runLask lask dir ["eval", "f"] ""
+          resErr kept `shouldNotSatisfy` isInfixOf "E-TYPE-WITHIN"
+    it "checks the command words cmd runs against the module constraint (spec 5)" $ \lask ->
+      withProject [("main.lask", "within { network: \"none\" }\ncommand { \"uname\" } on #local\n")] $ \dir -> do
+        -- Declaring a word on the host is not a use; running it is.
+        static <- runLask lask dir ["check"] ""
+        resExit static `shouldBe` 0
+        r <- runLask lask dir ["cmd", "uname"] ""
+        resExit r `shouldBe` 1
+        resErr r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED"
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""
