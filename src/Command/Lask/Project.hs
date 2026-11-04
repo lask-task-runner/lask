@@ -15,12 +15,13 @@ module Command.Lask.Project
     cmdEnvsFiles,
     cmdEnvsNetwork,
     cmdEnvsAccess,
+    cmdEnvsSecrets,
   )
 where
 
 import Command.Lask.Common
 import Command.Lask.DepUse (ImportSite (..), projectImports)
-import Language.Lask.Core.Access (Covering (..), OptVal (..), SVal (..), Target (..), UseKind (..), UseSite (..), Via (..), collectUseSites, coveringsOf, targetAccess, targetParametric, withinConstraints)
+import Language.Lask.Core.Access (Covering (..), Flow (..), OptVal (..), SVal (..), Secret (..), SecretKind (..), Target (..), UseKind (..), UseSite (..), Via (..), channelFlows, collectUseSites, coveringsOf, programMarksSecrets, secretFindings, targetAccess, targetParametric, withinConstraints)
 import Command.Lask.Envs (CommandSite (..), HeadImage (..), HeadUse (..), Requirer (..), collectCommandSites, collectHeadUses)
 import Command.Lask.Images
 import Language.Lask.Runtime.Container (ContainerBackend (..), resolveBackend)
@@ -32,6 +33,8 @@ import Control.Applicative ((<|>))
 import Control.Exception (IOException, try)
 import Control.Monad (forM, forM_, unless, when)
 import qualified Data.Aeson as A
+import qualified Data.Aeson.Key as K
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import Data.Either (isRight)
 import Data.IORef (modifyIORef', newIORef, readIORef)
@@ -48,7 +51,7 @@ import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Access (AccessTable, Finding (..), Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume, renderConstraint)
+import Language.Lask.Access (AccessTable, Channel (..), Constraint (..), Finding (..), channelText, exposedChannel, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume, renderConstraint)
 import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Core.AST (Core (..))
 import Language.Lask.Elaborate (CommandUse (..), CoreProgram (..))
@@ -1356,4 +1359,178 @@ rowJson listing verbose r =
           _ -> "computed"
     netName row = case rowOpt row "network" of
       Just (Known (SStr v)) -> Just v
+      _ -> Nothing
+
+-- envs secrets --------------------------------------------------------------
+
+-- | One row of @envs secrets@: a secret, or @(unknown)@, the channel it
+-- is given by, and the environment, with the network options its
+-- NETWORK column reads.
+data SecretRow = SecretRow
+  { srSecret :: Maybe Secret,
+    srChannel :: Maybe Channel,
+    srEnv :: AccessRow
+  }
+
+-- | @lask envs secrets@ (spec 11.4): which secret reaches which
+-- environment, by which channel, read statically (spec 10.11), and
+-- what the constraints covering the uses find of it.
+cmdEnvsSecrets :: CommonOpts -> Maybe Text -> IO ()
+cmdEnvsSecrets opts function = do
+  compiledE <- compileFileUnconstrained (optModule opts)
+  compiled <- case compiledE of
+    Right c -> pure c
+    Left _ -> compileOrExit opts
+  paths <- projectPaths opts
+  let core = compiledCore compiled
+  scope <- case function of
+    Nothing -> pure Nothing
+    Just fn ->
+      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
+        k : _ -> pure (Just k)
+        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+  lock <- loadLockMaybe paths
+  let cons = snd (withinConstraints (compiledProgram compiled))
+      sites = collectUseSites cons core scope
+      networkOpts = listingOptions ListNetwork
+      label site via = case via of
+        Just (Via vm vd _)
+          | (vm, vd) /= (usModule site, usDecl site) ->
+              moduleLabel paths lock vm <> ": " <> vd <> " → " <> usDecl site
+        _ -> moduleLabel paths lock (usModule site) <> ": " <> usDecl site
+      bounded s = [cvConstraint cv | cv <- usUnder s, isJust (conSecrets (cvConstraint cv))]
+      -- What the constraints covering a use find of one secret given
+      -- by one channel.
+      checkOf s ch sc = case bounded s of
+        [] -> "—"
+        cs -> case [f | c <- cs, (via, _, f) <- secretFindings c s {usTargets = Set.empty, usFlows = Map.singleton ch (Flow (Map.singleton sc Nothing) False)}, const True via] of
+          fs
+            | any isExceeds fs -> "exceeded"
+            | not (null fs) -> "unproven"
+            | otherwise -> "ok"
+      isExceeds f = case f of
+        Exceeds _ _ -> True
+        Unproven _ -> False
+      -- The environments a use's command string or arguments go to.
+      envsOf s = [(Just (tHead t), Map.filterWithKey (\k _ -> k `elem` networkOpts) (tOpts t), tVia t) | t <- Set.toList (usTargets s)] <> [(Nothing, Map.empty, Nothing) | usDynamic s]
+      entries =
+        [ ((Just sc, Just ch, h, o), (label s (via <|> tvia), s, checkOf s ch sc))
+        | s <- sites,
+          (ch, fl, tvia0) <- channelFlows s,
+          (sc, via) <- Map.toList (flSecrets fl),
+          (h, o, tvia) <- case ch of
+            ChEnv _ -> optionTarget s ch
+            ChEnvComputed -> optionTarget s ch
+            ChOption _ -> optionTarget s ch
+            _ -> envsOf s,
+          const True tvia0
+        ]
+          <> [ ((Nothing, Nothing, Nothing, Map.empty), (label s Nothing, s, if null (bounded s) then "—" else "unproven"))
+             | programMarksSecrets core,
+               s <- sites,
+               usDynamic s
+             ]
+      -- The environments whose run options give a secret by a channel.
+      optionTarget s ch = [(Just (tHead t), Map.filterWithKey (\k _ -> k `elem` networkOpts) (tOpts t), tVia t) | t <- Set.toList (usTargets s), Map.member ch (tSecrets t)]
+      grouped = Map.fromListWith (flip (<>)) [(k, [v]) | (k, v) <- entries]
+      rows =
+        sortOn rowOrder
+          [ SecretRow sc ch (AccessRow h o (nub (sort [b | (b, _, _) <- vs])) [x | (_, x, _) <- vs] (worstCheck [c | (_, _, c) <- vs]))
+          | ((sc, ch, h, o), vs) <- Map.toList grouped
+          ]
+      rowOrder r = (maybe (1 :: Int) (const 0) (srSecret r), fmap (\sc -> (scModule sc, scSpan sc)) (srSecret r), kindOrder (rowKind (srEnv r)), environmentCell r, srChannel r)
+      kindOrder k = case k of
+        "local" -> 0 :: Int
+        "dynamic" -> 2
+        _ -> 1
+      secretCell r = case srSecret r of
+        Nothing -> "(unknown)"
+        Just sc -> secretText paths lock sc
+      channelCell r = case srChannel r of
+        Nothing -> "(unknown)"
+        Just ch -> channelText ch <> (if exposedChannel ch then " !" else "")
+      environmentCell r = case arHead (srEnv r) of
+        Nothing -> "(dynamic)"
+        Just h ->
+          shortPath (fst (headLabel h)) <> case srChannel r of
+            Just (ChEnv _) -> "{env}"
+            Just ChEnvComputed -> "{env}"
+            Just (ChOption k) -> "{" <> k <> "}"
+            _ -> ""
+      networkOf r = let c = networkCell (srEnv r) in if c == "(computed)" then "(computed) !" else c
+  if optJsonFormat opts
+    then printJson (A.toJSON (map (secretRowJson paths lock environmentCell) rows))
+    else
+      if null rows
+        then TIO.putStrLn "no secrets are given to an environment"
+        else do
+          color <- colorFor (optNoColor opts) stdout
+          case scope of
+            Just key -> TIO.putStrLn $ case coveringsOf cons key of
+              [] -> "within: none"
+              cvs -> T.intercalate " and " (map (renderConstraint . cvConstraint) cvs)
+            Nothing -> pure ()
+          let header = ["SECRET", "CHANNEL", "ENVIRONMENT", "NETWORK", "CHECK", "REQUIRED BY"]
+              cells r = [plain (secretCell r), plain (channelCell r), plain (environmentCell r), plain (networkOf r), checkCell (arCheck (srEnv r)), plain (requiredCell (arBy (srEnv r)))]
+          mapM_ TIO.putStrLn (renderTable color header (map cells rows))
+          TIO.putStrLn ""
+          TIO.putStrLn $
+            plural (length rows) "row"
+              <> ": "
+              <> tally [if arCheck (srEnv r) == "—" then "unconstrained" else arCheck (srEnv r) | r <- rows]
+  exitSuccess
+
+-- | Where a secret originates, as 10.11 names it.
+secretText :: Paths -> Maybe LockFile -> Secret -> Text
+secretText paths lock sc = case scKind sc of
+  SecretValue -> m <> ": " <> scName sc
+  SecretKeyword -> m <> ": " <> scDecl sc <> " --" <> scName sc
+  SecretPositional -> m <> ": " <> scDecl sc <> " " <> scName sc
+  SecretBinding -> m <> ": " <> scDecl sc <> " " <> scName sc
+  SecretCall -> m <> ":" <> T.pack (show (secretLine sc)) <> " mark_secret"
+  where
+    m = moduleLabel paths lock (scModule sc)
+
+secretLine :: Secret -> Int
+secretLine sc = case scSpan sc of
+  Span (Position _ l _) _ -> l
+  NoSpan -> 0
+
+secretRowJson :: Paths -> Maybe LockFile -> (SecretRow -> Text) -> SecretRow -> A.Value
+secretRowJson paths lock environmentCell r =
+  A.object
+    [ ("secret", maybe A.Null secretJson (srSecret r)),
+      ("channel", maybe A.Null channelJson (srChannel r)),
+      ("environment", A.String (environmentCell r)),
+      ("kind", A.String (rowKind env)),
+      ("network", fromMaybe A.Null (lookupKey "network" (rowJson ListNetwork False env))),
+      ("check", if arCheck env == "—" then A.Null else A.String (arCheck env)),
+      ("required_by", A.toJSON (arBy env))
+    ]
+  where
+    env = srEnv r
+    secretJson sc =
+      A.object
+        [ ("module", A.String (moduleLabel paths lock (scModule sc))),
+          ("declaration", A.String (scDecl sc)),
+          ("name", if scKind sc == SecretCall then A.Null else A.String (scName sc)),
+          ( "kind",
+            A.String $ case scKind sc of
+              SecretValue -> "value"
+              SecretKeyword -> "parameter"
+              SecretPositional -> "parameter"
+              SecretBinding -> "binding"
+              SecretCall -> "mark_secret"
+          ),
+          ("location", A.String (moduleLabel paths lock (scModule sc) <> ":" <> T.pack (show (secretLine sc))))
+        ]
+    channelJson ch =
+      A.object $ case ch of
+        ChEnv n -> [("kind", "env"), ("name", A.String n)]
+        ChEnvComputed -> [("kind", "env"), ("name", A.Null)]
+        ChOption n -> [("kind", "option"), ("name", A.String n)]
+        ChCommand -> [("kind", "command"), ("name", A.Null)]
+        ChFile -> [("kind", "file"), ("name", A.Null)]
+    lookupKey k v = case v of
+      A.Object o -> KM.lookup (K.fromText k) o
       _ -> Nothing

@@ -686,6 +686,9 @@ rootCommands =
           },
         (plain "access" "List the host files and networks each environment's commands may reach" commonOpts)
           { cmdPos = [PosFunction]
+          },
+        (plain "secrets" "List the secrets each environment's commands are given, and how" commonOpts)
+          { cmdPos = [PosFunction]
           }
       ]
 

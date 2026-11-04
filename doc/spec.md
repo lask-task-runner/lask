@@ -2993,12 +2993,14 @@ Resolution:
 Secret flow:
 
 - What reaches a use is tracked from the expressions that give it, without evaluating them. A secret **originates** at a secret binding (6.10) and at a call of `mark_secret` (15.9), and at nothing else: a value read with `get_env` is not a secret here unless it is bound to a `!!`-marked name, since whether a variable holds a secret reference (9.8) is known only when it is read. The secret is named by where it originates: `main.lask: token` for a top-level value, `main.lask: deploy --key` for a keyword parameter, `main.lask: deploy key` for a positional parameter or a local binding, and `main.lask:12 mark_secret` for a call.
+- A binding whose value is `null`, as far as it is known statically, originates nothing, since an absent secret has no text (6.10). Nor does one whose value carries a secret already: it is that secret marked again, as a library marks the credential it is given, and it is named where it was first marked.
 - An expression **carries** the secrets of what it is built from:
   - a reference to a binding carries what the binding's expression carries, and a secret binding its own secret as well;
   - an interpolation, an operator, an `if` or a `case` carries what any part does;
   - an array carries what any element does; a record or map literal keeps what each entry carries, and an access to it by a literal key carries that entry's, and by any other key what any entry does;
   - a call of a top-level function carries what its result expressions carry, with its parameters given what the arguments of that call carry, as a parametric use is resolved;
-  - a call of a built-in function carries what any of its arguments does, and a parameter of a lambda given to one carries what the other arguments do.
+  - a call of a built-in function carries what any of its arguments does, and a parameter of a lambda given to one carries what the other arguments do;
+  - except that the functions a table of variables is built with keep what each entry carries: `merge` keeps the entries of both tables, the later winning; `from_entries` of `entries` of a table, filtered or not, keeps that table's entries, one filtered out included; `reduce` over an array that is statically empty is its initial value; and `cast` keeps what its argument carries. The entries of a table that is static are known as well.
 - An expression whose static type is `Bool`, `Number`, `Null` or `Void` carries nothing, whatever it is built from: what it can tell of a secret is not the secret.
 - The result of a use carries nothing: what a command writes, or a file holds, is not followed.
 - The `secrets` component of a use is what the expressions it is given carry: the options of its environment, as resolved above, and its command string or its arguments. It is **unresolved** when its environment is, when a key of `env` is not static and its value carries a secret, or when one of these expressions calls a function value that is not resolved, which may carry anything.
@@ -3028,8 +3030,7 @@ probe(): String within { network: "none" } =
 ```lask fragment
 aws(key: String) = #amazon/aws-cli:2.31.9{env: {"AWS_SECRET_ACCESS_KEY": key}}
 
-whoami(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String
-  within { secrets: ["AWS_SECRET_ACCESS_KEY"] } =
+whoami(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secrets: ["AWS_SECRET_ACCESS_KEY"] } =
   $[aws(key)] aws sts get-caller-identity
 
 // E-TYPE-WITHIN-EXCEEDED: main.lask: leak --key reaches #alpine:3.22.2 by command.
