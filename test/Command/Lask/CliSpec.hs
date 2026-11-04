@@ -890,8 +890,8 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", src)] $ \dir -> do
         end <- runLask lask dir ["eval", "deploy", "a", "--target", "prod", "--dry-run"] ""
         end `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
-        before <- runLask lask dir ["eval", "deploy", "--dry-run", "a", "--target", "prod", "--force"] ""
-        before `shouldBe` Result 0 "\"a prod true true 1\"\n" ""
+        leading <- runLask lask dir ["eval", "deploy", "--dry-run", "a", "--target", "prod", "--force"] ""
+        leading `shouldBe` Result 0 "\"a prod true true 1\"\n" ""
         text <- runLask lask dir ["eval", "--arg-decode", "text", "deploy", "a", "--target", "prod", "--dry-run"] ""
         text `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
     it "still takes true or false after a Bool keyword argument as its value" $ \lask ->

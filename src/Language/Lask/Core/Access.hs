@@ -444,14 +444,14 @@ walk :: Constraints -> CoreProgram -> [Key] -> [Key] -> Key -> Map Text AVal -> 
 walk cons core guard scope here binds c = case coreF c of
   CApp (Core _ (CVar (BuiltinRef "run"))) (envC : rest) kws -> do
     inner <- concat <$> mapM go (envC : rest <> map snd kws)
-    pure (use UseCommand (value envC) (given ChCommand (rest <> map snd kws)) : inner)
+    pure (use UseCommand (value envC) (carriedBy ChCommand (rest <> map snd kws)) : inner)
   CApp (Core _ (CVar (BuiltinRef fn))) args@(_ : _) []
     | fn `elem` fsFunctions -> do
         inner <- concat <$> mapM go args
         let path = case args of
               Core _ (CStrLit p) : _ -> Just p
               _ -> Nothing
-        pure (use (UseFile fn path) (value (last args)) (given ChFile (init args)) : inner)
+        pure (use (UseFile fn path) (value (last args)) (carriedBy ChFile (init args)) : inner)
   -- The session a with_container body is given runs in the
   -- environment the call opens it on (spec 15.5).
   CApp (Core _ (CVar (BuiltinRef "with_container"))) [envC, Core _ (CLam lam)] []
@@ -523,7 +523,7 @@ walk cons core guard scope here binds c = case coreF c of
       pure (defaults <> body)
     -- What the expressions a use is given carry, by the channel they
     -- give it by.
-    given ch es =
+    carriedBy ch es =
       let f = avFlow (unionV (map value es))
        in if carries f then Map.singleton ch f else Map.empty
     use kind v flows =
