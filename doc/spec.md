@@ -741,7 +741,7 @@ Declaration termination rules:
 
 Access constraints:
 
-- A `ModuleWithin` declares the **module constraint**, and a `WithinClause` the constraint of its function. Both bound the files and the network that what they cover may reach in the environments its commands run in; their fields and their meaning are those of 10.11, which also defines how they are checked. They are checked statically, and nothing about them is evaluated.
+- A `ModuleWithin` declares the **module constraint**, and a `WithinClause` the constraint of its function. Both bound the files and the network that what they cover may reach in the environments its commands run in, and the secrets those environments are given; their fields and their meaning are those of 10.11, which also defines how they are checked. They are checked statically, and nothing about them is evaluated.
 - A module has at most one `ModuleWithin`. A second is a static error (`E-TYPE-WITHIN-SPEC`). It may be written anywhere among the module's top-level declarations, and covers all of them regardless of position: every declaration of the module, and every expression evaluated in the module's scope, including those typed into `repl` (11.9) and the commands `cmd` runs from the module's command declarations (11.8).
 - A module constraint is a ceiling. A function's own constraint narrows it and cannot widen it: the constraint a function is checked against is the intersection of the two (10.11).
 - A module constraint belongs to the module it is written in. It does not cover a module that imports it, nor one it imports; the declarations of a module it imports are still checked as part of whatever in it calls them (10.11).
@@ -1962,7 +1962,7 @@ Scope of the masking effect:
 
 - Masking (12.8) applies only to what the implementation writes to stderr: the execution and command execution logs (12.2, 12.3), execution events (12.6), and error diagnostics (14.3).
 - Masking never applies to a `CommandResult`'s `stdout` / `stderr` (8.7) or to a function's return value or a caught error value as observed by the running program (a `!!`-marked value flows through ordinary evaluation unchanged). In particular, `eval`'s primary result on stdout (9.5, 11.3) is never masked: if a program's return value is derived from a secret binding, outputting it faithfully is the whole point of that program, and the primary-result contract of 11.3 takes precedence.
-- The matching rule is exact-value substring matching (12.8), not static or dynamic taint tracking through the type system. A transformation that changes the value's character sequence (e.g. `to_upper`, `replace`, slicing, encoding) breaks the match for the transformed result; a transformation that only embeds the value unchanged inside a larger string (e.g. `concat`, string interpolation) does not.
+- The matching rule is exact-value substring matching (12.8), not static or dynamic taint tracking through the type system. Where a secret is passed is tracked statically, separately from masking and with no effect on it (Secret flow, 10.11). A transformation that changes the value's character sequence (e.g. `to_upper`, `replace`, slicing, encoding) breaks the match for the transformed result; a transformation that only embeds the value unchanged inside a larger string (e.g. `concat`, string interpolation) does not.
 - A variadic parameter cannot be marked `!!` (6.1).
 
 Examples:
@@ -1974,10 +1974,12 @@ deploy(
   --region: String = get_env("AWS_DEFAULT_REGION"),
   --secret_key!!: String = get_env("AWS_SECRET_ACCESS_KEY")
 ) = do {
-  // `secret_key` is masked in the command log below, whether it came
-  // from the default expression or was supplied directly as
-  // `lask run deploy --secret_key ...`.
-  $[#amazon/aws-cli:2.31.9] aws configure set aws_secret_access_key #{secret_key} --region #{region}
+  // `secret_key` is masked in the log, whether it came from the default
+  // expression or was supplied directly as `lask run deploy --secret_key ...`.
+  // It is given to the container as a variable: written into the command
+  // string, it would be on a command line of the host (W-SECRET-COMMAND-LINE).
+  aws = #amazon/aws-cli:2.31.9{env: {"AWS_SECRET_ACCESS_KEY": secret_key}}
+  $[aws] aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY" --region #{region}
 }
 ```
 
@@ -2145,7 +2147,7 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-COMMAND-SCHEMA`: the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5)
 - `E-TYPE-COMMAND-OPTION`: a command string invokes a program in a way its command schema rules out (Chapter 5)
 - `E-TYPE-ENV-CONSTRUCT`: invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree; 6.7, 10.2, 10.3, 15.5)
-- `E-TYPE-WITHIN-SPEC`: an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, or a second module constraint; Chapter 5, 10.11)
+- `E-TYPE-WITHIN-SPEC`: an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, or a second module constraint; Chapter 5, 10.11)
 - `E-TYPE-WITHIN-EXCEEDED`: what a declaration covered by an access constraint can reach is shown to exceed it (10.11)
 - `E-TYPE-WITHIN-UNPROVEN`: what a declaration covered by an access constraint can reach cannot be determined statically, so it is not shown to stay within it (10.11)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
@@ -2791,7 +2793,7 @@ Rules:
 - `docker` is bounded above by the privileges within the container isolation boundary.
 - The filesystem functions (15.11) are bounded by the same boundary as command execution in the environment they are given: they see exactly the filesystem that environment's commands see, and never the host's filesystem by default. There is no filesystem access that does not name an environment.
 - If execution is impossible due to insufficient privileges, it is a runtime error, and the cause must be reported in a diagnosable form.
-- Within a `docker` environment, the part of the filesystem and network boundaries that reaches past the container — the host paths it may read or write, and the networks it may reach or be reached from — is decided by its run options, and is described by its access set (10.11). An access constraint bounds it statically, and `envs files`, `envs network` and `envs access` (11.4) list it.
+- Within a `docker` environment, the part of the filesystem and network boundaries that reaches past the container — the host paths it may read or write, and the networks it may reach or be reached from — is decided by its run options, and is described by its access set (10.11), together with the secrets it is given. An access constraint bounds it statically, and `envs files`, `envs network`, `envs access` and `envs secrets` (11.4) list it.
 
 Security requirements:
 
@@ -2917,7 +2919,7 @@ Engines:
 
 ### 10.11 Access Constraints
 
-An access constraint bounds the host files and the networks that the commands of what it covers may reach. It is written on a function or on a module (Chapter 5), and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
+An access constraint bounds the host files and the networks that the commands of what it covers may reach, and the secrets they may be given. It is written on a function or on a module (Chapter 5), and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
 
 ```lask
 within { network: "none", volumes: false }
@@ -2938,14 +2940,19 @@ Uses:
 
 Access sets:
 
-- The **access set** of a use describes what its container reaches past itself. It has four components, read from the run options of its environment:
+- The **access set** of a use describes what its container reaches past itself, and what it is given. It has five components. The first four are read from the run options of its environment:
   - `files`: a table from paths relative to the base directory to `"rw"`, `"ro"` or `"none"`, read from `base_access` (10.2): `{".": "rw"}` when it is not given, `{".": m}` when it is the mode `m`, and the table when it is one.
   - `volumes`: the host paths and named volumes the `volumes` option mounts, each with `"rw"` or `"ro"`. This implementation reads an entry as `[<source>:]<target>[:<options>]`: a source beginning with `/` is a host path, any other source a named volume, and an entry with no source adds nothing, since an anonymous volume holds nothing from the host. The mode is `"ro"` when the options include `ro`, and `"rw"` otherwise.
   - `network`: `none`, `default` or `host`, read from `network`: `none` for `"none"`; `host` for `"host"`; `default` when it is not given, for `"bridge"` and `"default"`, and for any other name of a network (letters, digits, `_`, `.` and `-`, beginning with a letter or digit); and `host` for any other value, such as one naming another container's or a namespace's network (`container:<name>`), whose reach is not known.
   - `publish`: whether `publish` has an entry.
+- The fifth, `secrets`, is read from the values the use is given (Secret flow, below): the secrets that reach it, each with the **channel** by which it does:
+  - `env <NAME>`: in the value of the variable `NAME` of the `env` option.
+  - `option <name>`: in any other run option, or in a key of `env`. These are given to the engine client on its command line (10.10).
+  - `command`: in the command string of a command execution expression, of `run`, or of a command run in a `with_container` session. It is the argument of `sh -c` on the client's command line, and on Linux the command lines of a container's processes are read from the host as well.
+  - `file`: in an argument of a filesystem function (15.11), which writes it, or names a path by it.
 - No other run option enters an access set. `base_mount` moves the base directory without widening what reaches it, and `read_only`, `tmpfs`, `cap_drop`, `dns`, `dns_search` and `add_hosts` stay inside the container or the network it is already on.
 - A run option that reaches past the container in another way — a device, a privilege, a namespace of the host — must not be provided unless this section gives it a place in the access set.
-- A use in `#local` reaches everything its process can (10.7). Its access set is unbounded in every component.
+- A use in `#local` reaches everything its process can (10.7). Its access set is unbounded in `files`, `volumes`, `network` and `publish`; its `secrets` are read as for any other use.
 
 Constraints:
 
@@ -2954,13 +2961,15 @@ Constraints:
   - `volumes`: `false`, admitting none, or a table from host paths (absolute, normalized as for `base_mount`) and volume names to `"rw"` or `"ro"`.
   - `network`: `"none"` or `"default"`.
   - `publish`: `false` or `true`.
+  - `secrets`: `false`, admitting none, or an array of names, written as identifiers (`[key, token]`), admitting the secrets bound to them, and those only in `env`. A name is one of the secret bindings (6.10) of what the constraint covers: for a function's constraint, a `!!`-marked parameter of the function or a `!!`-marked binding in its body; for either, a top-level value of the module that is a secret binding. A binding through `mark_secret` (`a = mark_secret(e)`) is one, as 6.10 makes it. Any other name is `E-TYPE-WITHIN-SPEC`. A secret of another module is named by binding it, marked, to a name of this one.
 - Every value is a literal, containing no interpolation. A field not given leaves its component unbounded, and `within {}` constrains nothing. Any other field or value is `E-TYPE-WITHIN-SPEC`.
 - An access set is **within** a constraint when each component the constraint bounds is:
   - `files`: for `"."` and for every key of either table, the mode the access set gives the path is no wider than the mode the constraint gives it, both read by the longest key that is the path or an ancestor of it (10.2), where `"none"` < `"ro"` < `"rw"`. Modes change only at keys, so these paths are enough.
   - `volumes`: every host path is the key, or under a key, of a host path the constraint gives a mode no narrower than its own; every named volume is a key of its own with such a mode. Paths are compared by their components as written; a symbolic link on the host is not followed.
   - `network`: no wider, where `none` < `default` < `host`.
   - `publish`: not `true` when the constraint gives `false`.
-- The access set of `#local` is within no constraint that gives a field: the host cannot be bounded by any of them.
+  - `secrets`: none when the constraint gives `false`; otherwise every secret is bound to one of the names the constraint gives (Secret flow, below), and reaches the use by the channel `env`. The channels `option`, `command` and `file` are within no constraint that gives `secrets`, and a secret bound to no name — one marked by a `mark_secret` that no binding takes — is within none either.
+- The access set of `#local` is within no constraint that gives `files`, `volumes`, `network` or `publish`: the host cannot be bounded by any of them. Its `secrets` are checked as any use's.
 - The constraint a declaration is checked against is the module constraint of its module together with its own, if it has one. An access set is within it when it is within both, so a function's constraint can narrow its module's and never widen it.
 
 Resolution:
@@ -2981,10 +2990,28 @@ Resolution:
 - A use that reaches the function invoked by `run` or `eval` (11.2) still parametric is resolved from the command line, before anything is evaluated: the arguments given there, and the defaults of the keyword parameters not given. A parameter of type `Environment` or `Runnable` takes its default, since none can be given there (11.2).
 - A function whose uses are parametric, referenced other than by a call or as an argument of a call of a top-level function — stored in a value, returned, or given to a built-in function — leaves them unresolved where they would be resolved. When a constraint covers them, the reference is `E-TYPE-WITHIN-UNPROVEN`: the function is to be called by name.
 
+Secret flow:
+
+- What reaches a use is tracked from the expressions that give it, without evaluating them. A secret **originates** at a secret binding (6.10) and at a call of `mark_secret` (15.9), and at nothing else: a value read with `get_env` is not a secret here unless it is bound to a `!!`-marked name, since whether a variable holds a secret reference (9.8) is known only when it is read. The secret is named by where it originates: `main.lask: token` for a top-level value, `main.lask: deploy --key` for a keyword parameter, `main.lask: deploy key` for a positional parameter or a local binding, and `main.lask:12 mark_secret` for a call.
+- A binding whose value is `null`, as far as it is known statically, originates nothing, since an absent secret has no text (6.10). Nor does one whose value carries a secret already: it is that secret marked again, as a library marks the credential it is given, and it is named where it was first marked.
+- A secret is **bound** to each name it is bound to by a secret binding on its way: where it originates, and each binding that marks it again. A secret given to a `!!`-marked parameter is bound to that parameter, so a function that takes a secret names it by its own parameter, and a module by its own value, whichever binding the secret came through first. A secret given to an unmarked parameter is bound to no name of the function it is given to.
+- An expression **carries** the secrets of what it is built from:
+  - a reference to a binding carries what the binding's expression carries, and a secret binding its own secret as well;
+  - an interpolation, an operator, an `if` or a `case` carries what any part does;
+  - an array carries what any element does; a record or map literal keeps what each entry carries, and an access to it by a literal key carries that entry's, and by any other key what any entry does;
+  - a call of a top-level function carries what its result expressions carry, with its parameters given what the arguments of that call carry, as a parametric use is resolved;
+  - a call of a built-in function carries what any of its arguments does, and a parameter of a lambda given to one carries what the other arguments do;
+  - except that the functions a table of variables is built with keep what each entry carries: `merge` keeps the entries of both tables, the later winning; `from_entries` of `entries` of a table, filtered or not, keeps that table's entries, one filtered out included; `reduce` over an array that is statically empty is its initial value; and `cast` keeps what its argument carries. The entries of a table that is static are known as well.
+- An expression whose static type is `Bool`, `Number`, `Null` or `Void` carries nothing, whatever it is built from: what it can tell of a secret is not the secret.
+- The result of a use carries nothing: what a command writes, or a file holds, is not followed.
+- The `secrets` component of a use is what the expressions it is given carry: the options of its environment, as resolved above, and its command string or its arguments. It is **unresolved** when its environment is, or when one of these expressions calls a function value that is not resolved, which may carry anything. A secret given in a table of `env` whose keys are not static still reaches the use by the channel `env`.
+- What depends on a parameter is resolved at each call, from what the argument carries, as a parametric use is. A parameter of the function invoked by `run` or `eval` carries nothing unless it is `!!`-marked: the command line gives a secret only to a parameter that says it takes one.
+
 Checking:
 
 - For every declaration covered by a constraint, every use it reaches is checked against the constraint the declaration is checked against. A use whose access set is resolved and is not within it is `E-TYPE-WITHIN-EXCEEDED`. A use whose access set is unresolved is `E-TYPE-WITHIN-UNPROVEN`: a constraint holds only of what is shown to hold it.
 - A parametric use is checked at each call that resolves it, and at the invocation that resolves it from the command line.
+- Whether or not a constraint covers it, a secret that reaches a use by the channel `option` or `command` is the advisory `W-SECRET-COMMAND-LINE` (14.2), placed where the secret enters the option or the command string, or, when it enters through a parameter, at the call that gives it. The diagnostic names the secret and the use, and suggests giving the value in `env` and reading the variable in the command.
 
 ```lask fragment
 alpine = #alpine:3.22.2
@@ -2999,6 +3026,28 @@ bad(): String = release_of(alpine)   // E-TYPE-WITHIN-EXCEEDED: network default,
 // E-TYPE-WITHIN-UNPROVEN: the network is read from outside the program.
 probe(): String within { network: "none" } =
   $[runnable(alpine, network = get_env("NET"))] true
+```
+
+```lask fragment
+token!!: String = get_env("TOKEN")
+other!!: String = get_env("OTHER")
+
+aws(key: String) = #amazon/aws-cli:2.31.9{env: {"AWS_SECRET_ACCESS_KEY": key}}
+
+whoami(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secrets: [key] } =
+  $[aws(key)] aws sts get-caller-identity
+
+// Bound to v here, whatever the caller calls it.
+show(v!!: String): String within { secrets: [v] } = $[#alpine:3.22.2{env: {"V": v}}] true
+ok(): String = show(token)
+
+// E-TYPE-WITHIN-EXCEEDED: main.lask: other is not one of the names given.
+pick(): String within { secrets: [token] } = $[#alpine:3.22.2{env: {"T": token, "O": other}}] true
+
+// E-TYPE-WITHIN-EXCEEDED: main.lask: leak --key is given in the command string.
+// It is W-SECRET-COMMAND-LINE as well, constraint or not.
+leak(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secrets: [key] } =
+  $[#alpine:3.22.2] echo #{key}
 ```
 - Checking is part of static verification (Chapter 7), and is made by `check`, `run`, `eval`, `repl`, `cmd` and `serve` before anything runs. The diagnostic is placed in what the broken constraint covers: for a parametric use, at the call that resolved it; for a use written in the covered declaration, or for a module constraint in the module, where the use is written; and for one reached through a call, at the call in the covered declaration, or the last call in the module, that leads out of it, since the declaration called keeps to its own constraints. Uses reached through one call are reported there once. It names the constraint, the declaration covered by it, the declarations through which the use is reached (`bad → release_of`), where the use is written, and the component that exceeds or cannot be determined, with its value as written.
 - `cmd` checks the environment of the command word it runs against the module constraint of the module that declares the word, before it runs; declaring the word is not a use, so `check` does not.
@@ -3024,7 +3073,7 @@ Set up the project:
 
 - `sync`: fetches and verifies the external dependencies, materializes the container images the program requires, and writes the lock file, reporting its progress and listing what it resolved (11.7).
 - `deps`: lists, graphs, adds and removes external dependencies (11.5).
-- `envs`: lists the execution environments used by tasks, what the lock file resolves them to, what requires them, and whether each image is present, and which programs tasks run in each (11.4).
+- `envs`: lists the execution environments used by tasks, what the lock file resolves them to, what requires them, and whether each image is present, which programs tasks run in each, and what each reaches and is given (11.4).
 - `secrets`: lists the secret references in the environment and checks that the stores they name can be read from (11.10).
 
 Develop:
@@ -3066,6 +3115,7 @@ lask envs commands [--module <path>] [--verbose] [<function>]
 lask envs files [--module <path>] [--verbose] [<function>]
 lask envs network [--module <path>] [<function>]
 lask envs access [--module <path>] [<function>]
+lask envs secrets [--module <path>] [<function>]
 lask sync [--module <path>] [--frozen] [--prune]
 lask deps list [--module <path>]
 lask deps graph [--module <path>] [<name>] [--depth <n>]
@@ -3440,6 +3490,47 @@ ENVIRONMENT                                    FILES          NETWORK  CHECK  RE
 #node:24.21.0-alpine3.24{base_access,network}  . ro, dist rw  none     ok     main.lask: build
 
 1 row (1 registry): 1 ok
+```
+
+`envs secrets` enumerates where the secrets of the program are given (10.11): which secret reaches which environment, and by which channel.
+
+Syntax:
+
+```text
+lask envs secrets [--module <path>] [<function>]
+```
+
+Enumeration rules:
+
+- Uses are enumerated, and what reaches them resolved, as for `envs access`, on the same call graph. A parameter of the function enumerated from carries nothing unless it is `!!`-marked, as at an invocation.
+- There is one row for each secret, channel and environment, in the notation of `envs access`; a use that no secret reaches is not listed. A use whose `secrets` component is unresolved is listed under the secret `(unknown)`.
+- Rows are ordered by secret, as they are written in the program, and then as `envs access` orders environments.
+- Nothing is evaluated, and no secret reference is resolved: a secret is shown by where it originates, never by a value.
+
+Columns:
+
+- `SECRET`: where the secret originates, as 10.11 names it, or `(unknown)`.
+- `CHANNEL`: `env <NAME>`, `option <name>`, `command` or `file`. `option`, `command` and `file` are marked `!`.
+- `ENVIRONMENT`: the head, followed in braces by the names of the options of the row that carry the secret (`#amazon/aws-cli:2.31.9{env}`), or `(dynamic)`.
+- `CHECK` and `REQUIRED BY`: as for `envs access`, where `CHECK` is what the constraints covering the uses find of their `secrets` component.
+- `NETWORK`: as for `envs network`, marked `!` when it is not `none`: the secret is in a container that may send it elsewhere.
+- With `<function>`, the table is preceded by one line giving the constraint the function is checked against, or none.
+
+Output and exit codes:
+
+- The table is on stdout, followed by one line counting the rows by `CHECK`, as for `envs access`.
+- With `--format json`, an array with one object per row: `secret` (`module`, `declaration`, `name` and `kind` — `value`, `parameter`, `binding` or `mark_secret` — and `location`; `null` for `(unknown)`), `channel` (`kind`: `env`, `option`, `command` or `file`, and `name`, `null` for `command`, `file`, and a variable of `env` whose name is not static), `environment`, `kind`, `network` (as for `envs network`), `check` and `required_by`.
+- It reports, and does not fail, as `envs access` does.
+
+Execution example:
+
+```text
+$ lask envs secrets
+SECRET                    CHANNEL                    ENVIRONMENT                 NETWORK    CHECK     REQUIRED BY
+main.lask: whoami --key   env AWS_SECRET_ACCESS_KEY  #amazon/aws-cli:2.31.9{env}  default !  ok        main.lask: whoami
+main.lask: leak --key     command !                  #alpine:3.22.2              default !  exceeded  main.lask: leak
+
+2 rows: 1 ok, 1 exceeded
 ```
 
 ### 11.5 Dependency Management (`deps`)
@@ -4346,6 +4437,7 @@ Advisory codes:
   - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
   - `W-ASYNC-UNUSED`: a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`.
   - `W-COMMAND-OPTION`: a command string uses an option or subcommand that a command schema which is not closed does not list (Chapter 5). Reported statically, with `stage: "static"`.
+  - `W-SECRET-COMMAND-LINE`: a secret reaches a use in its command string or in a run option other than a value of `env`, where it is on a command line of the host (10.11). Reported statically, with `stage: "static"`.
   - `W-ASYNC-UNAWAITED`: an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6). Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`.
 - Reporting advisory diagnostics is optional, with one exception: `W-ASYNC-UNAWAITED` is always reported, because a failure it carries is otherwise invisible. `check` and `serve` are the expected places for the static ones; `run` and `eval` report the run-time ones on stderr.
 

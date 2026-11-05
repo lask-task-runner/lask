@@ -12,12 +12,16 @@ aws_region = get_env("AWS_DEFAULT_REGION")
 
 python = tools.python.env(image = #python:3.12.14-alpine3.24)
 node = tools.node.env(image = #node:24.22.1-alpine3.24)
-aws = tools.aws.env(
+// The AWS CLI, with any other variable a task gives it: a credential is
+// given as a variable rather than written into the command.
+aws_with(extra: Map<String>) = tools.aws.env(
   image = #amazon/aws-cli:2.36.41,
   access_key_id = aws_access_key_id,
   secret_access_key = aws_secret_access_key,
-  region = aws_region
+  region = aws_region,
+  extra_env = extra
 )
+aws = aws_with({})
 terraform = tools.terraform.env(
   image = #hashicorp/terraform:1.16.2,
   extra_env = {
@@ -26,7 +30,7 @@ terraform = tools.terraform.env(
     "TF_VAR_aws_region": aws_region
   }
 )
-playwright = tools.playwright.env(image = #mcr.microsoft.com/playwright:v1.62.1-jammy)
+playwright(extra: Map<String>) = tools.playwright.env(image = #mcr.microsoft.com/playwright:v1.62.1-jammy, extra_env = extra)
 
 internal as_string(v: Any): String = cast(v)
 
@@ -58,11 +62,10 @@ test_e2e(
 ) = do {
   website = tf_output().website_url
 
-  $[playwright] cd e2e && \
+  // The password reaches the browser as a variable, not on a command line.
+  e2e = playwright({"E2E_BASE_URL": website, "E2E_EMAIL": email, "E2E_PASSWORD": password})
+  $[e2e] cd e2e && \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && \
-    E2E_BASE_URL="#{website}" \
-    E2E_EMAIL="#{email}" \
-    E2E_PASSWORD="#{password}" \
     npx playwright test
 }
 
@@ -161,9 +164,9 @@ create_user(
     cognito-idp admin-create-user --user-pool-id "#{pool}" --username "#{email}" \
     --user-attributes Name=email,Value="#{email}" Name=email_verified,Value=true \
     --message-action SUPPRESS
-  $ aws \
+  $[aws_with({"NEW_PASSWORD": password})] aws \
     cognito-idp admin-set-user-password --user-pool-id "#{pool}" --username "#{email}" \
-    --password "#{password}" --permanent
+    --password "$NEW_PASSWORD" --permanent
 }
 
 // Tears down everything deploy() created.

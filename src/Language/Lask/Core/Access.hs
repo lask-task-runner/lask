@@ -32,6 +32,16 @@ module Language.Lask.Core.Access
     targetAccess,
     targetParametric,
 
+    -- * Secrets
+    Secret (..),
+    SecretKind (..),
+    Flow (..),
+    Carried (..),
+    channelFlows,
+    secretFindings,
+    secretAdvisories,
+    programMarksSecrets,
+
     -- * Constraints
     Covering (..),
     Constraints,
@@ -58,10 +68,11 @@ import qualified Data.Text as T
 import Language.Lask.Access
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Builtins.Names (effectfulBuiltinNames)
+import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes)
 import Language.Lask.Core.AST
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
+import Language.Lask.Diagnostic (Advisory (..), Diagnostic, mkDiagnostic, withNote)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticParams (..))
-import Language.Lask.ErrorCode (ErrorCode (..), Stage (..))
+import Language.Lask.ErrorCode (AdvisoryCode (..), ErrorCode (..), Stage (..))
 import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
@@ -163,9 +174,55 @@ data Via = Via
 data Target = Target
   { tHead :: HeadImage,
     tOpts :: Map Text OptVal,
-    tVia :: Maybe Via
+    tVia :: Maybe Via,
+    -- | The secrets its run options are given, by channel (spec 10.11).
+    tSecrets :: Map Channel Flow
   }
   deriving (Show, Eq, Ord)
+
+-- | Where a secret originates (spec 10.11, Secret flow): a secret
+-- binding, named by the declaration it is in and its name, or a call
+-- of @mark_secret@.
+data Secret = Secret
+  { scModule :: FilePath,
+    scDecl :: Text,
+    scName :: Text,
+    scKind :: SecretKind,
+    scSpan :: Span
+  }
+  deriving (Show, Eq, Ord)
+
+data SecretKind = SecretValue | SecretKeyword | SecretPositional | SecretBinding | SecretCall
+  deriving (Show, Eq, Ord)
+
+-- | What a value carries: the secrets, each with the call that gave it
+-- when a parameter did, and whether a parameter of the declaration
+-- walked on its own may add to them, which each call resolves.
+data Flow = Flow
+  { flSecrets :: Map Secret Carried,
+    flParam :: Bool
+  }
+  deriving (Show, Eq, Ord)
+
+-- | A secret as a value carries it: the call that gave it, when a
+-- parameter did, and every name it has been bound to with @!!@ on its
+-- way (spec 10.11), each as the module, the declaration and the name.
+data Carried = Carried
+  { crVia :: Maybe Via,
+    crNames :: Set (FilePath, Text, Text)
+  }
+  deriving (Show, Eq, Ord)
+
+noFlow :: Flow
+noFlow = Flow Map.empty False
+
+joinFlow :: Flow -> Flow -> Flow
+joinFlow a b = Flow (Map.unionWith joinCarried (flSecrets a) (flSecrets b)) (flParam a || flParam b)
+  where
+    joinCarried x y = Carried (crVia x <|> crVia y) (Set.union (crNames x) (crNames y))
+
+carries :: Flow -> Bool
+carries f = not (Map.null (flSecrets f)) || flParam f
 
 -- | The run options @envs files@, @envs network@ and @envs access@
 -- show (spec 11.4); those of 'accessOptions' decide what a use
@@ -220,7 +277,10 @@ data UseSite = UseSite
     usRoot :: Key,
     -- | The calls it is reached through, outermost first: each in the
     -- declaration it is written in.
-    usCalls :: [(Key, Span)]
+    usCalls :: [(Key, Span)],
+    -- | The secrets its command string or its arguments carry
+    -- (@command@, @file@); those of its run options are its targets'.
+    usFlows :: Map Channel Flow
   }
   deriving (Show, Eq, Ord)
 
@@ -255,18 +315,20 @@ data AVal = AVal
     avFuns :: [FunRef],
     -- | What each field of a record or map literal can be, so that a
     -- static field is static even where the rest is not.
-    avFields :: Maybe (Map Text AVal)
+    avFields :: Maybe (Map Text AVal),
+    -- | The secrets it carries (spec 10.11, Secret flow).
+    avFlow :: Flow
   }
   deriving (Show, Eq, Ord)
 
 unknownV :: AVal
-unknownV = AVal Set.empty False False Nothing Nothing [] Nothing
+unknownV = AVal Set.empty False False Nothing Nothing [] Nothing noFlow
 
 dynV :: AVal
 dynV = unknownV {avDyn = True}
 
 paramV :: AVal
-paramV = unknownV {avParam = True}
+paramV = unknownV {avParam = True, avFlow = noFlow {flParam = True}}
 
 staticV :: SVal -> AVal
 staticV v = unknownV {avStatic = Just v}
@@ -282,6 +344,7 @@ joinV a b =
     (avVia a <|> avVia b)
     (nub (avFuns a <> avFuns b))
     (if avFields a == avFields b then avFields a else Nothing)
+    (joinFlow (avFlow a) (avFlow b))
 
 -- | The environments of several values, none of their static values.
 unionV :: [AVal] -> AVal
@@ -290,7 +353,8 @@ unionV vs =
     { avTargets = Set.unions (map avTargets vs),
       avDyn = any avDyn vs,
       avParam = any avParam vs,
-      avFuns = nub (concatMap avFuns vs)
+      avFuns = nub (concatMap avFuns vs),
+      avFlow = foldr (joinFlow . avFlow) noFlow vs
     }
 
 -- | A value as a parameter of a call gives it: what it reaches was
@@ -299,7 +363,9 @@ passedFrom :: Via -> AVal -> AVal
 passedFrom call v =
   v
     { avTargets = Set.map (\t -> t {tVia = tVia t <|> Just call}) (avTargets v),
-      avVia = avVia v <|> (call <$ avStatic v)
+      avVia = avVia v <|> (call <$ avStatic v),
+      avFields = Map.map (passedFrom call) <$> avFields v,
+      avFlow = (avFlow v) {flSecrets = Map.map (\cr -> cr {crVia = crVia cr <|> Just call}) (flSecrets (avFlow v))}
     }
 
 fsFunctions :: [Text]
@@ -390,14 +456,14 @@ walk :: Constraints -> CoreProgram -> [Key] -> [Key] -> Key -> Map Text AVal -> 
 walk cons core guard scope here binds c = case coreF c of
   CApp (Core _ (CVar (BuiltinRef "run"))) (envC : rest) kws -> do
     inner <- concat <$> mapM go (envC : rest <> map snd kws)
-    pure (use UseCommand (value envC) : inner)
+    pure (use UseCommand (value envC) (carriedBy ChCommand (rest <> map snd kws)) : inner)
   CApp (Core _ (CVar (BuiltinRef fn))) args@(_ : _) []
     | fn `elem` fsFunctions -> do
         inner <- concat <$> mapM go args
         let path = case args of
               Core _ (CStrLit p) : _ -> Just p
               _ -> Nothing
-        pure (use (UseFile fn path) (value (last args)) : inner)
+        pure (use (UseFile fn path) (value (last args)) (carriedBy ChFile (init args)) : inner)
   -- The session a with_container body is given runs in the
   -- environment the call opens it on (spec 15.5).
   CApp (Core _ (CVar (BuiltinRef "with_container"))) [envC, Core _ (CLam lam)] []
@@ -405,10 +471,23 @@ walk cons core guard scope here binds c = case coreF c of
         let env = value envC
         outer <- go envC
         inner <- walk cons core guard scope here (Map.insert box env binds) (lamBody lam)
-        pure (use UseSession env : outer <> inner)
+        pure (use UseSession env Map.empty : outer <> inner)
   -- A call of a top-level function: its body, with what this call
   -- gives its parameters. A function given as an argument is bound,
   -- not named as a value.
+  -- A lambda given to a built-in function is called with what the
+  -- other arguments carry (spec 10.11, Secret flow).
+  CApp (Core _ (CVar (BuiltinRef _))) pos kws
+    | any isLam (pos <> map snd kws) -> do
+        let args = pos <> map snd kws
+            others = avFlow (unionV [value a | a <- args, not (isLam a)])
+        concat
+          <$> mapM
+            ( \a -> case coreF a of
+                CLam lam -> walkLam others lam
+                _ -> go a
+            )
+            args
   CApp (Core _ (CVar (TopRef p n))) pos kws
     | Just callee <- Map.lookup (p, n) (cpDecls core),
       CLam lam <- coreF (cdCore callee) -> do
@@ -432,25 +511,34 @@ walk cons core guard scope here binds c = case coreF c of
   CVar (TopRef p n)
     | Just callee <- Map.lookup (p, n) (cpDecls core) -> do
         let escape = case coreF (cdCore callee) of
-              CLam _ -> [use (UseEscape (p, n)) unknownV]
+              CLam _ -> [use (UseEscape (p, n)) unknownV Map.empty]
               _ -> []
         inner <- if (p, n) `elem` guard then pure [] else walkDecl cons core guard scope (Just (here, coreSpan c)) callee Nothing
         pure (escape <> inner)
-  CLam lam -> do
-    let params = case lamType lam of
-          TyFun ts _ -> [(x, if holdsEnv t then dynV else unknownV) | (x, t) <- zip (lamPositional lam) ts]
-          _ -> [(x, unknownV) | x <- lamPositional lam]
-        binds' = Map.union (Map.fromList params) binds
-    defaults <- concat <$> mapM go [d | (_, Just d) <- lamKeywords lam]
-    body <- walk cons core guard scope here binds' (lamBody lam)
-    pure (defaults <> body)
+  CLam lam -> walkLam noFlow lam
   CDo stmts -> walkStmts binds stmts
   _ -> concat <$> mapM go (coreChildren c)
   where
     go = walk cons core guard scope here binds
     value = reach core here Set.empty binds
     call e = Via (fst here) (snd here) (coreSpan e)
-    use kind v =
+    isLam a = case coreF a of
+      CLam _ -> True
+      _ -> False
+    walkLam extra lam = do
+      let params = case lamType lam of
+            TyFun ts _ -> [(x, (if holdsEnv t then dynV else unknownV) {avFlow = extra}) | (x, t) <- zip (lamPositional lam) ts]
+            _ -> [(x, unknownV {avFlow = extra}) | x <- lamPositional lam]
+          binds' = Map.union (Map.fromList params) binds
+      defaults <- concat <$> mapM go [d | (_, Just d) <- lamKeywords lam]
+      body <- walk cons core guard scope here binds' (lamBody lam)
+      pure (defaults <> body)
+    -- What the expressions a use is given carry, by the channel they
+    -- give it by.
+    carriedBy ch es =
+      let f = avFlow (unionV (map value es))
+       in if carries f then Map.singleton ch f else Map.empty
+    use kind v flows =
       UseSite
         (fst here)
         (snd here)
@@ -463,6 +551,7 @@ walk cons core guard scope here binds c = case coreF c of
         (reverse (map snd scope))
         (last scope)
         []
+        flows
     namesFunction a = case coreF a of
       CVar (TopRef p n) | Just cd <- Map.lookup (p, n) (cpDecls core), CLam _ <- coreF (cdCore cd) -> True
       _ -> False
@@ -479,7 +568,7 @@ walk cons core guard scope here binds c = case coreF c of
     walkStmts _ [] = pure []
     walkStmts bs (CSBind x e : more) = do
       a <- walk cons core guard scope here bs e
-      b <- walkStmts (Map.insert x (reach core here Set.empty bs e) bs) more
+      b <- walkStmts (Map.insert x (boundValue core here Set.empty bs x e) bs) more
       pure (a <> b)
     walkStmts bs (CSExpr e : more) = (<>) <$> walk cons core guard scope here bs e <*> walkStmts bs more
 
@@ -496,9 +585,75 @@ callBinds core here call seen binds lam pos kws =
         given
         (lamKeywords lam)
 
--- | What an expression can be (spec 10.11, Resolution).
+-- | What an expression can be (spec 10.11, Resolution), and what it
+-- carries: nothing, where its type is one that can tell nothing of a
+-- secret (Secret flow).
 reach :: CoreProgram -> Key -> Set Key -> Map Text AVal -> Core -> AVal
-reach core here seen binds c = case coreF c of
+reach core here seen binds c
+  | scalarResult core c = v {avFlow = noFlow}
+  | otherwise = v
+  where
+    v = reachRaw core here seen binds c
+
+-- | What a binding of @x@ to @e@ binds it to: a binding through
+-- @mark_secret@ originates a secret named by it (spec 10.11, Secret
+-- flow), as a parameter when it rebinds one (6.10).
+boundValue :: CoreProgram -> Key -> Set Key -> Map Text AVal -> Text -> Core -> AVal
+boundValue core here seen binds x e = case coreF e of
+  CApp (Core _ (CVar (BuiltinRef "mark_secret"))) [inner] [] ->
+    let kind = case (coreF inner, coreF . cdCore <$> Map.lookup here (cpDecls core)) of
+          (CVar (LocalRef y), Just (CLam lam))
+            | y == x, x `elem` map fst (lamKeywords lam) -> SecretKeyword
+            | y == x, x `elem` (lamPositional lam <> maybe [] pure (lamVariadic lam)) -> SecretPositional
+          _ -> SecretBinding
+        -- A parameter is placed at its declaration, not at the
+        -- rebinding the marker desugars to.
+        at = case kind of
+          SecretBinding -> coreSpan e
+          _ -> maybe (coreSpan e) (coreSpan . cdCore) (Map.lookup here (cpDecls core))
+     in originates (Secret (fst here) (snd here) x kind at) (reach core here seen binds inner)
+  _ -> reach core here seen binds e
+
+-- | A value bound as a secret. One known to be @null@ originates
+-- nothing, since an absent secret has no text (spec 6.10), and nor
+-- does one that carries a secret already: it is that secret, marked
+-- again, as a library marks what it is given, and is bound to this
+-- name as well (spec 10.11).
+originates :: Secret -> AVal -> AVal
+originates sc v
+  | avStatic v == Just SNull = v
+  | not (Map.null (flSecrets (avFlow v))) = v {avFlow = (avFlow v) {flSecrets = Map.map (\cr -> cr {crNames = Set.union named (crNames cr)}) (flSecrets (avFlow v))}}
+  | otherwise = v {avFlow = (avFlow v) {flSecrets = Map.insert sc (Carried Nothing named) (flSecrets (avFlow v))}}
+  where
+    named = case scKind sc of
+      SecretCall -> Set.empty
+      _ -> Set.singleton (scModule sc, scDecl sc, scName sc)
+
+-- | Whether an expression's type is @Bool@, @Number@, @Null@ or @Void@,
+-- as far as it is known without the type checker's annotations.
+scalarResult :: CoreProgram -> Core -> Bool
+scalarResult core c = case coreF c of
+  CNull -> True
+  CBool _ -> True
+  CNumber _ -> True
+  CAnd _ _ -> True
+  COr _ _ -> True
+  CNot _ -> True
+  CIsType _ _ -> True
+  CBin PAdd a b -> scalarResult core a || scalarResult core b
+  CBin _ _ _ -> True
+  CCast _ t -> scalar t
+  CApp (Core _ (CVar (BuiltinRef f))) _ _ -> maybe False (scalar . schemeRet) (Map.lookup f builtinSchemes)
+  CApp (Core _ (CVar (TopRef p n))) _ _
+    | Just cd <- Map.lookup (p, n) (cpDecls core),
+      TyFun _ r <- cdType cd ->
+        scalar r
+  _ -> False
+  where
+    scalar t = t `elem` [TyBool, TyNumber, TyNull, TyVoid]
+
+reachRaw :: CoreProgram -> Key -> Set Key -> Map Text AVal -> Core -> AVal
+reachRaw core here seen binds c = case coreF c of
   CNull -> staticV SNull
   CBool b -> staticV (SBool b)
   CNumber x -> staticV (SNum (T.pack (formatScientific Generic Nothing x)))
@@ -508,22 +663,43 @@ reach core here seen binds c = case coreF c of
      in (unionV vs) {avStatic = SArr <$> mapM avStatic vs, avVia = firstVia vs}
   CMapLit kvs -> literal SMap kvs
   CRecordLit kvs -> literal SRec kvs
-  CEnv "local" _ -> unknownV {avTargets = Set.singleton (Target HeadLocal Map.empty Nothing)}
-  CEnv "docker" args -> unknownV {avTargets = maybe Set.empty (\h -> Set.singleton (Target h Map.empty Nothing)) (headImage args)}
+  CEnv "local" _ -> unknownV {avTargets = Set.singleton (Target HeadLocal Map.empty Nothing Map.empty)}
+  CEnv "docker" args -> unknownV {avTargets = maybe Set.empty (\h -> Set.singleton (Target h Map.empty Nothing Map.empty)) (headImage args)}
   CRunnable envC opts ->
     let env = go envC
         vals = [(k, evaluated o (go o)) | (k, o) <- opts, k `elem` listedOptions]
         shown = Map.fromList [(k, optVal v) | (k, v) <- vals]
         via = listToMaybe [w | (_, v) <- vals, isJust (avStatic v), Just w <- [avVia v]]
-     in env {avTargets = Set.map (\t -> t {tOpts = shown, tVia = tVia t <|> via}) (avTargets env), avStatic = Nothing}
+        flows = Map.filter carries (Map.fromListWith joinFlow (concat [optionFlows k (go o) | (k, o) <- opts]))
+     in env {avTargets = Set.map (\t -> t {tOpts = shown, tVia = tVia t <|> via, tSecrets = Map.unionWith joinFlow (tSecrets t) flows}) (avTargets env), avStatic = Nothing}
+  CApp (Core _ (CVar (BuiltinRef "mark_secret"))) [inner] [] ->
+    originates (Secret (fst here) (snd here) "" SecretCall (coreSpan c)) (go inner)
+  -- The tables a library builds a variable set with keep their keys,
+  -- so that what each variable carries is still known (spec 10.11,
+  -- Secret flow): a merge is both tables, the later winning, an entry
+  -- filtered out is kept, and a reduction over no element is its
+  -- initial value.
+  CApp (Core _ (CVar (BuiltinRef "merge"))) [a, b] [] ->
+    let va = go a
+        vb = go b
+     in (unionV [va, vb]) {avFields = Map.union <$> fieldsOf vb <*> fieldsOf va}
+  CApp (Core _ (CVar (BuiltinRef "from_entries"))) [xs] []
+    | Just m <- entriesOf xs -> (go m) {avStatic = Nothing}
+  CApp (Core _ (CVar (BuiltinRef "reduce"))) [xs, z, _] []
+    | avStatic (go xs) == Just (SArr []) -> go z
+  CCast a _ -> (go a) {avStatic = Nothing}
   CVar (LocalRef x) -> Map.findWithDefault unknownV x binds
   CVar (TopRef p n)
     | Just cd <- Map.lookup (p, n) (cpDecls core) -> case coreF (cdCore cd) of
-        CLam _ -> unknownV {avFuns = [FunTop (p, n)]}
+        -- A function as a value carries what its body does, which a
+        -- call of it may return.
+        CLam lam
+          | (p, n) `Set.member` seen -> unknownV {avFuns = [FunTop (p, n)]}
+          | otherwise -> unknownV {avFuns = [FunTop (p, n)], avFlow = avFlow (reach core (p, n) (Set.insert (p, n) seen) Map.empty (lamBody lam))}
         _
           | (p, n) `Set.member` seen -> unknownV
-          | otherwise -> reach core (p, n) (Set.insert (p, n) seen) Map.empty (cdCore cd)
-  CLam lam -> unknownV {avFuns = [FunLam lam binds here]}
+          | otherwise -> topValue (p, n) cd
+  CLam lam -> unknownV {avFuns = [FunLam lam binds here], avFlow = avFlow (reach core here seen (foldr Map.delete binds (lamPositional lam <> map fst (lamKeywords lam))) (lamBody lam))}
   CApp (Core _ (CVar (TopRef p n))) pos kws
     | Just cd <- Map.lookup (p, n) (cpDecls core),
       CLam lam <- coreF (cdCore cd),
@@ -557,12 +733,29 @@ reach core here seen binds c = case coreF c of
     firstVia vs = listToMaybe [w | v <- vs, Just w <- [avVia v]]
     doStmts _ acc [] = acc
     doStmts bs acc (CSBind x e : more) =
-      let v = reach core here seen bs e
+      let v = boundValue core here seen bs x e
        in doStmts (Map.insert x v bs) (accumulate acc v) more
     doStmts bs acc (CSExpr e : more) =
       let v = reach core here seen bs e
        in doStmts bs (if null more then (accumulate acc v) {avStatic = avStatic v, avVia = avVia v, avFields = avFields v} else accumulate acc v) more
     accumulate acc v = acc {avTargets = Set.union (avTargets acc) (avTargets v), avDyn = avDyn acc || avDyn v, avParam = avParam acc || avParam v}
+    entriesOf xs = case coreF xs of
+      CApp (Core _ (CVar (BuiltinRef "entries"))) [m] [] -> Just m
+      CApp (Core _ (CVar (BuiltinRef "filter"))) [inner, _] [] -> entriesOf inner
+      _ -> Nothing
+    -- A top-level value; one bound through @mark_secret@ originates a
+    -- secret named by it.
+    topValue key cd = case coreF (cdCore cd) of
+      CApp (Core _ (CVar (BuiltinRef "mark_secret"))) [inner] [] ->
+        originates (Secret (fst key) (snd key) (snd key) SecretValue (coreSpan (cdCore cd))) (reach core key (Set.insert key seen) Map.empty inner)
+      _ -> reach core key (Set.insert key seen) Map.empty (cdCore cd)
+    -- What a run option carries, by channel: a value of @env@ by the
+    -- name of its variable, when the table is a literal.
+    optionFlows k v
+      | k == "env" = case fieldsOf v of
+          Just fs -> [(ChEnv name, avFlow fv) | (name, fv) <- Map.toList fs]
+          Nothing -> [(ChEnvComputed, avFlow v)]
+      | otherwise = [(ChOption k, avFlow v)]
     entry key k = case coreF . cdCore <$> Map.lookup key (cpDecls core) of
       Just (CMapLit kvs) -> lookup k kvs
       Just (CRecordLit kvs) -> lookup k kvs
@@ -778,7 +971,13 @@ parseSpec (AST.AccessSpec _ fields) =
       "publish" -> case literal v of
         Just (SBool b) -> Right (\c -> c {conPublish = Just b})
         _ -> Left (err (AST.exprSpan v) "'publish' takes false or true")
-      _ -> Left (err ksp ("unknown field '" <> k <> "': a constraint takes files, volumes, network and publish"))
+      "secrets" -> case AST.exprF v of
+        AST.EBool False -> Right (\c -> c {conSecrets = Just SecretsNone})
+        AST.EArray xs
+          | Just names <- mapM (\x -> case AST.exprF x of AST.EVar n -> Just (n, AST.exprSpan x); _ -> Nothing) xs ->
+              Right (\c -> c {conSecrets = Just (SecretsNamed names)})
+        _ -> Left (err (AST.exprSpan v) "'secrets' takes false, or an array of the names of secret bindings, such as [token]")
+      _ -> Left (err ksp ("unknown field '" <> k <> "': a constraint takes files, volumes, network, publish and secrets"))
     str (k, SStr s) = Just (k, s)
     str _ = Nothing
     volume (k, m) = do
@@ -816,13 +1015,14 @@ parseSpec (AST.AccessSpec _ fields) =
 checkWithin :: Constraints -> CoreProgram -> [Diagnostic]
 checkWithin cons core
   | Map.null (Map.filter covered cons) = []
-  | otherwise = settle (concatMap (siteFindings core) uses <> escapes)
+  | otherwise = settle (concatMap (siteFindings core) uses <> escapes) <> unnamed
   where
     covered (m, fs) = isJust m || not (Map.null fs)
+    unnamed = concat [fst (secretNames core cv) | (m, fs) <- Map.elems cons, cv <- maybe [] pure m <> Map.elems fs]
     uses = walkRoots cons core (Map.keys (cpDecls core))
     -- A function whose covered uses wait on its parameters, named
     -- other than by a call: its constraint cannot be checked there.
-    owes u = not (null (usUnder u)) && (usParam u || any targetParametric (Set.toList (usTargets u)))
+    owes u = not (null (usUnder u)) && (usParam u || any targetParametric (Set.toList (usTargets u)) || any (\(_, f, _) -> flParam f) (channelFlows u))
     owing = Set.fromList [usRoot u | u <- uses, owes u]
     escapes =
       [ ( (Nothing, usSpan u, "escape"),
@@ -836,7 +1036,7 @@ checkWithin cons core
 
 -- | The findings of one use against each constraint covering it.
 siteFindings :: CoreProgram -> UseSite -> [((Maybe Span, Span, Text), Diagnostic)]
-siteFindings _ u = case usKind u of
+siteFindings core u = case usKind u of
   UseEscape _ -> []
   _ ->
     [ ((Just (cvSpan cv), sp, findingField f), finding cv sp f)
@@ -847,6 +1047,7 @@ siteFindings _ u = case usKind u of
           not (targetParametric t),
           f <- checkAccess (cvConstraint cv) (targetAccess t)
         ]
+          <> [(maybe (maybe (inCovered cv) viaSpan tvia) viaSpan via, f) | (via, tvia, _, _, f) <- secretFindings core cv u]
           <> [(inCovered cv, Unproven "environment") | usDynamic u]
     ]
   where
@@ -913,6 +1114,128 @@ checkCommandEnv cons core declaring word env =
     Just (Just cv, _)
       | bounds (cvConstraint cv) ->
           let v = reach core (declaring, "") Set.empty Map.empty env
-              site = UseSite declaring ("command \"" <> word <> "\"") (coreSpan env) UseCommand (avTargets v) (avDyn v) (avParam v) [cv] [] (declaring, "") []
+              site = UseSite declaring ("command \"" <> word <> "\"") (coreSpan env) UseCommand (avTargets v) (avDyn v) (avParam v) [cv] [] (declaring, "") [] Map.empty
            in settle (siteFindings core site)
     _ -> []
+
+-- Secrets ----------------------------------------------------------------
+
+-- | The secrets a use is given, by channel: those of the run options of
+-- each environment it may run in, with the call that resolved that
+-- environment, and those of its command string or arguments.
+channelFlows :: UseSite -> [(Channel, Flow, Maybe Via)]
+channelFlows u =
+  [(ch, f, tVia t) | t <- Set.toList (usTargets u), (ch, f) <- Map.toList (tSecrets t)]
+    <> [(ch, f, Nothing) | (ch, f) <- Map.toList (usFlows u)]
+
+-- | What a constraint finds of the secrets a use is given (spec
+-- 10.11): each with the call that gave the secret, and the one that
+-- resolved the environment, where a parameter did.
+secretFindings :: CoreProgram -> Covering -> UseSite -> [(Maybe Via, Maybe Via, Channel, Secret, Finding)]
+secretFindings core cv u =
+  [ (crVia cr, tvia, ch, sc, f)
+  | (ch, fl, tvia) <- channelFlows u,
+    (sc, cr) <- Map.toList (flSecrets fl),
+    f <- checkSecrets (cvConstraint cv) ch (label sc cr) (not (Set.null (Set.intersection names (crNames cr))))
+  ]
+  where
+    names = snd (secretNames core cv)
+    -- A secret bound to no name cannot be one a constraint gives.
+    label sc cr =
+      "'" <> secretLabel (secretFile sc) sc <> "'"
+        <> (if Set.null (crNames cr) then ", bound to no name a constraint can give (bind it with !!)," else "")
+
+-- | The secret bindings the names of a @secrets@ field are (spec
+-- 10.11): for a function's constraint, a @!!@ parameter or a binding
+-- of its body through @mark_secret@, which @!!@ is; otherwise, or when
+-- it has none of the name, a top-level value of the module bound so.
+-- A name that is neither is @E-TYPE-WITHIN-SPEC@.
+secretNames :: CoreProgram -> Covering -> ([Diagnostic], Set (FilePath, Text, Text))
+secretNames core cv = case conSecrets (cvConstraint cv) of
+  Just (SecretsNamed ns) ->
+    let resolved = [(n, sp, resolve n) | (n, sp) <- ns]
+     in ( [ mkDiagnostic ETypeWithinSpec StageStatic sp ("'" <> n <> "' is not a secret binding of " <> coveredLabel cv <> ": a constraint names its !! parameters and bindings, and the !! values of its module")
+          | (n, sp, Nothing) <- resolved
+          ],
+          Set.fromList [k | (_, _, Just k) <- resolved]
+        )
+  _ -> ([], Set.empty)
+  where
+    path = cvModule cv
+    resolve n = case cvFunction cv of
+      Just f | n `Set.member` localSecrets f -> Just (path, f, n)
+      _ | n `Set.member` topSecrets -> Just (path, n, n)
+      _ -> Nothing
+    localSecrets f = case Map.lookup (path, f) (cpDecls core) of
+      Just cd -> Set.fromList [x | CDo stmts <- map coreF (cdCore cd : coreDescendants (cdCore cd)), CSBind x e <- stmts, isMark e]
+      Nothing -> Set.empty
+    topSecrets = Set.fromList [n | ((p, n), cd) <- Map.toList (cpDecls core), p == path, isMark (cdCore cd)]
+    isMark e = case coreF e of
+      CApp (Core _ (CVar (BuiltinRef "mark_secret"))) [_] [] -> True
+      _ -> False
+
+-- | Where a secret originates, as 10.11 names it, with its module
+-- shown as given.
+secretLabel :: Text -> Secret -> Text
+secretLabel file sc = case scKind sc of
+  SecretValue -> file <> ": " <> scName sc
+  SecretKeyword -> file <> ": " <> scDecl sc <> " --" <> scName sc
+  SecretPositional -> file <> ": " <> scDecl sc <> " " <> scName sc
+  SecretBinding -> file <> ": " <> scDecl sc <> " " <> scName sc
+  SecretCall -> location (scSpan sc) <> " mark_secret"
+
+secretFile :: Secret -> Text
+secretFile sc = case scSpan sc of
+  Span (Position f _ _) _ -> T.pack f
+  NoSpan -> T.pack (scModule sc)
+
+-- | Whether a program has any secret to follow.
+programMarksSecrets :: CoreProgram -> Bool
+programMarksSecrets core = any (marks . cdCore) (Map.elems (cpDecls core))
+  where
+    marks e = any isMark (e : coreDescendants e)
+    isMark e = case coreF e of
+      CVar (BuiltinRef "mark_secret") -> True
+      _ -> False
+
+-- | @W-SECRET-COMMAND-LINE@ (spec 10.11, 14.2): a secret that reaches a
+-- use in its command string, or in a run option other than a value of
+-- @env@, where it is on a command line of the host. Placed where it
+-- enters, or at the call that gives it to a parameter.
+secretAdvisories :: CoreProgram -> [Advisory]
+secretAdvisories core
+  | not (programMarksSecrets core) = []
+  | otherwise = sortOn advSpan (Map.elems (Map.fromListWith (\_ a -> a) found))
+  where
+    uses = walkRoots Map.empty core (Map.keys (cpDecls core))
+    found =
+      [ ((place, sc), Advisory WSecretCommandLine place (message sc ch))
+      | u <- uses,
+        (ch, fl, tvia) <- channelFlows u,
+        exposed ch,
+        (sc, cr) <- Map.toList (flSecrets fl),
+        let place = maybe (maybe (usSpan u) viaSpan tvia) viaSpan (crVia cr)
+      ]
+    exposed ch = case ch of
+      ChCommand -> True
+      ChOption _ -> True
+      _ -> False
+    message sc ch =
+      "the secret '"
+        <> secretLabel (secretFile sc) sc
+        <> "' is "
+        <> ( case ch of
+               ChOption k -> "in the run option '" <> k <> "', which is given to the engine client"
+               _ -> "in the command string, which is given to the engine client and the shell"
+           )
+        <> " on a command line of the host; give it in 'env' and read the variable in the command"
+
+-- | What each entry of a table or record can be: those of a literal,
+-- or of a static value.
+fieldsOf :: AVal -> Maybe (Map Text AVal)
+fieldsOf v = avFields v <|> (static =<< avStatic v)
+  where
+    static sv = case sv of
+      SMap kvs -> Just (Map.fromList [(k, staticV x) | (k, x) <- kvs])
+      SRec kvs -> Just (Map.fromList [(k, staticV x) | (k, x) <- kvs])
+      _ -> Nothing

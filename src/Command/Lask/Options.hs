@@ -98,6 +98,7 @@ data RootCommand
     CmdEnvsFiles EnvsOpts Bool
   | CmdEnvsNetwork EnvsOpts
   | CmdEnvsAccess EnvsOpts
+  | CmdEnvsSecrets EnvsOpts
   | -- | @--frozen@, @--prune@.
     CmdSync CommonOpts Bool Bool
   | CmdDepsList CommonOpts
@@ -337,6 +338,12 @@ pEnvsCommand =
           ( info
               (CmdEnvsAccess <$> pEnvsOpts)
               (progDesc "List the host files and networks each environment's commands may reach")
+          )
+        <> command
+          "secrets"
+          ( info
+              (CmdEnvsSecrets <$> pEnvsOpts)
+              (progDesc "List the secrets each environment's commands are given, and how")
           )
     )
 
