@@ -21,7 +21,7 @@ where
 
 import Command.Lask.Common
 import Command.Lask.DepUse (ImportSite (..), projectImports)
-import Language.Lask.Core.Access (Covering (..), Flow (..), OptVal (..), SVal (..), Secret (..), SecretKind (..), Target (..), UseKind (..), UseSite (..), Via (..), channelFlows, collectUseSites, coveringsOf, programMarksSecrets, secretFindings, targetAccess, targetParametric, withinConstraints)
+import Language.Lask.Core.Access (Carried (..), Covering (..), Flow (..), OptVal (..), SVal (..), Secret (..), SecretKind (..), Target (..), UseKind (..), UseSite (..), Via (..), channelFlows, collectUseSites, coveringsOf, programMarksSecrets, secretFindings, targetAccess, targetParametric, withinConstraints)
 import Command.Lask.Envs (CommandSite (..), HeadImage (..), HeadUse (..), Requirer (..), collectCommandSites, collectHeadUses)
 import Command.Lask.Images
 import Language.Lask.Runtime.Container (ContainerBackend (..), resolveBackend)
@@ -1398,12 +1398,12 @@ cmdEnvsSecrets opts function = do
           | (vm, vd) /= (usModule site, usDecl site) ->
               moduleLabel paths lock vm <> ": " <> vd <> " → " <> usDecl site
         _ -> moduleLabel paths lock (usModule site) <> ": " <> usDecl site
-      bounded s = [cvConstraint cv | cv <- usUnder s, isJust (conSecrets (cvConstraint cv))]
+      bounded s = [cv | cv <- usUnder s, isJust (conSecrets (cvConstraint cv))]
       -- What the constraints covering a use find of one secret given
       -- by one channel.
       checkOf s ch sc = case bounded s of
         [] -> "—"
-        cs -> case [f | c <- cs, (via, _, f) <- secretFindings c s {usTargets = Set.empty, usFlows = Map.singleton ch (Flow (Map.singleton sc Nothing) False)}, const True via] of
+        cvs -> case [f | cv <- cvs, (_, _, ch', sc', f) <- secretFindings core cv s, ch' == ch, sc' == sc] of
           fs
             | any isExceeds fs -> "exceeded"
             | not (null fs) -> "unproven"
@@ -1417,7 +1417,8 @@ cmdEnvsSecrets opts function = do
         [ ((Just sc, Just ch, h, o), (label s (via <|> tvia), s, checkOf s ch sc))
         | s <- sites,
           (ch, fl, tvia0) <- channelFlows s,
-          (sc, via) <- Map.toList (flSecrets fl),
+          (sc, cr) <- Map.toList (flSecrets fl),
+          let via = crVia cr,
           (h, o, tvia) <- case ch of
             ChEnv _ -> optionTarget s ch
             ChEnvComputed -> optionTarget s ch

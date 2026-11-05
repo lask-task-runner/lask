@@ -1494,14 +1494,14 @@ spec = beforeAll findLask $ do
       withProject
         [ ( "main.lask",
             "aws(key: String) = #alpine:3.20{env: {\"AWS_SECRET_ACCESS_KEY\": key}}\n\
-            \whoami(--key!!: String = get_env(\"K\")): String within { secrets: [\"AWS_SECRET_ACCESS_KEY\"] } = $[aws(key)] true\n\
+            \whoami(--key!!: String = get_env(\"K\")): String within { secrets: [key] } = $[aws(key)] true\n\
             \leak(--key!!: String = get_env(\"K\")): String within { secrets: false } = $[#alpine:3.20] echo #{key}\n\
             \token!!: String = get_env(\"TOKEN\")\n\
             \counted(): String within { secrets: false } = $[#alpine:3.20] echo #{length(token)} #{token == \"\"}\n\
             \cfg = {user: \"me\", pass: token}\n\
             \user_only(): String within { secrets: false } = $[#alpine:3.20] echo #{cfg.user}\n\
             \vars_of(t: String): Map<String> = merge({\"A\": t}, {\"B\": \"b\"})\n\
-            \built(): String within { secrets: [\"A\"] } = $[#alpine:3.20{env: vars_of(token)}] true\n\
+            \built(): String within { secrets: [token] } = $[#alpine:3.20{env: vars_of(token)}] true\n\
             \absent_of(--key!!: String | Null = null): Runnable = #alpine:3.20{env: {\"K\": key}}\n\
             \absent(): String within { secrets: false } = $[absent_of()] true\n\
             \named(): String within { secrets: false } = $[#alpine:3.20{hostname: token}] true\n\
@@ -1536,7 +1536,7 @@ spec = beforeAll findLask $ do
           json <- runLask lask dir ["envs", "secrets", "--format", "json"] ""
           resOut json `shouldSatisfy` isInfixOf "\"channel\":{\"kind\":\"env\",\"name\":\"AWS_SECRET_ACCESS_KEY\"}"
           scoped <- runLask lask dir ["envs", "secrets", "whoami"] ""
-          resOut scoped `shouldSatisfy` isInfixOf "within { secrets: [\"AWS_SECRET_ACCESS_KEY\"] }"
+          resOut scoped `shouldSatisfy` isInfixOf "within { secrets: [key] }"
     it "advises a secret on a command line, and nothing for one given in env (spec 10.11, 14.2)" $ \lask ->
       withProject
         [ ( "main.lask",
@@ -1551,12 +1551,42 @@ spec = beforeAll findLask $ do
           resExit r `shouldBe` 0
           let advised = filter (isInfixOf "W-SECRET-COMMAND-LINE") (lines (resOut r))
           advised `shouldBe` ["main.lask:2:20-2:49: W-SECRET-COMMAND-LINE [static]: the secret 'main.lask: token' is in the command string, which is given to the engine client and the shell on a command line of the host; give it in 'env' and read the variable in the command"]
+    it "admits a secret by a name it is bound to with !! (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "token!!: String = get_env(\"TOKEN\")\n\
+            \show(v!!: String): String within { secrets: [v] } = $[#alpine:3.20{env: {\"V\": v}}] true\n\
+            \ok(): String = show(token)\n\
+            \plain(v: String): String within { secrets: false } = $[#alpine:3.20{env: {\"V\": v}}] true\n\
+            \via_plain(): String = plain(token)\n\
+            \issue(): String within { secrets: [generated] } = do {\n\
+            \  generated!! = random_string(12)\n\
+            \  $[#alpine:3.20{env: {\"G\": generated}}] true\n\
+            \}\n\
+            \anon(): String within { secrets: [token] } = $[#alpine:3.20{env: {\"G\": mark_secret(get_env(\"Z\"))}}] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let withinLines = filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))
+          -- show names what it is given by its own parameter, and issue
+          -- what it makes by its binding; an unmarked parameter names
+          -- nothing, and nor does an unbound mark_secret.
+          length withinLines `shouldBe` 2
+          resOut r `shouldSatisfy` isInfixOf "main.lask:5:23-5:35: E-TYPE-WITHIN-EXCEEDED [static]: the secret 'main.lask: token' is given in the variable V of 'env', which within { secrets: false } of 'plain'"
+          resOut r `shouldSatisfy` isInfixOf "bound to no name a constraint can give (bind it with !!)"
     it "rejects a secrets field that is not one (spec 10.11)" $ \lask ->
-      withProject [("main.lask", "f() within { secrets: [\"not a name\"] } = $[#alpine:3.20] true\ng() within { secrets: true } = $[#alpine:3.20] true\n")] $ \dir -> do
-        r <- runLask lask dir ["check"] ""
-        resExit r `shouldBe` 1
-        resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-SPEC [static]: 'not a name' is not the name of a variable"
-        resOut r `shouldSatisfy` isInfixOf "'secrets' takes false, or an array of names of variables"
+      do
+        withProject [("main.lask", "token!!: String = get_env(\"T\")\nf() within { secrets: [tokn] } = $[#alpine:3.20] true\n")] $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          resOut r `shouldSatisfy` isInfixOf "main.lask:2:24-2:28: E-TYPE-WITHIN-SPEC [static]: 'tokn' is not a secret binding of 'f'"
+        -- A name is an identifier, not the name of a variable.
+        withProject [("main.lask", "g() within { secrets: [\"TOKEN\"] } = $[#alpine:3.20] true\n")] $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          resOut r `shouldSatisfy` isInfixOf "'secrets' takes false, or an array of the names of secret bindings, such as [token]"
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""

@@ -36,6 +36,7 @@ module Language.Lask.Core.Access
     Secret (..),
     SecretKind (..),
     Flow (..),
+    Carried (..),
     channelFlows,
     secretFindings,
     secretAdvisories,
@@ -198,8 +199,17 @@ data SecretKind = SecretValue | SecretKeyword | SecretPositional | SecretBinding
 -- when a parameter did, and whether a parameter of the declaration
 -- walked on its own may add to them, which each call resolves.
 data Flow = Flow
-  { flSecrets :: Map Secret (Maybe Via),
+  { flSecrets :: Map Secret Carried,
     flParam :: Bool
+  }
+  deriving (Show, Eq, Ord)
+
+-- | A secret as a value carries it: the call that gave it, when a
+-- parameter did, and every name it has been bound to with @!!@ on its
+-- way (spec 10.11), each as the module, the declaration and the name.
+data Carried = Carried
+  { crVia :: Maybe Via,
+    crNames :: Set (FilePath, Text, Text)
   }
   deriving (Show, Eq, Ord)
 
@@ -207,7 +217,9 @@ noFlow :: Flow
 noFlow = Flow Map.empty False
 
 joinFlow :: Flow -> Flow -> Flow
-joinFlow a b = Flow (Map.unionWith (<|>) (flSecrets a) (flSecrets b)) (flParam a || flParam b)
+joinFlow a b = Flow (Map.unionWith joinCarried (flSecrets a) (flSecrets b)) (flParam a || flParam b)
+  where
+    joinCarried x y = Carried (crVia x <|> crVia y) (Set.union (crNames x) (crNames y))
 
 carries :: Flow -> Bool
 carries f = not (Map.null (flSecrets f)) || flParam f
@@ -353,7 +365,7 @@ passedFrom call v =
     { avTargets = Set.map (\t -> t {tVia = tVia t <|> Just call}) (avTargets v),
       avVia = avVia v <|> (call <$ avStatic v),
       avFields = Map.map (passedFrom call) <$> avFields v,
-      avFlow = (avFlow v) {flSecrets = Map.map (<|> Just call) (flSecrets (avFlow v))}
+      avFlow = (avFlow v) {flSecrets = Map.map (\cr -> cr {crVia = crVia cr <|> Just call}) (flSecrets (avFlow v))}
     }
 
 fsFunctions :: [Text]
@@ -605,12 +617,17 @@ boundValue core here seen binds x e = case coreF e of
 -- | A value bound as a secret. One known to be @null@ originates
 -- nothing, since an absent secret has no text (spec 6.10), and nor
 -- does one that carries a secret already: it is that secret, marked
--- again, as a library marks what it is given.
+-- again, as a library marks what it is given, and is bound to this
+-- name as well (spec 10.11).
 originates :: Secret -> AVal -> AVal
 originates sc v
   | avStatic v == Just SNull = v
-  | not (Map.null (flSecrets (avFlow v))) = v
-  | otherwise = v {avFlow = (avFlow v) {flSecrets = Map.insert sc Nothing (flSecrets (avFlow v))}}
+  | not (Map.null (flSecrets (avFlow v))) = v {avFlow = (avFlow v) {flSecrets = Map.map (\cr -> cr {crNames = Set.union named (crNames cr)}) (flSecrets (avFlow v))}}
+  | otherwise = v {avFlow = (avFlow v) {flSecrets = Map.insert sc (Carried Nothing named) (flSecrets (avFlow v))}}
+  where
+    named = case scKind sc of
+      SecretCall -> Set.empty
+      _ -> Set.singleton (scModule sc, scDecl sc, scName sc)
 
 -- | Whether an expression's type is @Bool@, @Number@, @Null@ or @Void@,
 -- as far as it is known without the type checker's annotations.
@@ -954,13 +971,12 @@ parseSpec (AST.AccessSpec _ fields) =
       "publish" -> case literal v of
         Just (SBool b) -> Right (\c -> c {conPublish = Just b})
         _ -> Left (err (AST.exprSpan v) "'publish' takes false or true")
-      "secrets" -> case literal v of
-        Just (SBool False) -> Right (\c -> c {conSecrets = Just SecretsNone})
-        Just (SArr xs)
-          | Just names <- mapM (\x -> case x of SStr n -> Just n; _ -> Nothing) xs -> case filter (not . isVariableName) names of
-              [] -> Right (\c -> c {conSecrets = Just (SecretsEnv names)})
-              bad : _ -> Left (err (AST.exprSpan v) ("'" <> bad <> "' is not the name of a variable"))
-        _ -> Left (err (AST.exprSpan v) "'secrets' takes false, or an array of names of variables")
+      "secrets" -> case AST.exprF v of
+        AST.EBool False -> Right (\c -> c {conSecrets = Just SecretsNone})
+        AST.EArray xs
+          | Just names <- mapM (\x -> case AST.exprF x of AST.EVar n -> Just (n, AST.exprSpan x); _ -> Nothing) xs ->
+              Right (\c -> c {conSecrets = Just (SecretsNamed names)})
+        _ -> Left (err (AST.exprSpan v) "'secrets' takes false, or an array of the names of secret bindings, such as [token]")
       _ -> Left (err ksp ("unknown field '" <> k <> "': a constraint takes files, volumes, network, publish and secrets"))
     str (k, SStr s) = Just (k, s)
     str _ = Nothing
@@ -999,9 +1015,10 @@ parseSpec (AST.AccessSpec _ fields) =
 checkWithin :: Constraints -> CoreProgram -> [Diagnostic]
 checkWithin cons core
   | Map.null (Map.filter covered cons) = []
-  | otherwise = settle (concatMap (siteFindings core) uses <> escapes)
+  | otherwise = settle (concatMap (siteFindings core) uses <> escapes) <> unnamed
   where
     covered (m, fs) = isJust m || not (Map.null fs)
+    unnamed = concat [fst (secretNames core cv) | (m, fs) <- Map.elems cons, cv <- maybe [] pure m <> Map.elems fs]
     uses = walkRoots cons core (Map.keys (cpDecls core))
     -- A function whose covered uses wait on its parameters, named
     -- other than by a call: its constraint cannot be checked there.
@@ -1019,7 +1036,7 @@ checkWithin cons core
 
 -- | The findings of one use against each constraint covering it.
 siteFindings :: CoreProgram -> UseSite -> [((Maybe Span, Span, Text), Diagnostic)]
-siteFindings _ u = case usKind u of
+siteFindings core u = case usKind u of
   UseEscape _ -> []
   _ ->
     [ ((Just (cvSpan cv), sp, findingField f), finding cv sp f)
@@ -1030,7 +1047,7 @@ siteFindings _ u = case usKind u of
           not (targetParametric t),
           f <- checkAccess (cvConstraint cv) (targetAccess t)
         ]
-          <> [(maybe (maybe (inCovered cv) viaSpan tvia) viaSpan via, f) | (via, tvia, f) <- secretFindings (cvConstraint cv) u]
+          <> [(maybe (maybe (inCovered cv) viaSpan tvia) viaSpan via, f) | (via, tvia, _, _, f) <- secretFindings core cv u]
           <> [(inCovered cv, Unproven "environment") | usDynamic u]
     ]
   where
@@ -1050,7 +1067,6 @@ siteFindings _ u = case usKind u of
       let (code, msg) = case f of
             Exceeds k what -> (ETypeWithinExceeded, what <> ", which " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " does not allow (" <> k <> ")")
             Unproven "environment" -> (ETypeWithinUnproven, "the environment here is not known without running the program, so " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " cannot be shown to hold")
-            Unproven "secrets" -> (ETypeWithinUnproven, "a secret is given in 'env' by a variable whose name is not known without running the program, so " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " cannot be shown to hold")
             Unproven k -> (ETypeWithinUnproven, "'" <> option k <> "' is not known here without running the program, so " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " cannot be shown to hold")
        in withNote ("reached through " <> T.intercalate " → " (usPath u <> [usDecl u | lastMay (usPath u) /= Just (usDecl u)]) <> ", at " <> location (usSpan u)) $
             withNote ("the constraint is at " <> location (cvSpan cv)) $
@@ -1115,15 +1131,48 @@ channelFlows u =
 -- | What a constraint finds of the secrets a use is given (spec
 -- 10.11): each with the call that gave the secret, and the one that
 -- resolved the environment, where a parameter did.
-secretFindings :: Constraint -> UseSite -> [(Maybe Via, Maybe Via, Finding)]
-secretFindings c u =
-  [ (via, tvia, f)
+secretFindings :: CoreProgram -> Covering -> UseSite -> [(Maybe Via, Maybe Via, Channel, Secret, Finding)]
+secretFindings core cv u =
+  [ (crVia cr, tvia, ch, sc, f)
   | (ch, fl, tvia) <- channelFlows u,
-    (sc, via) <- Map.toList (flSecrets fl),
-    f <- checkSecrets c [(ch, quoted (secretLabel (secretFile sc) sc))]
+    (sc, cr) <- Map.toList (flSecrets fl),
+    f <- checkSecrets (cvConstraint cv) ch (label sc cr) (not (Set.null (Set.intersection names (crNames cr))))
   ]
   where
-    quoted t = "'" <> t <> "'"
+    names = snd (secretNames core cv)
+    -- A secret bound to no name cannot be one a constraint gives.
+    label sc cr =
+      "'" <> secretLabel (secretFile sc) sc <> "'"
+        <> (if Set.null (crNames cr) then ", bound to no name a constraint can give (bind it with !!)," else "")
+
+-- | The secret bindings the names of a @secrets@ field are (spec
+-- 10.11): for a function's constraint, a @!!@ parameter or a binding
+-- of its body through @mark_secret@, which @!!@ is; otherwise, or when
+-- it has none of the name, a top-level value of the module bound so.
+-- A name that is neither is @E-TYPE-WITHIN-SPEC@.
+secretNames :: CoreProgram -> Covering -> ([Diagnostic], Set (FilePath, Text, Text))
+secretNames core cv = case conSecrets (cvConstraint cv) of
+  Just (SecretsNamed ns) ->
+    let resolved = [(n, sp, resolve n) | (n, sp) <- ns]
+     in ( [ mkDiagnostic ETypeWithinSpec StageStatic sp ("'" <> n <> "' is not a secret binding of " <> coveredLabel cv <> ": a constraint names its !! parameters and bindings, and the !! values of its module")
+          | (n, sp, Nothing) <- resolved
+          ],
+          Set.fromList [k | (_, _, Just k) <- resolved]
+        )
+  _ -> ([], Set.empty)
+  where
+    path = cvModule cv
+    resolve n = case cvFunction cv of
+      Just f | n `Set.member` localSecrets f -> Just (path, f, n)
+      _ | n `Set.member` topSecrets -> Just (path, n, n)
+      _ -> Nothing
+    localSecrets f = case Map.lookup (path, f) (cpDecls core) of
+      Just cd -> Set.fromList [x | CDo stmts <- map coreF (cdCore cd : coreDescendants (cdCore cd)), CSBind x e <- stmts, isMark e]
+      Nothing -> Set.empty
+    topSecrets = Set.fromList [n | ((p, n), cd) <- Map.toList (cpDecls core), p == path, isMark (cdCore cd)]
+    isMark e = case coreF e of
+      CApp (Core _ (CVar (BuiltinRef "mark_secret"))) [_] [] -> True
+      _ -> False
 
 -- | Where a secret originates, as 10.11 names it, with its module
 -- shown as given.
@@ -1164,8 +1213,8 @@ secretAdvisories core
       | u <- uses,
         (ch, fl, tvia) <- channelFlows u,
         exposed ch,
-        (sc, via) <- Map.toList (flSecrets fl),
-        let place = maybe (maybe (usSpan u) viaSpan tvia) viaSpan via
+        (sc, cr) <- Map.toList (flSecrets fl),
+        let place = maybe (maybe (usSpan u) viaSpan tvia) viaSpan (crVia cr)
       ]
     exposed ch = case ch of
       ChCommand -> True

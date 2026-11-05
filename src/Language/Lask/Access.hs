@@ -44,12 +44,12 @@ module Language.Lask.Access
     channelText,
     exposedChannel,
     SecretBound (..),
-    isVariableName,
     checkSecrets,
   )
 where
 
-import Data.Char (isAlphaNum, isDigit)
+import Data.Char (isAlphaNum)
+import Language.Lask.Span (Span (..))
 import Data.List (nub, sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -271,7 +271,7 @@ renderConstraint c =
         <> ["secrets: " <> secrets b | Just b <- [conSecrets c]]
     secrets b = case b of
       SecretsNone -> "false"
-      SecretsEnv ns -> "[" <> T.intercalate ", " (map quote ns) <> "]"
+      SecretsNamed ns -> "[" <> T.intercalate ", " (map fst ns) <> "]"
     files t = case t of
       [(".", m)] -> quote (modeText m)
       _ -> "{ " <> T.intercalate ", " [quote k <> ": " <> quote (modeText m) | (k, m) <- t] <> " }"
@@ -405,37 +405,30 @@ exposedChannel ch = case ch of
   ChEnvComputed -> False
   _ -> True
 
--- | What a @secrets@ field admits: none, or a secret only in the value
--- of one of the variables named, in @env@.
-data SecretBound = SecretsNone | SecretsEnv [Text]
+-- | What a @secrets@ field admits: none, or the secrets bound to one
+-- of the names it gives (spec 10.11), each where it is written, and
+-- those only in @env@.
+data SecretBound = SecretsNone | SecretsNamed [(Text, Span)]
   deriving (Show, Eq, Ord)
 
--- | @[A-Za-z_] [A-Za-z0-9_]*@.
-isVariableName :: Text -> Bool
-isVariableName n = case T.uncons n of
-  Just (c, rest) -> (isAsciiLetter c || c == '_') && T.all (\x -> isAsciiLetter x || isDigit x || x == '_') rest
-  Nothing -> False
-  where
-    isAsciiLetter x = (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z')
-
--- | What keeps the secrets reaching a use, each by its channel and
--- named by where it originates, from being within a constraint (spec
--- 10.11).
+-- | What keeps a secret reaching a use from being within a constraint
+-- (spec 10.11): the channel it is given by, the secret as a diagnostic
+-- names it, and whether it is bound to a name the constraint gives.
 --
--- >>> checkSecrets noConstraint {conSecrets = Just (SecretsEnv ["TOKEN"])} [(ChEnv "TOKEN", "main.lask: token")]
+-- >>> checkSecrets noConstraint {conSecrets = Just (SecretsNamed [("token", NoSpan)])} (ChEnv "TOKEN") "'main.lask: token'" True
 -- []
--- >>> checkSecrets noConstraint {conSecrets = Just (SecretsEnv ["TOKEN"])} [(ChCommand, "main.lask: token"), (ChEnvComputed, "main.lask: key")]
--- [Exceeds "secrets" "the secret main.lask: token is given in the command string",Unproven "secrets"]
-checkSecrets :: Constraint -> [(Channel, Text)] -> [Finding]
-checkSecrets c flows = case conSecrets c of
+-- >>> checkSecrets noConstraint {conSecrets = Just (SecretsNamed [("token", NoSpan)])} ChCommand "'main.lask: token'" True
+-- [Exceeds "secrets" "the secret 'main.lask: token' is given in the command string"]
+-- >>> checkSecrets noConstraint {conSecrets = Just (SecretsNamed [("token", NoSpan)])} (ChEnv "OTHER") "'main.lask: other'" False
+-- [Exceeds "secrets" "the secret 'main.lask: other' is given in the variable OTHER of 'env'"]
+checkSecrets :: Constraint -> Channel -> Text -> Bool -> [Finding]
+checkSecrets c ch label named = case conSecrets c of
   Nothing -> []
-  Just bound -> take 1 (concatMap (finding bound) [f | f@(ch, _) <- flows, ch /= ChEnvComputed]) <> unproven bound
+  Just (SecretsNamed _)
+    | inEnv ch && named -> []
+  Just _ -> [Exceeds "secrets" ("the secret " <> label <> " is given " <> channelPhrase ch)]
   where
-    finding bound (ch, label) = case (bound, ch) of
-      (SecretsEnv ns, ChEnv n) | n `elem` ns -> []
-      _ -> [Exceeds "secrets" ("the secret " <> label <> " is given " <> channelPhrase ch)]
-    computed = [l | (ChEnvComputed, l) <- flows]
-    unproven bound = case (bound, computed) of
-      (_, []) -> []
-      (SecretsNone, l : _) -> [Exceeds "secrets" ("the secret " <> l <> " is given " <> channelPhrase ChEnvComputed)]
-      (SecretsEnv _, _) -> [Unproven "secrets"]
+    inEnv x = case x of
+      ChEnv _ -> True
+      ChEnvComputed -> True
+      _ -> False
