@@ -266,7 +266,10 @@ sweep backend = void (try go :: IO (Either SomeException ()))
     go = do
       host <- T.pack <$> getHostName
       cs <- labelled ["ps", "-a", "--filter", "label=" <> T.unpack ownerLabel, "--format", "{{.Names}} {{.Label \"" <> T.unpack ownerLabel <> "\"}}"]
-      ns <- labelled ["network", "ls", "--filter", "label=" <> T.unpack ownerLabel, "--format", "{{.Name}} {{.Label \"" <> T.unpack ownerLabel <> "\"}}"]
+      -- nerdctl lists no label of a network, so each one listed is
+      -- asked for its labels.
+      names <- map fst <$> labelled ["network", "ls", "--filter", "label=" <> T.unpack ownerLabel, "--format", "{{.Name}}"]
+      ns <- fmap concat . mapM (\n -> maybe [] (\o -> [(n, o)]) <$> networkOwner n) $ names
       let pids = [p | (_, o) <- cs <> ns, Just p <- [pidOn host o]]
       live <- liveOf (nub pids)
       let gone o = maybe False (`notElem` live) (pidOn host o)
@@ -276,6 +279,10 @@ sweep backend = void (try go :: IO (Either SomeException ()))
       pure $ case r of
         Right out -> [(n, T.strip o) | l <- T.lines out, let (n, o) = T.breakOn " " (T.strip l), not (T.null n)]
         Left _ -> []
+    networkOwner n = do
+      r <- cbClient backend ["network", "inspect", T.unpack n, "--format", "{{json .Labels}}"]
+      let labels out = A.decode (BL.fromStrict (TE.encodeUtf8 (T.strip out))) :: Maybe (Map Text Text)
+      pure (either (const Nothing) (\out -> Map.lookup ownerLabel =<< labels out) r)
     pidOn host o = case T.breakOnEnd ":" o of
       (h, p) | T.dropEnd 1 h == host, [(n, "")] <- reads (T.unpack p) -> Just (n :: Int)
       _ -> Nothing
