@@ -388,7 +388,7 @@ renderEgressEntry (EgressEntry h port) = host <> ":" <> T.pack (show port)
 -- the same host, or a wildcard over it, which may itself be a wildcard
 -- of a longer name.
 --
--- >>> let e = either error id . parseEgressEntry
+-- >>> let e = either (error . T.unpack) id . parseEgressEntry
 -- >>> [egressCovers (e "*.github.com:443") (e x) | x <- ["api.github.com:443", "a.b.github.com:443", "*.api.github.com:443", "github.com:443", "api.github.com:80"]]
 -- [True,True,True,False,False]
 egressCovers :: EgressEntry -> EgressEntry -> Bool
