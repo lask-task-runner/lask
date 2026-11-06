@@ -157,6 +157,12 @@ ci_test() = do {
   $[#local] stack exec doctest app src
 }
 
+// Test the egress proxy (spec 10.12), which is Go and has no
+// dependency to fetch: so it builds with no network, and writes nothing
+// to the project.
+test_egress_proxy(): String within { network: "none", files: { ".": "ro" } } =
+  $[#golang:1.26.2-alpine3.23{network: "none", base_access: { ".": "ro" }}] cd egress-proxy && go vet ./... && go test ./...
+
 // Check that the committed lask.cabal is what stack generates from
 // package.yaml.
 //

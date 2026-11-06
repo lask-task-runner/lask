@@ -3,6 +3,8 @@ module Main (main) where
 import Command.Lask.Complete (runComplete)
 import Command.Lask.Entry (runRootCommand)
 import Command.Lask.Options (pRootCommand, protectArgSeparator)
+import Control.Exception (finally)
+import Language.Lask.Runtime.Egress (removeEgress)
 import Options.Applicative
 import System.Environment (getArgs)
 
@@ -26,4 +28,6 @@ runCli args = do
   cmd <-
     handleParseResult $
       execParserPure defaultPrefs (info (pRootCommand <**> helper) idm) (protectArgSeparator args)
-  runRootCommand cmd
+  -- The networks and proxies of egress live as long as the invocation
+  -- (spec 10.12), however it ends.
+  runRootCommand cmd `finally` removeEgress

@@ -80,6 +80,8 @@ library
       Language.Lask.Runtime.AsyncTrack
       Language.Lask.Runtime.CancelScope
       Language.Lask.Runtime.Container
+      Language.Lask.Runtime.Egress
+      Language.Lask.Runtime.EgressProxy
       Language.Lask.Runtime.Environment
       Language.Lask.Runtime.Eval
       Language.Lask.Runtime.Glob

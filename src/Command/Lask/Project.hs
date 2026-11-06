@@ -1010,8 +1010,8 @@ data AccessListing = ListFiles | ListNetwork | ListAccess
 listingOptions :: AccessListing -> [Text]
 listingOptions l = case l of
   ListFiles -> ["base_mount", "base_access", "volumes", "read_only", "tmpfs"]
-  ListNetwork -> ["network", "publish", "dns", "dns_search", "add_hosts"]
-  ListAccess -> ["base_access", "volumes", "network", "publish"]
+  ListNetwork -> ["network", "egress", "publish", "dns", "dns_search", "add_hosts"]
+  ListAccess -> ["base_access", "volumes", "network", "egress", "publish"]
 
 -- | One row: a head, or @(dynamic)@, with the options the listing
 -- shows, and the uses in it.
@@ -1101,12 +1101,12 @@ cmdEnvsAccessListing listing opts function verbose = do
                       ]
                   )
                 ListNetwork ->
-                  ( ["ENVIRONMENT", "NETWORK", "INBOUND", "NAME RESOLUTION", "CHECK", "REQUIRED BY"],
-                    \r -> [[plain (rowLabel r), plain (networkCell r), plain (inboundCell r), plain (nameResolutionCell r), checkCell (arCheck r), plain (requiredCell (arBy r))]]
+                  ( ["ENVIRONMENT", "NETWORK", "EGRESS", "INBOUND", "NAME RESOLUTION", "CHECK", "REQUIRED BY"],
+                    \r -> [[plain (rowLabel r), plain (networkCell r), plain (egressCell r), plain (inboundCell r), plain (nameResolutionCell r), checkCell (arCheck r), plain (requiredCell (arBy r))]]
                   )
                 ListAccess ->
                   ( ["ENVIRONMENT", "FILES", "NETWORK", "CHECK", "REQUIRED BY"],
-                    \r -> [[plain (rowLabel r), plain (filesSummary r), plain (networkCell r <> (if hasInbound r then " + inbound !" else "")), checkCell (arCheck r), plain (requiredCell (arBy r))]]
+                    \r -> [[plain (rowLabel r), plain (filesSummary r), plain (accessNetworkCell r <> (if hasInbound r then " + inbound !" else "")), checkCell (arCheck r), plain (requiredCell (arBy r))]]
                   )
               groups = map cellsOf rows
               rendered = renderTable color header (concat groups)
@@ -1245,11 +1245,36 @@ fileLines r
       Just ts -> [(T.takeWhile (/= ':') t, "(tmpfs)", "rw") | t <- ts]
       Nothing -> [("(computed)", "(tmpfs)", "rw")]
 
+-- | The entries of a row's @egress@: 'Nothing' when it is not given,
+-- and @Just Nothing@ when it is computed (spec 10.12).
+rowEgress :: AccessRow -> Maybe (Maybe [Text])
+rowEgress r = case rowOpt r "egress" of
+  Nothing -> Nothing
+  Just (Known (SArr xs)) -> Just (Just [t | SStr t <- xs])
+  Just _ -> Just Nothing
+
+-- | NETWORK in @envs access@ and @envs secrets@: an egress with what
+-- it lists.
+accessNetworkCell :: AccessRow -> Text
+accessNetworkCell r = case networkCell r of
+  "egress" -> "egress: " <> egressCell r
+  c -> c
+
+egressCell :: AccessRow -> Text
+egressCell r
+  | Nothing <- arHead r = "(unknown)"
+  | otherwise = case rowEgress r of
+      Nothing -> "—"
+      Just (Just []) -> "(none)"
+      Just (Just es) -> T.intercalate ", " es
+      Just Nothing -> "(computed)"
+
 -- | The class of a row's network, and how it is written.
 networkCell :: AccessRow -> Text
 networkCell r
   | isLocalRow r = "host (unbounded) !"
   | Nothing <- arHead r = "(unknown)"
+  | Just _ <- rowEgress r = "egress"
   | otherwise = case rowOpt r "network" of
       Nothing -> "default !"
       Just (Known (SStr v)) -> case classifyNetwork (Just v) of
@@ -1341,6 +1366,7 @@ rowJson listing verbose r =
       A.object
         [ ("class", A.String (netClass r)),
           ("name", maybe A.Null A.String (netName r)),
+          ("egress", maybe A.Null (maybe A.Null A.toJSON) (rowEgress r)),
           ("inbound", entries (rowStrings r "publish")),
           ("name_resolution", entries (nameResolution r))
         ]
@@ -1353,6 +1379,8 @@ rowJson listing verbose r =
     netClass row
       | isLocalRow row = "host"
       | Nothing <- arHead row = "dynamic"
+      | Just (Just _) <- rowEgress row = "egress"
+      | Just Nothing <- rowEgress row = "computed"
       | otherwise = case rowOpt row "network" of
           Nothing -> "default"
           Just (Known (SStr v)) -> netClassText (classifyNetwork (Just v))
@@ -1458,7 +1486,7 @@ cmdEnvsSecrets opts function = do
             Just ChEnvComputed -> "{env}"
             Just (ChOption k) -> "{" <> k <> "}"
             _ -> ""
-      networkOf r = let c = networkCell (srEnv r) in if c == "(computed)" then "(computed) !" else c
+      networkOf r = let c = accessNetworkCell (srEnv r) in if c == "(computed)" then "(computed) !" else c
   if optJsonFormat opts
     then printJson (A.toJSON (map (secretRowJson paths lock environmentCell) rows))
     else

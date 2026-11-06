@@ -1587,6 +1587,79 @@ spec = beforeAll findLask $ do
           r <- runLask lask dir ["check"] ""
           resExit r `shouldBe` 1
           resOut r `shouldSatisfy` isInfixOf "'secrets' takes false, or an array of the names of secret bindings, such as [token]"
+    it "checks a list written against a union with one array as that array (spec 4.4)" $ \lask ->
+      withProject [("main.lask", "takes(--hosts: Array<String> | Null = null): String = \"x\"\ne(): String = takes(hosts = [])\nr = #alpine:3.20{egress: []}\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resExit r `shouldBe` 0
+    it "checks egress entries, and what within admits of them (spec 10.11, 10.12)" $ \lask -> do
+      withProject [("main.lask", "a = #alpine:3.20{egress: [\"x.com\"]}\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resOut r `shouldSatisfy` isInfixOf "main.lask:1:27-1:34: E-TYPE-ENV-CONSTRUCT [static]: 'x.com' is not <host>:<port>"
+      withProject [("main.lask", "a = #alpine:3.20{egress: [\"x.com:443\"], network: \"none\"}\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resOut r `shouldSatisfy` isInfixOf "E-TYPE-ENV-CONSTRUCT [static]: 'network' is given with egress"
+      withProject
+        [ ( "main.lask",
+            "npm = #alpine:3.20{egress: [\"registry.npmjs.org:443\"]}\n\
+            \a(): String within { network: [\"registry.npmjs.org:443\"] } = $[npm] true\n\
+            \b(): String within { network: [\"*.github.com:443\"] } = $[#alpine:3.20{egress: [\"api.github.com:443\", \"github.com:443\"]}] true\n\
+            \c(): String within { network: \"none\" } = $[#alpine:3.20{egress: []}] true\n\
+            \d(): String within { network: [\"a.com:443\"] } = $[#alpine:3.20] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let withinLines = filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))
+          -- A wildcard does not cover the name itself, an egress that
+          -- lists nothing is within none, and a container that may
+          -- reach anything is within no list.
+          length withinLines `shouldBe` 2
+          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: egress lists \"github.com:443\", which within { network: [\"*.github.com:443\"] } of 'b'"
+          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: the network is \"default\", which within { network: [\"a.com:443\"] } of 'd'"
+          network <- runLask lask dir ["envs", "network"] ""
+          resOut network `shouldSatisfy` isInfixOf "registry.npmjs.org:443"
+          resOut network `shouldSatisfy` isInfixOf "(none)"
+          json <- runLask lask dir ["envs", "network", "--format", "json"] ""
+          resOut json `shouldSatisfy` isInfixOf "\"class\":\"egress\",\"egress\":[\"registry.npmjs.org:443\"]"
+    it "places a container given egress beside its proxy, logs what it refuses, and removes both (spec 10.12)" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject [("main.lask", "f(): String = $[#alpine:3.22.2{egress: [\"example.com:443\"]}] echo hi\n")] $ \dir -> do
+          _ <- runLaskEnv lask dir extra ["sync"] ""
+          writeFile (state </> "present" </> "lask-egress-proxy_dev") "[]"
+          writeFile (state </> "denied") "{\"event\":\"denied\",\"destination\":\"other.test:443\",\"reason\":\"not in egress\"}\n"
+          writeFile (state </> "calls") ""
+          r <- runLaskEnv lask dir (("LASK_EGRESS_PROXY_IMAGE", "lask-egress-proxy:dev") : extra) ["eval", "f"] ""
+          resExit r `shouldBe` 0
+          resErr r `shouldSatisfy` isInfixOf "2| egress denied: other.test:443"
+          cs <- calls state
+          let has p = filter (isInfixOf p) cs
+          has "network create --internal" `shouldSatisfy` ((== 1) . length)
+          -- The proxy is on both networks at once, and known on the
+          -- inside one by the name every container gives egress uses.
+          has ("--network name=") `shouldSatisfy` all (isInfixOf "alias=lask-egress-proxy")
+          has "lask-egress-proxy:dev -listen :3128 example.com:443" `shouldSatisfy` ((== 1) . length)
+          -- The container is on the inside network only, and told
+          -- where the proxy is.
+          let workload = [c | c <- cs, "run --rm" `isPrefixOf` c]
+          workload `shouldSatisfy` ((== 1) . length)
+          workload `shouldSatisfy` all (isInfixOf "--env HTTPS_PROXY=http://lask-egress-proxy:3128")
+          workload `shouldSatisfy` all (isInfixOf "--env NODE_USE_ENV_PROXY")
+          workload `shouldSatisfy` all (isInfixOf "-in ")
+          workload `shouldSatisfy` all (isInfixOf "--network lask-egress-")
+          -- Both are removed when the invocation ends.
+          has "rm --force lask-egress-" `shouldSatisfy` ((== 1) . length)
+          has "network rm lask-egress-" `shouldSatisfy` ((== 2) . length)
+    it "does not run a container given egress without its proxy image (spec 10.12)" $ \lask ->
+      withFakeDocker $ \_ extra ->
+        withProject [("main.lask", "f(): String = $[#alpine:3.22.2{egress: [\"example.com:443\"]}] echo hi\n")] $ \dir -> do
+          _ <- runLaskEnv lask dir extra ["sync"] ""
+          missing <- runLaskEnv lask dir (("LASK_EGRESS_PROXY_IMAGE", "lask-egress-proxy:absent") : extra) ["eval", "f"] ""
+          resExit missing `shouldBe` 3
+          resErr missing `shouldSatisfy` isInfixOf "E-IO-IMAGE-MISSING"
+          unnamed <- runLaskEnv lask dir extra ["eval", "f"] ""
+          resExit unnamed `shouldBe` 3
+          resErr unnamed `shouldSatisfy` isInfixOf "names no egress proxy image"
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""

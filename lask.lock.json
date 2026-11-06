@@ -1,5 +1,10 @@
 {
     "images": {
+        "#golang:1.26.2-alpine3.23": {
+            "digest": "sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1",
+            "kind": "registry",
+            "ref": "golang:1.26.2-alpine3.23"
+        },
         "#haskell:9.10.3": {
             "digest": "sha256:365e1baa8ddcde41b5187c3b9b4254c876fe397330b494b71cec48922ce99310",
             "kind": "registry",
