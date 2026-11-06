@@ -1587,6 +1587,10 @@ spec = beforeAll findLask $ do
           r <- runLask lask dir ["check"] ""
           resExit r `shouldBe` 1
           resOut r `shouldSatisfy` isInfixOf "'secrets' takes false, or an array of the names of secret bindings, such as [token]"
+    it "checks a list written against a union with one array as that array (spec 4.4)" $ \lask ->
+      withProject [("main.lask", "takes(--hosts: Array<String> | Null = null): String = \"x\"\ne(): String = takes(hosts = [])\nr = #alpine:3.20{egress: []}\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resExit r `shouldBe` 0
     it "checks egress entries, and what within admits of them (spec 10.11, 10.12)" $ \lask -> do
       withProject [("main.lask", "a = #alpine:3.20{egress: [\"x.com\"]}\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""

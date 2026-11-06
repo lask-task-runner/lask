@@ -1235,6 +1235,14 @@ check ctx path locals e@(Expr sp f) expected = case f of
   EArray es | TyArray t <- expected -> do
     cs <- mapM (\el -> check ctx path locals el t) es
     pure (Core sp (CArray cs))
+  -- Against a union with one array among its members, as a parameter
+  -- that is a list or null, a list written out is checked as that
+  -- array, so that `[]` is a list of its elements rather than of Any.
+  EArray es
+    | TyUnion ts <- expected,
+      [TyArray t] <- [x | x@(TyArray _) <- ts] -> do
+        cs <- mapM (\el -> check ctx path locals el t) es
+        pure (Core sp (CArray cs))
   EObject kvs -> checkObject ctx path locals sp kvs expected
   ELambda ps rt body
     | TyFun expPs _ <- expected -> do
@@ -2595,7 +2603,9 @@ dockerRunOptions =
     -- Network.
     ("network", text),
     -- The destinations a container may reach, through a proxy (10.12).
-    ("egress", list),
+    -- Null as a whole, unlike the other lists: an empty list admits
+    -- nothing, so "not given" is null, which a library passes on.
+    ("egress", mkUnion list [TyNull]),
     ("dns", list),
     ("dns_search", list),
     ("add_hosts", table),
@@ -2737,13 +2747,13 @@ elabRunnable ctx path locals sp env args = do
           | Just pairs <- mapM literalValue kvs -> () <$ either (optionErr c) pure (accessTable pairs)
         _ -> pure ()
       -- An entry of egress written as a literal, and egress with
-      -- network or publish, both written (10.12).
+      -- network or publish, both written as literals (10.12). A
+      -- library passes its own parameters on, null when not given, and
+      -- is held to it when the command runs.
       case lookup "egress" opts of
-        Just c | not (isNullLit c) -> do
-          case coreF c of
-            CArray es -> mapM_ (\e -> case coreF e of CStrLit t -> () <$ either (optionErr e) pure (parseEgressEntry t); _ -> pure ()) es
-            _ -> pure ()
-          case [(k, o) | k <- ["network", "publish"], Just o <- [lookup k opts], not (isNullLit o)] of
+        Just (Core _ (CArray es)) -> do
+          mapM_ (\e -> case coreF e of CStrLit t -> () <$ either (optionErr e) pure (parseEgressEntry t); _ -> pure ()) es
+          case [(k, o) | k <- ["network", "publish"], Just o <- [lookup k opts], givenLiteral o] of
             (k, o) : _ -> optionErr o ("'" <> k <> "' is given with egress, which provides the network: a container given egress reaches only what it lists, and publishes no port")
             [] -> pure ()
         _ -> pure ()
@@ -2754,6 +2764,13 @@ elabRunnable ctx path locals sp env args = do
 
     isNullLit c = case coreF c of
       CNull -> True
+      _ -> False
+
+    -- A literal that gives the option: not null, and not a list of
+    -- nothing but nulls, which leaves it out (10.2).
+    givenLiteral c = case coreF c of
+      CStrLit _ -> True
+      CArray xs -> any (not . isNullLit) xs
       _ -> False
 
     optionErr :: Core -> Text -> TC a
@@ -2808,6 +2825,7 @@ bindEnvOptions ctx path locals sig unknown = foldM step []
     checkEnvArg e ty = case ty of
       TyArray el | el == nullableText -> orPlain (TyArray TyString)
       TyMap el | el == nullableText -> orPlain (TyMap TyString)
+      _ | ty == mkUnion (TyArray nullableText) [TyNull] -> orPlain (mkUnion (TyArray TyString) [TyNull])
       _ -> check ctx path locals e ty
       where
         nullableText = mkUnion TyString [TyNull]
