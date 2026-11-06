@@ -119,6 +119,11 @@ withProject files action =
 -- command probe (spec 11.7) reports every word present except those
 -- with a file @missing/<word>@.
 --
+-- The networks and the proxy of egress (spec 10.12): @network@ and a
+-- detached @run@ succeed, the proxy's @logs@ say it is ready, followed,
+-- once a container has run, by the contents of @denied@, and nothing is left from another
+-- process to remove.
+--
 -- A reference pulled by its Docker Hub name, as podman is made to pull
 -- one, is also found by its short name, as podman's store finds it.
 -- An image inspected with @--mode=native@ is answered as nerdctl
@@ -162,7 +167,13 @@ fakeDocker =
       "    printf '[]' > \"$S/present/$(key \"$tag\")\" ;;",
       -- A variable named by `--env NAME` is taken from the client's
       -- environment, as docker takes it; @env@ records what it found.
+      "  network) case \"$2\" in create) echo net-id ;; esac ;;",
+      "  logs) echo '{\"event\":\"ready\"}'; [ -f \"$S/workload-ran\" ] && [ -f \"$S/denied\" ] && cat \"$S/denied\"; exit 0 ;;",
+      "  inspect) echo true ;;",
+      "  ps) ;;",
       "  run) prev=''",
+      "    case \" $* \" in *' -d '*) echo container-id; exit 0 ;; esac",
+      "    touch \"$S/workload-ran\"",
       "    [ -f \"$S/run-fails\" ] && { cat \"$S/run-fails\" >&2; exit \"$(cat \"$S/run-exit\")\"; }",
       -- The container of a with_container session: ready at once, and
       -- running until its stdin ends.

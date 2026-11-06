@@ -2659,7 +2659,7 @@ The run options this implementation provides:
 
 - `ulimits`, `tmpfs`, `cap_drop`, `egress`, `dns`, `dns_search`, `publish` and `volumes` are `Array<String | Null>`; `env` and `add_hosts` are `Map<String | Null>`; `init` and `read_only` are `Bool | Null`; `cpus`, `cpu_shares`, `pids_limit` and `blkio_weight` are `Number | Null`; `base_access` is `String | Map<String> | Null`; the rest are `String | Null`.
 - A list or table option also takes a value already typed `Array<String>` or `Map<String>`. Containers are invariant (4.4), so such a value does not conform to the nullable element type; it holds no null to leave out, and means the same.
-- An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing, except for `egress`, where an empty list admits no destination (10.12). This is how an argument says "not given" — a function that builds a runnable passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
+- An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing, except for `egress`, which lists what a container may reach rather than what it is given, so that an empty list admits no destination (10.12). This is how an argument says "not given" — a function that builds a runnable passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
 - `workdir` is the explicit working directory 10.5 gives precedence over the default.
 - `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
 - A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the engine client's command line (10.10) and sets its value in the client's environment, from which the client takes it. A variable the client reads itself is passed with its value on the command line instead, since setting it for the client would change which engine it reaches or how. In any case, that is a name ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, and, by engine:
@@ -2971,7 +2971,7 @@ Constraints:
 - An access set is **within** a constraint when each component the constraint bounds is:
   - `files`: for `"."` and for every key of either table, the mode the access set gives the path is no wider than the mode the constraint gives it, both read by the longest key that is the path or an ancestor of it (10.2), where `"none"` < `"ro"` < `"rw"`. Modes change only at keys, so these paths are enough.
   - `volumes`: every host path is the key, or under a key, of a host path the constraint gives a mode no narrower than its own; every named volume is a key of its own with such a mode. Paths are compared by their components as written; a symbolic link on the host is not followed.
-  - `network`: no wider, where `none` < the entries of `egress` < `default` < `host`. A use's `egress` is within an array the constraint gives when each of its entries is covered by one of the array (10.12, Entries), within `"default"` whatever it lists, and within `"none"` never, even when it lists nothing. Two arrays are compared only by coverage, so `["*.github.com:443"]` admits `egress: ["api.github.com:443"]` and not the reverse.
+  - `network`: no wider, where `none` < the entries of `egress` < `default` < `host`. A use's `egress` is within an array the constraint gives when each of its entries is covered by one of the array (10.12, Entries), within `"default"` whatever it lists, and within `"none"` when it lists nothing, since it then reaches nothing. Two arrays are compared only by coverage, so `["*.github.com:443"]` admits `egress: ["api.github.com:443"]` and not the reverse.
   - `publish`: not `true` when the constraint gives `false`.
   - `secrets`: none when the constraint gives `false`; otherwise every secret is bound to one of the names the constraint gives (Secret flow, below), and reaches the use by the channel `env`. The channels `option`, `command` and `file` are within no constraint that gives `secrets`, and a secret bound to no name — one marked by a `mark_secret` that no binding takes — is within none either.
 - The access set of `#local` is within no constraint that gives `files`, `volumes`, `network` or `publish`: the host cannot be bounded by any of them. Its `secrets` are checked as any use's.
@@ -3063,7 +3063,7 @@ leak(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secret
 
 `egress` lets the commands of a container reach the destinations it lists, and nothing else. It is enforced by where the container is placed, not by what its programs choose to do: the container is on a network with no route out, and the only way out is a proxy Lask runs, which forwards a connection only to a listed destination.
 
-```lask fragment
+```lask
 npm = #node:24.21.0-alpine3.24{egress: ["registry.npmjs.org:443"]}
 
 fetch(): String within { network: ["registry.npmjs.org:443", "*.github.com:443"] } =
@@ -3080,8 +3080,8 @@ Entries:
 - `*` alone, an address range, a port range, a scheme or a path is not an entry. A container that may reach anything leaves `network` at its default.
 - An entry **covers** another when their ports are equal and its host is the same, or is a wildcard covering the other's host, which may itself be a wildcard of a longer name.
 - An entry that is not of this form is `E-TYPE-ENV-CONSTRUCT` where `egress` is written as a literal, and `E-RUNTIME-VALUE` when the command runs otherwise.
-- `egress` given an array admits exactly what it lists: an empty array admits no destination, unlike the other list options (10.2). `null`, or no `egress`, leaves the network to `network`.
-- `egress` is not given with `network` or `publish`: Lask provides the network, and a network with no route out publishes no port. Either is `E-TYPE-ENV-CONSTRUCT` where both are written as literals, and `E-RUNTIME-VALUE` when the command runs otherwise.
+- `egress` given an array admits exactly what it lists: an empty array, or one whose elements are all `null`, admits no destination, unlike the other list options (10.2). `null`, or no `egress`, leaves the network to `network`. So a restriction is narrowed by what is written, and widened only by writing nothing: a container that may reach anything is written without `egress`.
+- `egress` is not given with `network` or `publish`: Lask provides the network, and a network with no route out publishes no port. Either is `E-TYPE-ENV-CONSTRUCT` where both are given other than as a literal `null`, and `E-RUNTIME-VALUE` when the command runs otherwise.
 - `#local` takes no `egress`, as it takes no option (10.2).
 
 What a container given `egress` reaches:
@@ -3095,14 +3095,14 @@ What a container given `egress` reaches:
 Variables:
 
 - A container given `egress` is given these variables, unless its `env` sets them, which it may: setting them reaches nothing more.
-  - `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy` and `https_proxy`: the address of the proxy, as `http://<name>:<port>`.
+  - `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy` and `https_proxy`: the address of the proxy, `http://lask-egress-proxy:3128`. The proxy is reached by that name and port in every container given `egress`, so that a program configured by other means, such as Java's system properties, can name it.
   - `NO_PROXY` and `no_proxy`: `localhost,127.0.0.1,::1`.
   - `NODE_USE_ENV_PROXY`: `1`, so that Node reads the variables above.
 - No other variable is given. A program that reads its proxy from elsewhere, such as Java's system properties or ssh's configuration, is configured by whoever runs it.
 
 Reporting:
 
-- The proxy records each destination it refuses. When a command in a container given `egress` fails, its diagnostic adds one line for each destination refused while it ran: `egress denied: <host>:<port>`. A refused destination of a command that succeeds is logged (12.3) the same way.
+- The proxy records each destination it refuses. Each destination refused while a command in a container given `egress` ran is a line of that command in the command execution log (12.3), on its stderr, `egress denied: <host>:<port>`, whether the command succeeded or not. A program sees nothing of it: the command's own result is as the command left it (8.7).
 
 Lifetime:
 
@@ -3117,7 +3117,9 @@ The proxy image:
 This implementation:
 
 - The proxy is built from `egress-proxy/` in the Lask repository and published as `ghcr.io/lask-task-runner/lask-egress-proxy`, signed, for `linux/amd64` and `linux/arm64`.
-- For each distinct `egress`, it makes a network with no route out (`network create --internal`) and a network with one, and starts the proxy on both, given on the command line it is started with (`--network <inside> --network <outside>`), under a name of its own, by which the container finds it. The container is started on the inside network only, so it has no route but to the inside network, and no capability to change that. Both networks and the proxy carry labels naming Lask and the invocation (its process and its host), which is how what an invocation left is found.
+- For each distinct `egress`, it makes a network with no route out (`network create --internal`) and a network with one, and starts the proxy on both, given on the command line it is started with (`--network <inside> --network <outside>`): nerdctl cannot add a network to a running container, and Docker does not start one on its default bridge and another together, so the outside network is one Lask makes too. The proxy is found on the inside network as `lask-egress-proxy`: an alias of that network for Docker and Podman, and its host name for nerdctl.
+- The container is started on the inside network only, so it has no route but to the inside network, and no capability to change that. Both networks and the proxy carry the label `io.lask.egress.owner=<host>:<pid>`, which is how what an invocation left is found: what a process on this host that is no longer running left is removed before an invocation makes its first.
+- The digest a release runs is written in `src/Language/Lask/Runtime/EgressProxy.hs`, by the workflow that publishes the image. A build that names none, as one from source before the first publication, runs `egress` only with `LASK_EGRESS_PROXY_IMAGE` naming an image on the engine; that image is not materialized by `sync` or recorded in the lock, and it is for developing Lask, not for running a project.
 - Docker, Podman and nerdctl all make such networks, so every engine of 10.10 runs `egress`.
 
 ## 11. CLI Specification

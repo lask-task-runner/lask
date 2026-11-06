@@ -22,7 +22,25 @@ permissions:
   contents: write
 
 jobs:
+  # A release runs the egress proxy it names (spec 10.12), so it names
+  # one, and that one is published.
+  egress-proxy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Check the egress proxy this release names
+        run: |
+          image=$(sed -n 's/^embeddedProxyImage = Just "\(.*\)"$/\1/p' src/Language/Lask/Runtime/EgressProxy.hs)
+          if [ -z "$image" ]; then
+            echo "::error::src/Language/Lask/Runtime/EgressProxy.hs names no egress proxy image; run the Egress proxy workflow and write the digest it reports"
+            exit 1
+          fi
+          docker buildx imagetools inspect "$image"
+
   build:
+    needs: egress-proxy
     strategy:
       fail-fast: false
       matrix:

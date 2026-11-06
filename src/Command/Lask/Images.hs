@@ -32,11 +32,12 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Deps.Lock
-import Language.Lask.Elaborate (CoreProgram (..), Key)
+import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key)
 import Language.Lask.ErrorCode (ErrorCode (..), codeText)
 import Control.Exception (throwIO, try)
 import Language.Lask.Builtins.Impl (RtHooks (..))
-import Language.Lask.Core.AST (Core)
+import Language.Lask.Core.AST (Core (..), CoreF (..), coreChildren)
+import Language.Lask.Runtime.EgressProxy (embeddedProxyImage)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
 import Language.Lask.Runtime.Container (ContainerBackend (..), MountError (..), RunSpec (..), resolveBaseMounts)
 import Language.Lask.Runtime.Environment (ResolvedEnv (..), resolveEnv)
@@ -89,8 +90,29 @@ data ImageSource = FromRegistry Text [Maybe Text] | FromRecipe Recipe
 -- | The images the program requires (spec 10.3), with what requires
 -- them. With a declaration, only what it reaches.
 imageRows :: CoreProgram -> Maybe Key -> [ImageRow]
-imageRows core scope = registries <> recipes
+imageRows core scope = registries <> recipes <> proxy
   where
+    -- The egress proxy, when a runnable is given egress (spec 10.3,
+    -- 10.12): a reference written with its digest, which pins itself.
+    proxy = case embeddedProxyImage of
+      Just ref
+        | not (null givers) ->
+            [ImageRow ("#" <> ref) "registry" (registryKey ref) (FromRegistry ref [Nothing]) givers]
+      _ -> []
+    givers =
+      [ Requirer p n Nothing
+      | ((p, n), cd) <- Map.toList (cpDecls core),
+        maybe True (== (p, n)) scope,
+        givesEgress (cdCore cd)
+      ]
+    givesEgress c =
+      or
+        [ True
+        | CRunnable _ opts <- map coreF (c : descendants c),
+          Just o <- [lookup "egress" opts],
+          coreF o /= CNull
+        ]
+    descendants e = let cs = coreChildren e in cs <> concatMap descendants cs
     uses = collectHeadUses core scope
     registries =
       [ ImageRow ("#" <> ref) "registry" (registryKey ref) (FromRegistry ref (Set.toList ps)) (Set.toList by)

@@ -235,6 +235,7 @@ listedOptions =
     "read_only",
     "tmpfs",
     "network",
+    "egress",
     "publish",
     "dns",
     "dns_search",
@@ -243,7 +244,7 @@ listedOptions =
 
 -- | The run options that enter an access set (spec 10.11).
 accessOptions :: [Text]
-accessOptions = ["base_access", "volumes", "network", "publish"]
+accessOptions = ["base_access", "volumes", "network", "egress", "publish"]
 
 data UseKind
   = UseCommand
@@ -874,12 +875,20 @@ targetAccess t = case tHead t of
           Nothing -> Just []
           Just (Known v) -> mapMaybe parseVolume <$> strings v
           _ -> Nothing
+    -- An egress given leaves the network to what it lists (spec 10.12).
     network
+      | computed "egress" = Nothing
+      | Just (Known v) <- opt "egress" = case v of
+          SArr xs -> NetEgress <$> mapM entry [x | x <- xs, x /= SNull]
+          _ -> Nothing
       | computed "network" = Nothing
       | otherwise = case opt "network" of
-          Nothing -> Just (NetDefault, Nothing)
-          Just (Known (SStr v)) -> Just (classifyNetwork (Just v), Just v)
+          Nothing -> Just (NetReach NetDefault Nothing)
+          Just (Known (SStr v)) -> Just (NetReach (classifyNetwork (Just v)) (Just v))
           _ -> Nothing
+    entry x = case x of
+      SStr e -> either (const Nothing) Just (parseEgressEntry e)
+      _ -> Nothing
     publish
       | computed "publish" = Nothing
       | otherwise = case opt "publish" of
@@ -965,9 +974,12 @@ parseSpec (AST.AccessSpec _ fields) =
               Left (err (AST.exprSpan v) e)
         _ -> Left (err (AST.exprSpan v) "'volumes' takes false, or a table of host paths and volume names to \"rw\" or \"ro\"")
       "network" -> case literal v of
-        Just (SStr "none") -> Right (\c -> c {conNetwork = Just NetNone})
-        Just (SStr "default") -> Right (\c -> c {conNetwork = Just NetDefault})
-        _ -> Left (err (AST.exprSpan v) "'network' takes \"none\" or \"default\"")
+        Just (SStr "none") -> Right (\c -> c {conNetwork = Just (BoundClass NetNone)})
+        Just (SStr "default") -> Right (\c -> c {conNetwork = Just (BoundClass NetDefault)})
+        Just (SArr xs)
+          | Just ts <- mapM (\x -> case x of SStr t -> Just t; _ -> Nothing) xs ->
+              either (Left . err (AST.exprSpan v)) (\es -> Right (\c -> c {conNetwork = Just (BoundEgress es)})) (mapM parseEgressEntry ts)
+        _ -> Left (err (AST.exprSpan v) "'network' takes \"none\", \"default\", or an array of egress entries such as [\"registry.npmjs.org:443\"]")
       "publish" -> case literal v of
         Just (SBool b) -> Right (\c -> c {conPublish = Just b})
         _ -> Left (err (AST.exprSpan v) "'publish' takes false or true")

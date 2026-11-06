@@ -33,7 +33,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Language.Lask.Access (Mode (..), accessTable, parseMode, validateBaseMount)
+import Language.Lask.Access (Mode (..), accessTable, parseEgressEntry, parseMode, validateBaseMount)
 import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Shell (escapeCommand, rawBuiltin)
 import Language.Lask.CommandSchema (Finding (..), Schema, Static (..), StaticF (..), checkCommand, fromStatic)
@@ -2594,6 +2594,8 @@ dockerRunOptions =
     ("cap_drop", list),
     -- Network.
     ("network", text),
+    -- The destinations a container may reach, through a proxy (10.12).
+    ("egress", list),
     ("dns", list),
     ("dns_search", list),
     ("add_hosts", table),
@@ -2733,6 +2735,17 @@ elabRunnable ctx path locals sp env args = do
             _ -> pure ()
         Just c@(Core _ (CMapLit kvs))
           | Just pairs <- mapM literalValue kvs -> () <$ either (optionErr c) pure (accessTable pairs)
+        _ -> pure ()
+      -- An entry of egress written as a literal, and egress with
+      -- network or publish, both written (10.12).
+      case lookup "egress" opts of
+        Just c | not (isNullLit c) -> do
+          case coreF c of
+            CArray es -> mapM_ (\e -> case coreF e of CStrLit t -> () <$ either (optionErr e) pure (parseEgressEntry t); _ -> pure ()) es
+            _ -> pure ()
+          case [(k, o) | k <- ["network", "publish"], Just o <- [lookup k opts], not (isNullLit o)] of
+            (k, o) : _ -> optionErr o ("'" <> k <> "' is given with egress, which provides the network: a container given egress reaches only what it lists, and publishes no port")
+            [] -> pure ()
         _ -> pure ()
 
     literalValue (k, v) = case coreF v of
