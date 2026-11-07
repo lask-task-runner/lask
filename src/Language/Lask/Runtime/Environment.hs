@@ -26,7 +26,7 @@ where
 
 import Control.Concurrent.Async (concurrently)
 import Control.Exception (IOException, bracket, throwIO, try, uninterruptibleMask_)
-import Control.Monad (forM, unless, void)
+import Control.Monad (forM, forM_, unless, void)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -115,8 +115,11 @@ resolveEnv (EnvValue kind params) = case kind of
           let ctx = case Map.lookup "context" params of
                 Just (VString c) | not (T.null c) -> c
                 _ -> T.pack (takeDirectory (T.unpack df))
-              recipe = Recipe df ctx (recipeBuildArgs params) (platformOf params)
-           in Right (ResolvedRecipe recipe (Map.delete "dockerfile" (Map.delete "context" params)))
+              recipe = Recipe df ctx (recipeBuildArgs params) (platformOf params) (networkOf params)
+              networkOf ps = case Map.lookup "build_network" ps of
+                Just (VString t) -> Just t
+                _ -> Nothing
+           in Right (ResolvedRecipe recipe (foldr Map.delete params ["dockerfile", "context", "build_network"]))
     _ -> Left (ioFailure EIoEnvResolve "docker environment requires an image reference or a recipe")
   "session" -> case (Map.lookup "container" params, Map.lookup "origin" params) of
     (Just (VString name), Just (VEnv origin)) -> ResolvedSession name <$> resolveEnv origin
@@ -311,8 +314,8 @@ mkCommandRunner backend pins baseDir0 sink = do
       Right resolved -> do
         execNo <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
         let (summary, envJson) = envLogInfo envValue resolved
-            run stopC cp engineFailure = do
-              r <- try (runLoggedProcess sink summary envJson execNo cmd stopC cp)
+            run' fed stopC cp engineFailure = do
+              r <- try (runLoggedProcess sink summary envJson execNo cmd fed stopC cp)
               pure $ case r of
                 Left e ->
                   Left (ioFailure EIoEnvResolve ("cannot launch command: " <> T.pack (show (e :: IOException))))
@@ -330,17 +333,18 @@ mkCommandRunner backend pins baseDir0 sink = do
                   -- No exit code is the engine's own here: the
                   -- session's container is known to be running, and
                   -- one that stops under the command ends the session.
-                  run
+                  run'
+                    (Just cmd)
                     (stopSessionCommand backend name marker)
-                    (cbExecProcess backend (sessionExec name False marker cmd))
+                    (cbExecProcess backend (sessionExecFed name marker))
                     (\_ _ -> Nothing)
           Right Nothing ->
-            run (pure ()) ((shell (T.unpack cmd)) {cwd = Just baseDir}) (\_ _ -> Nothing)
+            run' Nothing (pure ()) ((shell (T.unpack cmd)) {cwd = Just baseDir}) (\_ _ -> Nothing)
           Right (Just (image, opts, mounts, placement)) -> do
             name <- newContainerName
-            cp <- cbRunProcess backend (shellRun baseDir name image opts mounts False cmd)
+            cp <- cbRunProcess backend (shellRunFed baseDir name image opts mounts)
             withDenials sink summary envJson execNo cmd placement $
-              run (cbStop backend stopGraceSeconds name) cp (cbRunFailure backend)
+              run' (Just cmd) (cbStop backend stopGraceSeconds name) cp (cbRunFailure backend)
 
 -- Container sessions (spec 15.5) -------------------------------------------
 
@@ -384,6 +388,31 @@ sessionExec name wantStdin marker cmd =
       execEnv = [(sessionMarkerVar, marker)],
       execCommand = ["/bin/sh", "-c", cmd]
     }
+
+-- | A command run in a session as 'commandFromStdin' runs it.
+sessionExecFed :: Text -> Text -> ExecSpec
+sessionExecFed name marker =
+  (sessionExec name True marker "") {execCommand = "/bin/sh" : commandFromStdin}
+
+-- | The arguments of a @/bin/sh@ that reads its command string from its
+-- standard input, to the end, and runs it with that input empty, as a
+-- command's is (spec 10.2). The command string is thereby on no command
+-- line: neither the engine client's on the host nor the shell's in the
+-- container, both of which the host's process list shows. Only the
+-- shell's builtins read it, so an image needs nothing beyond @/bin/sh@.
+commandFromStdin :: [Text]
+commandFromStdin =
+  [ "-c",
+    T.intercalate
+      "\n"
+      [ "lask_command=",
+        "while IFS= read -r lask_line || [ -n \"$lask_line\" ]; do lask_command=\"$lask_command$lask_line",
+        "\"; done",
+        "unset lask_line",
+        "exec </dev/null",
+        "eval \"$lask_command\""
+      ]
+  ]
 
 -- | The variable that marks the processes of one command in a
 -- session. A process inherits it from the one that started it, so it
@@ -520,6 +549,13 @@ withDenials sink summary envJson execNo cmd (Just p) act = do
       denied
   pure r
 
+-- | A container run of a command string that @/bin/sh@ reads from its
+-- standard input ('commandFromStdin'), named so that it can be stopped
+-- if the command is abandoned (8.7).
+shellRunFed :: FilePath -> Text -> Text -> Map Text Value -> [BaseMount] -> RunSpec
+shellRunFed baseDir name image opts mounts =
+  (shellRun baseDir name image opts mounts True "") {runCommand = commandFromStdin}
+
 -- | A container run of a command string through @/bin/sh@, named so
 -- that it can be stopped if the command is abandoned (8.7); with stdin
 -- kept open when the shell is to be fed on it (the filesystem runner
@@ -606,11 +642,14 @@ runLoggedProcess ::
   Int ->
   -- | Command string (rendered on the start line).
   Text ->
+  -- | What the process is given on its standard input, which then
+  -- ends; nothing when it is 'Nothing'.
+  Maybe Text ->
   -- | Stop the container the process runs, if it runs one.
   IO () ->
   CreateProcess ->
   IO (Int, Text, Text)
-runLoggedProcess sink summary envJson0 execNo cmd stopC cp = do
+runLoggedProcess sink summary envJson0 execNo cmd fed stopC cp = do
   -- Masked against the registry as it stands now (spec 12.8), before
   -- the command runs and before any sink can retain the log record.
   maskedCmd <- maskSecrets cmd
@@ -624,7 +663,12 @@ runLoggedProcess sink summary envJson0 execNo cmd stopC cp = do
     cp {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
     stop
     $ \(mIn, mOut, mErr, ph) -> do
-      mapM_ hClose mIn
+      -- A shell that reads its command from stdin stops reading at the
+      -- end of it; one that has exited already leaves a broken pipe,
+      -- which its exit code reports.
+      forM_ mIn $ \h -> do
+        forM_ fed $ \t -> void (try (BS.hPut h (TE.encodeUtf8 t)) :: IO (Either IOException ()))
+        void (try (hClose h) :: IO (Either IOException ()))
       emit maskedCmd ClStart
       (out, errOut) <- case (mOut, mErr) of
         (Just hOut, Just hErr) ->

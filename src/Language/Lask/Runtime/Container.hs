@@ -81,7 +81,9 @@ data BuildSpec = BuildSpec
     bsTag :: Text,
     -- | In name order.
     bsArgs :: [(Text, Text)],
-    bsPlatform :: Maybe Text
+    bsPlatform :: Maybe Text,
+    -- | Build with no network (spec 10.3, @build_network@).
+    bsOffline :: Bool
   }
 
 -- | One container run: the base directory mounted as its working
@@ -316,6 +318,7 @@ cliBackend engine =
               <> (if engine == Podman then [] else ["--progress=plain"])
               <> ["-f", bsFile spec, "-t", T.unpack (bsTag spec)]
               <> maybe [] (\p -> ["--platform", T.unpack p]) (bsPlatform spec)
+              <> (if bsOffline spec then ["--network", "none"] else [])
               <> concat [["--build-arg", T.unpack (k <> "=" <> v)] | (k, v) <- sortOn fst (bsArgs spec)]
               <> [bsContext spec]
           step line = case T.breakOn " [" line of

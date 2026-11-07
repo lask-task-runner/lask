@@ -2628,7 +2628,7 @@ dockerRunOptions =
 -- are given only in a head's own argument list, as literals, so that
 -- the images a program uses are known by reading it.
 imageOptionNames :: [Text]
-imageOptionNames = ["platform", "context", "build_args"]
+imageOptionNames = ["platform", "context", "build_args", "build_network"]
 
 -- | The type of a runnable's options, for a diagnostic that points at
 -- the braces.
@@ -2648,10 +2648,15 @@ elabEnv ctx path locals sp h mArgs = case classifyHead h of
     pure (Core sp (CEnv "docker" (("image", Core sp (CStrLit ref)) : opts)), TyEnvironment)
   HeadRecipe written -> do
     dockerfile <- treePath "the recipe path" written
-    opts <- options [("platform", TyString), ("context", TyString), ("build_args", TyMap TyString)]
+    opts <- options [("platform", TyString), ("context", TyString), ("build_args", TyMap TyString), ("build_network", TyString)]
     _ <- requireLiteral opts "platform"
     mapM_ (treePath "'context'") =<< requireLiteral opts "context"
     requireLiteralTable opts "build_args"
+    -- What the build reaches (10.3): "none", or the engine's default.
+    network <- requireLiteral opts "build_network"
+    case network of
+      Just n | n `notElem` ["none", "default"] -> envErr ("'build_network' takes \"none\" or \"default\", not '" <> n <> "'")
+      _ -> pure ()
     pure
       ( Core sp (CEnv "docker" (map recipeArg (("dockerfile", Core sp (CStrLit dockerfile)) : opts))),
         TyEnvironment

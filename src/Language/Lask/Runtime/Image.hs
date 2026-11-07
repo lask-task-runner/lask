@@ -57,7 +57,10 @@ data Recipe = Recipe
     rcContext :: Text,
     -- | In name order.
     rcBuildArgs :: [(Text, Text)],
-    rcPlatform :: Maybe Text
+    rcPlatform :: Maybe Text,
+    -- | @build_network@: @"none"@ builds with no network; 'Nothing'
+    -- (or @"default"@) with the engine's default one (spec 10.3).
+    rcNetwork :: Maybe Text
   }
   deriving (Show, Eq, Ord)
 
@@ -74,9 +77,12 @@ recipeSource df
 -- declared build arguments and the platform (spec 10.3), so changing
 -- any of them yields a different tag and cannot reuse a cached image.
 -- A recipe with no platform hashes as it did before platforms were
--- covered, so its tag does not move.
+-- covered, so its tag does not move. A recipe built with no network
+-- (@build_network = "none"@) is an image of its own, so that what an
+-- offline build makes is never one a build with the network made; one
+-- built with the default network hashes as before.
 recipeTag :: FilePath -> Recipe -> IO (Either Text Text)
-recipeTag baseDir (Recipe dockerfile context buildArgs platform) = do
+recipeTag baseDir (Recipe dockerfile context buildArgs platform network) = do
   file <- resolveInBase baseDir (T.unpack dockerfile)
   r <- try (BS.readFile file)
   pure $ case r of
@@ -84,7 +90,8 @@ recipeTag baseDir (Recipe dockerfile context buildArgs platform) = do
       Left ("cannot read Dockerfile '" <> dockerfile <> "': " <> T.pack (show (e :: IOException)))
     Right bytes ->
       let platformKey = maybe "" ("\0platform=" <>) platform
-          key = hashBytes (bytes <> TE.encodeUtf8 ("\0" <> context <> buildArgKey buildArgs <> platformKey))
+          networkKey = if network == Just "none" then "\0network=none" else ""
+          key = hashBytes (bytes <> TE.encodeUtf8 ("\0" <> context <> buildArgKey buildArgs <> platformKey <> networkKey))
        in Right ("lask/" <> T.replace "sha256-" "" key)
 
 -- | Build arguments in name order, so the hash does not depend on the
@@ -117,10 +124,10 @@ imageExists = cbImageExists
 --
 -- The build's steps are reported as they run: @[3/6] RUN apk add ...@.
 buildRecipe :: ContainerBackend -> (Text -> IO ()) -> FilePath -> Recipe -> Text -> IO (Either Text ())
-buildRecipe backend report baseDir (Recipe dockerfile context buildArgs platform) tag = do
+buildRecipe backend report baseDir (Recipe dockerfile context buildArgs platform network) tag = do
   file <- resolveInBase baseDir (T.unpack dockerfile)
   dir <- resolveInBase baseDir (T.unpack context)
-  cbBuild backend report (BuildSpec file dir tag (sortOn fst buildArgs) platform)
+  cbBuild backend report (BuildSpec file dir tag (sortOn fst buildArgs) platform (network == Just "none"))
 
 -- Registry references (spec 10.3) ---------------------------------------------
 
