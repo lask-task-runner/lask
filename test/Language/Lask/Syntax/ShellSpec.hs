@@ -59,7 +59,9 @@ spec = do
           "echo \"a && b\" 'c | d'",
           "echo a\\;b",
           "a &&\nb",
-          "a\n\nb"
+          "a |\n\n  b",
+          "a;\nb",
+          "a &\nb"
         ]
 
   describe "syntax errors (spec 6.6)" $ do
@@ -102,6 +104,21 @@ spec = do
     it "reports an error inside a command substitution" $
       problem "echo $(| x)" `shouldBe` Just "'|' has no command before it"
 
+    it "reports a newline that ends a command, as a braced command can hold" $ do
+      let why = Just "a newline after a command starts another one, and only the exit code of the last is checked: join them with '&&', or run each as a command of its own"
+      problem "npm ci\nnpm test" `shouldBe` why
+      problem "a\n\nb" `shouldBe` why
+      problem "(a)\nb" `shouldBe` why
+      problem "echo 'x\ny'" `shouldBe` Nothing
+
+    it "reports lask's pipes, which the shell would read as a pipe and a redirection" $ do
+      problem "uname -s |> trim"
+        `shouldBe` Just "'|>' is a lask operator, which a command string hands to the shell: to apply it to the command's output, close the command with braces first, as in ${ ... } |> f"
+      problem "uname -s <| trim"
+        `shouldBe` Just "'<|' is a lask operator, which a command string hands to the shell: to apply it to the command's output, close the command with braces first, as in f <| ${ ... }"
+      problem "echo '|>' \"<|\"" `shouldBe` Nothing
+      problem "a | > out" `shouldBe` Nothing
+
   describe "where reading stops (determinacy, spec 10.9)" $ do
     it "stops at a reserved word in command position" $ do
       problem "for f in *.go; do go build $f; done &&" `shouldBe` Nothing
@@ -129,7 +146,7 @@ spec = do
 
     it "reads a comment to the end of its line" $ do
       problem "echo hi # it's && |" `shouldBe` Nothing
-      problem "echo hi # note\n| x" `shouldBe` Just "'|' has no command before it"
+      problem "echo hi; # note\n| x" `shouldBe` Just "'|' has no command before it"
 
     it "reports what comes before the stop" $
       problem "&& if" `shouldBe` Just "'&&' has no command before it"

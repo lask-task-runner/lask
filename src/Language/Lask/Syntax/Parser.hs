@@ -85,7 +85,7 @@ commandHints toks =
         <> T.pack (show l)
         <> " runs to the end of its line, so its closing '"
         <> T.singleton c
-        <> "' was read as part of the command; a command cannot sit inside brackets: bind it to a name on its own line first"
+        <> "' was read as part of the command; to end it before the bracket, close it with braces: ${ ... }"
     )
   | Spanned (Span start _) (TCommand _ _ parts) <- toks,
     let l = line start,
@@ -852,6 +852,7 @@ pCommandExpr :: P Expr
 pCommandExpr = do
   Spanned sp (stream, envToks, parts) <- matchTok "command" $ \t -> case t of
     TCommand s env ps -> Just (s, env, ps)
+    TBracedCommand s env ps -> Just (s, env, ps)
     _ -> Nothing
   env <- traverse (subExpr "<command environment>") envToks
   ps <- traverse convertPart parts
