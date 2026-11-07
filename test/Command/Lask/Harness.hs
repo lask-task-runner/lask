@@ -134,7 +134,8 @@ fakeDocker =
     [ "#!/bin/sh",
       "S=\"$FAKE_DOCKER_STATE\"",
       "mkdir -p \"$S/present\" \"$S/registry\"",
-      "echo \"$*\" >> \"$S/calls\"",
+      -- One line per invocation, an argument's own newlines included.
+      "printf '%s\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" >> \"$S/calls\"",
       "key() { printf '%s' \"$1\" | tr '/:@' '___'; }",
       "repo() { r=\"${1%@*}\"; last=\"${r##*/}\"; case \"$last\" in *:*) r=\"${r%:*}\";; esac; printf '%s' \"$r\"; }",
       "[ -f \"$S/daemon-down\" ] && { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }",
@@ -183,8 +184,11 @@ fakeDocker =
       "      if [ \"$prev\" = --env ]; then case \"$a\" in *=*) ;; *) eval \"v=\\${$a-UNSET}\"; echo \"$a=$v\" >> \"$S/env\" ;; esac; fi",
       "      prev=\"$a\"",
       "    done",
-      "    case \"$*\" in *'sleep 30'*) sleep 30 ;; esac; echo ran ;;",
-      "  exec) for a in \"$@\"; do last=\"$a\"; done; echo \"exec: $last\" ;;",
+      -- A command string lask gives the shell on its stdin is read
+      -- from there (spec 10.2).
+      "    fed=''; case \"$*\" in *lask_command=*) fed=$(cat) ;; esac",
+      "    case \"$* $fed\" in *'sleep 30'*) sleep 30 ;; esac; echo ran ;;",
+      "  exec) case \"$*\" in *lask_command=*) last=$(cat) ;; *) for a in \"$@\"; do last=\"$a\"; done ;; esac; echo \"exec: $last\" ;;",
       "  stop|rm) ;;",
       "  *) echo \"fake docker: unsupported: $*\" >&2; exit 2 ;;",
       "esac"

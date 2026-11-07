@@ -109,7 +109,8 @@ headImage args = case (lookup "image" args, lookup "dockerfile" args) of
           rcBuildArgs = case lookup "build_args" args of
             Just (Core _ (CMapLit kvs)) -> sortOn fst [(k, v) | (k, Core _ (CStrLit v)) <- kvs]
             _ -> [],
-          rcPlatform = literalArg "platform" args
+          rcPlatform = literalArg "platform" args,
+          rcNetwork = literalArg "build_network" args
         }
   _ -> Nothing
 
@@ -847,9 +848,17 @@ targetParametric t = any (== FromParam) [v | (k, v) <- Map.toList (tOpts t), k `
 -- is computed is 'Nothing'.
 targetAccess :: Target -> AccessSet
 targetAccess t = case tHead t of
-  HeadLocal -> HostAccess
-  _ -> AccessSet files volumes network publish
+  HeadLocal -> HostAccess "#local reaches the whole host"
+  _
+    | Just vs <- volumes,
+      v : _ <- filter (hostEquivalent . volSource) vs ->
+        HostAccess ("the volume " <> q (sourceOf (volSource v)) <> " gives what the host has")
+    | otherwise -> AccessSet files volumes network publish
   where
+    q x = "\"" <> x <> "\""
+    sourceOf s' = case s' of
+      VolumeHost h -> h
+      VolumeNamed n -> n
     opt k = case Map.lookup k (tOpts t) of
       Just (Known SNull) -> Nothing
       Nothing -> Nothing
@@ -1237,10 +1246,9 @@ secretAdvisories core
         <> secretLabel (secretFile sc) sc
         <> "' is "
         <> ( case ch of
-               ChOption k -> "in the run option '" <> k <> "', which is given to the engine client"
-               _ -> "in the command string, which is given to the engine client and the shell"
+               ChOption k -> "in the run option '" <> k <> "', which is given to the engine client on a command line of the host; give it in 'env'"
+               _ -> "in the command string, from which the programs the command runs are given it as arguments, which the host's process list shows; give it in 'env' to a program that reads the variable itself"
            )
-        <> " on a command line of the host; give it in 'env' and read the variable in the command"
 
 -- | What each entry of a table or record can be: those of a literal,
 -- or of a static value.

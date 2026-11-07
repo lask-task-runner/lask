@@ -1979,10 +1979,11 @@ deploy(
 ) = do {
   // `secret_key` is masked in the log, whether it came from the default
   // expression or was supplied directly as `lask run deploy --secret_key ...`.
-  // It is given to the container as a variable: written into the command
-  // string, it would be on a command line of the host (W-SECRET-COMMAND-LINE).
+  // It is given to the container as the variable the CLI reads itself:
+  // written into the command, it would be an argument of the program the
+  // command runs, which the host's process list shows (W-SECRET-COMMAND-LINE).
   aws = #amazon/aws-cli:2.31.9{env: {"AWS_SECRET_ACCESS_KEY": secret_key}}
-  $[aws] aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY" --region #{region}
+  $[aws] aws sts get-caller-identity --region #{region}
 }
 ```
 
@@ -2639,7 +2640,7 @@ The execution environment profiles specified by this specification are `local` a
   - The image is named by the head of the environment expression (6.7), in one of two forms.
     - **Registry reference**: `#<reference>`, an image in a registry. It may carry a registry, a tag or a digest, or none of them: a bare repository name names its `latest`. Whatever a reference names upstream, the lock pins the image it resolved to when it was materialized (10.3), so a reference that moves upstream does not move a run.
     - **Recipe**: `#./<path>`, a Dockerfile, with the image options `context`, naming its build context, and `build_args`, supplying the build arguments the recipe hash covers (10.3). `context` defaults to the directory containing the Dockerfile. `context` and `build_args` given to a registry reference are static errors (`E-TYPE-ENV-CONSTRUCT`), because there is then no build for them to reach.
-  - Image options: `platform` (`String`) for either form, and `context` (`String`) and `build_args` (`Map<String>`) for a recipe. They decide which image is materialized and run: `platform` selects a variant of a multi-platform image, or the platform a recipe is built for. They are given only in a head's own argument list, as literals containing no interpolation (6.7), so that the set of images a program uses is determinable by reading its source (10.3).
+  - Image options: `platform` (`String`) for either form, and `context` (`String`), `build_args` (`Map<String>`) and `build_network` (`"none"` or `"default"`, 10.3) for a recipe. They decide which image is materialized and run: `platform` selects a variant of a multi-platform image, or the platform a recipe is built for. They are given only in a head's own argument list, as literals containing no interpolation (6.7), so that the set of images a program uses is determinable by reading its source (10.3).
   - The Dockerfile and `context` are relative to the directory of the module in which the expression is written, and must resolve inside the tree of that module. A path escaping that tree is a static error (`E-TYPE-ENV-CONSTRUCT`). A recipe is therefore covered by the module's content hash (Chapter 5) and cannot be altered without invalidating the pin.
   - Both keep naming the same file wherever the environment is later used: from a module that imports it, or from a project that depends on the tree. A library can therefore ship the recipes of its environments beside them.
   - Run options configure the container. They are given to `runnable` (15.5), or in braces after a head (6.7), and make a `Runnable`. Implementations may provide further run options (e.g. `memory`, `cpus`); an unknown option name must be a static error (7.7).
@@ -2690,7 +2691,7 @@ Each profile has at least the following execution attributes.
 
 How this implementation launches a command:
 
-- `docker`: the container is started with the image's entrypoint replaced by `/bin/sh`, and the command string is run as `/bin/sh -c <command string>`. An image must therefore provide `/bin/sh`; an image without a shell (a distroless or `scratch`-based tool image) cannot run a command, and is wrapped in an image that has one.
+- `docker`: the container is started with the image's entrypoint replaced by `/bin/sh`, and the command string is run by it as `/bin/sh -c <command string>` would run it. This implementation gives the command string to `/bin/sh` on its standard input, which the shell reads to the end, with its builtins alone, before running the command with that input empty, as a command's is: so the command string is on no command line, neither the engine client's on the host nor the shell's in the container, both of which the host's process list shows. An image must therefore provide `/bin/sh`; an image without a shell (a distroless or `scratch`-based tool image) cannot run a command, and is wrapped in an image that has one.
 - `local`: the command string is run by the host's shell, `/bin/sh -c` on POSIX systems and `cmd.exe /c` on Windows.
 
 Implementations may extend with additional profiles, but must not break compatible behavior with the above 2 profiles.
@@ -2715,6 +2716,8 @@ Materialization:
 - The pin moves only when the program does. Writing another reference — a new tag — materializes a new image; the same tag pointing somewhere new upstream changes nothing until its entry is removed from the lock.
 - A recipe is built, for its `platform` if one is given. The resulting image is tagged `lask/<dependency path>/<recipe hash>`, where the recipe hash covers the Dockerfile, the build context, the declared build arguments, and the platform. A changed recipe therefore yields a different image and cannot reuse a cached one.
 - Builds are performed with no host mount other than the declared context, without privileged mode, and without host networking.
+- What a build's steps reach is the network the engine gives a build, unless the recipe is given `build_network = "none"`, which builds it with no network at all. A recipe a dependency writes builds as it is written, so what a project's builds may reach is read in its recipes, and `sync`'s summary and `envs list` show a recipe built with no network as `(no network)`. A build cannot be given `egress` (10.12): an engine places a build's steps on no network Lask makes, so it is reached either without a network or with the engine's own.
+- A recipe built with no network is an image of its own: its hash covers that too, so an image a build with the network made is never taken for one, and its lock entry is keyed `#<Dockerfile>(build_network = "none")`. A recipe built with the default network hashes as it did before `build_network` was covered, whether it gives `"default"` or nothing.
 
 Timing:
 
@@ -2953,12 +2956,13 @@ Access sets:
 - The fifth, `secrets`, is read from the values the use is given (Secret flow, below): the secrets that reach it, each with the **channel** by which it does:
   - `env <NAME>`: in the value of the variable `NAME` of the `env` option.
   - `option <name>`: in any other run option, or in a key of `env`. These are given to the engine client on its command line (10.10).
-  - `command`: in the command string of a command execution expression, of `run`, or of a command run in a `with_container` session. It is the argument of `sh -c` on the client's command line, and on Linux the command lines of a container's processes are read from the host as well.
+  - `command`: in the command string of a command execution expression, of `run`, or of a command run in a `with_container` session. Lask puts the command string on no command line (10.2), but what it interpolates becomes the arguments of the programs it runs, which on Linux the host reads from its process list, as it reads every container process's.
   - `file`: in an argument of a filesystem function (15.11), which writes it, or names a path by it.
 - No other run option enters an access set. `base_mount` moves the base directory without widening what reaches it, and `read_only`, `tmpfs`, `cap_drop`, `dns`, `dns_search` and `add_hosts` stay inside the container or the network it is already on.
 - `egress` enters the access set, and must be static as `network` must (Resolution, below).
 - A run option that reaches past the container in another way — a device, a privilege, a namespace of the host — must not be provided unless this section gives it a place in the access set.
 - A use in `#local` reaches everything its process can (10.7). Its access set is unbounded in `files`, `volumes`, `network` and `publish`; its `secrets` are read as for any other use.
+- So is a use that mounts a host path that gives a container what the host has, whatever its mode: the root, `/`; the kernel's interfaces, `/proc`, `/sys` and `/dev`, and what is under them; the socket or the state of a container engine, which starts any container with any option (`/var/run/docker.sock`, `/run/docker.sock`, `/run/containerd`, `/run/podman`, `/var/lib/docker`, `/var/lib/containerd`, `/var/lib/containers`, and any path ending in `/docker.sock`, `/podman.sock`, `/containerd.sock` or `/buildkitd.sock`); the host's configuration and root's home, `/etc`, `/root` and `/boot`; and any directory that holds one of those, such as `/var/run`. A path is read with `.` and `..` resolved as written, and no link is followed. A constraint that admits the volume does not make it less than the host, so it is within no constraint that gives `files`, `volumes`, `network` or `publish`.
 
 Constraints:
 
@@ -3017,7 +3021,7 @@ Checking:
 
 - For every declaration covered by a constraint, every use it reaches is checked against the constraint the declaration is checked against. A use whose access set is resolved and is not within it is `E-TYPE-WITHIN-EXCEEDED`. A use whose access set is unresolved is `E-TYPE-WITHIN-UNPROVEN`: a constraint holds only of what is shown to hold it.
 - A parametric use is checked at each call that resolves it, and at the invocation that resolves it from the command line.
-- Whether or not a constraint covers it, a secret that reaches a use by the channel `option` or `command` is the advisory `W-SECRET-COMMAND-LINE` (14.2), placed where the secret enters the option or the command string, or, when it enters through a parameter, at the call that gives it. The diagnostic names the secret and the use, and suggests giving the value in `env` and reading the variable in the command.
+- Whether or not a constraint covers it, a secret that reaches a use by the channel `option` or `command` is the advisory `W-SECRET-COMMAND-LINE` (14.2), placed where the secret enters the option or the command string, or, when it enters through a parameter, at the call that gives it. The diagnostic names the secret and the use, and suggests giving the value in `env`, to a program that reads the variable itself: expanded into a program's arguments by the shell (`--password "$PASSWORD"`), it is on that program's command line all the same.
 
 ```lask fragment
 alpine = #alpine:3.22.2
@@ -3500,7 +3504,7 @@ Common columns:
 - `CHECK`: what the constraints covering the uses of the row (10.11) find: `ok`, `exceeded` or `unproven`, the worst of them when they differ, or `—` when no use of the row is covered by one. A use left to a parameter of the function enumerated from is `—`: each call of it, and its invocation, is where it is checked.
 - The listings are made whether or not the program keeps to its constraints: they are where what a constraint finds is seen whole.
 - `REQUIRED BY`: the declarations whose uses are in the row, in the notation of `envs list`, two shown and how many more. A parametric use resolved at a call is shown as the declaration of the call, `→`, and the declaration the use is written in (`main.lask: ok → release_of`), unless the call is in the declaration the use is written in.
-- An entry that reaches past what the base directory alone gives is marked `!`: the host for `#local`, a volume, a `default` or `host` network, and a published port. An `egress` network is not marked: it reaches only the destinations it lists, which are shown.
+- An entry that reaches past what the base directory alone gives is marked `!`: the host for `#local`, a volume, a `default` or `host` network, and a published port. A volume that gives what the host has (10.11) is marked `! (host)`. An `egress` network is not marked: it reaches only the destinations it lists, which are shown.
 
 Columns (`envs files`):
 
@@ -4509,7 +4513,7 @@ Advisory codes:
   - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
   - `W-ASYNC-UNUSED`: a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`.
   - `W-COMMAND-OPTION`: a command string uses an option or subcommand that a command schema which is not closed does not list (Chapter 5). Reported statically, with `stage: "static"`.
-  - `W-SECRET-COMMAND-LINE`: a secret reaches a use in its command string or in a run option other than a value of `env`, where it is on a command line of the host (10.11). Reported statically, with `stage: "static"`.
+  - `W-SECRET-COMMAND-LINE`: a secret reaches a use in its command string, from which it becomes the arguments of the programs the command runs, or in a run option other than a value of `env`, which is on the engine client's command line (10.11). Reported statically, with `stage: "static"`.
   - `W-ASYNC-UNAWAITED`: an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6). Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`.
 - Reporting advisory diagnostics is optional, with one exception: `W-ASYNC-UNAWAITED` is always reported, because a failure it carries is otherwise invisible. `check` and `serve` are the expected places for the static ones; `run` and `eval` report the run-time ones on stderr.
 
@@ -4978,7 +4982,7 @@ Container sessions:
 - Given `#local`, or a session that is open, `with_container` evaluates `body(env)`: the host keeps its state already, and a session is one already. A function can therefore take any runnable and open a session on it, and a session can be given to a function that opens one.
 - A command in a session is logged with the environment summary of `env` (12.3). The execution log (12.2) records at `info` the start of the session, naming its container and `env`, and the removal of its container.
 - A session is serialized as the environment `env` it was started on (13.1).
-- This implementation starts the container with a `/bin/sh` that reads its standard input to the end, and holds the other end of that input: closing it ends the container, which is removed then, and lask's exit closes it however lask exits. A command is run with the engine client's `exec` as `/bin/sh -c <command string>`, marked by a variable of its own, `LASK_SESSION_EXEC`, which the processes it starts inherit; an abandoned command is stopped by sending its marked processes the termination request of 8.7.
+- This implementation starts the container with a `/bin/sh` that reads its standard input to the end, and holds the other end of that input: closing it ends the container, which is removed then, and lask's exit closes it however lask exits. A command is run with the engine client's `exec` by a `/bin/sh` given the command string on its standard input, as a container's command is (10.2), marked by a variable of its own, `LASK_SESSION_EXEC`, which the processes it starts inherit; an abandoned command is stopped by sending its marked processes the termination request of 8.7.
 
 ```lask
 // Install a tool outside /work, start a server in the background, and

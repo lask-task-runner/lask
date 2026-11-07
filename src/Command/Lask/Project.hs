@@ -51,7 +51,7 @@ import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Access (AccessTable, Channel (..), Constraint (..), Finding (..), channelText, exposedChannel, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume, renderConstraint)
+import Language.Lask.Access (AccessTable, Channel (..), Constraint (..), Finding (..), channelText, exposedChannel, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, hostEquivalent, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume, renderConstraint)
 import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Core.AST (Core (..))
 import Language.Lask.Elaborate (CommandUse (..), CoreProgram (..))
@@ -193,6 +193,9 @@ requiredCell labels = case nub (sort labels) of
 environmentLabel :: ImageRow -> Text
 environmentLabel row = case irSource row of
   FromRegistry _ ps | any isJust ps -> irHead row <> " (" <> T.intercalate ", " (map (fromMaybe "native") ps) <> ")"
+  -- A recipe built with no network is told apart from the one built
+  -- with it, which is a different image (spec 10.3).
+  FromRecipe r | rcNetwork r == Just "none" -> irHead row <> " (no network)"
   _ -> irHead row
 
 printTable :: CommonOpts -> [Text] -> [[Cell]] -> IO ()
@@ -1229,7 +1232,7 @@ fileLines r
       Nothing -> [(target, ".", "(computed)")]
     volumes = case rowStrings r "volumes" of
       Just vs ->
-        [ (volTarget v, source (volSource v), modeText (volMode v) <> " !")
+        [ (volTarget v, source (volSource v), modeText (volMode v) <> (if hostEquivalent (volSource v) then " ! (host)" else " !"))
         | Just v <- map parseVolume vs
         ]
       Nothing -> [("(computed)", "(volumes)", "(computed) !")]
