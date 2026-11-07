@@ -184,6 +184,7 @@ lexScript inner = run (LS [] [] Nothing 0)
       '|' -> case rest of
         AChar sp2 '|' : rest' -> Next (op (sp <> sp2) "||" st) rest'
         AChar sp2 '&' : _ -> Done st (Left (Stop sp2))
+        AChar sp2 '>' : _ -> Done st (Left (Bad (sp <> sp2) (laskOperator "|>")))
         _ -> Next (op sp "|" st) rest
       '&' -> case rest of
         AChar sp2 '&' : rest' -> Next (op (sp <> sp2) "&&" st) rest'
@@ -229,6 +230,7 @@ lexScript inner = run (LS [] [] Nothing 0)
             -- A here-document, and process substitution, which only
             -- some shells have.
             AChar s2 '<' : _ | c == '<' -> Done st (Left (Stop s2))
+            AChar s2 '|' : _ | c == '<' -> Done st (Left (Bad (sp <> s2) (laskOperator "<|")))
             _ -> case rest' of
               AChar s2 '(' : _ -> Done st (Left (Stop s2))
               _ -> Next (emit (TRedir sp' name) st) rest'
@@ -449,7 +451,12 @@ parse cut = go AtStart [] Nothing []
       TOp sp t : rest -> case t of
         "\n" -> case mode of
           Needs {} -> go mode groups Nothing acc rest
-          _ -> go AtStart groups Nothing acc rest
+          AtStart -> go AtStart groups Nothing acc rest
+          _ ->
+            problem
+              sp
+              "a newline after a command starts another one, and only the exit code of the last is checked: join them with '&&', or run each as a command of its own"
+              acc
         "(" -> case mode of
           AtStart -> go AtStart ((sp, False) : markCommand groups) Nothing acc rest
           Needs {} -> go AtStart ((sp, False) : markCommand groups) Nothing acc rest
@@ -502,6 +509,19 @@ parse cut = go AtStart [] Nothing []
             && not (T.head name `elem` ['0' .. '9'])
 
     reserved w = swLiteral w && swPrefix w `elem` reservedWords
+
+-- | Why a lask operator written in a command string is a mistake: the
+-- shell reads it as two operators of its own.
+laskOperator :: Text -> Text
+laskOperator o =
+  "'"
+    <> o
+    <> "' is a lask operator, which a command string hands to the shell: to apply it to the command's output, close the command with braces first, as in "
+    <> example
+  where
+    example
+      | o == "<|" = "f <| ${ ... }"
+      | otherwise = "${ ... } " <> o <> " f"
 
 -- | Words that open a compound command or change how the rest is read
 -- in some shell. Reading stops at any of them in command position.

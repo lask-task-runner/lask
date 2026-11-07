@@ -487,23 +487,26 @@ lexSemanticTokensWith commandWordSpans fileName src =
     flattenToken (Tok.Spanned sp t) = case t of
       Tok.TString strParts ->
         carve sp SemanticTokenTypes_String (partAtoms strParts)
-      Tok.TCommand _ env cmdParts ->
-        let headLen = case sp of
-              S.Span (S.Position _ l c) _
-                | maybe False (`elem` ("12*" :: String)) (charAt l (c + 1)) -> 2
-              _ -> 1
-            (headSpan, restSpan) = splitSpanAt sp headLen
-            nested =
-              maybe [] (concatMap flattenToken) env
-                <> partAtoms cmdParts
-                <> [ (ws, SemanticTokenTypes_Function)
-                   | ws <- commandWordSpans,
-                     spanWithin ws sp
-                   ]
-         in (headSpan, SemanticTokenTypes_Function) : carve restSpan SemanticTokenTypes_String nested
+      Tok.TCommand _ env cmdParts -> command env cmdParts
+      Tok.TBracedCommand _ env cmdParts -> command env cmdParts
       _ -> case toSemanticTokenTypes t of
         Just typ -> [(sp, typ)]
         Nothing -> []
+      where
+        command env cmdParts =
+          let headLen = case sp of
+                S.Span (S.Position _ l c) _
+                  | maybe False (`elem` ("12*" :: String)) (charAt l (c + 1)) -> 2
+                _ -> 1
+              (headSpan, restSpan) = splitSpanAt sp headLen
+              nested =
+                maybe [] (concatMap flattenToken) env
+                  <> partAtoms cmdParts
+                  <> [ (ws, SemanticTokenTypes_Function)
+                     | ws <- commandWordSpans,
+                       spanWithin ws sp
+                     ]
+           in (headSpan, SemanticTokenTypes_Function) : carve restSpan SemanticTokenTypes_String nested
 
     partAtoms = concatMap partAtom
     partAtom (Tok.Chunk _ _) = []

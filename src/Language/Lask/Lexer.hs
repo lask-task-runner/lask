@@ -218,9 +218,10 @@ isIdentChar c =
 -- Command expressions ----------------------------------------------------
 
 -- | @$[stream][ \[env\] ] shell-string@ up to (not including) the
--- terminating newline (spec 6.6). Stream selector and @[env]@ must
+-- terminating newline, or @$[stream][ \[env\] ] { shell-string }@ up
+-- to its closing brace (spec 6.6). Stream selector and @[env]@ must
 -- directly follow @$@ without whitespace; otherwise they are part of
--- the command string.
+-- the command string. Whitespace before the brace is not significant.
 pCommand :: Lexer Token
 pCommand = do
   _ <- char '$'
@@ -232,8 +233,11 @@ pCommand = do
           <|> StreamAll <$ char '*'
       )
   envToks <- optional (char '[' *> pNestedUntil TLBracket TRBracket)
-  parts <- pCommandString
-  pure (TCommand stream envToks parts)
+  _ <- takeWhileP Nothing (\c -> c == ' ' || c == '\t')
+  open <- optional (getSourcePos <* char '{')
+  case open of
+    Just pos -> TBracedCommand stream envToks <$> pBracedString pos
+    Nothing -> TCommand stream envToks <$> pCommandString
 
 pCommandString :: Lexer [StrPart]
 pCommandString = do
@@ -253,6 +257,56 @@ pCommandString = do
         ]
     plainChar c =
       c /= '\n' && c /= '\r' && c /= '\\' && c /= '#'
+
+-- | The inside of a braced command, @${ ... }@, through its closing
+-- brace (spec 6.6). Braces are counted whatever the shell quoting, as
+-- a hole's are; a brace written after @\\@ is not counted and is
+-- kept as written, backslash and all, because that is what the shell
+-- and its regular expressions read. Newlines are part of the string,
+-- and whitespace at either end is removed.
+pBracedString :: SourcePos -> Lexer [StrPart]
+pBracedString open = do
+  _ <- takeWhileP Nothing (\c -> c == ' ' || c == '\t' || c == '\n' || c == '\r') -- leading trim
+  parts <- go (0 :: Int)
+  case trimBracedEnd (mergeChunks parts) of
+    [] -> fail "a command between braces cannot be empty"
+    ps -> pure ps
+  where
+    go depth
+      | depth == 0 = ([] <$ char '}') <|> more depth
+      | otherwise = more depth
+    more depth = do
+      (p, depth') <- part depth
+      (p :) <$> go depth'
+    same p = (\x -> (x, 0)) <$> p
+    part depth =
+      fmap (\(x, d) -> (x, depth + d)) . choice $
+        [ same (chunked ("#{" <$ chunk "\\#{")),
+          same (chunked ("#!{" <$ chunk "\\#!{")),
+          same (chunked ("" <$ try (char '\\' *> pNewline))), -- line continuation
+          same (chunked (try (char '\\' *> satisfy (\c -> c /= '\n' && c /= '\r')) >>= \c -> pure (T.pack ['\\', c]))),
+          same (chunked (T.singleton <$> char '\\')),
+          same (Interp <$> (chunk "#{" *> pNestedUntil TLBrace TRBrace)),
+          same (RawInterp <$> (chunk "#!{" *> pNestedUntil TLBrace TRBrace)),
+          (\x -> (x, 1)) <$> chunked ("{" <$ char '{'),
+          (\x -> (x, -1)) <$> chunked ("}" <$ char '}'),
+          same (chunked ("\n" <$ chunk "\r\n")),
+          same (chunked (takeWhile1P Nothing plainChar)),
+          same (chunked (T.singleton <$> satisfy (\c -> c == '#' || c == '\r'))),
+          eof *> fail ("the command opened with '{' on line " <> show (unPos (sourceLine open)) <> " has no closing '}'")
+        ]
+    plainChar c = c /= '\\' && c /= '#' && c /= '{' && c /= '}' && c /= '\r'
+
+-- | Remove the whitespace, newlines included, that ends a braced
+-- command string. The start is trimmed by consuming it, so that the
+-- spans of what follows stay where the source has them.
+trimBracedEnd :: [StrPart] -> [StrPart]
+trimBracedEnd = reverse . go . reverse
+  where
+    go (Chunk sp c : rest) =
+      let c' = T.dropWhileEnd (\x -> x == ' ' || x == '\t' || x == '\n') c
+       in if T.null c' then go rest else Chunk sp c' : rest
+    go ps = ps
 
 -- | Lex a nested token stream until the matching closer (exclusive).
 -- Newlines inside the capture are dropped: the capture is by

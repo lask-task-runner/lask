@@ -325,7 +325,7 @@ Lexical rules:
 
 - Whitespace (spaces, tabs) is treated as a token separator except inside string literals, command strings (6.6), and comments.
 - Consecutive whitespace is treated as equivalent to a single separator.
-- A newline is treated as an independent token (`newline`); at the top level it marks the end of a declaration (the declaration termination rules of Chapter 5), inside a `do` block it marks the end of a statement (the statement termination rules of 6.5), and in a command execution expression it marks the end of the command string (6.6). However, a newline that falls under the continuation rules of 6.5 is ignored in the same way as token-separating whitespace.
+- A newline is treated as an independent token (`newline`); at the top level it marks the end of a declaration (the declaration termination rules of Chapter 5), inside a `do` block it marks the end of a statement (the statement termination rules of 6.5), and in a command execution expression that is not braced it marks the end of the command string (6.6). However, a newline that falls under the continuation rules of 6.5 is ignored in the same way as token-separating whitespace.
 - Consecutive newlines (blank lines) are treated as equivalent to a single newline token. Blank lines produce no declarations or statements.
 - Comments are treated the same as whitespace for the purposes of lexical analysis.
 - A line comment ends at a newline, and a block comment is enclosed by `/*` and `*/`.
@@ -1221,7 +1221,7 @@ The conditional operator `c ? a : b`:
 - `c ? a : b` is syntactic sugar for `if (c) { a } else { b }` (6.4). It is the form of `IfExpr` whose branches are single expressions, and it is typed and evaluated exactly as that `IfExpr` is: `c` must be `Bool`, the two branches must have the same type `T`, which is the type of the whole expression, an expected type is propagated into both branches unchanged (4.3), and only the selected branch is evaluated.
 - It binds more loosely than every binary operator, so the condition is a whole `BinaryExpr`: `xs |> is_empty ? 0 : 1` tests `is_empty(xs)`. Each branch is a whole `Expression`, so `c ? a || b : xs |> f` needs no parentheses.
 - It associates to the right: `a ? x : b ? y : z` is `a ? x : (b ? y : z)`, and a conditional may stand in the middle branch without parentheses, as in `a ? b ? x : y : z`. A multi-way choice with more than two conditions is usually clearer as the condition form of `case` (6.4).
-- A newline before a line-leading `?` or `:`, and after a line-final `?` or `:`, continues the expression (6.5), so a long conditional may put each branch on its own line. This is how a branch can be a command execution expression other than the last one: a command string runs to the end of its line (6.6), so in `c ? $ echo a : $ echo b` the then branch swallows `: $ echo b`, while the three-line form below does not.
+- A newline before a line-leading `?` or `:`, and after a line-final `?` or `:`, continues the expression (6.5), so a long conditional may put each branch on its own line. This is one way a branch can be a command execution expression other than the last one: a command string runs to the end of its line (6.6), so in `c ? $ echo a : $ echo b` the then branch swallows `: $ echo b`, while the three-line form below does not. The other is the braced form, which ends at its closing brace: `c ? ${echo a} : ${echo b}`.
 
 ```lask
 greet(--loud = false, --name = "Lask"): String = do {
@@ -1600,14 +1600,16 @@ notify(--verbose = false) = do {
 ### 6.6 Command Execution Expressions
 
 ```ebnf
-CommandExpr  = "$" [ stream ] [ "[" Expression "]" ] shell_string .
-stream       = "1" | "2" | "*" .
-shell_string = { shell_char | interpolation | raw_hole } .
-raw_hole     = "#!{" Expression "}" .
-shell_char   = unicode_char .
+CommandExpr   = "$" [ stream ] [ "[" Expression "]" ] ( "{" braced_string "}" | shell_string ) .
+stream        = "1" | "2" | "*" .
+shell_string  = { shell_char | interpolation | raw_hole } .
+braced_string = { braced_char | "{" braced_string "}" | "\{" | "\}" | interpolation | raw_hole } .
+raw_hole      = "#!{" Expression "}" .
+shell_char    = unicode_char .
+braced_char   = unicode_char | newline .
 ```
 
-Here `shell_char` is `unicode_char` (the common lexical element of Chapter 3; excluding newlines). A command string terminates at the end of the line (details follow the lexical rules of this section).
+Here `shell_char` is `unicode_char` (the common lexical element of Chapter 3; excluding newlines), and `braced_char` is any character other than `{` and `}`, newlines included. A command string terminates at the end of the line, and a **braced** command string at its closing brace (details follow the lexical rules of this section).
 
 A command execution expression is syntactic sugar for concisely writing shell command execution. Semantically it is handled by normalization to the built-in function `run`. The stream specifiers `1`, `2`, and `*` derive from file descriptor numbers and select which part of the command's result is received (`1` = standard output, `2` = standard error, `*` = the entire result).
 
@@ -1642,14 +1644,17 @@ Desugaring rules:
 Lexical rules:
 
 - The command string extends from immediately after `$` (immediately after the stream specifier if present, or after the closing `]` if an environment specification is present) to the end of the line. The newline is the terminator of the command string and is treated as the newline token of 3.3. The stream specifier and environment specification must follow `$` without intervening whitespace.
+- When the first character there other than spaces and tabs is `{`, the command is **braced**: its command string is what lies between that `{` and the `}` that closes it, and what follows the `}` is not part of it, so the expression may go on on the same line. `${uname -s}`, `$ { uname -s }`, `$*{ls}` and `$[#alpine:3.22] {ls}` are braced commands. A shell brace group written as a whole command, `$ { a; b; }`, is therefore read as a braced command; since every command runs in a shell of its own (10.2), the group added nothing.
+- Inside a braced command, braces are counted to find the closing one, whatever the shell quoting around them: every `{` opens and every `}` closes, so the braces of `'{"a": {"b": 1}}'`, `awk '{print $1}'`, `${HOME}` and `find . -exec rm {} \;` are inside the command. The braces of a hole are the hole's own. A brace written right after `\` is not counted, and the `\` is kept: `\{` and `\}` reach the shell as written, as `\{2\}` in a regular expression, or `echo \}`, needs. A brace the command must hold unpaired inside quotes, where the shell would keep a `\`, is written as a hole: `${sed 's/#{"}"}/x/' f}`.
+- Leading and trailing whitespace of a braced command string, newlines included, is removed. Inside it, a newline is part of the command string, read by the shell as the shell reads it; a line ending in `\` is joined to the next as in an unbraced command. A braced command with nothing between its braces, or whose closing brace never comes, is a syntax error.
 - Leading and trailing whitespace of the command string is removed, and internal whitespace is preserved as is.
 - If the line ends with `\`, it is a continuation line; the `\` and the newline are removed and the next line is concatenated.
 - Inside the command string, the shell's `;`, quotation marks, pipes, etc. can be used without escaping.
 - `#{` starts an interpolation, and `#!{` a raw hole. To include a literal `#{` or `#!{`, write `\#{` or `\#!{`. A `#` followed by neither `{` nor `!{` is treated as an ordinary character, so `$ echo '#!/bin/sh'` needs no escape.
 - A raw hole exists only in a command string. In an interpreted string (3.4), `#!{` is ordinary text: `"#!{x}"` is the five characters it shows.
 - Inside `do`, the newline that terminates a command string simultaneously serves as statement termination (6.5).
-- A command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run(#local, "git --version") |> trim`.
-- All tokens on the same line after a command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. To process it inside an expression, first bind it and then use it, or call `run` directly.
+- An unbraced command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run(#local, "git --version") |> trim`.
+- All tokens on the same line after an unbraced command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. A command that has to be followed on its line — by `|> trim`, by the `)` of a call, by the `,` of a list — is written braced: `${git --version} |> trim`, `retry(delays, \() -> ${make test})`.
 
 Here `run` is a core function and must not be directly declared or overridden by user code (15.5).
 
@@ -1681,9 +1686,12 @@ Shell syntax:
   - an operator (`&&`, `||`, `|`, `;`, `&`) with no command before it, including two operators in a row; `;;`, which ends a clause of a `case` command and is read only after `case`, which stops reading;
   - `&&`, `||` or `|` with no command after it. A newline may come between the operator and the command;
   - a redirection operator (`<`, `>`, `>>`, `<&`, `>&`, `<>`, `>|`) with no word after it;
-  - a group `( )` that contains no command.
+  - a group `( )` that contains no command;
+  - a newline that ends a command, as one written between two commands of a braced command string. The shell would run them one after the other, and `$` checks the exit code of the last one only, so a failure of the first would go unnoticed. A newline is well formed where the shell reads it as continuing the list: after `&&`, `||` or `|`, and where no command has begun, after `;`, `&` or `(`. Commands that depend on each other are joined with `&&`, or written as commands of their own;
+  - `|>` or `<|`, lask's application operators (6.2), which the shell would read as a pipe and a redirection, as `uname -s |> trim` would be read as `uname -s | > trim`. The diagnostic suggests the braced form, `${uname -s} |> trim`. Written apart, as `| >`, they are the shell's operators and are not reported.
 - A command consisting only of assignments or redirections is a command, as in the shell: `FOO=1` and `> out.txt` are well formed. A trailing `;` or `&` ends a list and is well formed.
 - The check is not made where the environment may be the `local` environment of a Windows host, whose shell is `cmd.exe` (10.2): on such a host it is made only when the environment is known from the text to be a container environment, written as a container environment expression directly or through top-level bindings.
+- There instead, a command string that holds a newline is the static error `E-TYPE-COMMAND-SYNTAX`: `cmd.exe /c` runs the first line of what it is given and nothing after it, so a braced command spanning lines would run only its start.
 - Examples: `$[#local] make &&`, `$[#local] cat >`, `$[#local] echo "unterminated` and `$[#local] | grep x` are `E-TYPE-COMMAND-SYNTAX`. `$[#local] for f in *.go; do gofmt -l $f; done`, `$[#local] echo #!{flags} &&` and `$[#local] echo hi # it's` are not, because reading stops at `for`, at the raw hole, and at the comment.
 
 Environment specification rules:
@@ -1692,7 +1700,7 @@ Environment specification rules:
 - `env` is an expression of type `Runnable`: an `Environment`, which conforms to it (4.4), or a runnable. It is usually written as an environment expression (6.7) — `#local`, an image reference such as `#alpine:3.20`, a recipe such as `#./images/build/Dockerfile`, or any of these with run options, `#alpine:3.20{memory: "4g"}` — but any expression of either type (a variable reference, a call, etc.) can be placed there.
 - If resolution of `env` fails, it is a pre-execution error.
 - When an environment specification is present it is the environment, and dispatch is not performed whatever the command string contains. When it is absent the environment is the one dispatch selects (10.9), and its absence is a static error when dispatch selects none. There is no default execution environment (10.1).
-- Whitespace after `$` is not significant. The command string begins immediately after `$`, after the stream specifier, or after the closing `]`, and its leading whitespace is removed, so `$go test` and `$ go test` are the same expression. Only a stream specifier and an environment specification may follow `$` without intervening whitespace.
+- Whitespace after `$` is not significant. The command string begins immediately after `$`, after the stream specifier, or after the closing `]`, and its leading whitespace is removed, so `$go test` and `$ go test` are the same expression, and `${go test}` and `$ { go test }` are too. Only a stream specifier and an environment specification may follow `$` without intervening whitespace.
 - Detailed environment resolution rules and responsibilities follow Chapter 10.
 
 Typing rules:
@@ -1739,6 +1747,19 @@ lint(): String = do {
   r = $* golangci-lint run
   if (r.code == 0) { "clean" } else { r.stdout }
 }
+
+// A braced command ends at its closing brace, so the expression goes on
+// after it on the same line, and its command string may span lines
+// where the shell continues the command.
+kernel(): String = $[#local]{uname -s} |> trim
+
+versions(): Array<String> = map(["go", "node"], \(t: String) -> $[#local]{#{t} --version} |> trim)
+
+largest(--dir = "."): String = $[#local]{
+  du -s #{dir}/* |
+    sort -n |
+    tail -n 1
+} |> trim
 ```
 
 ### 6.7 Environment Expressions
@@ -2849,7 +2870,7 @@ Determinacy principle:
 
 Input:
 
-- The procedure operates on the command string before interpolation, after the lexical normalization of 6.6 (leading and trailing whitespace removed, continuation lines joined).
+- The procedure operates on the command string before interpolation, after the lexical normalization of 6.6 (leading and trailing whitespace removed, continuation lines joined). The braces of a braced command are not part of its command string.
 - Each interpolation `#{...}`, and each raw hole `#!{...}`, is one opaque character, belonging to no other class. A hole may expand to any text, so no analysis may look through one.
 
 Regions and segmentation:
@@ -4539,7 +4560,7 @@ Additional requirements related to types and names:
 Additional requirements related to commands:
 
 - The message of a failed command execution is its standard error output (6.6). When that is empty or only whitespace, as for a tool that reports on standard output, the diagnostic's `message` says instead that the command exited with its code and wrote nothing to standard error, and that its output is in the command execution log (12.3). Only the diagnostic changes: the `Error` value a program catches keeps the empty `message`.
-- A syntax error in a module where a command string holds a closing bracket that it never opened carries a note naming that command's line: the command ran to the end of its line (6.6) and took the bracket of an enclosing call with it.
+- A syntax error in a module where a command string holds a closing bracket that it never opened carries a note naming that command's line: the command ran to the end of its line (6.6) and took the bracket of an enclosing call with it. The note suggests the braced form, which ends before the bracket.
 
 Additional requirements related to reporting several errors:
 

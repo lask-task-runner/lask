@@ -2122,7 +2122,9 @@ elabCommand ctx path locals sp stream mEnv parts = do
       pure (c, Just (renderEnvCore c), ws)
   when hostIsWindows $ do
     container <- runsInContainer ctx envCore
-    when container (checkShellSyntax sp reading)
+    if container
+      then checkShellSyntax sp reading
+      else checkOneLine sp parts
   recordCommandUse sp shownEnv viaWords parts
   let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run"))) [envCore, cmdCore] [])
   case stream of
@@ -2161,6 +2163,18 @@ checkShellSyntax sp reading = case srProblem reading of
   Just (psp, why) ->
     abort . diag ETypeCommandSyntax (if psp == NoSpan then sp else psp) $
       "this command is not valid shell syntax: " <> why
+
+-- | cmd.exe ends a command line at its first newline and never reads
+-- the rest (10.2), so a braced command that may run there is one line.
+checkOneLine :: Span -> [TextPart] -> TC ()
+checkOneLine sp parts
+  | any hasNewline parts =
+      abort . diag ETypeCommandSyntax sp $
+        "this command spans several lines, and it may run on the local environment of this Windows host, whose cmd.exe would run only the first: write it on one line"
+  | otherwise = pure ()
+  where
+    hasNewline (TPChunk _ t) = T.any (== '\n') t
+    hasNewline _ = False
 
 -- | Whether an environment is known from the text to be a container
 -- one, through the bindings that name it.

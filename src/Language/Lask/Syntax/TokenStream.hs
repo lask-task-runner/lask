@@ -67,6 +67,7 @@ renderToken t = case t of
   TUpperId n -> T.unpack n
   TEnvHead n -> "#" <> T.unpack n
   TCommand {} -> "command"
+  TBracedCommand {} -> "command"
   TKw k -> renderKeyword k
   TOp o -> renderOp o
   TLParen -> "("
