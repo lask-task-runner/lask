@@ -67,7 +67,7 @@ valueToJson v = case v of
 -- | The parameters of an environment that name its image (spec 10.2);
 -- any other is a run option.
 imageParams :: [Text]
-imageParams = ["image", "dockerfile", "context", "build_args", "platform"]
+imageParams = ["image", "dockerfile", "context", "build_args", "platform", "build_network"]
 
 -- | 'FunctionRef' metadata (spec 13.2).
 functionRefJson :: Lam -> A.Value

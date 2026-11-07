@@ -72,6 +72,13 @@ registryKey ref = "#" <> ref
 recipeKey :: Text -> Text
 recipeKey dockerfile = "#" <> dockerfile
 
+-- | The lock key of a recipe: its Dockerfile, and, built with no
+-- network, that too, since it is another image (spec 10.3).
+recipeLockKey :: Recipe -> Text
+recipeLockKey r
+  | rcNetwork r == Just "none" = recipeKey (rcDockerfile r) <> "(build_network = \"none\")"
+  | otherwise = recipeKey (rcDockerfile r)
+
 -- | One image the program requires, as the listings show it (spec
 -- 11.4, 11.7): a registry reference with every platform a head names
 -- it for, or a recipe, and where each head is written.
@@ -123,7 +130,7 @@ imageRows core scope = registries <> recipes <> proxy
               [(ref, (Set.singleton p, Set.singleton (huBy u))) | u@(HeadUse (HeadRegistry ref p) _) <- uses]
       ]
     recipes =
-      [ ImageRow ("#" <> recipeSource (rcDockerfile r)) "recipe" (recipeKey (rcDockerfile r)) (FromRecipe r) (Set.toList by)
+      [ ImageRow ("#" <> recipeSource (rcDockerfile r)) "recipe" (recipeLockKey r) (FromRecipe r) (Set.toList by)
       | (r, by) <- Map.toList (Map.fromListWith Set.union [(r, Set.singleton (huBy u)) | u@(HeadUse (HeadRecipe r) _) <- uses])
       ]
 
@@ -310,7 +317,7 @@ commandImage core c = do
     Right (ResolvedDocker ref opts)
       | not (Map.member "platform" opts) -> Just (registryKey ref, opts)
     Right (ResolvedRecipe rc opts)
-      | rcPlatform rc == Nothing -> Just (recipeKey (rcDockerfile rc), opts)
+      | rcPlatform rc == Nothing -> Just (recipeLockKey rc, opts)
     _ -> Nothing
 
 -- | Probe the command words of every module's declarations whose image

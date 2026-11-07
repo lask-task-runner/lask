@@ -23,6 +23,7 @@ module Language.Lask.Access
     Volume (..),
     VolumeSource (..),
     parseVolume,
+    hostEquivalent,
 
     -- * The network
     NetClass (..),
@@ -206,6 +207,49 @@ parseVolume t = case T.splitOn ":" t of
         source = if "/" `T.isPrefixOf` src then VolumeHost src else VolumeNamed src
      in Just (Volume source target mode)
   _ -> Nothing
+
+-- | Whether a host path, mounted, gives the container what the host has
+-- (spec 10.11): the root; the kernel's interfaces, @/proc@, @/sys@ and
+-- @/dev@; the socket or the state of a container engine, which starts
+-- any container with any option; the host's configuration and root's
+-- home; and any directory that holds one of those. The path is read
+-- with @.@ and @..@ resolved as written, without following a link.
+--
+-- >>> map (hostEquivalent . VolumeHost) ["/", "/var/run/docker.sock", "/var/run", "/run/user/1000/podman/podman.sock", "/proc/1", "/etc", "/var/run/../lib/docker", "/home/me/.cfg", "/tmp/cache", "/var/lib/app"]
+-- [True,True,True,True,True,True,True,False,False,False]
+hostEquivalent :: VolumeSource -> Bool
+hostEquivalent src = case src of
+  VolumeNamed _ -> False
+  VolumeHost p ->
+    let parts = resolveDots (T.splitOn "/" p)
+        path = "/" <> T.intercalate "/" parts
+        under a = path == a || (a <> "/") `T.isPrefixOf` path
+        holds a = (path <> "/") `T.isPrefixOf` a
+     in null parts
+          || any under ["/proc", "/sys", "/dev"]
+          || any (\a -> under a || holds a) sensitive
+          || any (`T.isSuffixOf` path) ["/docker.sock", "/podman.sock", "/containerd.sock", "/buildkitd.sock"]
+  where
+    resolveDots = reverse . foldl step []
+    step acc c = case c of
+      "" -> acc
+      "." -> acc
+      ".." -> drop 1 acc
+      _ -> c : acc
+    sensitive =
+      [ "/var/run/docker.sock",
+        "/run/docker.sock",
+        "/var/run/containerd",
+        "/run/containerd",
+        "/var/run/podman",
+        "/run/podman",
+        "/var/lib/docker",
+        "/var/lib/containerd",
+        "/var/lib/containers",
+        "/etc",
+        "/root",
+        "/boot"
+      ]
 
 -- The network -----------------------------------------------------------
 
@@ -479,7 +523,9 @@ sourceText s = case s of
 -- of @network@ as written, and whether a port is published.
 data AccessSet
   = AccessSet (Maybe AccessTable) (Maybe [Volume]) (Maybe NetReach) (Maybe Bool)
-  | HostAccess
+  | -- | The host, and why: @#local@, or a volume that gives what the
+    -- host has ('hostEquivalent').
+    HostAccess Text
   deriving (Show, Eq)
 
 -- | Where an access set is not shown to be within a constraint: a
@@ -503,12 +549,12 @@ findingField f = case f of
 -- [Exceeds "files" "\".\" is \"rw\", wider than \"ro\"",Exceeds "network" "the network is \"default\""]
 -- >>> checkAccess c (AccessSet (Just [(".", ModeRo)]) Nothing Nothing (Just False))
 -- [Unproven "network"]
--- >>> checkAccess c HostAccess
+-- >>> checkAccess c (HostAccess "#local reaches the whole host")
 -- [Exceeds "files" "#local reaches the whole host",Exceeds "network" "#local reaches the whole host"]
 checkAccess :: Constraint -> AccessSet -> [Finding]
 checkAccess c a = case a of
-  HostAccess ->
-    [ Exceeds k "#local reaches the whole host"
+  HostAccess why ->
+    [ Exceeds k why
     | (k, True) <- [("files", isJust' (conFiles c)), ("volumes", isJust' (conVolumes c)), ("network", isJust' (conNetwork c)), ("publish", isJust' (conPublish c))]
     ]
   AccessSet files vols net pub ->
