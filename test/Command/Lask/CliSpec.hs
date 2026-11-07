@@ -1650,16 +1650,19 @@ spec = beforeAll findLask $ do
           -- Both are removed when the invocation ends.
           has "rm --force lask-egress-" `shouldSatisfy` ((== 1) . length)
           has "network rm lask-egress-" `shouldSatisfy` ((== 2) . length)
-    it "does not run a container given egress without its proxy image (spec 10.12)" $ \lask ->
+    it "runs a container given egress with the proxy sync materialized, and not without one (spec 10.12)" $ \lask ->
       withFakeDocker $ \_ extra ->
         withProject [("main.lask", "f(): String = $[#alpine:3.22.2{egress: [\"example.com:443\"]}] echo hi\n")] $ \dir -> do
           _ <- runLaskEnv lask dir extra ["sync"] ""
           missing <- runLaskEnv lask dir (("LASK_EGRESS_PROXY_IMAGE", "lask-egress-proxy:absent") : extra) ["eval", "f"] ""
           resExit missing `shouldBe` 3
           resErr missing `shouldSatisfy` isInfixOf "E-IO-IMAGE-MISSING"
-          unnamed <- runLaskEnv lask dir extra ["eval", "f"] ""
-          resExit unnamed `shouldBe` 3
-          resErr unnamed `shouldSatisfy` isInfixOf "names no egress proxy image"
+          -- The proxy this release names is one sync materialized,
+          -- pinned by its digest.
+          named <- runLaskEnv lask dir extra ["eval", "f"] ""
+          resExit named `shouldBe` 0
+          lock <- readFile (dir </> "lask.lock.json")
+          lock `shouldSatisfy` isInfixOf "#ghcr.io/lask-task-runner/lask-egress-proxy@sha256:"
     it "gives a container's command to its shell on stdin, on no command line (spec 10.2)" $ \lask ->
       withFakeDocker $ \state extra ->
         withProject [("main.lask", "token!!: String = get_env_or(\"T\", \"s3cr3t-value\")\nf(): String = $[#alpine:3.22.2] echo marker-#{token}\n")] $ \dir -> do
