@@ -12,7 +12,7 @@ where
 
 import Data.Text (Text)
 
--- | 'Nothing' until the first image is published. A build without one
--- runs @egress@ only with @LASK_EGRESS_PROXY_IMAGE@ set.
+-- | Published by the egress-proxy workflow from a3138df (run 42355073047),
+-- for linux/amd64 and linux/arm64, signed with cosign.
 embeddedProxyImage :: Maybe Text
-embeddedProxyImage = Nothing
+embeddedProxyImage = Just "ghcr.io/lask-task-runner/lask-egress-proxy@sha256:97f1181305de62395aafe7ea5f450a0d10f2e6d1176577b00f6bbe0dc8791c4d"
