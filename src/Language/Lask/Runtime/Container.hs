@@ -28,15 +28,18 @@ module Language.Lask.Runtime.Container
     resolveBackend,
     cliBackend,
     runArgs,
+    runArgsWith,
     execArgs,
     clientEnv,
+    fileEnv,
     containerWorkdir,
   )
 where
 
 import Control.Concurrent.Async (concurrently, concurrently_)
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, onException, throwIO, try)
 import qualified Data.Aeson as A
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (find, sortOn)
@@ -51,11 +54,12 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Language.Lask.Access (Mode (..), accessScalar, accessTable, defaultBaseMount, parseMode, validateBaseMount)
 import Language.Lask.Runtime.Value (Value (..))
-import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable)
+import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable, getTemporaryDirectory, removeDirectoryRecursive)
 import System.FilePath (isRelative, makeRelative, splitDirectories, (</>))
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (hGetLine, hIsEOF)
+import System.IO.Temp (createTempDirectory)
 import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, readCreateProcessWithExitCode, waitForProcess)
 
 -- | The engines whose client lask drives (spec 10.10).
@@ -154,8 +158,10 @@ data ContainerBackend = ContainerBackend
     cbPull :: (Text -> IO ()) -> Maybe Text -> Text -> IO (Either Text ()),
     -- | Build a recipe, reporting each step as it starts.
     cbBuild :: (Text -> IO ()) -> BuildSpec -> IO (Either Text ()),
-    -- | The client process that runs a container.
-    cbRunProcess :: RunSpec -> IO CreateProcess,
+    -- | The client process that runs a container, and what to do once
+    -- it has exited: remove the file of variables it was given (see
+    -- 'fileEnv'). Run the second whether or not the process ran.
+    cbRunProcess :: RunSpec -> IO (CreateProcess, IO ()),
     -- | The client process that runs a command in a running container.
     cbExecProcess :: ExecSpec -> CreateProcess,
     -- | Given the exit code and stderr of a run, the engine's own
@@ -201,7 +207,7 @@ unusableBackend msg =
       cbRepoDigests = const (pure (Left msg)),
       cbPull = \_ _ _ -> pure (Left msg),
       cbBuild = \_ _ -> pure (Left msg),
-      cbRunProcess = \_ -> pure (proc "sh" ["-c", "echo \"$0\" >&2; exit 125", T.unpack msg]),
+      cbRunProcess = \_ -> pure (proc "sh" ["-c", "echo \"$0\" >&2; exit 125", T.unpack msg], pure ()),
       cbExecProcess = \_ -> proc "sh" ["-c", "echo \"$0\" >&2; exit 125", T.unpack msg],
       cbRunFailure = \_ _ -> Just msg,
       cbStop = \_ _ -> pure (),
@@ -236,13 +242,14 @@ cliBackend engine =
       cbPull = pull,
       cbBuild = build,
       cbRunProcess = \spec -> do
-        let cp = proc program (runArgs engine spec)
+        (file, cleanup) <- writeEnvFile (fileEnv engine (runOptions spec))
+        let cp = proc program (runArgsWith engine file spec)
         case clientEnv engine (runOptions spec) of
-          [] -> pure cp
+          [] -> pure (cp, cleanup)
           extra -> do
             inherited <- getEnvironment
             let names = map fst extra
-            pure cp {env = Just (extra <> [kv | kv@(k, _) <- inherited, k `notElem` names])},
+            pure (cp {env = Just (extra <> [kv | kv@(k, _) <- inherited, k `notElem` names])}, cleanup),
       cbExecProcess = proc program . execArgs,
       cbRunFailure = runFailure,
       cbStop = \grace name -> do
@@ -501,7 +508,11 @@ resolveBaseMounts baseDir opts = case options of
 -- options, then the image and what it runs. The three clients take the
 -- same ones.
 runArgs :: Engine -> RunSpec -> [String]
-runArgs engine spec =
+runArgs engine = runArgsWith engine Nothing
+
+-- | 'runArgs', with the file the variables of 'fileEnv' are written to.
+runArgsWith :: Engine -> Maybe FilePath -> RunSpec -> [String]
+runArgsWith engine envFile spec =
   ["run", "--rm", "--pull=never"]
     <> maybe [] (\n -> ["--name", T.unpack n]) (runName spec)
     <> (if runStdin spec then ["-i"] else [])
@@ -511,6 +522,7 @@ runArgs engine spec =
     <> ["-w", T.unpack (baseMountTarget (runOptions spec))]
     <> ["--entrypoint", T.unpack (runEntrypoint spec)]
     <> optionArgs engine (runOptions spec)
+    <> maybe [] (\f -> ["--env-file", f]) envFile
     <> [T.unpack (runImage spec)]
     <> map T.unpack (runCommand spec)
 
@@ -626,12 +638,14 @@ optionArgs engine opts = concatMap emit (Map.toAscList opts)
         entries m = [(k, optionScalar x) | (k, x) <- Map.toAscList m]
 
     -- A variable the client is given (see 'clientEnv') is only named
-    -- here, so its value never reaches the process list.
+    -- here, and any other is in the file of 'fileEnv', so no value
+    -- reaches the process list.
     envArgs v = case v of
       VMap m ->
         concat
-          [ ["--env", T.unpack (if passedByName engine k then k else k <> "=" <> t)]
-          | (k, Just t) <- [(k, optionScalar x) | (k, x) <- Map.toAscList m]
+          [ ["--env", T.unpack k]
+          | (k, Just _) <- [(k, optionScalar x) | (k, x) <- Map.toAscList m],
+            passedByName engine k
           ]
       _ -> []
 
@@ -664,6 +678,41 @@ clientEnv :: Engine -> Map Text Value -> [(String, String)]
 clientEnv engine opts = case Map.lookup "env" opts of
   Just (VMap m) -> [(T.unpack k, T.unpack t) | (k, x) <- Map.toAscList m, passedByName engine k, Just t <- [optionScalar x]]
   _ -> []
+
+-- | The variables of the @env@ option that cannot be passed by name
+-- (see 'passedByName'), since the client reads them itself. They are
+-- written to a file the client is given with @--env-file@, which only
+-- the user can read, rather than on its command line (spec 10.2).
+fileEnv :: Engine -> Map Text Value -> [(Text, Text)]
+fileEnv engine opts = case Map.lookup "env" opts of
+  Just (VMap m) -> [(k, t) | (k, x) <- Map.toAscList m, not (passedByName engine k), Just t <- [optionScalar x]]
+  _ -> []
+
+-- | Write the variables of 'fileEnv' to a file in a directory of its
+-- own that only the user can enter, and the action that removes it.
+-- The file holds a variable to a line, so a name or a value that a line
+-- cannot hold is refused rather than put on the command line.
+writeEnvFile :: [(Text, Text)] -> IO (Maybe FilePath, IO ())
+writeEnvFile [] = pure (Nothing, pure ())
+writeEnvFile vars = do
+  case [k | (k, t) <- vars, T.null k || T.any (`elem` ("=\n\r\0" :: String)) k || T.any (`elem` ("\n\r\0" :: String)) t] of
+    (k : _) ->
+      throwIO . userError . T.unpack $
+        "the variable '" <> k <> "' of env is one the engine client reads itself, so it is given in a file, "
+          <> "which cannot hold a name that is empty or has '=' or a line break, or a value with a line break"
+    [] -> pure ()
+  tmp <- getTemporaryDirectory
+  dir <- createTempDirectory tmp "lask-env"
+  let file = dir </> "env"
+      cleanup = removeDirectoryRecursive dir `catchIO` pure ()
+  (BS.writeFile file (TE.encodeUtf8 (T.concat [k <> "=" <> t <> "\n" | (k, t) <- vars])) `onException` cleanup)
+  pure (Just file, cleanup)
+  where
+    catchIO act h = do
+      r <- try act
+      case r of
+        Left e -> const h (e :: IOException)
+        Right x -> pure x
 
 -- | Whether a variable is passed by name. Not one the client itself
 -- reads — which engine it talks to, through which proxy, with which

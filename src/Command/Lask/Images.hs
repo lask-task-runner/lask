@@ -34,7 +34,7 @@ import qualified Data.Text as T
 import Language.Lask.Deps.Lock
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key)
 import Language.Lask.ErrorCode (ErrorCode (..), codeText)
-import Control.Exception (throwIO, try)
+import Control.Exception (finally, throwIO, try)
 import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Core.AST (Core (..), CoreF (..), coreChildren)
 import Language.Lask.Runtime.EgressProxy (embeddedProxyImage)
@@ -372,7 +372,7 @@ probeCommands backend core mats prior images = do
         Right ms -> probeMounted baseDir image opts ws ms
 
     probeMounted baseDir image opts ws mounts = do
-      cp <-
+      (cp, cleanup) <-
         cbRunProcess backend $
           RunSpec
             { runBaseDir = baseDir,
@@ -385,7 +385,7 @@ probeCommands backend core mats prior images = do
               runCommand = ["-c", script, "sh"] <> ws,
               runMounts = mounts
             }
-      (code, out, err) <- readCreateProcessWithExitCode cp ""
+      (code, out, err) <- readCreateProcessWithExitCode cp "" `finally` cleanup
       let errText = T.strip (T.pack err)
           exit = case code of
             ExitSuccess -> 0

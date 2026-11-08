@@ -172,11 +172,13 @@ spec = beforeAll findLask $ do
             runs <- filter ("run " `isPrefixOf`) <$> calls state
             runs `shouldSatisfy` all (not . isInfixOf "s3cr3t")
             runs `shouldSatisfy` all (isInfixOf "--env TOKEN ")
-            -- docker reads DOCKER_HOST itself, so it stays an argument.
-            runs `shouldSatisfy` all (isInfixOf "--env DOCKER_HOST=tcp://x")
+            -- docker reads DOCKER_HOST itself, so it is given in a file.
+            runs `shouldSatisfy` all (not . isInfixOf "tcp://x")
+            runs `shouldSatisfy` all (isInfixOf "--env-file ")
             seen <- lines <$> readFile (state </> "env")
             seen `shouldSatisfy` elem "TOKEN=s3cr3t"
             seen `shouldSatisfy` elem "EMPTY="
+            seen `shouldSatisfy` elem "DOCKER_HOST=tcp://x"
 
     it "keeps the pinned image when the tag moves upstream" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
@@ -1643,8 +1645,12 @@ spec = beforeAll findLask $ do
           -- where the proxy is.
           let workload = [c | c <- cs, "run --rm" `isPrefixOf` c]
           workload `shouldSatisfy` ((== 1) . length)
-          workload `shouldSatisfy` all (isInfixOf "--env HTTPS_PROXY=http://lask-egress-proxy:3128")
-          workload `shouldSatisfy` all (isInfixOf "--env NODE_USE_ENV_PROXY")
+          -- The proxy's variables are ones the client reads itself, so
+          -- they are given in a file (spec 10.2).
+          workload `shouldSatisfy` all (isInfixOf "--env-file ")
+          given <- lines <$> readFile (state </> "env")
+          given `shouldSatisfy` elem "HTTPS_PROXY=http://lask-egress-proxy:3128"
+          given `shouldSatisfy` elem "NODE_USE_ENV_PROXY=1"
           workload `shouldSatisfy` all (isInfixOf "-in ")
           workload `shouldSatisfy` all (isInfixOf "--network lask-egress-")
           -- Both are removed when the invocation ends.
@@ -1663,6 +1669,33 @@ spec = beforeAll findLask $ do
           resExit named `shouldBe` 0
           lock <- readFile (dir </> "lask.lock.json")
           lock `shouldSatisfy` isInfixOf "#ghcr.io/lask-task-runner/lask-egress-proxy@sha256:"
+    it "gives a variable of env the client reads itself in a file, on no command line (spec 10.2)" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject [("main.lask", "token!!: String = get_env_or(\"T\", \"s3cr3t-value\")\nf(): String within { secrets: [token] } = $[runnable(#alpine:3.22.2, env = {\"DOCKER_TOKEN\": token, \"HTTPS_PROXY\": \"http://p:3128\"})] true\nbad(): String = $[runnable(#alpine:3.22.2, env = {\"DOCKER_X\": \"a\\nb\"})] true\n")] $ \dir -> do
+          _ <- runLaskEnv lask dir extra ["sync"] ""
+          writeFile (state </> "calls") ""
+          r <- runLaskEnv lask dir extra ["eval", "f"] ""
+          resExit r `shouldBe` 0
+          cs <- calls state
+          let runs = [c | c <- cs, "run --rm" `isPrefixOf` c]
+          runs `shouldSatisfy` ((== 1) . length)
+          runs `shouldSatisfy` all (isInfixOf "--env-file ")
+          runs `shouldSatisfy` all (not . isInfixOf "s3cr3t-value")
+          runs `shouldSatisfy` all (not . isInfixOf "http://p:3128")
+          given <- lines <$> readFile (state </> "env")
+          given `shouldSatisfy` elem "DOCKER_TOKEN=s3cr3t-value"
+          given `shouldSatisfy` elem "HTTPS_PROXY=http://p:3128"
+          -- The file is removed once the client has exited.
+          let file = takeWhile (/= ' ') (snd (breakAfter "--env-file " (concat (take 1 runs))))
+              breakAfter needle hay = case [i | i <- [0 .. length hay - length needle], take (length needle) (drop i hay) == needle] of
+                i : _ -> (take i hay, drop (i + length needle) hay)
+                [] -> (hay, "")
+          doesFileExist file `shouldReturn` False
+          -- A value a line of the file cannot hold is refused, not put
+          -- on the command line.
+          b <- runLaskEnv lask dir extra ["eval", "bad"] ""
+          resExit b `shouldBe` 3
+          resErr b `shouldSatisfy` isInfixOf "cannot hold"
     it "gives a container's command to its shell on stdin, on no command line (spec 10.2)" $ \lask ->
       withFakeDocker $ \state extra ->
         withProject [("main.lask", "token!!: String = get_env_or(\"T\", \"s3cr3t-value\")\nf(): String = $[#alpine:3.22.2] echo marker-#{token}\n")] $ \dir -> do
