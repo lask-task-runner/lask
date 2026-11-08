@@ -890,8 +890,8 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", src)] $ \dir -> do
         end <- runLask lask dir ["eval", "deploy", "a", "--target", "prod", "--dry-run"] ""
         end `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
-        before <- runLask lask dir ["eval", "deploy", "--dry-run", "a", "--target", "prod", "--force"] ""
-        before `shouldBe` Result 0 "\"a prod true true 1\"\n" ""
+        leading <- runLask lask dir ["eval", "deploy", "--dry-run", "a", "--target", "prod", "--force"] ""
+        leading `shouldBe` Result 0 "\"a prod true true 1\"\n" ""
         text <- runLask lask dir ["eval", "--arg-decode", "text", "deploy", "a", "--target", "prod", "--dry-run"] ""
         text `shouldBe` Result 0 "\"a prod true false 1\"\n" ""
     it "still takes true or false after a Bool keyword argument as its value" $ \lask ->
@@ -1406,7 +1406,7 @@ spec = beforeAll findLask $ do
           out `shouldSatisfy` isInfixOf "main.lask:7:"
           out `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-UNPROVEN [static]: 'network' is not known here without running the program"
           out `shouldSatisfy` isInfixOf "#local reaches the whole host"
-          out `shouldSatisfy` isInfixOf "\"/var/run/docker.sock\" is mounted \"rw\", which within { volumes: false } of the module does not allow"
+          out `shouldSatisfy` isInfixOf "the volume \"/var/run/docker.sock\" gives what the host has, which within { volumes: false } of the module does not allow"
           out `shouldSatisfy` isInfixOf "'release_of' is named as a value"
           -- The listings report what the constraints find, and do not fail.
           network <- runLask lask dir ["envs", "network"] ""
@@ -1490,6 +1490,246 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["cmd", "uname"] ""
         resExit r `shouldBe` 1
         resErr r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED"
+    it "follows secrets to where they are given, and bounds them with within (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "aws(key: String) = #alpine:3.20{env: {\"AWS_SECRET_ACCESS_KEY\": key}}\n\
+            \whoami(--key!!: String = get_env(\"K\")): String within { secrets: [key] } = $[aws(key)] true\n\
+            \leak(--key!!: String = get_env(\"K\")): String within { secrets: false } = $[#alpine:3.20] echo #{key}\n\
+            \token!!: String = get_env(\"TOKEN\")\n\
+            \counted(): String within { secrets: false } = $[#alpine:3.20] echo #{length(token)} #{token == \"\"}\n\
+            \cfg = {user: \"me\", pass: token}\n\
+            \user_only(): String within { secrets: false } = $[#alpine:3.20] echo #{cfg.user}\n\
+            \vars_of(t: String): Map<String> = merge({\"A\": t}, {\"B\": \"b\"})\n\
+            \built(): String within { secrets: [token] } = $[#alpine:3.20{env: vars_of(token)}] true\n\
+            \absent_of(--key!!: String | Null = null): Runnable = #alpine:3.20{env: {\"K\": key}}\n\
+            \absent(): String within { secrets: false } = $[absent_of()] true\n\
+            \named(): String within { secrets: false } = $[#alpine:3.20{hostname: token}] true\n\
+            \shown(xs: Array<String>): Array<String> = for (x: xs) {\n\
+            \  $[#alpine:3.20] echo #{x}\n\
+            \}\n\
+            \calls(): Array<String> = shown([token])\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let out = resOut r
+              withinLines = filter (isInfixOf "E-TYPE-WITHIN") (lines out)
+          out `shouldSatisfy` isInfixOf "main.lask:3:74-3:101: E-TYPE-WITHIN-EXCEEDED [static]: the secret 'main.lask: leak --key' is given in the command string"
+          out `shouldSatisfy` isInfixOf "main.lask:12:45-12:82: E-TYPE-WITHIN-EXCEEDED [static]: the secret 'main.lask: token' is given in the run option 'hostname'"
+          -- A secret in the variable the constraint names, one that is
+          -- only counted or compared, a field beside it, a key kept
+          -- through merge, and an absent one are all within.
+          length withinLines `shouldBe` 2
+          listing <- runLask lask dir ["envs", "secrets"] ""
+          resExit listing `shouldBe` 0
+          let rows = lines (resOut listing)
+              row secret channel = filter (\l -> secret `isInfixOf` l && channel `isInfixOf` l) rows
+          row "main.lask: whoami --key" "env AWS_SECRET_ACCESS_KEY" `shouldSatisfy` (\ls -> length ls == 1 && all (isInfixOf "ok") ls)
+          row "main.lask: leak --key" "command !" `shouldSatisfy` (\ls -> length ls == 1 && all (isInfixOf "exceeded") ls)
+          row "main.lask: token" "env A " `shouldSatisfy` ((== 1) . length)
+          row "main.lask: token" "command !" `shouldSatisfy` (\ls -> length ls == 1 && all (isInfixOf "main.lask: calls → shown") ls)
+          filter (isInfixOf "absent") rows `shouldBe` []
+          -- A parameter the command line may give is a secret there.
+          length (filter (isInfixOf "main.lask: absent_of --key") rows) `shouldBe` 0
+          json <- runLask lask dir ["envs", "secrets", "--format", "json"] ""
+          resOut json `shouldSatisfy` isInfixOf "\"channel\":{\"kind\":\"env\",\"name\":\"AWS_SECRET_ACCESS_KEY\"}"
+          scoped <- runLask lask dir ["envs", "secrets", "whoami"] ""
+          resOut scoped `shouldSatisfy` isInfixOf "within { secrets: [key] }"
+    it "advises a secret on a command line, and nothing for one given in env (spec 10.11, 14.2)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "token!!: String = get_env(\"TOKEN\")\n\
+            \inline(): String = $[#alpine:3.20] echo #{token}\n\
+            \given(): String = $[#alpine:3.20{env: {\"TOKEN\": token}}] echo \"$TOKEN\"\n\
+            \counted(): String = $[#alpine:3.20] echo #{length(token)}\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 0
+          let advised = filter (isInfixOf "W-SECRET-COMMAND-LINE") (lines (resOut r))
+          advised `shouldBe` ["main.lask:2:20-2:49: W-SECRET-COMMAND-LINE [static]: the secret 'main.lask: token' is in the command string, from which the programs the command runs are given it as arguments, which the host's process list shows; give it in 'env' to a program that reads the variable itself"]
+    it "admits a secret by a name it is bound to with !! (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "token!!: String = get_env(\"TOKEN\")\n\
+            \show(v!!: String): String within { secrets: [v] } = $[#alpine:3.20{env: {\"V\": v}}] true\n\
+            \ok(): String = show(token)\n\
+            \plain(v: String): String within { secrets: false } = $[#alpine:3.20{env: {\"V\": v}}] true\n\
+            \via_plain(): String = plain(token)\n\
+            \issue(): String within { secrets: [generated] } = do {\n\
+            \  generated!! = random_string(12)\n\
+            \  $[#alpine:3.20{env: {\"G\": generated}}] true\n\
+            \}\n\
+            \anon(): String within { secrets: [token] } = $[#alpine:3.20{env: {\"G\": mark_secret(get_env(\"Z\"))}}] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let withinLines = filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))
+          -- show names what it is given by its own parameter, and issue
+          -- what it makes by its binding; an unmarked parameter names
+          -- nothing, and nor does an unbound mark_secret.
+          length withinLines `shouldBe` 2
+          resOut r `shouldSatisfy` isInfixOf "main.lask:5:23-5:35: E-TYPE-WITHIN-EXCEEDED [static]: the secret 'main.lask: token' is given in the variable V of 'env', which within { secrets: false } of 'plain'"
+          resOut r `shouldSatisfy` isInfixOf "bound to no name a constraint can give (bind it with !!)"
+    it "rejects a secrets field that is not one (spec 10.11)" $ \lask ->
+      do
+        withProject [("main.lask", "token!!: String = get_env(\"T\")\nf() within { secrets: [tokn] } = $[#alpine:3.20] true\n")] $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          resOut r `shouldSatisfy` isInfixOf "main.lask:2:24-2:28: E-TYPE-WITHIN-SPEC [static]: 'tokn' is not a secret binding of 'f'"
+        -- A name is an identifier, not the name of a variable.
+        withProject [("main.lask", "g() within { secrets: [\"TOKEN\"] } = $[#alpine:3.20] true\n")] $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          resOut r `shouldSatisfy` isInfixOf "'secrets' takes false, or an array of the names of secret bindings, such as [token]"
+    it "checks a list written against a union with one array as that array (spec 4.4)" $ \lask ->
+      withProject [("main.lask", "takes(--hosts: Array<String> | Null = null): String = \"x\"\ne(): String = takes(hosts = [])\nr = #alpine:3.20{egress: []}\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resExit r `shouldBe` 0
+    it "checks egress entries, and what within admits of them (spec 10.11, 10.12)" $ \lask -> do
+      withProject [("main.lask", "a = #alpine:3.20{egress: [\"x.com\"]}\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resOut r `shouldSatisfy` isInfixOf "main.lask:1:27-1:34: E-TYPE-ENV-CONSTRUCT [static]: 'x.com' is not <host>:<port>"
+      withProject [("main.lask", "a = #alpine:3.20{egress: [\"x.com:443\"], network: \"none\"}\n")] $ \dir -> do
+        r <- runLask lask dir ["check"] ""
+        resOut r `shouldSatisfy` isInfixOf "E-TYPE-ENV-CONSTRUCT [static]: 'network' is given with egress"
+      withProject
+        [ ( "main.lask",
+            "npm = #alpine:3.20{egress: [\"registry.npmjs.org:443\"]}\n\
+            \a(): String within { network: [\"registry.npmjs.org:443\"] } = $[npm] true\n\
+            \b(): String within { network: [\"*.github.com:443\"] } = $[#alpine:3.20{egress: [\"api.github.com:443\", \"github.com:443\"]}] true\n\
+            \c(): String within { network: \"none\" } = $[#alpine:3.20{egress: []}] true\n\
+            \d(): String within { network: [\"a.com:443\"] } = $[#alpine:3.20] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let withinLines = filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))
+          -- A wildcard does not cover the name itself, an egress that
+          -- lists nothing is within none, and a container that may
+          -- reach anything is within no list.
+          length withinLines `shouldBe` 2
+          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: egress lists \"github.com:443\", which within { network: [\"*.github.com:443\"] } of 'b'"
+          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: the network is \"default\", which within { network: [\"a.com:443\"] } of 'd'"
+          network <- runLask lask dir ["envs", "network"] ""
+          resOut network `shouldSatisfy` isInfixOf "registry.npmjs.org:443"
+          resOut network `shouldSatisfy` isInfixOf "(none)"
+          json <- runLask lask dir ["envs", "network", "--format", "json"] ""
+          resOut json `shouldSatisfy` isInfixOf "\"class\":\"egress\",\"egress\":[\"registry.npmjs.org:443\"]"
+    it "places a container given egress beside its proxy, logs what it refuses, and removes both (spec 10.12)" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject [("main.lask", "f(): String = $[#alpine:3.22.2{egress: [\"example.com:443\"]}] echo hi\n")] $ \dir -> do
+          _ <- runLaskEnv lask dir extra ["sync"] ""
+          writeFile (state </> "present" </> "lask-egress-proxy_dev") "[]"
+          writeFile (state </> "denied") "{\"event\":\"denied\",\"destination\":\"other.test:443\",\"reason\":\"not in egress\"}\n"
+          writeFile (state </> "calls") ""
+          r <- runLaskEnv lask dir (("LASK_EGRESS_PROXY_IMAGE", "lask-egress-proxy:dev") : extra) ["eval", "f"] ""
+          resExit r `shouldBe` 0
+          resErr r `shouldSatisfy` isInfixOf "2| egress denied: other.test:443"
+          cs <- calls state
+          let has p = filter (isInfixOf p) cs
+          has "network create --internal" `shouldSatisfy` ((== 1) . length)
+          -- The proxy is on both networks at once, and known on the
+          -- inside one by the name every container gives egress uses.
+          has ("--network name=") `shouldSatisfy` all (isInfixOf "alias=lask-egress-proxy")
+          has "lask-egress-proxy:dev -listen :3128 example.com:443" `shouldSatisfy` ((== 1) . length)
+          -- The container is on the inside network only, and told
+          -- where the proxy is.
+          let workload = [c | c <- cs, "run --rm" `isPrefixOf` c]
+          workload `shouldSatisfy` ((== 1) . length)
+          workload `shouldSatisfy` all (isInfixOf "--env HTTPS_PROXY=http://lask-egress-proxy:3128")
+          workload `shouldSatisfy` all (isInfixOf "--env NODE_USE_ENV_PROXY")
+          workload `shouldSatisfy` all (isInfixOf "-in ")
+          workload `shouldSatisfy` all (isInfixOf "--network lask-egress-")
+          -- Both are removed when the invocation ends.
+          has "rm --force lask-egress-" `shouldSatisfy` ((== 1) . length)
+          has "network rm lask-egress-" `shouldSatisfy` ((== 2) . length)
+    it "runs a container given egress with the proxy sync materialized, and not without one (spec 10.12)" $ \lask ->
+      withFakeDocker $ \_ extra ->
+        withProject [("main.lask", "f(): String = $[#alpine:3.22.2{egress: [\"example.com:443\"]}] echo hi\n")] $ \dir -> do
+          _ <- runLaskEnv lask dir extra ["sync"] ""
+          missing <- runLaskEnv lask dir (("LASK_EGRESS_PROXY_IMAGE", "lask-egress-proxy:absent") : extra) ["eval", "f"] ""
+          resExit missing `shouldBe` 3
+          resErr missing `shouldSatisfy` isInfixOf "E-IO-IMAGE-MISSING"
+          -- The proxy this release names is one sync materialized,
+          -- pinned by its digest.
+          named <- runLaskEnv lask dir extra ["eval", "f"] ""
+          resExit named `shouldBe` 0
+          lock <- readFile (dir </> "lask.lock.json")
+          lock `shouldSatisfy` isInfixOf "#ghcr.io/lask-task-runner/lask-egress-proxy@sha256:"
+    it "gives a container's command to its shell on stdin, on no command line (spec 10.2)" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject [("main.lask", "token!!: String = get_env_or(\"T\", \"s3cr3t-value\")\nf(): String = $[#alpine:3.22.2] echo marker-#{token}\n")] $ \dir -> do
+          _ <- runLaskEnv lask dir extra ["sync"] ""
+          writeFile (state </> "calls") ""
+          r <- runLaskEnv lask dir extra ["eval", "f"] ""
+          resExit r `shouldBe` 0
+          cs <- calls state
+          let runs = [c | c <- cs, "run --rm" `isPrefixOf` c]
+          runs `shouldSatisfy` ((== 1) . length)
+          -- The client is given a shell that reads its command, not the
+          -- command: the secret is on no command line.
+          runs `shouldSatisfy` all (isInfixOf " -i ")
+          runs `shouldSatisfy` all (isInfixOf "lask_command=")
+          runs `shouldSatisfy` all (not . isInfixOf "s3cr3t-value")
+          runs `shouldSatisfy` all (not . isInfixOf "marker-")
+    it "takes a volume that gives what the host has as the host (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "within { volumes: { \"/var/run\": \"rw\", \"/home/me\": \"ro\" } }\n\
+            \ship(): String = $[#docker:27{volumes: [\"/var/run/docker.sock:/var/run/docker.sock\"]}] docker ps\n\
+            \up(): String = $[#alpine:3.20{volumes: [\"/var/run/../lib/docker:/d:ro\"]}] ls\n\
+            \cfg(): String = $[#alpine:3.20{volumes: [\"/home/me/.cfg:/cfg:ro\"]}] ls /cfg\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let withinLines = filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))
+          -- A constraint that admits the socket's directory does not
+          -- make the socket less than the host; a path is read with ..
+          -- resolved; an ordinary directory is what it says.
+          length withinLines `shouldBe` 2
+          resOut r `shouldSatisfy` isInfixOf "the volume \"/var/run/docker.sock\" gives what the host has"
+          resOut r `shouldSatisfy` isInfixOf "the volume \"/var/run/../lib/docker\" gives what the host has"
+          files <- runLask lask dir ["envs", "files"] ""
+          resOut files `shouldSatisfy` isInfixOf "rw ! (host)"
+          resOut files `shouldSatisfy` isInfixOf "ro !\n"
+    it "builds a recipe given build_network = \"none\" with no network, as an image of its own (spec 10.3)" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject
+          [ ("img/Dockerfile", "FROM alpine:3.22.2\n"),
+            ( "main.lask",
+              "online = #./img/Dockerfile\n\
+              \offline = #./img/Dockerfile(build_network = \"none\")\n\
+              \a(): String = $[online] true\n\
+              \b(): String = $[offline] true\n"
+            )
+          ]
+          $ \dir -> do
+            s' <- runLaskEnv lask dir extra ["sync"] ""
+            resExit s' `shouldBe` 0
+            resOut s' `shouldSatisfy` isInfixOf "#./img/Dockerfile (no network)"
+            cs <- calls state
+            let builds = [c | c <- cs, "build " `isPrefixOf` c]
+                tag c = takeWhile (/= ' ') (drop 4 (snd (breakOn' " -t " c)))
+                breakOn' needle hay = case [i | i <- [0 .. length hay - length needle], take (length needle) (drop i hay) == needle] of
+                  i : _ -> (take i hay, drop i hay)
+                  [] -> (hay, "")
+            length builds `shouldBe` 2
+            length (filter (isInfixOf "--network none") builds) `shouldBe` 1
+            -- Two images, so that the offline one is never the other.
+            length (nub (map tag builds)) `shouldBe` 2
+            lock <- readFile (dir </> "lask.lock.json")
+            lock `shouldSatisfy` isInfixOf "#img/Dockerfile(build_network = \\\"none\\\")"
+            bad <- withProject [("main.lask", "x = #./Dockerfile(build_network = \"host\")\n"), ("Dockerfile", "FROM alpine\n")] $ \d -> runLask lask d ["check"] ""
+            resOut bad `shouldSatisfy` isInfixOf "'build_network' takes \"none\" or \"default\", not 'host'"
     it "rejects undefined environment names before evaluation" $ \lask ->
       withProject [("main.lask", "f() = $[#env(\"missing\")] ls\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""

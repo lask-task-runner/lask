@@ -110,7 +110,11 @@ data Token
   | TEnvHead Text
   -- ^ The text after @#@ (e.g. @local@, @alpine:3.12@).
   | TCommand CmdStream (Maybe [Spanned Token]) [StrPart]
-  -- ^ Stream selector, optional @[env]@ token stream, command string.
+  -- ^ Stream selector, optional @[env]@ token stream, command string
+  -- running to the end of its line.
+  | TBracedCommand CmdStream (Maybe [Spanned Token]) [StrPart]
+  -- ^ The same, with the command string closed by its braces
+  -- (@${ ... }@), so the line goes on after it.
   | TKw Keyword
   | TOp Op
   | TLParen
@@ -216,6 +220,7 @@ stripToken :: Token -> Token
 stripToken t = case t of
   TString ps -> TString (map stripPart ps)
   TCommand s env ps -> TCommand s (fmap stripTokens' env) (map stripPart ps)
+  TBracedCommand s env ps -> TBracedCommand s (fmap stripTokens' env) (map stripPart ps)
   _ -> t
   where
     stripPart (Chunk _ c) = Chunk NoSpan c

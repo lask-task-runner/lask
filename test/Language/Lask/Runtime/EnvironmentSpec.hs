@@ -92,10 +92,10 @@ spec = do
         `shouldBe` Right (ResolvedDocker "alpine:3.20" Map.empty)
     it "resolves a recipe, defaulting the context to the Dockerfile's directory" $
       resolveEnv (env "docker" [("dockerfile", VString "infra/Dockerfile")])
-        `shouldBe` Right (ResolvedRecipe (Recipe "infra/Dockerfile" "infra" [] Nothing) Map.empty)
+        `shouldBe` Right (ResolvedRecipe (Recipe "infra/Dockerfile" "infra" [] Nothing Nothing) Map.empty)
     it "keeps an explicit context" $
       resolveEnv (env "docker" [("dockerfile", VString "infra/Dockerfile"), ("context", VString ".")])
-        `shouldBe` Right (ResolvedRecipe (Recipe "infra/Dockerfile" "." [] Nothing) Map.empty)
+        `shouldBe` Right (ResolvedRecipe (Recipe "infra/Dockerfile" "." [] Nothing Nothing) Map.empty)
     it "carries the build arguments and the platform into the recipe, and runs on that platform" $
       resolveEnv
         ( env
@@ -107,7 +107,7 @@ spec = do
         )
         `shouldBe` Right
           ( ResolvedRecipe
-              (Recipe "infra/Dockerfile" "infra" [("V", "1")] (Just "linux/amd64"))
+              (Recipe "infra/Dockerfile" "infra" [("V", "1")] (Just "linux/amd64") Nothing)
               ( Map.fromList
                   [ ("build_args", VMap (Map.fromList [("V", VString "1")])),
                     ("platform", VString "linux/amd64")
@@ -366,7 +366,7 @@ spec = do
   describe "recipe hashing (spec 10.3)" $ do
     let tagWith buildArgs platform = withSystemTempDirectory "lask-recipe" $ \dir -> do
           writeFile (dir <> "/Dockerfile") "FROM alpine:3.20\n"
-          recipeTag dir (Recipe "Dockerfile" "." buildArgs platform)
+          recipeTag dir (Recipe "Dockerfile" "." buildArgs platform Nothing)
         tagFor buildArgs = tagWith buildArgs Nothing
 
     it "covers the declared build arguments" $ do
@@ -507,7 +507,7 @@ spec = do
       fst
         ( envLogInfo
             (env "docker" [("dockerfile", VString "infra/Dockerfile")])
-            (ResolvedRecipe (Recipe "infra/Dockerfile" "infra" [] Nothing) Map.empty)
+            (ResolvedRecipe (Recipe "infra/Dockerfile" "infra" [] Nothing Nothing) Map.empty)
         )
         `shouldBe` "#./infra/Dockerfile"
 

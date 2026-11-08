@@ -77,6 +77,12 @@ required_profile(): String = get_env("AWS_PROFILE")
 // `!!` marks a binding secret: the value is masked wherever it appears
 // in the command execution log afterwards.
 //
+// The token is given to the container as a variable, which the command
+// reads. Written into the command string instead, it would be on a
+// command line of the host, which `lask check` warns of
+// (W-SECRET-COMMAND-LINE); `lask envs secrets` lists where each secret
+// is given.
+//
 // Run this and watch the log — the token is replaced, while the
 // harmless argument beside it is not. The marker is allowed on
 // `String` only, means nothing to the type system, and does not mask
@@ -91,7 +97,7 @@ required_profile(): String = get_env("AWS_PROFILE")
 // @example lask run show-token
 show_token(--token!!: String = get_env_or("APP_TOKEN", "s3cr3t-value")): Void = do {
   log("about to use #{token}")
-  $[alpine] echo "token=#{token} user=lask"
+  $[runnable(alpine, env = {"APP_TOKEN": token})] echo "token=$APP_TOKEN user=lask"
   log("done")
 }
 
@@ -101,7 +107,7 @@ show_token(--token!!: String = get_env_or("APP_TOKEN", "s3cr3t-value")): Void = 
 // not declared with `!!` — the return value of a command, say.
 issue_token(): String = do {
   generated = mark_secret(random_string(12))
-  $[alpine] echo "issued #{generated}"
+  $[runnable(alpine, env = {"GENERATED": generated})] echo "issued $GENERATED"
   "issued"
 }
 

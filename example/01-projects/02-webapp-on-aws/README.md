@@ -23,8 +23,10 @@ Execution environments are values, so they're declared once at the top of the fi
 ```lask
 python = tools.python.env(image = #python:3.12.14-alpine3.24)
 node = tools.node.env(image = #node:24.22.1-alpine3.24)
-playwright = tools.playwright.env(image = #mcr.microsoft.com/playwright:v1.62.1-jammy)
+playwright(extra: Map<String>) = tools.playwright.env(image = #mcr.microsoft.com/playwright:v1.62.1-jammy, extra_env = extra)
 ```
+
+`playwright` is a function rather than a value because the end-to-end test gives the browser its password as a variable (`extra_env`), not written into the command, where it would be on a command line of the machine. `lask envs secrets` lists which secret goes to which container, and how.
 
 A `command` declaration then says which environment provides each program:
 

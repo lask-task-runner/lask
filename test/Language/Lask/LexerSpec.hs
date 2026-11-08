@@ -206,6 +206,45 @@ spec = do
     it "does not take a spaced [ as environment" $
       lexed "$ [ls]" `shouldBe` Right [TCommand StreamOut Nothing (chunk1 "[ls]")]
 
+  describe "braced command expressions (spec 6.6)" $ do
+    it "ends the command string at its closing brace" $
+      lexed "${uname -s} |> trim"
+        `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "uname -s"), TOp OpPipeR, lid "trim"]
+
+    it "takes a brace after whitespace, after a stream and after an environment" $ do
+      lexed "$ { ls }" `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "ls")]
+      lexed "$*{ls}" `shouldBe` Right [TBracedCommand StreamAll Nothing (chunk1 "ls")]
+      lexed "$2 {ls}" `shouldBe` Right [TBracedCommand StreamErr Nothing (chunk1 "ls")]
+      lexed "$[#local] {ls}"
+        `shouldBe` Right [TBracedCommand StreamOut (Just [nt (TEnvHead "local")]) (chunk1 "ls")]
+
+    it "counts the braces inside it, whatever the quoting" $ do
+      lexed "${echo '{\"a\": {\"b\": 1}}'}"
+        `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "echo '{\"a\": {\"b\": 1}}'")]
+      lexed "${awk '{print $1}' f}, x"
+        `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "awk '{print $1}' f"), TComma, lid "x"]
+
+    it "keeps a backslashed brace as written and does not count it" $
+      lexed "${echo \\} \\{}"
+        `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "echo \\} \\{")]
+
+    it "captures holes, whose braces are their own" $
+      lexed "${echo #{x}}"
+        `shouldBe` Right [TBracedCommand StreamOut Nothing [Chunk NoSpan "echo ", Interp [nt (lid "x")]]]
+
+    it "keeps newlines inside and trims whitespace at both ends" $
+      lexed "${\n  a |\n    b\n}"
+        `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "a |\n    b")]
+
+    it "reads CRLF line ends as newlines" $
+      lexed "${a |\r\n b}"
+        `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "a |\n b")]
+
+    it "rejects an empty or unclosed braced command" $ do
+      lexed "${ }" `shouldSatisfy` isLeft
+      lexed "${ls" `shouldSatisfy` isLeft
+      lexed "${ls {a}" `shouldSatisfy` isLeft
+
   describe "layout: continuation rules (spec 6.5)" $ do
     it "keeps newlines between top-level declarations" $
       laid "a = 1\nb = 2"

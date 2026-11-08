@@ -195,6 +195,13 @@ spec = do
     it "keeps a command's line to itself" $
       unchanged ["xs = [", "  $ ls", "]"]
 
+    it "lets a braced command share its line" $ do
+      unchanged ["xs = [${ls}, $[#local] { pwd } |> trim]"]
+      ["xs = [  ${ls}  ,${pwd}]"] `formatsTo` ["xs = [${ls}, ${pwd}]"]
+
+    it "copies the lines of a braced command as written" $
+      unchanged ["f() = ${", "  ls |", "    sort", "} |> trim"]
+
   describe "errors" $ do
     it "reports a syntax error instead of formatting" $
       fmt ["x = "] `shouldSatisfy` isSyntax

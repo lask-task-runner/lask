@@ -89,11 +89,11 @@ os_release(): String = $[alpine] cat /etc/os-release
 
 // The last line of a file, sorted.
 //
-// A command string runs to the end of its line, and *everything* still
-// on that line is command text: `$ uname -s |> trim` hands `|>` and
-// `trim` to the shell and quietly returns the empty string. The pipe
-// therefore goes on the next line, where a leading binary operator
-// continues the expression (6.5) instead.
+// A command string runs to the end of its line, and everything still
+// on that line is command text. The pipe therefore goes on the next
+// line, where a leading binary operator continues the expression (6.5)
+// instead. Writing `$ uname -s |> trim` on one line is
+// E-TYPE-COMMAND-SYNTAX: the shell would read `|>` as `|` and `>`.
 //
 // A line ending in `\` continues the command itself, which is how a
 // long shell pipeline is broken across lines — the command ends at the
@@ -103,6 +103,27 @@ longest_line(--file: String = "/etc/passwd"): String =
     sort | \
     tail -n 1
   |> trim
+
+// The same, braced.
+//
+// A braced command, `${ ... }`, ends at its closing brace, so the
+// expression goes on after it on the same line. Inside, braces are
+// counted whatever the quoting — JSON, awk and `${HOME}` need nothing
+// — and a newline may stand where the shell continues the command:
+// after `|`, `&&` or `||`. A newline between two commands is
+// E-TYPE-COMMAND-SYNTAX, because only the last one's exit code would
+// be checked; join them with `&&` instead.
+longest_line_braced(--file: String = "/etc/passwd"): String = $[alpine]{
+  cat #{file} |
+    sort |
+    tail -n 1
+} |> trim
+
+// The host's kernel and the image's machine, in one line.
+//
+// Braced, a command can sit wherever an expression can: in a call, a
+// list, a record, a lambda.
+kernel_and_machine(): Array<String> = [${uname -s} |> trim, $[alpine]{uname -m} |> trim]
 
 // Greet someone from inside the container.
 //

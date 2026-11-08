@@ -17,6 +17,7 @@ module Language.Lask.Runtime.ProcessStop
     stopProcessTree,
     newContainerName,
     stopGraceSeconds,
+    liveOf,
   )
 where
 

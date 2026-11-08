@@ -79,12 +79,14 @@ data ErrorCode
 data AdvisoryCode
   = WAsyncUnused
   | WCommandOption
+  | WSecretCommandLine
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 advisoryText :: AdvisoryCode -> Text
 advisoryText c = case c of
   WAsyncUnused -> "W-ASYNC-UNUSED"
   WCommandOption -> "W-COMMAND-OPTION"
+  WSecretCommandLine -> "W-SECRET-COMMAND-LINE"
 
 -- | Error stage (spec 14.3).
 data Stage

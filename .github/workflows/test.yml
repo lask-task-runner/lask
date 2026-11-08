@@ -53,6 +53,13 @@ jobs:
       - name: Test
         run: dist/bin/lask run ci
 
+      # The egress proxy (spec 10.12) is tested in a pinned Go image with
+      # no network, which `sync` materializes.
+      - name: Test the egress proxy
+        run: |
+          dist/bin/lask sync --frozen
+          dist/bin/lask run test-egress-proxy
+
       - name: Summarize coverage
         run: dist/bin/lask eval --stdout-encode text coverage-report >> "$GITHUB_STEP_SUMMARY"
 

@@ -81,7 +81,9 @@ data BuildSpec = BuildSpec
     bsTag :: Text,
     -- | In name order.
     bsArgs :: [(Text, Text)],
-    bsPlatform :: Maybe Text
+    bsPlatform :: Maybe Text,
+    -- | Build with no network (spec 10.3, @build_network@).
+    bsOffline :: Bool
   }
 
 -- | One container run: the base directory mounted as its working
@@ -161,7 +163,11 @@ data ContainerBackend = ContainerBackend
     cbRunFailure :: Int -> Text -> Maybe Text,
     -- | Stop and remove a named container, waiting this many seconds
     -- before it is killed.
-    cbStop :: Int -> Text -> IO ()
+    cbStop :: Int -> Text -> IO (),
+    -- | Run the client with these arguments to completion: its stdout,
+    -- or why it failed. For what has no operation of its own, such as
+    -- the networks of egress (spec 10.12).
+    cbClient :: [String] -> IO (Either Text Text)
   }
 
 -- | The backend for the engine @LASK_CONTAINER_ENGINE@ names, or, when
@@ -198,7 +204,8 @@ unusableBackend msg =
       cbRunProcess = \_ -> pure (proc "sh" ["-c", "echo \"$0\" >&2; exit 125", T.unpack msg]),
       cbExecProcess = \_ -> proc "sh" ["-c", "echo \"$0\" >&2; exit 125", T.unpack msg],
       cbRunFailure = \_ _ -> Just msg,
-      cbStop = \_ _ -> pure ()
+      cbStop = \_ _ -> pure (),
+      cbClient = \_ -> pure (Left msg)
     }
 
 -- | The backend that drives an engine's client.
@@ -241,7 +248,8 @@ cliBackend engine =
       cbStop = \grace name -> do
         _ <- client ["stop", "-t", show grace, T.unpack name]
         _ <- client ["rm", "--force", T.unpack name]
-        pure ()
+        pure (),
+      cbClient = client
     }
   where
     program = T.unpack (engineName engine)
@@ -310,6 +318,7 @@ cliBackend engine =
               <> (if engine == Podman then [] else ["--progress=plain"])
               <> ["-f", bsFile spec, "-t", T.unpack (bsTag spec)]
               <> maybe [] (\p -> ["--platform", T.unpack p]) (bsPlatform spec)
+              <> (if bsOffline spec then ["--network", "none"] else [])
               <> concat [["--build-arg", T.unpack (k <> "=" <> v)] | (k, v) <- sortOn fst (bsArgs spec)]
               <> [bsContext spec]
           step line = case T.breakOn " [" line of

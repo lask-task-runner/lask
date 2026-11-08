@@ -538,6 +538,18 @@ spec = do
       pExpr "$*[#local] ls"
         `shouldBe` Right (ECommand StreamAll (Just (ex (EEnv "local" Nothing Nothing))) [TPChunk NoSpan "ls"])
 
+    it "parses a braced command, which the expression goes on after (spec 6.6)" $
+      pExpr "$[#local]{uname -s} |> trim"
+        `shouldBe` Right
+          ( EBin
+              OpPipeR
+              (ex (ECommand StreamOut (Just (ex (EEnv "local" Nothing Nothing))) [TPChunk NoSpan "uname -s"]))
+              (ex (EVar "trim"))
+          )
+
+    it "parses a braced command inside a call" $
+      pExpr "f(${ls}, 1)" `shouldSatisfy` isRight
+
   describe "do blocks and statements" $ do
     it "parses do blocks with binds and trailing expression" $
       pExpr "do {\n  a = 1\n  a\n}"
@@ -711,5 +723,10 @@ spec = do
     it "names the command that took a closing bracket" $
       notes "f() = length($[#local] ls)\n"
         `shouldSatisfy` any (isInfixOf "the command on line 1 runs to the end of its line, so its closing ')'")
+    it "suggests the braced form" $
+      notes "f() = length($[#local] ls)\n"
+        `shouldSatisfy` any (isInfixOf "close it with braces: ${ ... }")
+    it "says nothing about a braced command inside brackets" $
+      notes "f() = length($[#local]{ls})\n" `shouldBe` []
     it "says nothing about a command whose brackets balance" $
       notes "f() = do {\n  x = $[#local] echo '(' \")\" $(date)\n  x +\n}\n" `shouldBe` []

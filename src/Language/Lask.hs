@@ -22,9 +22,10 @@ import Data.Text (Text)
 import Language.Lask.Deps.File (defaultDepsFileName)
 import Language.Lask.Deps.Lock (defaultLockFileName)
 import Language.Lask.Confirm (validateConfirm)
-import Language.Lask.Core.Access (checkWithin, withinConstraints)
-import Language.Lask.Diagnostic (Diagnostic, settleDiagnostics)
-import Language.Lask.Elaborate (CoreProgram, elaborateRecovering)
+import Language.Lask.Core.Access (checkWithin, secretAdvisories, withinConstraints)
+import Data.List (sortOn)
+import Language.Lask.Diagnostic (Advisory (..), Diagnostic, settleDiagnostics)
+import Language.Lask.Elaborate (CoreProgram (..), elaborateRecovering)
 import Language.Lask.Module.Loader (LoadedModule (..), LoaderEnv (..), ModuleReader, Program (..), collapseDots, defaultLoaderEnv, fileReader, loadProgramEnv, loadProgramWith)
 import Language.Lask.Module.Resolve (GlobalScope, resolveProgram)
 import Language.Lask.Syntax.AST (Module)
@@ -96,7 +97,12 @@ checkProgramWith constrained prog =
       withinDs
         | constrained && null (nameDs <> typeDs <> specDs) = checkWithin cons core
         | otherwise = []
-   in (settleDiagnostics (nameDs <> typeDs <> specDs <> withinDs), scopes, core)
+      -- Where secrets are given is advised on whether or not a
+      -- constraint covers them (spec 10.11).
+      advised
+        | null (nameDs <> typeDs <> specDs) = core {cpAdvisories = sortOn advSpan (cpAdvisories core <> secretAdvisories core)}
+        | otherwise = core
+   in (settleDiagnostics (nameDs <> typeDs <> specDs <> withinDs), scopes, advised)
 
 -- | Compile an in-editor document: the entry module's text is
 -- provided directly; imported modules are read from disk.

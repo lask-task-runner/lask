@@ -33,7 +33,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Language.Lask.Access (Mode (..), accessTable, parseMode, validateBaseMount)
+import Language.Lask.Access (Mode (..), accessTable, parseEgressEntry, parseMode, validateBaseMount)
 import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Shell (escapeCommand, rawBuiltin)
 import Language.Lask.CommandSchema (Finding (..), Schema, Static (..), StaticF (..), checkCommand, fromStatic)
@@ -1235,6 +1235,14 @@ check ctx path locals e@(Expr sp f) expected = case f of
   EArray es | TyArray t <- expected -> do
     cs <- mapM (\el -> check ctx path locals el t) es
     pure (Core sp (CArray cs))
+  -- Against a union with one array among its members, as a parameter
+  -- that is a list or null, a list written out is checked as that
+  -- array, so that `[]` is a list of its elements rather than of Any.
+  EArray es
+    | TyUnion ts <- expected,
+      [TyArray t] <- [x | x@(TyArray _) <- ts] -> do
+        cs <- mapM (\el -> check ctx path locals el t) es
+        pure (Core sp (CArray cs))
   EObject kvs -> checkObject ctx path locals sp kvs expected
   ELambda ps rt body
     | TyFun expPs _ <- expected -> do
@@ -2114,7 +2122,9 @@ elabCommand ctx path locals sp stream mEnv parts = do
       pure (c, Just (renderEnvCore c), ws)
   when hostIsWindows $ do
     container <- runsInContainer ctx envCore
-    when container (checkShellSyntax sp reading)
+    if container
+      then checkShellSyntax sp reading
+      else checkOneLine sp parts
   recordCommandUse sp shownEnv viaWords parts
   let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run"))) [envCore, cmdCore] [])
   case stream of
@@ -2153,6 +2163,18 @@ checkShellSyntax sp reading = case srProblem reading of
   Just (psp, why) ->
     abort . diag ETypeCommandSyntax (if psp == NoSpan then sp else psp) $
       "this command is not valid shell syntax: " <> why
+
+-- | cmd.exe ends a command line at its first newline and never reads
+-- the rest (10.2), so a braced command that may run there is one line.
+checkOneLine :: Span -> [TextPart] -> TC ()
+checkOneLine sp parts
+  | any hasNewline parts =
+      abort . diag ETypeCommandSyntax sp $
+        "this command spans several lines, and it may run on the local environment of this Windows host, whose cmd.exe would run only the first: write it on one line"
+  | otherwise = pure ()
+  where
+    hasNewline (TPChunk _ t) = T.any (== '\n') t
+    hasNewline _ = False
 
 -- | Whether an environment is known from the text to be a container
 -- one, through the bindings that name it.
@@ -2594,6 +2616,10 @@ dockerRunOptions =
     ("cap_drop", list),
     -- Network.
     ("network", text),
+    -- The destinations a container may reach, through a proxy (10.12).
+    -- Null as a whole, unlike the other lists: an empty list admits
+    -- nothing, so "not given" is null, which a library passes on.
+    ("egress", mkUnion list [TyNull]),
     ("dns", list),
     ("dns_search", list),
     ("add_hosts", table),
@@ -2616,7 +2642,7 @@ dockerRunOptions =
 -- are given only in a head's own argument list, as literals, so that
 -- the images a program uses are known by reading it.
 imageOptionNames :: [Text]
-imageOptionNames = ["platform", "context", "build_args"]
+imageOptionNames = ["platform", "context", "build_args", "build_network"]
 
 -- | The type of a runnable's options, for a diagnostic that points at
 -- the braces.
@@ -2636,10 +2662,15 @@ elabEnv ctx path locals sp h mArgs = case classifyHead h of
     pure (Core sp (CEnv "docker" (("image", Core sp (CStrLit ref)) : opts)), TyEnvironment)
   HeadRecipe written -> do
     dockerfile <- treePath "the recipe path" written
-    opts <- options [("platform", TyString), ("context", TyString), ("build_args", TyMap TyString)]
+    opts <- options [("platform", TyString), ("context", TyString), ("build_args", TyMap TyString), ("build_network", TyString)]
     _ <- requireLiteral opts "platform"
     mapM_ (treePath "'context'") =<< requireLiteral opts "context"
     requireLiteralTable opts "build_args"
+    -- What the build reaches (10.3): "none", or the engine's default.
+    network <- requireLiteral opts "build_network"
+    case network of
+      Just n | n `notElem` ["none", "default"] -> envErr ("'build_network' takes \"none\" or \"default\", not '" <> n <> "'")
+      _ -> pure ()
     pure
       ( Core sp (CEnv "docker" (map recipeArg (("dockerfile", Core sp (CStrLit dockerfile)) : opts))),
         TyEnvironment
@@ -2734,6 +2765,17 @@ elabRunnable ctx path locals sp env args = do
         Just c@(Core _ (CMapLit kvs))
           | Just pairs <- mapM literalValue kvs -> () <$ either (optionErr c) pure (accessTable pairs)
         _ -> pure ()
+      -- An entry of egress written as a literal, and egress with
+      -- network or publish, both written as literals (10.12). A
+      -- library passes its own parameters on, null when not given, and
+      -- is held to it when the command runs.
+      case lookup "egress" opts of
+        Just (Core _ (CArray es)) -> do
+          mapM_ (\e -> case coreF e of CStrLit t -> () <$ either (optionErr e) pure (parseEgressEntry t); _ -> pure ()) es
+          case [(k, o) | k <- ["network", "publish"], Just o <- [lookup k opts], givenLiteral o] of
+            (k, o) : _ -> optionErr o ("'" <> k <> "' is given with egress, which provides the network: a container given egress reaches only what it lists, and publishes no port")
+            [] -> pure ()
+        _ -> pure ()
 
     literalValue (k, v) = case coreF v of
       CStrLit t -> Just (k, t)
@@ -2741,6 +2783,13 @@ elabRunnable ctx path locals sp env args = do
 
     isNullLit c = case coreF c of
       CNull -> True
+      _ -> False
+
+    -- A literal that gives the option: not null, and not a list of
+    -- nothing but nulls, which leaves it out (10.2).
+    givenLiteral c = case coreF c of
+      CStrLit _ -> True
+      CArray xs -> any (not . isNullLit) xs
       _ -> False
 
     optionErr :: Core -> Text -> TC a
@@ -2795,6 +2844,7 @@ bindEnvOptions ctx path locals sig unknown = foldM step []
     checkEnvArg e ty = case ty of
       TyArray el | el == nullableText -> orPlain (TyArray TyString)
       TyMap el | el == nullableText -> orPlain (TyMap TyString)
+      _ | ty == mkUnion (TyArray nullableText) [TyNull] -> orPlain (mkUnion (TyArray TyString) [TyNull])
       _ -> check ctx path locals e ty
       where
         nullableText = mkUnion TyString [TyNull]
