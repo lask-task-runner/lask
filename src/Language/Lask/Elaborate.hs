@@ -1972,7 +1972,9 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
 
     -- Rebind the name at the narrowed type for the arm body. A single
     -- narrowed type goes through the conversion of cast (15.8), so a
-    -- record narrowed to Map<T> reaches the body as a map.
+    -- record narrowed to Map<T> reaches the body as a map. A type
+    -- parameter is opaque in the body (4.4) and has no run-time check,
+    -- so its positions are converted as Any is: passed as they are.
     narrowBind n declared narrowed
       | narrowed == declared = plain
       | otherwise = (Map.insert n narrowed locals, wrap)
@@ -1981,7 +1983,9 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
         scrutVar = Core sp (CVar (LocalRef (caseScrutName sp)))
         rhs = case narrowed of
           TyUnion _ -> scrutVar
-          _ -> Core sp (CCast scrutVar narrowed)
+          _ -> case applySubst (Map.fromList [(v, TyAny) | v <- typeVars narrowed]) narrowed of
+            TyAny -> scrutVar
+            target -> Core sp (CCast scrutVar target)
 
     -- Subtractive narrowing for the else arm (spec 6.4). Removing
     -- every member leaves the declared type: there is no empty type.
