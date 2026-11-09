@@ -90,6 +90,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [11.9 Interactive Session (`repl`)](#119-interactive-session-repl)
     - [11.10 Secret References (`secrets`)](#1110-secret-references-secrets)
     - [11.11 Formatting (`fmt`)](#1111-formatting-fmt)
+    - [11.12 Signals](#1112-signals)
   - [12. Observability](#12-observability)
     - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
     - [12.2 Execution Log](#122-execution-log)
@@ -2350,7 +2351,7 @@ Error value conversion of failures caused by non-zero exit (carrying over the ex
 
 Stopping an abandoned command:
 
-- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
+- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7). A `run` or `eval` stopped by SIGINT or SIGTERM abandons its whole evaluation the same way (11.12).
 - An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed. A command running in the container of a session (15.5) is stopped without it: its own processes in the container are stopped, and the container and the session's other processes stay. The container runs under an init process unless its environment turns that off (10.2), so the request reaches a command that is not written to handle it.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
@@ -3152,7 +3153,7 @@ Reporting:
 Lifetime:
 
 - The network and the proxy a container is given are made when the first use that needs them runs, and are shared by every use of one invocation (`run`, `eval`, `cmd`, a `repl` session) whose `egress` lists the same entries, those running concurrently (6.3) included. A `with_container` session (15.5) keeps them as long as it is open.
-- They are removed when the invocation ends, by an error and by the termination of 8.7 too. They are marked as Lask's and as the invocation's, and what an invocation that ended without removing them left is removed by a later one on the same machine.
+- They are removed when the invocation ends, by an error, by the termination of 8.7 and by a signal (11.12) too. They are marked as Lask's and as the invocation's, and what an invocation that ended without removing them left is removed by its reaper (11.12) or by a later one on the same machine.
 
 The proxy image:
 
@@ -3371,6 +3372,7 @@ Exit code contract:
 - Uncaught failure: the `code` of the `Error` value (8.10). Command failure passes through that command's exit code; other runtime errors default to `2`; external I/O errors (including image materialization failure and environment resolution failure) default to `3`; `fail` passes through the specified value. If `code` is not an integer in 1–255, it is normalized to `1`.
 - `1`: syntax or static validation error (detected before evaluation; no `Error` value is generated)
 - `4`: CLI usage error (invalid option, missing argument, etc.), including a refused confirmation (`E-CLI-NOT-CONFIRMED`, 11.2)
+- `128 + n`: a `run` or `eval` stopped by the signal `n` (`E-RUNTIME-INTERRUPTED`, 11.12): `130` for SIGINT, `143` for SIGTERM
 
 Overlap of exit codes:
 
@@ -3944,7 +3946,7 @@ Stream rules:
 - When stdin, stdout and stderr are all terminals, stderr is attached to the program as well, and a terminal is allocated in the `docker` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
 - Otherwise the program's standard error is relayed as the command execution log (12.3). The relay is applied to standard error only: relaying standard output would either duplicate it or withhold it from the pipe, and interactivity and pipeability both take precedence over the completeness of the relay.
 - The start line and the exit line of 12.3 are emitted in every case, so every invocation is recorded with its environment, its argument vector and its exit status.
-- `INT` and `TERM` are forwarded to the program, and the container must be removed on exit, including on signal.
+- `INT` and `TERM` are forwarded to the program, and the container must be removed on exit, including on signal (11.12).
 
 Exit code rules:
 
@@ -4119,6 +4121,32 @@ main.lask
 $ lask fmt --check
 $
 ```
+
+### 11.12 Signals
+
+`run` and `eval` stop on SIGINT and SIGTERM as a `timeout` stops a body it abandons (8.7, 15.7): what is running is stopped, and every `finally` block runs before lask exits. A second signal stops lask at once. SIGKILL cannot be handled by the process it kills, so the containers a killed invocation leaves are removed by another process, the reaper.
+
+Graceful stop:
+
+- The first SIGINT or SIGTERM a `run` or `eval` receives while it evaluates abandons the evaluation (8.7). The command running is stopped, and the `finally` blocks of the evaluation run (8.10), innermost first, as do those of every computation it started with `async`, each of which is cancelled. No `catch` block sees it. A line on stderr says the signal was received and that a second one stops at once.
+- When they have ended, the run fails with `E-RUNTIME-INTERRUPTED` (14.5), whose `Error` has `code` `128 + n` for the signal `n`: `130` for SIGINT and `143` for SIGTERM, as a shell reports a command a signal ended. The containers the run started have been stopped and removed with their commands (8.7), and the networks of `egress` are removed (10.12).
+- What has not started does not start: the run does not go on past the abandonment. Computations nothing awaited are cancelled rather than waited for (6.3), and are not reported as `W-ASYNC-UNAWAITED`.
+- A signal that arrives before the evaluation starts, or after it has ended, is not handled this way.
+
+Immediate stop:
+
+- A second SIGINT or SIGTERM while the graceful stop is under way stops lask at once, with the same exit code. No further `finally` block runs. The processes the run's commands started are killed (`SIGKILL`), and no process is started after that. The containers are left to the reaper.
+
+The reaper:
+
+- Every container lask starts — the container of a command, of a `with_container` session (15.5), of `cmd` (11.8), of a probe (11.7) and of the egress proxy (10.12) — is labelled with the invocation that starts it, `io.lask.owner=<host>:<pid>` (the networks and proxy of `egress` keep their label of 10.12).
+- Before it starts its first container, an invocation starts the reaper: a process of its own, outside the terminal's process group so that the signal that stops lask does not stop it, which ignores SIGINT, SIGTERM and SIGHUP. The reaper waits for the invocation to end.
+- An invocation that ends in any other way than at once tells the reaper so, and the reaper exits doing nothing. When the invocation ends without telling it — it was killed with SIGKILL, it stopped at once on a second signal, or it failed in a way that skipped its clean-up — the reaper force-removes every container labelled with it, and the containers and networks of its `egress`.
+- What the reaper cannot do is not done: a reaper that is killed itself (as by a SIGKILL sent to every process of a session or a control group) removes nothing, and the processes of `local` commands are not containers and are not its concern. The networks and proxy of `egress` such an invocation left are still removed by a later invocation (10.12).
+
+`cmd`:
+
+- `cmd` (11.8) does not stop on a signal: SIGTERM is passed on to the program it runs, and SIGINT reaches it from the terminal. Its exit code is the program's.
 
 ## 12. Observability
 
@@ -4531,6 +4559,7 @@ Representative codes:
 - `E-RUNTIME-TIMEOUT`
 - `E-RUNTIME-UNTIL-EXHAUSTED`
 - `E-RUNTIME-SESSION-CLOSED`
+- `E-RUNTIME-INTERRUPTED`
 - `E-IO-STDIN-READ`
 - `E-IO-ENV-RESOLVE`
 - `E-IO-FS`
@@ -4677,6 +4706,7 @@ Representative examples:
 - `E-RUNTIME-TIMEOUT`: the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10).
 - `E-RUNTIME-UNTIL-EXHAUSTED`: the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10).
 - `E-RUNTIME-SESSION-CLOSED`: a command was run with the session of a `with_container` whose body had returned, or was running in it when it did (15.5).
+- `E-RUNTIME-INTERRUPTED`: a `run` or `eval` was stopped by SIGINT or SIGTERM (11.12). Its `Error` has `code` `128 + n` for the signal `n`. It is an abandonment, not a failure of the program, so no `catch` block sees it.
 
 Rules:
 
