@@ -1892,7 +1892,7 @@ CatchClause   = "catch" "(" lower_id ")" Block .
 FinallyClause = "finally" Block .
 ```
 
-An error handling expression is an expression that catches failures during evaluation (runtime errors and external I/O errors) and joins to an alternative computation. Semantically it is handled by normalization to the core functions `recover` and `fail`.
+An error handling expression is an expression that catches failures during evaluation (runtime errors and external I/O errors) and joins to an alternative computation. Semantically `catch` is handled by normalization to the core functions `recover` and `fail`, and `finally` has an evaluation rule of its own (8.10), because it also runs when its body is abandoned, which is not a failure.
 
 The `Error` type:
 
@@ -1910,7 +1910,7 @@ Here `recover` and `fail` are core functions and must not be directly declared o
 Desugaring rules:
 
 - `try B catch (e) H` is syntactic sugar for `recover(\() -> do { B }, \(e) -> do { H })`.
-- `try B finally F` is syntactic sugar for `do { v = recover(\() -> do { B }, \(e) -> do { F; fail(e) }); F; v }` (`v` is a fresh identifier that does not collide with others). `F` is evaluated exactly once on both the success and the failure path.
+- `try B finally F` is not an expansion through `recover`: it is evaluated by the rule of 8.10, which evaluates `F` exactly once whether `B` succeeds, fails, or is abandoned (8.7). On the success and the failure path it behaves as `do { v = recover(\() -> do { B }, \(e) -> do { F; fail(e) }); F; v }` would; the abandonment path has no such expansion, since abandoning a body is not a failure `recover` could catch.
 - `try B catch (e) H finally F` is equivalent to `try (try B catch (e) H) finally F` (`catch` is applied first, and `finally` is applied to the whole).
 
 Typing rules:
@@ -1925,6 +1925,7 @@ Catch rules:
 
 - The targets of catching are runtime errors and external I/O errors that occur during evaluation of the body block. Syntax and static errors are detected before evaluation and are therefore not targets.
 - A failure that occurs inside a `catch` block or a `finally` block is not caught by the same `TryExpr` and propagates outward.
+- An abandonment (8.7) is not a failure, and no `catch` block sees it, so that a `try` inside a `timeout` cannot keep the body from being abandoned. Every `finally` block of the abandoned body runs (8.10).
 - When `TryExpr`s are nested, the innermost `TryExpr` catches first.
 
 Examples:
@@ -2143,7 +2144,7 @@ The expansion order during static verification is as follows.
 4. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`; without `else`, the false branch is `\() -> null`, or `\() -> do {}` for a `Void` block (6.4)
 5. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
 6. `for (x: xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
-7. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
+7. `try ... catch (...) { ... }` -> an expression using `recover` (6.9); `finally { ... }` stays a core expression of its own (8.10)
 8. Sequential-execution expansion of `do { ... }`
 9. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
 10. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
@@ -2353,6 +2354,7 @@ Stopping an abandoned command:
 - An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed. A command running in the container of a session (15.5) is stopped without it: its own processes in the container are stopped, and the container and the session's other processes stay. The container runs under an init process unless its environment turns that off (10.2), so the request reaches a command that is not written to handle it.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
+- Abandoning a computation stops its command first and then runs the `finally` blocks it is inside, innermost first (8.10). What cancelled it — `race`, `all` or `timeout` — goes on once those blocks have ended.
 
 ### 8.8 Evaluation of Environment Expressions (Core Expression)
 
@@ -2420,6 +2422,14 @@ Evaluation of `recover(body, handler)`:
 2. If it succeeds, return its value. `handler` is not evaluated.
 3. If it fails, map the failure to an `Error` value `err`, evaluate `handler(err)`, and return its result.
 4. Failures during the evaluation of `handler` are not caught by this `recover` and propagate outward.
+
+Evaluation of `try B finally F` (6.9):
+
+1. Evaluate `B`.
+2. If it succeeds with `v`, evaluate `F`, and return `v`. A failure of `F` propagates.
+3. If it fails, evaluate `F`, and propagate the failure of `B`. A failure of `F` propagates in its place.
+4. If it is abandoned (8.7), the command it is running has been stopped. Evaluate `F`, and let the abandonment go on to what caused it. `F` is not abandoned by that same cause: a `timeout` whose limit passed waits for `F` to end before it fails, so a body with a long `finally` returns after its limit. Something further out, such as an enclosing `timeout`, may still abandon `F`. A failure of `F` here does not propagate, since the outcome is decided by what abandoned the body (a `timeout`'s code `124`, or the result of `race` or `all`); it is written to the execution log (12.2), naming its code and message.
+5. A `catch` block is not evaluated for an abandonment (6.9). `F` is evaluated exactly once on every path. A `finally` block that is already running when its body is abandoned is part of what is abandoned, and is not started again.
 
 Evaluation of `fail(err)`:
 
@@ -5044,12 +5054,12 @@ Semantics:
 - `spawn`/`await` follow the rules of 6.3 and 8.6.
 - Because `await` is a reserved word, it can only be applied in the `AwaitExpr` form (`await h`); when passing it as a function value, write `\(h) -> await h` (6.3).
 - `all` waits for all handles to complete and returns the result array in input order.
-- `race` returns the first result to succeed or fail. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7).
+- `race` returns the first result to succeed or fail. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7). Their `finally` blocks run, and `race` returns once they have ended (8.10).
 
 Failure rules:
 
 - `await` on a handle whose computation failed re-raises that failure unchanged (6.3, 8.6): the same `Error` value, with its code and message, and therefore the same exit code if it goes uncaught (11.3). `all` and `race` do the same with the failure they receive.
-- `all` fails as soon as any one of them fails, whichever position it holds in the array, with that failure. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7), so none is left running after the failure is reported.
+- `all` fails as soon as any one of them fails, whichever position it holds in the array, with that failure. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7), so none is left running after the failure is reported. Their `finally` blocks run before it is (8.10).
 - `race` on an empty array is `E-RUNTIME-VALUE`: there is no result to return.
 
 ### 15.7 Error Handling Functions
@@ -5145,7 +5155,7 @@ Evaluation of `timeout(seconds, body)`:
 1. `seconds` must be finite and positive; fractions are allowed. Anything else is `E-RUNTIME-VALUE`.
 2. Evaluate `body()`, measuring the time from the call. If it finishes, successfully or not, before `seconds` have passed, its result is the result of the call.
 3. Once `seconds` have passed without it finishing, the body is abandoned: the command it is running is stopped (8.7), and every computation it started with `async`, directly or through the computations those started, is cancelled, and its commands stopped. The call then fails with the `Error` `{code: 124, message: "timed out after <seconds>s"}` and the diagnostic code `E-RUNTIME-TIMEOUT` (8.10, 14.5). There is no grace setting and no per-environment default.
-4. The failure is raised at the `timeout` call, not inside the body. A `try` inside the body does not see it, and its `finally` does not run, because abandoning the body is not a failure of the body; a `try` around the call sees it. Clean-up that must run belongs outside the `timeout`.
+4. The failure is raised at the `timeout` call, not inside the body. A `catch` inside the body does not see it, because abandoning the body is not a failure of the body; a `try` around the call sees it. The `finally` blocks of the body, and of the computations it started, do run (8.10), after its commands are stopped and before the call fails, so the call may return later than `seconds` by the time they take. To bound clean-up as well, write a `timeout` around the whole.
 5. A computation the body started is cancelled only when the body is abandoned. When the body finishes in time, what it started runs on as usual (6.3).
 
 `timeout` bounds what it is given, so where it is written decides what it bounds. `timeout(30, \() -> await h)` bounds the wait for `h`, and `h` runs on after the limit; `async timeout(30, \() -> work())` bounds `work` itself.
