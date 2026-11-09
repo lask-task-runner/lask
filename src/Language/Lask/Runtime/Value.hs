@@ -5,6 +5,8 @@ module Language.Lask.Runtime.Value
   ( Value (..),
     EnvValue (..),
     withRunOptions,
+    imageParams,
+    isRunnableOnly,
     Closure (..),
     AsyncHandle (..),
     Scope,
@@ -87,6 +89,19 @@ withRunOptions (EnvValue kind params) opts
     notNull VNull = False
     notNull _ = True
 
+-- | The parameters of an environment that name its image (spec 10.2);
+-- any other is a run option.
+imageParams :: [Text]
+imageParams = ["image", "dockerfile", "context", "build_args", "platform", "build_network"]
+
+-- | Whether a value is a runnable and not an environment (spec 4.4):
+-- one with a run option set, or the session of a @with_container@
+-- (15.5). An environment is a runnable with no run options, so a
+-- value with none is both.
+isRunnableOnly :: EnvValue -> Bool
+isRunnableOnly (EnvValue kind params) =
+  kind == "session" || any (`notElem` imageParams) (Map.keys params)
+
 type Scope = Map Text Value
 
 -- | Structural equality (spec 6.2, 8.8). Static checking guarantees
@@ -138,7 +153,9 @@ typeNameOf v = case v of
   VClosure _ -> "Function"
   VBuiltin _ -> "Function"
   VAsync _ -> "AsyncHandle"
-  VEnv _ -> "Environment"
+  VEnv e
+    | isRunnableOnly e -> "Runnable"
+    | otherwise -> "Environment"
 
 -- Failures ---------------------------------------------------------------
 
