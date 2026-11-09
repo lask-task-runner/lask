@@ -1362,7 +1362,7 @@ Desugaring rules:
 - For iteration for side effects where the result array is unnecessary, either make the body of type `Void` or use `for_each` directly.
 - `case (e) { p -> b; R }` is syntactic sugar for `do { s = e; choose(s == p, \() -> b, \() -> C) }`, where `s` is a fresh name that no source program can write (it therefore captures nothing and shadows nothing) and `C` is the expansion of the remaining arms `R`. Because the scrutinee is bound once, it is evaluated exactly once however many arms are tested.
 - A type head expands the same way, with the condition being the runtime type test of `s` against the head type rather than an equality: `case (e) { M -> b; R }` is `do { s = e; choose(<s is M>, \() -> b, \() -> C) }`. The test `<s is M>` is the runtime type check of `cast` at target `M` (15.8) used as a predicate, without its conversion and without its failure.
-- When the scrutinee is a plain local name `x` and the arm narrows it, the arm body is expanded with the narrowing in place: the branch function is `\() -> do { x = <narrowed x>; b }`, where `<narrowed x>` is `cast(s)` at the narrowed type when narrowing leaves exactly one member, and `s` itself otherwise. The rebinding is inside the branch function, so it is confined to that arm.
+- When the scrutinee is a plain local name `x` and the arm narrows it, the arm body is expanded with the narrowing in place: the branch function is `\() -> do { x = <narrowed x>; b }`, where `<narrowed x>` is `cast(s)` at the narrowed type when narrowing leaves exactly one member, and `s` itself otherwise. Each type parameter (4.2) the narrowed type mentions is replaced by `Any` for this conversion, and a narrowed type that is a type parameter is `s` itself (below). The rebinding is inside the branch function, so it is confined to that arm.
 - An arm with several heads tests their disjunction: `p1, p2 -> b` produces the condition `s == p1 || s == p2` in the scrutinee form, and `p1 || p2` in the condition form.
 - `case { c -> b; R }` (the condition form) is syntactic sugar for `choose(c, \() -> b, \() -> C)`. It introduces no binding.
 - The final arm `else -> bz` expands to `bz` itself, as the false branch of the innermost `choose`.
@@ -1403,6 +1403,17 @@ Within the body of an arm, the scrutinee is known to be narrower than its declar
 - Narrowing is a property of `case` alone. `if (x == null) { ... } else { ... }` does not narrow `x` in either block.
 
 The narrowed name is a binding of the arm body, so it shadows the outer binding inside that body and is invisible outside it (7.3). Where the narrowed type is a single type other than the declared one, the narrowed name is bound to the result of the same check-and-convert that `cast` performs at that type (15.8), so that a record value narrowed to `Map<T>`, or the reverse, reaches the body in the representation its type promises. Where the narrowed type is a union of two or more members, or is the declared type unchanged, the value is passed to the body as it is.
+
+A type parameter has no run-time check: it is not a type `cast` may target (4.4), and within the body it is opaque, so its values need no particular representation. The conversion therefore treats each position of the narrowed type that is a type parameter as `Any`, which passes without checking (15.8). `x: T | Null` narrowed to `T` is passed as it is, and `xs: Array<T> | Null` narrowed to `Array<T>` is checked to be an array and its elements passed as they are:
+
+```lask
+or_default<T>(x: T | Null, d: T): T = case (x) {
+  Null -> d
+  else -> x                // x: T here, the value as the caller gave it
+}
+
+s(): String = or_default(find_env("HOME"), "/")
+```
 
 ```lask
 // The scrutinee is a name, so the else arm knows it is a String.
@@ -2271,7 +2282,7 @@ Evaluation of the condition of a type-head arm (6.4):
 
 1. The scrutinee has already been evaluated and bound, so nothing further is evaluated to test a type head.
 2. The bound value is checked against the head type by the runtime type check rules of `cast` (15.8). The check yields `true` or `false`; unlike `cast` it neither converts the value nor fails.
-3. When the arm is selected and the scrutinee is a narrowed name whose narrowed type calls for the conversion of 6.4, the value bound in the branch is the result of the corresponding `cast`, so that a record value narrowed to `Map<T>`, or the reverse, is converted before the body runs. The conversion follows a check that has just succeeded, or, in an `else` arm, a narrowing that leaves one member of the scrutinee's own type, so it cannot fail.
+3. When the arm is selected and the scrutinee is a narrowed name whose narrowed type calls for the conversion of 6.4, the value bound in the branch is the result of the corresponding `cast`, so that a record value narrowed to `Map<T>`, or the reverse, is converted before the body runs. A position of the narrowed type that is a type parameter is converted as `Any` is, passing as it is (6.4). The conversion follows a check that has just succeeded, or, in an `else` arm, a narrowing that leaves one member of the scrutinee's own type, so it cannot fail.
 
 Evaluation of `map(xs, body)`:
 
