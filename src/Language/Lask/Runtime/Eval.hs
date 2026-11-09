@@ -316,7 +316,8 @@ castValueEither = go []
       (TyString, VString _) -> pure v
       (TyBool, VBool _) -> pure v
       (TyNull, VNull) -> pure v
-      (TyEnvironment, VEnv _) -> pure v
+      -- A runnable with run options is not an environment (4.4).
+      (TyEnvironment, VEnv e) | not (isRunnableOnly e) -> pure v
       (TyRunnable, VEnv _) -> pure v
       (TyArray t, VArray xs) ->
         VArray <$> V.imapM (\i x -> go (path <> [T.pack ("[" <> show i <> "]")]) t x) xs
@@ -357,7 +358,7 @@ matchesType ty v = case (ty, v) of
   (TyString, VString _) -> True
   (TyBool, VBool _) -> True
   (TyNull, VNull) -> True
-  (TyEnvironment, VEnv _) -> True
+  (TyEnvironment, VEnv e) -> not (isRunnableOnly e)
   (TyRunnable, VEnv _) -> True
   (TyArray t, VArray xs) -> V.all (matchesType t) xs
   (TyMap t, VMap m) -> all (matchesType t) (Map.elems m)

@@ -17,7 +17,9 @@ import Language.Lask.Elaborate (elaborateProgram)
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
-import Language.Lask.Runtime.Eval (applyValue, mkRtCtx, topValue)
+import qualified Data.Map.Strict as Map
+import Language.Lask.Runtime.Eval (applyValue, castValueEither, mkRtCtx, topValue)
+import Language.Lask.Types (Type (TyEnvironment, TyRunnable))
 import Language.Lask.Runtime.Secrets (maskSecrets, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue)
@@ -682,6 +684,27 @@ spec = do
       failsWith "f(v: String | Null): String = cast(v)\ng() = f(null)" "g" ERuntimeCast
     it "serializes a union as the member the value is (spec 13.1)" $
       evalsTo "f(): Array<String | Null> = [\"a\", null]" "f" "[\"a\",null]"
+    -- A runnable with run options does not conform to Environment
+    -- (spec 4.4); an environment conforms to Runnable.
+    it "does not take a runnable with run options for an environment (spec 4.4, 15.8)" $ do
+      failsWith "k(x: Any): Environment = cast(x)\ng(): Environment = k(#alpine:3.20{memory: \"1g\"})" "g" ERuntimeCast
+      evalsTo "k(x: Any): Environment = cast(x)\ng(): Environment = k(runnable(#alpine:3.20))" "g" "{\"$type\":\"Environment\",\"kind\":\"docker\",\"params\":{\"image\":\"alpine:3.20\"}}"
+      evalsTo "k(x: Any): Environment = cast(x)\ng(): Environment = k(#alpine:3.20{memory: null})" "g" "{\"$type\":\"Environment\",\"kind\":\"docker\",\"params\":{\"image\":\"alpine:3.20\"}}"
+      evalsTo "k(x: Any): Runnable = cast(x)\ng(): Runnable = k(#alpine:3.20)" "g" "{\"$type\":\"Environment\",\"kind\":\"docker\",\"params\":{\"image\":\"alpine:3.20\"}}"
+    it "dispatches a runnable with run options to a Runnable head, not an Environment one (spec 6.4)" $ do
+      let h = "h(x: Any): String = case (x) {\n  Environment -> \"env\"\n  Runnable -> \"runnable\"\n  else -> \"other\"\n}\n"
+      evalsTo (h <> "g(): String = h(#alpine:3.20{memory: \"1g\"})") "g" "\"runnable\""
+      evalsTo (h <> "g(): String = h(#alpine:3.20)") "g" "\"env\""
+      evalsTo (h <> "g(): String = h(#local)") "g" "\"env\""
+    it "names a runnable with run options as Runnable, and one without as Environment" $ do
+      typeNameOf (VEnv (EnvValue "docker" (Map.fromList [("image", VString "a"), ("memory", VString "1g")]))) `shouldBe` "Runnable"
+      typeNameOf (VEnv (EnvValue "docker" (Map.fromList [("image", VString "a"), ("platform", VString "linux/amd64")]))) `shouldBe` "Environment"
+      typeNameOf (VEnv (EnvValue "local" Map.empty)) `shouldBe` "Environment"
+    it "takes a container session for a runnable and not an environment (spec 15.5)" $ do
+      let session = VEnv (EnvValue "session" (Map.fromList [("origin", VEnv (EnvValue "docker" (Map.fromList [("image", VString "a")])))]))
+      isRight (castValueEither TyEnvironment session) `shouldBe` False
+      isRight (castValueEither TyRunnable session) `shouldBe` True
+      typeNameOf session `shouldBe` "Runnable"
 
   describe "optional record fields (spec 4.2)" $ do
     it "casts a value whose optional key is absent, and not one whose required key is" $ do
