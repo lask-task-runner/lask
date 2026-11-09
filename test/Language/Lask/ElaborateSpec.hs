@@ -631,6 +631,16 @@ spec = do
     it "rejects a join whose other branch is not a data type" $ do
       rejects "f(c: Bool) = c ? \\(x: Number) -> x : null" ETypeIllformed
       rejects "f(c: Bool) = if (c) { log(\"x\") } else { null }" ETypeIllformed
+      rejects "f(c: Bool) = do {\n  g = c ? \\(x: Number) -> x : null\n  2\n}" ETypeIllformed
+      rejects "f(c: Bool) = do {\n  1\n  if (c) { \\(x: Number) -> x } else { null }\n}" ETypeIllformed
+    -- As an if without else is (spec 6.4).
+    it "accepts any branch type when the value is discarded" $ do
+      accepts "f(c: Bool): Number = do {\n  if (c) { \\(x: Number) -> x } else { null }\n  1\n}"
+      accepts "f(c: Bool): Number = do {\n  c ? \\(x: Number) -> x : null\n  1\n}"
+      accepts "f(c: Bool): Number = do {\n  case {\n    c -> \\(x: Number) -> x\n    else -> null\n  }\n  1\n}"
+      accepts "f(): Number = do {\n  try { log(\"x\") } catch (e) { null }\n  1\n}"
+    it "still requires discarded branches to agree otherwise" $
+      rejects "f(c: Bool): Number = do {\n  if (c) { 1 } else { \"a\" }\n  2\n}" ETypeMismatch
     it "plays no part under an expected type" $ do
       accepts "f(c: Bool): String | Null = c ? \"a\" : null"
       rejects "f(c: Bool): Number = c ? 1 : null" ETypeMismatch
