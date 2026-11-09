@@ -29,6 +29,7 @@ module Language.Lask.Runtime.Container
     cliBackend,
     runArgs,
     runArgsWith,
+    labelled,
     execArgs,
     clientEnv,
     fileEnv,
@@ -54,6 +55,7 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Language.Lask.Access (Mode (..), accessScalar, accessTable, defaultBaseMount, parseMode, validateBaseMount)
 import Language.Lask.Runtime.Value (Value (..))
+import Language.Lask.Runtime.Reaper (ensureReaper, ownerArgs)
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable, getTemporaryDirectory, removeDirectoryRecursive)
 import System.FilePath (isRelative, makeRelative, splitDirectories, (</>))
 import System.Environment (getEnvironment, lookupEnv)
@@ -243,7 +245,10 @@ cliBackend engine =
       cbBuild = build,
       cbRunProcess = \spec -> do
         (file, cleanup) <- writeEnvFile (fileEnv engine (runOptions spec))
-        let cp = proc program (runArgsWith engine file spec)
+        -- Every container is labelled with the invocation, and the
+        -- reaper removes it should the invocation be killed (11.12).
+        ensureReaper program
+        let cp = proc program (labelled (runArgsWith engine file spec))
         case clientEnv engine (runOptions spec) of
           [] -> pure (cp, cleanup)
           extra -> do
@@ -509,6 +514,13 @@ resolveBaseMounts baseDir opts = case options of
 -- same ones.
 runArgs :: Engine -> RunSpec -> [String]
 runArgs engine = runArgsWith engine Nothing
+
+-- | Client arguments of a @run@ with the label that names this
+-- invocation as the container's owner (spec 11.12) placed after it.
+labelled :: [String] -> [String]
+labelled args = case args of
+  "run" : rest -> "run" : ownerArgs <> rest
+  _ -> args
 
 -- | 'runArgs', with the file the variables of 'fileEnv' are written to.
 runArgsWith :: Engine -> Maybe FilePath -> RunSpec -> [String]

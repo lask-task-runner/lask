@@ -57,8 +57,10 @@ import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
 import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, renderSite)
+import Language.Lask.Runtime.CancelScope (cancelScope, withScope)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Secrets (maskFailure)
+import Language.Lask.Runtime.Shutdown (Interrupted (..), signalName, withGracefulShutdown)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
@@ -231,19 +233,40 @@ cmdRunEval printResult runOpts = do
         | optJsonFormat opts = writeErr . encodeEvent
         | otherwise = noSink
       ctx = ctx0 {rtTraceId = traceId, rtEmit = sink}
-  result <- try $ do
-    fv <- topValue ctx key
-    case fv of
-      VClosure _ -> applyValue ctx fv posVals kwVals
-      VBuiltin _ -> applyValue ctx fv posVals kwVals
-      v
-        | null posVals && null kwVals -> pure v
-        | otherwise -> applyValue ctx fv posVals kwVals
-  -- A computation nothing awaited is waited for rather than cut short
-  -- by the end of the process, and reported (spec 6.3). Whatever it
-  -- did, the run keeps its own outcome and exit code.
-  unawaited <- drainUnawaited tracker
-  mapM_ (fmap (unawaitedDiagnostic opts traceId) . maskOutcome >=> writeErr) unawaited
+  -- A signal abandons the evaluation as a timeout abandons its body:
+  -- its commands are stopped and its finally blocks run, and the
+  -- computations it started are cancelled with it (spec 11.12). They
+  -- all belong to one scope opened here, which is what is cancelled.
+  stopped <- withGracefulShutdown . withScope $ \root -> do
+    outcome <- try $ do
+      result <- try $ do
+        fv <- topValue ctx key
+        case fv of
+          VClosure _ -> applyValue ctx fv posVals kwVals
+          VBuiltin _ -> applyValue ctx fv posVals kwVals
+          v
+            | null posVals && null kwVals -> pure v
+            | otherwise -> applyValue ctx fv posVals kwVals
+      -- A computation nothing awaited is waited for rather than cut
+      -- short by the end of the process, and reported (spec 6.3).
+      -- Whatever it did, the run keeps its own outcome and exit code.
+      unawaited <- drainUnawaited tracker
+      mapM_ (fmap (unawaitedDiagnostic opts traceId) . maskOutcome >=> writeErr) unawaited
+      pure result
+    case outcome of
+      Right result -> pure (Right result)
+      Left (Interrupted sig) -> do
+        -- Cancelled, and so not reported as never awaited (6.3).
+        cancelScope root >>= mapM_ (trackAwaited tracker)
+        pure (Left sig)
+  result <- case stopped of
+    Right r -> pure r
+    Left sig ->
+      failureExit opts traceId $
+        LaskFailure
+          (Just ERuntimeInterrupted)
+          (errorValue (fromIntegral (128 + fromIntegral sig :: Int)) ("the run was stopped by " <> signalName sig))
+          []
   case result of
     Left lf -> failureExit opts traceId lf
     Right v -> do
