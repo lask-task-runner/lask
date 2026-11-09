@@ -114,6 +114,24 @@ statefulRunner = do
           _ -> mockRunner env cmd
   pure (runner, readIORef calls, readIORef stopped)
 
+-- | A runner that records each command it is given, in order. "hang"
+-- waits until it is stopped, "slow" answers "winner" after a tenth of
+-- a second, "broken" exits 9 at once and "slow_broken" after a tenth of
+-- a second; anything else
+-- succeeds with no output.
+recordingRunner :: IO (CommandRunner, IO [Text])
+recordingRunner = do
+  seen <- newIORef []
+  let runner _ cmd = do
+        atomicModifyIORef' seen (\xs -> (xs <> [cmd], ()))
+        case cmd of
+          "hang" -> threadDelay 10000000 >> pure (Right (0, "", ""))
+          "broken" -> pure (Right (9, "", "broken"))
+          "slow" -> threadDelay 100000 >> pure (Right (0, "winner", ""))
+          "slow_broken" -> threadDelay 100000 >> pure (Right (9, "", "broken"))
+          _ -> pure (Right (0, "", ""))
+  pure (runner, readIORef seen)
+
 spec :: Spec
 spec = do
   describe "literals and operators (spec 8.1)" $ do
@@ -875,6 +893,46 @@ spec = do
     it "rejects a limit that is not a positive number of seconds" $ do
       failsWith "f() = timeout(0, \\() -> 1)" "f" ERuntimeValue
       failsWith "f() = timeout(0 - 1, \\() -> 1)" "f" ERuntimeValue
+
+  -- A finally block runs when its body is abandoned, as it does when
+  -- the body succeeds or fails (spec 6.9, 8.10).
+  describe "finally on abandonment (spec 6.9, 8.10)" $ do
+    let hang = "hang(): String = $[#local] hang\n"
+        guarded = "guarded(tag: String): String = try { hang() } finally { $[#local]{cleanup #{tag}} }\n"
+    it "runs the finally of a body a timeout abandons, then fails with 124" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> guarded <> "f() = timeout(0.1, \\() -> guarded(\"t\"))") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeTimeout) . fst) (const False)
+      seen `shouldReturn` ["hang", "cleanup 't'"]
+    it "runs the finally of the computations race cancels" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> guarded <> "f() = do {\n  a = async guarded(\"loser\")\n  b = async $[#local] slow\n  race([a, b])\n}") "f"
+      r `shouldBe` Right "\"winner\""
+      seen >>= (`shouldSatisfy` elem "cleanup 'loser'")
+    it "runs the finally of the computations all cancels after a failure" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> guarded <> "f() = do {\n  a = async guarded(\"other\")\n  b = async $[#local] slow_broken\n  all([a, b])\n}") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeCommandNonzero) . fst) (const False)
+      seen >>= (`shouldSatisfy` elem "cleanup 'other'")
+    it "runs nested finally blocks innermost first" $ do
+      (runner, seen) <- recordingRunner
+      _ <- runWith runner (hang <> "f() = timeout(0.1, \\() -> try {\n  try { hang() } finally { $[#local]{inner} }\n} finally { $[#local]{outer} })") "f"
+      seen `shouldReturn` ["hang", "inner", "outer"]
+    it "runs no catch block for an abandonment" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> "f() = timeout(0.1, \\() -> try { hang() } catch (e) { $[#local]{handler} })") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeTimeout) . fst) (const False)
+      seen `shouldReturn` ["hang"]
+    it "keeps the timeout's failure when the finally block fails" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> "f() = timeout(0.1, \\() -> try { hang() } finally { $[#local]{broken} })") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeTimeout) . fst) (const False)
+      seen `shouldReturn` ["hang", "broken"]
+    it "still lets a failing finally take the place of the body's failure" $ do
+      (runner, _) <- recordingRunner
+      r <- runWith runner "f() = try { $[#local]{exit_three} } finally { $[#local]{broken} }" "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeCommandNonzero) . fst) (const False)
+      fmap (either snd id) (pure r) >>= (`shouldSatisfy` T.isInfixOf "\"code\":9")
 
   describe "nondeterministic generation (spec 15.13)" $ do
     it "generates a version 4 uuid in canonical form" $ do

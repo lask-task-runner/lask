@@ -2120,26 +2120,18 @@ elabTry ctx path locals sp body mCatch mFin mExpected discarded = do
   case mFin of
     Nothing -> pure (caught, caughtTy)
     Just fin -> do
-      (finStmts, _) <- elabBlock ctx path locals fin Nothing
+      (finStmts, finTy) <- elabBlock ctx path locals fin Nothing
       let finCore = Core (blockSpan fin) (CDo finStmts)
-          -- try X finally F ==
-          --   do { v = recover(\() -> X, \(e) -> do { F; fail(e) }); F; v }
-          e = "%e"
-          v = "%v"
-          rethrow =
-            Core sp $
-              CDo
-                [ CSExpr finCore,
-                  CSExpr (Core sp (CApp (builtin "fail") [Core sp (CVar (LocalRef e))] []))
-                ]
-          protected = recoverCallWith caught (Just e) rethrow caughtTy
+          -- try X finally F is %ensure(\() -> X, \() -> F), an internal
+          -- builtin rather than an expansion through recover: F also
+          -- runs when X is abandoned, which is not a failure recover
+          -- could catch (spec 6.9, 8.10).
           whole =
             Core sp $
-              CDo
-                [ CSBind v protected,
-                  CSExpr finCore,
-                  CSExpr (Core sp (CVar (LocalRef v)))
-                ]
+              CApp
+                (builtin "%ensure")
+                [mkThunk path sp caught caughtTy, mkThunk path (blockSpan fin) finCore finTy]
+                []
       pure (whole, caughtTy)
   where
     builtin n = Core sp (CVar (BuiltinRef n))

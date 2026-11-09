@@ -102,6 +102,6 @@ lintDecl cp cd = map ((cdName cd <> ": ") <>) (nub (go Set.empty (cdCore cd)))
     known n = Map.member n builtinSchemes || n `Set.member` coreFunctionNames || n `elem` internalNames
 
     -- Names the elaborator refers to that no program can write.
-    internalNames = ["stdin", "%commandFail", rawBuiltin] <> map fst shellEscapeBuiltins
+    internalNames = ["stdin", "%commandFail", "%ensure", rawBuiltin] <> map fst shellEscapeBuiltins
 
     tshow = T.pack . show

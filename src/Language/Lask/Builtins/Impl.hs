@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Implementations of the builtin library (spec chapter 15).
 --
@@ -19,7 +20,7 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (cancel, waitAnyCatch, waitCatch)
-import Control.Exception (throwIO, try)
+import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
@@ -48,6 +49,7 @@ import Language.Lask.Runtime.AsyncTrack (AsyncTracker (..), siteOf)
 import Language.Lask.Runtime.CancelScope (cancelScope, spawnInScopes, withScope)
 import Language.Lask.Runtime.Secrets (maskSecrets, registerSecret)
 import Language.Lask.Runtime.Value
+import Language.Lask.Serialize (failureMessage)
 import System.Entropy (getEntropy)
 import System.Environment (lookupEnv)
 import System.Random (randomRIO)
@@ -327,6 +329,33 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
       Right v -> pure v
       Left failure -> apply handler [lfError failure] []
   ("fail", [err]) -> throwIO (userFailure err)
+  -- try B finally F (spec 6.9, 8.10): F runs once, whether B succeeds,
+  -- fails, or is abandoned by timeout, race or all (15.6, 15.7).
+  ("%ensure", [body, cleanup]) -> do
+    r <- try (apply body [] [])
+    case r of
+      Right v -> apply cleanup [] [] >> pure v
+      Left (ex :: SomeException)
+        -- Abandoned: the clean-up runs, and the abandonment goes on
+        -- as it came. A failure of the clean-up is logged rather than
+        -- raised, so that what abandoned the body still decides the
+        -- outcome (a timeout's code 124).
+        | Just (_ :: SomeAsyncException) <- fromException ex -> do
+            c <- try' (apply cleanup [] [])
+            case c of
+              Right _ -> pure ()
+              Left failure ->
+                maskSecrets
+                  ( "a finally block run after its body was abandoned failed with "
+                      <> maybe "E-RUNTIME" codeText (lfCode failure)
+                      <> ": "
+                      <> failureMessage failure
+                  )
+                  >>= hookLog hooks
+            throwIO ex
+        -- Failed: the clean-up runs, and a failure of its own takes
+        -- the place of the body's, as 6.9 says.
+        | otherwise -> apply cleanup [] [] >> throwIO ex
   -- Internal: command-sugar failure (spec 6.6), tagged with
   -- E-RUNTIME-COMMAND-NONZERO for diagnostics (14.5).
   ("%commandFail", [err]) -> throwIO (LaskFailure (Just ERuntimeCommandNonzero) err [])
