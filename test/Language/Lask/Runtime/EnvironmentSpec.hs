@@ -301,21 +301,27 @@ spec = do
       optionArgs options `shouldBe` ["--env", "CI", "--env", "TOKEN"]
       dockerClientEnv (Map.fromList options) `shouldBe` [("CI", "1"), ("TOKEN", "s3cr3t")]
 
-    it "keeps a variable the docker client reads itself on the command line" $ do
+    it "gives a variable the docker client reads itself in a file, never on the command line (spec 10.2)" $ do
       let options = [("env", VMap (Map.fromList [(k, VString "v") | k <- ["DOCKER_HOST", "HTTPS_PROXY", "no_proxy", "PATH", "HOME"]]))]
-      optionArgs options
-        `shouldBe` ["--env", "DOCKER_HOST=v", "--env", "HOME=v", "--env", "HTTPS_PROXY=v", "--env", "PATH=v", "--env", "no_proxy=v"]
+      optionArgs options `shouldBe` []
       dockerClientEnv (Map.fromList options) `shouldBe` []
+      fileEnv Docker (Map.fromList options)
+        `shouldBe` [("DOCKER_HOST", "v"), ("HOME", "v"), ("HTTPS_PROXY", "v"), ("PATH", "v"), ("no_proxy", "v")]
+      let args = runArgsWith Docker (Just "/tmp/lask-env-x/env") (RunSpec "/p" Nothing "i" (Map.fromList options) False False "/bin/sh" [] (defaultBaseMounts "/p"))
+      [f | ("--env-file", f) <- zip args (drop 1 args)] `shouldBe` ["/tmp/lask-env-x/env"]
+      args `shouldSatisfy` all (not . T.isInfixOf "=v" . T.pack)
 
-    it "keeps on the command line a variable the podman or nerdctl client reads itself (spec 10.10)" $ do
+    it "gives in a file a variable the podman or nerdctl client reads itself (spec 10.10)" $ do
       let options = Map.fromList [("env", VMap (Map.fromList [(k, VString "v") | k <- ["CONTAINER_HOST", "CONTAINERD_ADDRESS", "XDG_RUNTIME_DIR", "TOKEN"]]))]
           envValues e =
             let args = runArgs e (RunSpec "/p" Nothing "i" options False False "/bin/sh" [] (defaultBaseMounts "/p"))
              in [a | ("--env", a) <- zip args (drop 1 args)]
-      envValues Podman `shouldBe` ["CONTAINERD_ADDRESS", "CONTAINER_HOST=v", "TOKEN", "XDG_RUNTIME_DIR=v"]
+      envValues Podman `shouldBe` ["CONTAINERD_ADDRESS", "TOKEN"]
       map fst (clientEnv Podman options) `shouldBe` ["CONTAINERD_ADDRESS", "TOKEN"]
-      envValues Nerdctl `shouldBe` ["CONTAINERD_ADDRESS=v", "CONTAINER_HOST", "TOKEN", "XDG_RUNTIME_DIR=v"]
+      map fst (fileEnv Podman options) `shouldBe` ["CONTAINER_HOST", "XDG_RUNTIME_DIR"]
+      envValues Nerdctl `shouldBe` ["CONTAINER_HOST", "TOKEN"]
       map fst (clientEnv Nerdctl options) `shouldBe` ["CONTAINER_HOST", "TOKEN"]
+      map fst (fileEnv Nerdctl options) `shouldBe` ["CONTAINERD_ADDRESS", "XDG_RUNTIME_DIR"]
 
     -- Null is how an argument says "not given" (spec 10.2); "" is a
     -- value the caller means, and is passed on.
