@@ -3304,6 +3304,7 @@ Flags:
 Binding rules:
 
 1. Resolve the target module (`--module`, default `main.lask`) and obtain the function specified by the first positional argument, among the public symbols of that module: those it declares, and those it re-exports under the name it publishes them by (Chapter 5). A re-exported function is invoked as the declaration it names, with its parameter list intact. A declaration marked `internal` is not reachable.
+   The command line calls functions: a public symbol whose type is a function type, which is a function declaration or a value binding whose value is a function (`inc = \(x: Number) -> x + 1`). A plain value binding (`version = "1.0"`) is not called, and naming one is a usage error (`E-CLI-USAGE`) that says so; a value the command line is to print is written as a function of no parameters (`version() = "1.0"`). The same holds wherever a subcommand takes a function name: `run`, `eval`, their `--help` (11.6), `envs` (11.4) and `secrets` (11.10).
 2. Bind the positional arguments after the function name, from left to right, to the positional parameters in declaration order. Positional arguments exceeding the number of positional parameters are collected into the variadic parameter (variadic collection in 7.5).
 3. Bind keyword arguments to parameters with matching names. Unknown names and duplicate bindings are pre-execution errors (corresponding to `E-TYPE-KEYWORD` in 7.5).
 4. Keyword parameters that were not bound are completed with the default values from the function definition (default-value completion in 7.5). A required keyword parameter (6.1) that was not bound is a pre-execution error (`missing keyword argument: '--target'`).
@@ -3429,7 +3430,7 @@ lask envs list [--module <path>] [<function>]
 Enumeration rules:
 
 - If no function is specified, the environments reachable from the module are enumerated (static scan of environment heads, 6.7): those in its declarations, keyword parameter defaults included, and in the environment of every command word the module has, declared or imported, through every declaration they reference in any module (Chapter 5). A declaration of an imported module that nothing reachable references is not scanned.
-- If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. Function-name mapping follows 11.2.
+- If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. It names a function the command line can call, as `run` takes it, by the function-name mapping of 11.2.
 - Reachability is an over-approximation. A superset of the environments that may be used must be reported; under-reporting is not permitted. Functions passed around as function values are included conservatively.
 - What is enumerated is the heads: every image is named by one (6.7), so every environment is enumerated concretely. Run options change no image, and add no entry.
 
@@ -3760,7 +3761,7 @@ Rendering rules:
 - In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`. A required keyword parameter (6.1) is rendered without the brackets, `--name <Type>`, and a flag (11.2) without the type, `[--name]`.
 - In the parameter list, a required keyword parameter is marked `(required)` after its type, in place of a default value.
 - A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
-- The function list holds the module's functions — declarations written as functions, and bindings whose value is a function — whether it declares them or re-exports them (Chapter 5). Plain value bindings are callable (11.2) and have help of their own, but are not listed.
+- The function list holds the module's functions — declarations written as functions, and bindings whose value is a function — whether it declares them or re-exports them (Chapter 5). Plain value bindings are not functions the command line calls (11.2), and are not listed.
 - A re-exported function is listed and described under the name the module publishes, from the declaration it names: the documentation comment, parameters and location are those of the file that declares it.
 - The function list omits declarations marked `@hidden` (3.1), and shows only the name for functions that have no summary.
 
@@ -3858,7 +3859,7 @@ Output destination and exit codes:
 
 - Help is written to stdout (the exception in 11.3). Diagnostics are written to stderr as usual.
 - `0`: the help was displayed.
-- `4`: the specified name is not a top-level declaration of the module. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`. A declaration that is not a function is not an error: a plain value binding is callable with no arguments (11.2), so its help is displayed with an empty parameter list.
+- `4`: the specified name is not a function the command line can call (11.2): no public symbol of the module has it, or it names a plain value binding. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`.
 - `1`: the target module could not be parsed. Diagnostics are written to stderr and no help is displayed.
 - Static errors (14.4) do **not** prevent help display. The help is rendered from the information that is available, a type that could not be determined is displayed as `?`, the diagnostics are written to stderr, and the exit code is `0`. Help is most needed while a module is broken, so this is a deliberate exception to the rule of 14.4 that static errors stop `run` / `eval`; no function is evaluated in this case either.
 - For `lask run --help` / `lask eval --help` without a function name, the CLI option help must always be displayed with exit code `0`. If the target module cannot be loaded, the function list is omitted.
@@ -4046,7 +4047,7 @@ lask secrets check [--module <path>] [<function>] [--read]
 Scope:
 
 - Without a function, every variable of the process environment is considered, and no module is read: `secrets` also works outside a project.
-- With a function, only the variables it can read are considered: the names given as string literals to `get_env`, `find_env` and `get_env_or` in the declarations it reaches, and in the environments of the module's command declarations. Reachability over-approximates as in 11.4. When a name is computed, or one of these functions is passed as a value, any variable may be read, and every variable is considered.
+- With a function — one the command line can call, as `run` takes it (11.2) — only the variables it can read are considered: the names given as string literals to `get_env`, `find_env` and `get_env_or` in the declarations it reaches, and in the environments of the module's command declarations. Reachability over-approximates as in 11.4. When a name is computed, or one of these functions is passed as a value, any variable may be read, and every variable is considered.
 - Neither subcommand prints a secret value or a credential.
 
 `list`:

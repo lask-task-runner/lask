@@ -2159,14 +2159,33 @@ spec = beforeAll findLask $ do
         resOut r `shouldContain` "test    Run the tests."
         resOut r `shouldNotContain` "scratch"
 
-    it "lists functions only, but still helps on a plain value binding" $ \lask ->
+    -- A plain value binding is not a function the command line calls
+    -- (spec 11.2), so it has no help either.
+    it "lists functions only, and gives no help on a plain value binding" $ \lask ->
       withProject [("main.lask", "out_dir = \"dist\"\n" <> src)] $ \dir -> do
         l <- runLask lask dir ["run", "--help"] ""
         l `shouldSatisfy` (not . isInfixOf "out_dir " . resOut)
         v <- runLask lask dir ["run", "out_dir", "--help"] ""
-        resExit v `shouldBe` 0
-        resOut v `shouldContain` "lask run out-dir"
-        resOut v `shouldContain` "Returns:"
+        resExit v `shouldBe` 4
+        resErr v `shouldContain` "'out_dir' is a value, not a function"
+
+    it "calls functions only, wherever a subcommand takes a function name (spec 11.2)" $ \lask ->
+      withProject
+        [("main.lask", "version = \"1.0\"\ninc = \\(x: Number) -> x + 1\nshow(): String = version\ninternal hidden(): String = \"h\"\n")]
+        $ \dir -> do
+          let usage args = do
+                r <- runLask lask dir args ""
+                resExit r `shouldBe` 4
+                pure (resErr r)
+          usage ["eval", "version"] >>= (`shouldContain` "'version' is a value, not a function")
+          usage ["envs", "list", "version"] >>= (`shouldContain` "'version' is a value, not a function")
+          usage ["secrets", "list", "version"] >>= (`shouldContain` "'version' is a value, not a function")
+          -- An internal declaration is not one, for envs as for run.
+          usage ["envs", "list", "hidden"] >>= (`shouldContain` "no such function: 'hidden'")
+          inc <- runLask lask dir ["eval", "inc", "2"] ""
+          resOut inc `shouldBe` "3\n"
+          shown <- runLask lask dir ["eval", "show"] ""
+          resOut shown `shouldBe` "\"1.0\"\n"
 
     it "wins over argument binding errors (spec 11.6)" $ \lask ->
       withProject [("main.lask", src)] $ \dir -> do
