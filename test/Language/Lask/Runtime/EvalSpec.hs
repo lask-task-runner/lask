@@ -114,7 +114,8 @@ statefulRunner = do
 
 -- | A runner that records each command it is given, in order. "hang"
 -- waits until it is stopped, "slow" answers "winner" after a tenth of
--- a second, and "broken" exits 9; anything else
+-- a second, "broken" exits 9 at once and "slow_broken" after a tenth of
+-- a second; anything else
 -- succeeds with no output.
 recordingRunner :: IO (CommandRunner, IO [Text])
 recordingRunner = do
@@ -125,6 +126,7 @@ recordingRunner = do
           "hang" -> threadDelay 10000000 >> pure (Right (0, "", ""))
           "broken" -> pure (Right (9, "", "broken"))
           "slow" -> threadDelay 100000 >> pure (Right (0, "winner", ""))
+          "slow_broken" -> threadDelay 100000 >> pure (Right (9, "", "broken"))
           _ -> pure (Right (0, "", ""))
   pure (runner, readIORef seen)
 
@@ -870,7 +872,7 @@ spec = do
       seen >>= (`shouldSatisfy` elem "cleanup 'loser'")
     it "runs the finally of the computations all cancels after a failure" $ do
       (runner, seen) <- recordingRunner
-      r <- runWith runner (hang <> guarded <> "f() = do {\n  a = async guarded(\"other\")\n  b = async $[#local] broken\n  all([a, b])\n}") "f"
+      r <- runWith runner (hang <> guarded <> "f() = do {\n  a = async guarded(\"other\")\n  b = async $[#local] slow_broken\n  all([a, b])\n}") "f"
       fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeCommandNonzero) . fst) (const False)
       seen >>= (`shouldSatisfy` elem "cleanup 'other'")
     it "runs nested finally blocks innermost first" $ do
