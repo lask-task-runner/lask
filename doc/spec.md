@@ -1258,10 +1258,10 @@ The types of the operators are as follows.
 - `<`, `<=`, `>`, `>=` are typed as `Function<Number, Number, Bool>`.
 - `&&`, `||` are typed as `Function<Bool, Bool, Bool>`.
 - `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. In the terms of 4.4 they are `<T: comparable> Function<T, T, Bool>`, instantiated at the wider type, and a type that is not comparable is `E-TYPE-BOUND`. When neither side is a union this is the same rule as "the two types match", because conformance between non-union types is identity or promotion to `Any`, and `Any` is not comparable.
-- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, a union all of whose members are comparable types, and a type parameter whose bound entails `comparable` (4.4). This is the named bound `comparable` (4.2).
+- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Runnable`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, a union all of whose members are comparable types, and a type parameter whose bound entails `comparable` (4.4). This is the named bound `comparable` (4.2).
 - Therefore `x == null` is well-typed when `x: String | Null`, since `Null` conforms to `String | Null` and that union is comparable. It compares values and does not by itself narrow the type of `x`; narrowing is a property of `case` (6.4).
 - Applying `==` / `!=` to types containing `Function`, `AsyncHandle`, `Void`, or `Any` is a static error. To compare values of `Any`, first move to a concrete type with `cast` (15.8), or narrow with `case` (6.4), and then compare.
-- Equality of structured values (`Array` / `Map` / `Record`) is determined by recursive structural comparison of elements, keys, and fields. Equality of `Environment` follows 8.8.
+- Equality of structured values (`Array` / `Map` / `Record`) is determined by recursive structural comparison of elements, keys, and fields. Equality of `Environment` and `Runnable` follows 8.8.
 - `e1 |> f` is well-typed when `e1: T` and `f: Function<T, R>` hold, and the type of the whole expression is `R`.
 - `f <| e1` is well-typed when `e1: T` and `f: Function<T, R>` hold, and the type of the whole expression is `R`.
 - `f >> g` is well-typed when `f: Function<T, U>` and `g: Function<U, R>` hold, and the type of the whole expression is `Function<T, R>`.
@@ -2386,7 +2386,8 @@ Resolution of an environment or runnable value to an execution environment (10.4
 
 Equality comparison:
 
-- `==` / `!=` (6.2) on `Environment` and `Runnable` values is determined by structural equality of the profile, the image with its image options, and the set of run options that are set. An `Environment` and a `Runnable` with no run option set are equal: `#alpine:3.20 == runnable(#alpine:3.20)`, and `#alpine:3.20{memory: null} == #alpine:3.20`.
+- `==` / `!=` (6.2) on `Environment` and `Runnable` values is determined by structural equality of the profile, the image with its image options, and the set of run options that are set. An `Environment` and a `Runnable` with no run option set are equal: `#alpine:3.20 == runnable(#alpine:3.20)`, and `#alpine:3.20{memory: null} == #alpine:3.20`. The order run options are written in is not part of the value (10.2), so it plays no part.
+- The session a `with_container` call that starts a container gives its body (15.5) is equal only to itself: not to the environment it was opened on, nor to the session of another call. A call given `#local`, or a session that is open, gives the body that value itself, which compares as it does anywhere else.
 
 ### 8.9 Evaluation of Accessor Expressions (Core Expression)
 
@@ -4949,7 +4950,7 @@ Searching:
   ```
 
 - `find_index(xs, p)` returns the index of the first element for which `p` is true, or `-1`. It reports a position rather than a value, so the absent case is `-1` and not `Null` (15.1). Use `find` when the element is wanted and `find_index` when the position is.
-- A type variable inside a union is permitted in the return type of a signature, which is what `find` relies on, and not in a parameter type (4.4). One consequence of the canonical form of a union (4.2) is worth noting: searching an `Array<Any>` gives `Any | Null`, which is `Any`, so the absent case is then not distinguishable by type. That is inherent to `Any`, and the answer is the usual one — `cast` the decoded value to a concrete element type before searching it.
+- A type variable may occur inside a union in any position of a signature (4.4): `find` relies on it in its return type, and a declaration may take `T | Null` as a parameter. One consequence of the canonical form of a union (4.2) is worth noting: searching an `Array<Any>` gives `Any | Null`, which is `Any`, so the absent case is then not distinguishable by type. That is inherent to `Any`, and the answer is the usual one — `cast` the decoded value to a concrete element type before searching it.
 - `every(xs, p)` is true when `p` holds for every element, and is true for an empty array. `any(xs, p)` is true when `p` holds for at least one element, and is false for an empty array. Both stop applying `p` at the first element that decides the result.
 - The name `all` is not used for `every`, because it is already the asynchronous helper of 15.6.
 
