@@ -439,8 +439,9 @@ spec = do
       rejects "f(): String | Null = {a: 1}" ETypeMismatch
     it "propagates an expected union into both branches of an if (spec 4.3)" $
       accepts "f(c: Bool): String | Null = if (c) { \"a\" } else { null }"
+    -- Only a join with Null is inferred (spec 4.3).
     it "still refuses to infer a union from differing branches" $
-      rejects "f(c: Bool) = if (c) { \"a\" } else { null }" ETypeMismatch
+      rejects "f(c: Bool) = if (c) { \"a\" } else { 1 }" ETypeMismatch
     it "compares a union with one of its members (spec 6.2)" $ do
       accepts "f(x: String | Null): Bool = x == null"
       rejects "f(x: String | Null): Bool = x == 1" ETypeMismatch
@@ -597,6 +598,54 @@ spec = do
       rejects "f(n: Number) = if (n) { 1 }" ETypeMismatch
     it "leaves no return to write (spec 6.5)" $
       rejects "f(c: Bool): String = do {\n  if (c) { return \"a\" }\n  \"b\"\n}" ESyntaxUnexpectedToken
+    it "is typed as the if with else { null } it is sugar for (spec 4.3)" $ do
+      hasType "f(c: Bool) = if (c) { \"a\" }" "f" "Function<Bool, String | Null>"
+      hasType "f(c: Bool) = if (c) { \"a\" } else { null }" "f" "Function<Bool, String | Null>"
+
+  describe "join with Null (spec 4.3)" $ do
+    it "joins an if whose else is null" $
+      hasType "f(c: Bool) = if (c) { 1 } else { null }" "f" "Function<Bool, Number | Null>"
+    it "joins an if whose then is null" $
+      hasType "f(c: Bool) = if (c) { null } else { \"a\" }" "f" "Function<Bool, String | Null>"
+    it "joins a conditional expression (spec 6.2)" $
+      hasType "f(c: Bool) = c ? \"a\" : null" "f" "Function<Bool, String | Null>"
+    it "joins the arms of a case, wherever the null arm is (spec 6.4)" $ do
+      hasType "f(s: String) = case (s) {\n  \"a\" -> 1\n  \"b\" -> null\n  else -> 2\n}" "f" "Function<String, Number | Null>"
+      hasType "f(n: Number) = case {\n  n > 0 -> null\n  else -> \"x\"\n}" "f" "Function<Number, String | Null>"
+    it "joins the body and the catch block of a try (spec 6.9)" $
+      hasType "f() = try { $[#local]{echo hi} } catch (e) { null }" "f" "Function<String | Null>"
+    it "keeps a type that already admits Null" $
+      hasType "f(c: Bool) = if (c) { find_env(\"A\") } else { null }" "f" "Function<Bool, String | Null>"
+    it "is absorbed by Any" $
+      hasType "f(c: Bool, x) = if (c) { x } else { null }" "f" "Function<Bool, Any, Any>"
+    it "types branches that are all null as Null" $
+      hasType "f(c: Bool) = c ? null : null" "f" "Function<Bool, Null>"
+    it "still lets a context-typed branch take the type of the others" $ do
+      hasType "f(c: Bool) = if (c) { null } else { fail(error(2, \"x\")) }" "f" "Function<Bool, Null>"
+      hasType "f(c: Bool) = if (c) { fail(error(2, \"x\")) } else { null }" "f" "Function<Bool, Null>"
+      hasType "f(c: Bool, s: String) = case (s) {\n  \"a\" -> null\n  \"b\" -> 1\n  else -> fail(error(2, \"x\"))\n}" "f" "Function<Bool, String, Number | Null>"
+    it "rejects branches whose types differ otherwise" $ do
+      rejects "f(c: Bool) = if (c) { 1 } else { \"a\" }" ETypeMismatch
+      rejects "f(c: Bool) = c ? 1 : \"a\"" ETypeMismatch
+      rejects "f(s: String) = case (s) {\n  \"a\" -> 1\n  \"b\" -> null\n  else -> \"x\"\n}" ETypeMismatch
+    it "rejects a join whose other branch is not a data type" $ do
+      rejects "f(c: Bool) = c ? \\(x: Number) -> x : null" ETypeIllformed
+      rejects "f(c: Bool) = if (c) { log(\"x\") } else { null }" ETypeIllformed
+      rejects "f(c: Bool) = do {\n  g = c ? \\(x: Number) -> x : null\n  2\n}" ETypeIllformed
+      rejects "f(c: Bool) = do {\n  1\n  if (c) { \\(x: Number) -> x } else { null }\n}" ETypeIllformed
+    -- As an if without else is (spec 6.4).
+    it "accepts any branch type when the value is discarded" $ do
+      accepts "f(c: Bool): Number = do {\n  if (c) { \\(x: Number) -> x } else { null }\n  1\n}"
+      accepts "f(c: Bool): Number = do {\n  c ? \\(x: Number) -> x : null\n  1\n}"
+      accepts "f(c: Bool): Number = do {\n  case {\n    c -> \\(x: Number) -> x\n    else -> null\n  }\n  1\n}"
+      accepts "f(): Number = do {\n  try { log(\"x\") } catch (e) { null }\n  1\n}"
+    it "still requires discarded branches to agree otherwise" $
+      rejects "f(c: Bool): Number = do {\n  if (c) { 1 } else { \"a\" }\n  2\n}" ETypeMismatch
+    it "plays no part under an expected type" $ do
+      accepts "f(c: Bool): String | Null = c ? \"a\" : null"
+      rejects "f(c: Bool): Number = c ? 1 : null" ETypeMismatch
+    it "gives a union that has to be narrowed before use" $
+      rejects "f(c: Bool): String = to_string(c ? \"a\" : null)" ETypeBound
 
   describe "accessors (spec 6.8)" $ do
     it "types record field access" $

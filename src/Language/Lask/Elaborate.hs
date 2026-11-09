@@ -24,7 +24,7 @@ where
 import Control.Applicative ((<|>))
 import Control.Monad (foldM, unless, when)
 import Control.Monad.State.Strict (StateT (runStateT), get, gets, lift, modify, put)
-import Data.Maybe (isJust, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Bifunctor (first)
 import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
@@ -1102,27 +1102,7 @@ infer ctx path locals (Expr sp f) = case f of
   EDo block -> do
     (stmts, ty) <- elabBlock ctx path locals block Nothing
     pure (Core sp (CDo stmts), ty)
-  EIf c t (Just el) -> do
-    condCore <- check ctx path locals c TyBool
-    -- Infer one branch and check the other against it, in either
-    -- order: this lets context-typed calls (fail(e), cast) appear in
-    -- one of the two branches (spec 6.4, 15.7).
-    r <- tryTC (elabBlock ctx path locals t Nothing)
-    (thenStmts, elseStmts, ty) <- case r of
-      Right (thenStmts, thenTy) -> do
-        (elseStmts, _) <- elabBlock ctx path locals el (Just thenTy)
-        pure (thenStmts, elseStmts, thenTy)
-      Left thenErr -> do
-        r2 <- tryTC (elabBlock ctx path locals el Nothing)
-        case r2 of
-          Right (elseStmts, elseTy) -> do
-            (thenStmts, _) <- elabBlock ctx path locals t (Just elseTy)
-            pure (thenStmts, elseStmts, elseTy)
-          Left _ -> abort thenErr
-    pure
-      ( Core sp (CIf condCore (Core (blockSpan t) (CDo thenStmts)) (Core (blockSpan el) (CDo elseStmts))),
-        ty
-      )
+  EIf c t (Just el) -> elabIfElse ctx path locals sp c t el False
   EIf c t Nothing -> elabIfNoElse ctx path locals sp c t Nothing False
   ECond c a b -> infer ctx path locals (condAsIf sp c a b)
   EFor (Spanned xsp x) xs body -> do
@@ -1147,8 +1127,8 @@ infer ctx path locals (Expr sp f) = case f of
             then ("for_each", TyVoid)
             else ("map", TyArray bodyTy)
     pure (Core sp (CApp (Core sp (CVar (BuiltinRef fnName))) [xsCore, bodyLam] []), resTy)
-  ECase scrut arms -> elabCase ctx path locals sp scrut arms Nothing
-  ETry body mCatch mFin -> elabTry ctx path locals sp body mCatch mFin Nothing
+  ECase scrut arms -> elabCase ctx path locals sp scrut arms Nothing False
+  ETry body mCatch mFin -> elabTry ctx path locals sp body mCatch mFin Nothing False
   EAsync inner -> do
     (c, t) <- infer ctx path locals inner
     let thunk = mkThunk path sp c t
@@ -1222,6 +1202,102 @@ elabIfNoElse ctx path locals sp c t mExpected discarded = do
               <> renderType thenTy
               <> " | Null, which is not a type: only a data type can be a member of a union; add an else block"
 
+-- | One branch of an expression that chooses between several (spec
+-- 4.3): how it is elaborated with no expected type, and how it is
+-- checked against one.
+data Branch a = Branch
+  { branchInfer :: TC (a, Type),
+    branchCheck :: Type -> TC a
+  }
+
+-- | The branches of an @if@, a conditional, a @case@ or a @try@ with
+-- no expected type (spec 4.3, 6.2, 6.4, 6.9). They share one type,
+-- which comes from the first branch that infers on its own as other
+-- than @Null@; every other branch is checked against it, so a
+-- context-typed call such as @fail(e)@ or @cast@ may be any of them
+-- (15.7). A branch that is @Null@ instead joins the result with
+-- @Null@: @T | Null@, which must be a type. Branches that fail to
+-- infer commit nothing ('tryTC'). When none infers, the first
+-- branch's diagnostic is the report. A statement whose value is
+-- discarded (the first argument) is not held to @T | Null@ being a
+-- type, as an if without else is not ('elabIfNoElse'), and keeps @T@.
+joinBranches :: Bool -> Span -> [Branch a] -> TC ([a], Type)
+joinBranches discarded sp branches = go [] Nothing Nothing (zip [0 :: Int ..] branches)
+  where
+    -- @done@ holds the branches elaborated so far, by position;
+    -- @pending@ those that did not infer on their own, still to be
+    -- checked against the shared type once there is one.
+    go done mAnchor mErr [] = finish done mAnchor mErr
+    go done mAnchor mErr ((i, b) : rest) = case mAnchor of
+      Just t -> do
+        r <- tryTC (branchCheck b t)
+        case r of
+          Right a -> go ((i, Right (a, False)) : done) mAnchor mErr rest
+          Left err -> do
+            -- A branch that is null where the others are T joins them
+            -- with Null rather than conflicting with them.
+            r2 <- tryTC (branchInfer b)
+            case r2 of
+              Right (a, TyNull) -> go ((i, Right (a, True)) : done) mAnchor mErr rest
+              _ -> abort err
+      Nothing -> do
+        r <- tryTC (branchInfer b)
+        case r of
+          Right (a, TyNull) -> go ((i, Right (a, True)) : done) Nothing mErr rest
+          Right (a, t) -> go ((i, Right (a, False)) : done) (Just t) mErr rest
+          Left d -> go ((i, Left b) : done) Nothing (maybe (Just d) Just mErr) rest
+
+    finish done mAnchor mErr = do
+      let sawNull = or [n | (_, Right (_, n)) <- done]
+      shared <- case mAnchor of
+        Just t -> pure t
+        -- Every branch that inferred is null: the others are checked
+        -- as Null, which is then the type of the whole.
+        Nothing
+          | sawNull -> pure TyNull
+          | otherwise -> abort (fromMaybe (diag ETypeMismatch sp "these branches have no type") mErr)
+      results <- mapM (elabPending shared) (sortOn fst done)
+      ty <- joined sawNull shared
+      pure (results, ty)
+
+    joined sawNull shared
+      | not sawNull || shared == TyNull = pure shared
+      | dataType shared = pure (mkUnion shared [TyNull])
+      | discarded = pure shared
+      | otherwise =
+          abort . diag ETypeIllformed sp $
+            "one branch is null and another is "
+              <> renderType shared
+              <> ", and "
+              <> renderType shared
+              <> " | Null is not a type: only a data type can be a member of a union"
+
+    elabPending _ (_, Right (a, _)) = pure a
+    elabPending t (_, Left b) = branchCheck b t
+
+-- | @if (c) { t } else { el }@ with no expected type (spec 6.4): the
+-- two branches share a type, or join it with Null (4.3). The last
+-- argument says whether the value is discarded ('joinBranches').
+elabIfElse :: Ctx -> FilePath -> Locals -> Span -> Expr -> Block -> Block -> Bool -> TC (Core, Type)
+elabIfElse ctx path locals sp c t el discarded = do
+  condCore <- check ctx path locals c TyBool
+  (stmtss, ty) <- joinBranches discarded sp [blockBranch ctx path locals t, blockBranch ctx path locals el]
+  (thenStmts, elseStmts) <- case stmtss of
+    [a, b] -> pure (a, b)
+    _ -> abort (diag ETypeMismatch sp "an if has two branches")
+  pure
+    ( Core sp (CIf condCore (Core (blockSpan t) (CDo thenStmts)) (Core (blockSpan el) (CDo elseStmts))),
+      ty
+    )
+
+-- | A block as one of the branches of 'joinBranches'.
+blockBranch :: Ctx -> FilePath -> Locals -> Block -> Branch [CoreStmt]
+blockBranch ctx path locals blk =
+  Branch
+    { branchInfer = elabBlock ctx path locals blk Nothing,
+      branchCheck = \t -> fst <$> elabBlock ctx path locals blk (Just t)
+    }
+
 -- | @c ? a : b@ is @if (c) { a } else { b }@ (spec 6.2), and is
 -- typed and evaluated as that @IfExpr@ is (6.4).
 condAsIf :: Span -> Expr -> Expr -> Expr -> Expr
@@ -1259,10 +1335,10 @@ check ctx path locals e@(Expr sp f) expected = case f of
     (stmts, _) <- elabBlock ctx path locals block (Just expected)
     pure (Core sp (CDo stmts))
   ECase scrut arms | expected /= TyAny -> do
-    (c, _) <- elabCase ctx path locals sp scrut arms (Just expected)
+    (c, _) <- elabCase ctx path locals sp scrut arms (Just expected) False
     pure c
   ETry body mCatch mFin | expected /= TyAny -> do
-    (c, _) <- elabTry ctx path locals sp body mCatch mFin (Just expected)
+    (c, _) <- elabTry ctx path locals sp body mCatch mFin (Just expected) False
     pure c
   ECall fn args -> do
     (c, t) <- elabCall ctx path locals sp fn args (Just expected)
@@ -1705,9 +1781,16 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
         pure (CSBind n c : cs, ty)
       SExpr e -> do
         (c, t) <- case e of
-          -- Its value is discarded, so an if without else is not
-          -- held to having a type that can be unioned with Null.
+          -- Its value is discarded, so a choice between branches is
+          -- not held to having a type that can be unioned with Null
+          -- (spec 4.3, 6.4).
           Expr isp (EIf cond thenB Nothing) -> elabIfNoElse ctx path locals isp cond thenB Nothing True
+          Expr isp (EIf cond thenB (Just elseB)) -> elabIfElse ctx path locals isp cond thenB elseB True
+          Expr isp (ECond cond a b) -> case condAsIf isp cond a b of
+            Expr _ (EIf c' t' (Just e')) -> elabIfElse ctx path locals isp c' t' e' True
+            other -> infer ctx path locals other
+          Expr isp (ECase scrut arms) -> elabCase ctx path locals isp scrut arms Nothing True
+          Expr isp (ETry body mCatch mFin) -> elabTry ctx path locals isp body mCatch mFin Nothing True
           _ -> infer ctx path locals e
         -- Only the last statement gives the block its value (6.5).
         when (holdsHandles t) $
@@ -1772,8 +1855,10 @@ elabCase ::
   Maybe Expr ->
   [CaseArm] ->
   Maybe Type ->
+  -- | Whether the value is discarded ('joinBranches').
+  Bool ->
   TC (Core, Type)
-elabCase ctx path locals sp mScrut arms mExpected = do
+elabCase ctx path locals sp mScrut arms mExpected discarded = do
   (matchArms, elseBody) <- splitCaseArms sp arms
   duplicateHeads [h | (ValueHeads hs, _) <- matchArms, h <- hs]
   (mBind, conds, narrows, taken) <- case mScrut of
@@ -1911,32 +1996,23 @@ elabCase ctx path locals sp mScrut arms mExpected = do
     anyOf [] = Core sp (CBool False)
     anyOf (c : cs) = foldl (\acc x -> Core (coreSpan acc <> coreSpan x) (COr acc x)) c cs
 
-    -- All arm bodies share one type. Without an expected type, it
-    -- comes from the first arm that infers on its own, and every other
-    -- arm is checked against it, so a context-typed call such as
-    -- @fail(e)@ or @cast@ may sit in any arm (spec 6.4, 15.7). Arms
-    -- that fail to infer commit nothing ('tryTC'), so checking them
-    -- afterwards elaborates each arm exactly once.
+    -- All arm bodies share one type, or join it with Null (spec 4.3,
+    -- 6.4). Without an expected type, 'joinBranches' finds it, so a
+    -- context-typed call such as @fail(e)@ or @cast@ may sit in any
+    -- arm (15.7).
     elabBodies bodies = case mExpected of
       Just t | t /= TyAny -> do
         cs <- mapM (`checkArm` t) bodies
         pure (cs, t)
-      _ -> inferFirst [] Nothing bodies
+      _ -> joinBranches discarded sp (map armBranch bodies)
 
     checkArm ((lcls, wrap), b) t = wrap <$> check ctx path lcls b t
 
-    -- When no arm infers, the first arm's diagnostic is the report.
-    inferFirst _ mFirstErr [] = case mFirstErr of
-      Just d -> abort d
-      Nothing -> abort (caseElse sp "a case expression requires an else arm")
-    inferFirst pending mFirstErr (a@((lcls, wrap), b) : rest) = do
-      r <- tryTC (infer ctx path lcls b)
-      case r of
-        Right (c, t) -> do
-          before <- mapM (`checkArm` t) (reverse pending)
-          after <- mapM (`checkArm` t) rest
-          pure (before <> (wrap c : after), t)
-        Left d -> inferFirst (a : pending) (maybe (Just d) Just mFirstErr) rest
+    armBranch arm@((lcls, wrap), b) =
+      Branch
+        { branchInfer = (\(c, t) -> (wrap c, t)) <$> infer ctx path lcls b,
+          branchCheck = checkArm arm
+        }
 
     -- Two type heads denoting the same type make the later arm
     -- unreachable (spec 6.4).
@@ -2011,8 +2087,10 @@ elabTry ::
   Maybe (Spanned Text, Block) ->
   Maybe Block ->
   Maybe Type ->
+  -- | Whether the value is discarded ('joinBranches').
+  Bool ->
   TC (Core, Type)
-elabTry ctx path locals sp body mCatch mFin mExpected = do
+elabTry ctx path locals sp body mCatch mFin mExpected discarded = do
   (caught, caughtTy) <- case mCatch of
     Just (Spanned _ ename, handler) -> do
       let handlerLocals = Map.insert ename errorType locals
@@ -2023,21 +2101,14 @@ elabTry ctx path locals sp body mCatch mFin mExpected = do
           (hStmts, _) <- elabBlock ctx path handlerLocals handler (Just t)
           pure (coreOf body bodyStmts, coreOf handler hStmts, t)
         Nothing -> do
-          -- Infer the body and check the handler against it, or the
-          -- other way round (context-typed calls like fail may appear
-          -- in either, 15.7).
-          r <- tryTC (elabBlock ctx path locals body Nothing)
-          case r of
-            Right (bodyStmts, bodyTy) -> do
-              (hStmts, _) <- elabBlock ctx path handlerLocals handler (Just bodyTy)
-              pure (coreOf body bodyStmts, coreOf handler hStmts, bodyTy)
-            Left bodyErr -> do
-              r2 <- tryTC (elabBlock ctx path handlerLocals handler Nothing)
-              case r2 of
-                Right (hStmts, hTy) -> do
-                  (bodyStmts, _) <- elabBlock ctx path locals body (Just hTy)
-                  pure (coreOf body bodyStmts, coreOf handler hStmts, hTy)
-                Left _ -> abort bodyErr
+          -- The body and the handler share a type, or join it with
+          -- Null (spec 4.3, 6.9); context-typed calls like fail may
+          -- appear in either (15.7).
+          (stmtss, ty) <-
+            joinBranches discarded sp [blockBranch ctx path locals body, blockBranch ctx path handlerLocals handler]
+          case stmtss of
+            [bodyStmts, hStmts] -> pure (coreOf body bodyStmts, coreOf handler hStmts, ty)
+            _ -> abort (diag ETypeMismatch sp "a try with catch has two branches")
       pure (recoverCall bodyCore (Just ename) handlerCore ty, ty)
     Nothing -> do
       (bodyStmts, bodyTy) <- elabBlock ctx path locals body mExpected
