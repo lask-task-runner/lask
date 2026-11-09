@@ -153,6 +153,8 @@ library
     , vector ==0.13.*
     , yaml >=0.11 && <1
   default-language: Haskell2010
+  if os(windows)
+    buildable: False
 
 executable lask
   main-is: Main.hs

@@ -184,14 +184,12 @@ coverage_report(): String = $[#local] tools/coverage-report.sh
 //
 // The base directory reaches `docker run` as the mount source, and it
 // used to be pasted into `-v <source>:/work`, where every colon in it
-// became a field separator. A Windows base directory splits at its
-// drive letter — `C:\proj` was read as source `C`, target `\proj` and
-// mode `/work` — and a POSIX directory whose name holds a colon splits
-// the same way, which is what makes the regression reachable on Linux.
+// became a field separator, so a directory whose name holds a colon
+// was split there.
 //
-// EnvironmentSpec already asserts the argument vector, including the
-// Windows case. Only the daemon can say whether it accepts what we
-// build, so that assertion is worth this container.
+// EnvironmentSpec already asserts the argument vector. Only the daemon
+// can say whether it accepts what we build, so that assertion is worth
+// this container.
 //
 // @param dir   Directory the hello-world example is copied into.
 // @param lask  The lask binary to drive.
@@ -255,8 +253,7 @@ ci() = do {
 release_archives: Map<String> = {
   "linux-amd64": "tar.gz",
   "macos-amd64": "tar.gz",
-  "macos-arm64": "tar.gz",
-  "windows-amd64": "zip"
+  "macos-arm64": "tar.gz"
 }
 
 // The version package.yaml declares.
@@ -272,17 +269,8 @@ internal declared_version(yaml: String): String = do {
 }
 
 // Write `<file>.sha256` in the format `sha256sum -c` reads.
-//
-// Commands run under cmd.exe on Windows, where neither shasum nor a
-// POSIX quote exists, so the hash comes from PowerShell there, and the
-// file name goes in as a raw hole, `#!{file}`: the other holes of a
-// command are escaped for a POSIX shell (spec 6.6).
-internal write_checksum(file: String, --windows = false): String = do {
-  hash = if (windows) {
-    $[#local] pwsh -NoProfile -Command "(Get-FileHash '#!{file}' -Algorithm SHA256).Hash.ToLower()"
-  } else {
-    $[#local] shasum -a 256 #{file} | cut -d ' ' -f 1
-  }
+internal write_checksum(file: String): String = do {
+  hash = $[#local] shasum -a 256 #{file} | cut -d ' ' -f 1
   sum = "#{file}.sha256"
   write_file(sum, "#{trim(hash)}  #{basename(file)}\n", #local)
   sum
@@ -291,12 +279,6 @@ internal write_checksum(file: String, --windows = false): String = do {
 internal archive_tar(bin_dir: String, name: String): String = do {
   file = "#{name}.tar.gz"
   $[#local] tar -C #{bin_dir} -czf #{file} lask
-  file
-}
-
-internal archive_zip(bin_dir: String, name: String): String = do {
-  file = "#{name}.zip"
-  $[#local] pwsh -NoProfile -Command "Compress-Archive -Path '#!{bin_dir}/lask.exe' -DestinationPath '#!{file}' -Force"
   file
 }
 
@@ -323,8 +305,8 @@ internal package_deb(version: String, bin_dir: String, name: String): String = d
 
 // Package a built binary as the release files for one target.
 //
-// Archives the binary `stack build --copy-bins` left in bin_dir — a
-// .tar.gz, or a .zip on Windows — adds a .deb on linux-amd64, and
+// Archives the binary `stack build --copy-bins` left in bin_dir as a
+// .tar.gz, adds a .deb on linux-amd64, and
 // writes a .sha256 beside each file, all in the current directory.
 //
 // @param version        Version being released, without the leading v.
@@ -343,14 +325,13 @@ release_package(version: String, target: String, --check_version = true, --bin_d
     fail(error(1, "package.yaml declares #{package_version()}, not #{version}"))
   }
   name = "lask-v#{version}-#{target}"
-  windows = release_archives[target] == "zip"
-  archive = if (windows) { archive_zip(bin_dir, name) } else { archive_tar(bin_dir, name) }
+  archive = archive_tar(bin_dir, name)
   files = if (target == "linux-amd64") {
     [archive, package_deb(version, bin_dir, name)]
   } else {
     [archive]
   }
-  sums = map(files, \(f: String) -> write_checksum(f, windows = windows))
+  sums = map(files, write_checksum)
   concat_array(files, sums)
 }
 
@@ -477,7 +458,7 @@ release(version: String, --notes: String = "notes.md"): String = do {
 
   log("publishing #{tag}")
   url = $[#local] gh release create #{tag} --target main --title #{tag} --notes-file #{notes} \
-    dist/release/lask-#{tag}-*.tar.gz dist/release/lask-#{tag}-*.zip dist/release/lask-#{tag}-*.deb
+    dist/release/lask-#{tag}-*.tar.gz dist/release/lask-#{tag}-*.deb
 
   log("install-testing #{tag}")
   watch(dispatch("install-test.yml", "-f version=#{version}"))

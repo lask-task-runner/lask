@@ -73,6 +73,10 @@ ghc-options:
 
 library:
   source-dirs: src
+  # Windows is not a host (spec 10.2): there, lask runs inside WSL 2.
+  when:
+    - condition: os(windows)
+      buildable: false
 
 executables:
   lask:

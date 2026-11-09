@@ -34,7 +34,6 @@ import qualified Data.Text.Encoding as TE
 import System.Entropy (getEntropy)
 import System.Exit (ExitCode)
 import System.IO (Handle, hClose)
-import System.Info (os)
 import System.Process
   ( CreateProcess,
     ProcessHandle,
@@ -81,22 +80,16 @@ stopProcessTree graceSeconds ph = do
   case mpid of
     -- Already exited and reaped.
     Nothing -> pure ()
-    Just pid
-      -- Windows has no termination request a console program answers,
-      -- so the tree is killed at once.
-      | os == "mingw32" -> do
-          quietly "taskkill" ["/PID", show pid, "/T", "/F"]
-          void (waitForProcess ph)
-      | otherwise -> do
-          -- The tree is read before anything is signalled: once a
-          -- parent is gone, its children are re-parented and can no
-          -- longer be found under it.
-          tree <- descendantsOf (fromIntegral pid)
-          signal "TERM" tree
-          waitGone (graceSeconds * 20) tree
-          live <- liveOf tree
-          unless (null live) (signal "KILL" live)
-          void (waitForProcess ph)
+    Just pid -> do
+      -- The tree is read before anything is signalled: once a
+      -- parent is gone, its children are re-parented and can no
+      -- longer be found under it.
+      tree <- descendantsOf (fromIntegral pid)
+      signal "TERM" tree
+      waitGone (graceSeconds * 20) tree
+      live <- liveOf tree
+      unless (null live) (signal "KILL" live)
+      void (waitForProcess ph)
   where
     -- Polls every 50ms. The direct child stays a zombie until it is
     -- reaped, so it is reaped here to be seen as gone.

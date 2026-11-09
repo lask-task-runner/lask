@@ -52,7 +52,6 @@ import Language.Lask.Deps.Cache (inCache)
 import Language.Lask.Runtime.Image (recipeSource)
 import Language.Lask.Types
 import System.FilePath (isAbsolute, joinPath, normalise, splitDirectories, takeDirectory, (</>))
-import qualified System.Info
 
 -- Program-level results ------------------------------------------------------
 
@@ -2100,10 +2099,9 @@ elabCommand ::
 elabCommand ctx path locals sp stream mEnv parts = do
   (cmdCore, _) <- first escapeCommand <$> elabString ctx path locals sp parts
   -- The shell syntax is checked before dispatch (6.6), whose own
-  -- reading cannot segment a string with an open region. Only on
-  -- Windows does it wait for the environment, which may be cmd.exe.
+  -- reading cannot segment a string with an open region.
   let reading = readShell parts
-  unless hostIsWindows (checkShellSyntax sp reading)
+  checkShellSyntax sp reading
   (envCore, shownEnv, viaWords) <- case mEnv of
     Just envExpr -> do
       (c, t) <- infer ctx path locals envExpr
@@ -2120,11 +2118,6 @@ elabCommand ctx path locals sp stream mEnv parts = do
         _ -> pure ()
       recordDispatched [(path, w) | Spanned _ w <- ws]
       pure (c, Just (renderEnvCore c), ws)
-  when hostIsWindows $ do
-    container <- runsInContainer ctx envCore
-    if container
-      then checkShellSyntax sp reading
-      else checkOneLine sp parts
   recordCommandUse sp shownEnv viaWords parts
   let call = Core sp (CApp (Core sp (CVar (BuiltinRef "run"))) [envCore, cmdCore] [])
   case stream of
@@ -2150,11 +2143,6 @@ elabCommand ctx path locals sp stream mEnv parts = do
           failCall = Core sp (CApp (Core sp (CVar (BuiltinRef "%commandFail"))) [errRecord] [])
        in Core sp (CDo [CSBind r call, CSExpr (Core sp (CIf cond okBranch failCall))])
 
--- | The local environment of a Windows host runs a command string with
--- cmd.exe (10.2), which does not read POSIX shell syntax.
-hostIsWindows :: Bool
-hostIsWindows = System.Info.os == "mingw32"
-
 -- | A command string must be well formed as POSIX shell syntax, as far
 -- as its reading goes (6.6).
 checkShellSyntax :: Span -> ShellReading -> TC ()
@@ -2163,32 +2151,6 @@ checkShellSyntax sp reading = case srProblem reading of
   Just (psp, why) ->
     abort . diag ETypeCommandSyntax (if psp == NoSpan then sp else psp) $
       "this command is not valid shell syntax: " <> why
-
--- | cmd.exe ends a command line at its first newline and never reads
--- the rest (10.2), so a braced command that may run there is one line.
-checkOneLine :: Span -> [TextPart] -> TC ()
-checkOneLine sp parts
-  | any hasNewline parts =
-      abort . diag ETypeCommandSyntax sp $
-        "this command spans several lines, and it may run on the local environment of this Windows host, whose cmd.exe would run only the first: write it on one line"
-  | otherwise = pure ()
-  where
-    hasNewline (TPChunk _ t) = T.any (== '\n') t
-    hasNewline _ = False
-
--- | Whether an environment is known from the text to be a container
--- one, through the bindings that name it.
-runsInContainer :: Ctx -> Core -> TC Bool
-runsInContainer ctx = go Set.empty
-  where
-    go seen c = case coreF c of
-      CEnv kind _ -> pure (kind /= "local")
-      CRunnable base _ -> go seen base
-      CVar (TopRef p n)
-        | not (Set.member (p, n) seen) -> do
-            cd <- demandDecl ctx (p, n)
-            go (Set.insert (p, n) seen) (cdCore cd)
-      _ -> pure False
 
 -- Command declarations and dispatch (spec ch. 5, 10.9) -----------------------
 
