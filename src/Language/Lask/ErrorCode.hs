@@ -58,6 +58,7 @@ data ErrorCode
   | ERuntimeTimeout
   | ERuntimeUntilExhausted
   | ERuntimeSessionClosed
+  | ERuntimeInterrupted
   | EIoStdinRead
   | EIoEnvResolve
   | EIoImageMissing
@@ -142,6 +143,7 @@ codeText c = case c of
   ERuntimeTimeout -> "E-RUNTIME-TIMEOUT"
   ERuntimeUntilExhausted -> "E-RUNTIME-UNTIL-EXHAUSTED"
   ERuntimeSessionClosed -> "E-RUNTIME-SESSION-CLOSED"
+  ERuntimeInterrupted -> "E-RUNTIME-INTERRUPTED"
   EIoStdinRead -> "E-IO-STDIN-READ"
   EIoEnvResolve -> "E-IO-ENV-RESOLVE"
   EIoImageMissing -> "E-IO-IMAGE-MISSING"

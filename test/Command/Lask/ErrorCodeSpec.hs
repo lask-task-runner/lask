@@ -111,6 +111,16 @@ trigger c = case c of
     withFakeDocker $ \_ extra -> withProject leaked $ \dir -> do
       void (runLaskEnv lask dir extra ["sync"] "")
       runLaskEnv lask dir extra ["eval", "f"] ""
+  -- A run stopped by a signal exits 128 + n (spec 11.12).
+  ERuntimeInterrupted -> Scripted 143 $ \lask ->
+    withProject [("main.lask", "f(): String = $[#local] sleep 30\n")] $ \dir -> do
+      (code, out, err) <-
+        readCreateProcessWithExitCode
+          ( (proc "sh" ["-c", "\"$0\" run f & p=$!; sleep 2; kill -TERM $p; wait $p", lask])
+              {cwd = Just dir}
+          )
+          ""
+      pure (Result (exitOf code) out err)
   -- External I/O errors (spec 14.6) default to exit 3.
   EIoStdinRead -> Scripted 3 $ \lask ->
     withProject [("main.lask", "f(): String = stdin\n")] $ \dir -> do

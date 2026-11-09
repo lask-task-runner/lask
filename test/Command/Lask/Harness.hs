@@ -172,7 +172,9 @@ fakeDocker =
       "  network) case \"$2\" in create) echo net-id ;; esac ;;",
       "  logs) echo '{\"event\":\"ready\"}'; [ -f \"$S/workload-ran\" ] && [ -f \"$S/denied\" ] && cat \"$S/denied\"; exit 0 ;;",
       "  inspect) echo true ;;",
-      "  ps) ;;",
+      -- The containers an invocation labelled as its own, as the
+      -- reaper asks for them (spec 11.12).
+      "  ps) case \"$*\" in *io.lask.owner=*) echo lask-left-behind ;; esac ;;",
       "  run) prev=''",
       "    case \" $* \" in *' -d '*) echo container-id; exit 0 ;; esac",
       "    touch \"$S/workload-ran\"",

@@ -1643,7 +1643,7 @@ spec = beforeAll findLask $ do
           has "lask-egress-proxy:dev -listen :3128 example.com:443" `shouldSatisfy` ((== 1) . length)
           -- The container is on the inside network only, and told
           -- where the proxy is.
-          let workload = [c | c <- cs, "run --rm" `isPrefixOf` c]
+          let workload = [c | c <- cs, "run " `isPrefixOf` c, " --rm " `isInfixOf` c]
           workload `shouldSatisfy` ((== 1) . length)
           -- The proxy's variables are ones the client reads itself, so
           -- they are given in a file (spec 10.2).
@@ -1677,7 +1677,7 @@ spec = beforeAll findLask $ do
           r <- runLaskEnv lask dir extra ["eval", "f"] ""
           resExit r `shouldBe` 0
           cs <- calls state
-          let runs = [c | c <- cs, "run --rm" `isPrefixOf` c]
+          let runs = [c | c <- cs, "run " `isPrefixOf` c, " --rm " `isInfixOf` c]
           runs `shouldSatisfy` ((== 1) . length)
           runs `shouldSatisfy` all (isInfixOf "--env-file ")
           runs `shouldSatisfy` all (not . isInfixOf "s3cr3t-value")
@@ -1704,7 +1704,7 @@ spec = beforeAll findLask $ do
           r <- runLaskEnv lask dir extra ["eval", "f"] ""
           resExit r `shouldBe` 0
           cs <- calls state
-          let runs = [c | c <- cs, "run --rm" `isPrefixOf` c]
+          let runs = [c | c <- cs, "run " `isPrefixOf` c, " --rm " `isInfixOf` c]
           runs `shouldSatisfy` ((== 1) . length)
           -- The client is given a shell that reads its command, not the
           -- command: the secret is on no command line.

@@ -74,6 +74,7 @@ import Language.Lask.Runtime.ProcessStop
     withStoppableProcess,
   )
 import Language.Lask.Runtime.Secrets (maskSecrets, maskSecretsJson)
+import Language.Lask.Runtime.Shutdown (withForwardedSignals)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (valueToJson)
 import System.Exit (ExitCode (..))
@@ -264,8 +265,14 @@ runAttachedProcess sink summary envJson0 rendered interactive cp = do
           std_err = if interactive then Inherit else CreatePipe,
           delegate_ctlc = True
         }
-  mapM_ (relayErr maskedCmd) mErr
-  exitCode <- waitForProcess ph
+  -- SIGTERM goes to the program, as INT does from the terminal
+  -- (spec 11.8), for as long as it runs: lask waits for it to act on
+  -- it. The relay of its stderr lasts until it exits, so it is covered
+  -- too.
+  pid <- getPid ph
+  exitCode <- withForwardedSignals pid $ do
+    mapM_ (relayErr maskedCmd) mErr
+    waitForProcess ph
   let code = case exitCode of
         ExitSuccess -> 0
         ExitFailure n -> n
