@@ -30,9 +30,12 @@ import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Exception (IOException, SomeException, try)
 import Control.Monad (unless, void, when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Environment (getExecutablePath)
+import System.Directory (getTemporaryDirectory)
+import System.Environment (getEnvironment, getExecutablePath)
+import System.FilePath ((</>))
 import System.Exit (ExitCode (..))
 import System.IO (hGetContents, hSetBinaryMode, stdin)
 import System.IO.Unsafe (unsafePerformIO)
@@ -108,10 +111,18 @@ start client = modifyMVar_ reaper $ \running -> case running of
       -- the pipe open and the reaper waiting.
       setFdOption writeEnd CloseOnExec True
       readHandle <- fdToHandle readEnd
+      tmp <- getTemporaryDirectory
+      inherited <- getEnvironment
+      pid <- P.getCurrentPid
       _ <-
         P.createProcess
           (P.proc exe ["__reap", client, T.unpack processOwner])
             { P.std_in = P.UseHandle readHandle,
+              -- A lask built for coverage reads and writes its .tix file
+              -- where it runs; the reaper's would race with the next
+              -- invocation's, so it is kept apart. Any other build
+              -- ignores the variable.
+              P.env = Just (("HPCTIXFILE", tmp </> ("lask-reaper-" <> show pid <> ".tix")) : [kv | kv@(k, _) <- inherited, k /= "HPCTIXFILE"]),
               P.std_out = P.NoStream,
               P.std_err = P.Inherit,
               -- Nothing else of lask's: a pipe lask writes its result
@@ -159,7 +170,7 @@ removeLeftovers client owner = do
   let filterOf label = ["--filter", T.unpack ("label=" <> label <> "=" <> owner)]
   containers <- output (["ps", "-aq"] <> filterOf ownerLabel)
   proxies <- output (["ps", "-aq"] <> filterOf egressOwnerLabel)
-  let ids = containers <> proxies
+  let ids = nub (containers <> proxies)
   unless (null ids) (void (quietly ("rm" : "-f" : ids)))
   networks <- output (["network", "ls", "-q"] <> filterOf egressOwnerLabel)
   unless (null networks) (void (quietly ("network" : "rm" : networks)))
