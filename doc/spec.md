@@ -4938,7 +4938,7 @@ Searching:
   ```
 
 - `find_index(xs, p)` returns the index of the first element for which `p` is true, or `-1`. It reports a position rather than a value, so the absent case is `-1` and not `Null` (15.1). Use `find` when the element is wanted and `find_index` when the position is.
-- A type variable inside a union is permitted in the return type of a signature, which is what `find` relies on, and not in a parameter type (4.4). One consequence of the canonical form of a union (4.2) is worth noting: searching an `Array<Any>` gives `Any | Null`, which is `Any`, so the absent case is then not distinguishable by type. That is inherent to `Any`, and the answer is the usual one — `cast` the decoded value to a concrete element type before searching it.
+- A type variable may occur inside a union in any position of a signature (4.4): `find` relies on it in its return type, and a declaration may take `T | Null` as a parameter. One consequence of the canonical form of a union (4.2) is worth noting: searching an `Array<Any>` gives `Any | Null`, which is `Any`, so the absent case is then not distinguishable by type. That is inherent to `Any`, and the answer is the usual one — `cast` the decoded value to a concrete element type before searching it.
 - `every(xs, p)` is true when `p` holds for every element, and is true for an empty array. `any(xs, p)` is true when `p` holds for at least one element, and is false for an empty array. Both stop applying `p` at the first element that decides the result.
 - The name `all` is not used for `every`, because it is already the asynchronous helper of 15.6.
 
