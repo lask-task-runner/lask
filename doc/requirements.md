@@ -72,7 +72,7 @@ To solve these problems, Lask satisfies the following core requirements.
 1. **Performance**
    - Analysis and inference must be sufficiently fast, with responsiveness that does not interrupt the user's train of thought even during editor integration (responses within tens of milliseconds).
 2. **Portability**
-   - The tool must be distributable and executable cross-platform (macOS, Linux environments, etc.) without depending on the execution infrastructure.
+   - The tool must be distributable and executable on POSIX hosts (macOS, Linux environments, etc.) without depending on the execution infrastructure. Windows is reached through WSL 2 rather than supported natively.
 3. **Extensibility**
    - The executor model must be designed generically so that built-in libraries and function sets can be added or replaced, and language functionality can be easily extended.
 

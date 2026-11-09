@@ -1666,7 +1666,7 @@ Escaping:
   - Inside `'...'`, each `'` of the value is written `'\''`: `$ sh -c 'grep -q "^#{name}:" /etc/passwd'`.
 - A hole in `$(...)` or backquotes is escaped for the quoting in force where the substitution is written; the shell's own reparsing of the substitution is not followed.
 - A raw hole `#!{e}` is substituted without escaping, so the shell parses the value: `$ go build #!{flags}` passes each flag in `flags` as a word of its own. It is written with its own delimiter, not with a function, so that what the shell parses is visible where the hole is written: no expression inside an ordinary hole, whatever function it calls, is substituted unescaped. Because the shell parses the value, a value from outside the program (an argument, a file, a command's output) must not reach a raw hole: it would run what it contains.
-- The escaping is POSIX shell escaping. The shell of a `local` environment on Windows is `cmd.exe` (10.2), which does not read it; a command meant for it writes its holes as raw holes and quotes them itself.
+- The escaping is POSIX shell escaping, which the shell of every environment reads (10.2).
 - Only holes of a command execution expression are escaped. A string passed to `run` (15.5) is a command line as it is, so a value interpolated into it is quoted with `shell_quote` where it needs to be.
 - The escaping is part of the desugaring: it is written with internal builtins that no program can name, so user definitions cannot change it.
 
@@ -1690,8 +1690,6 @@ Shell syntax:
   - a newline that ends a command, as one written between two commands of a braced command string. The shell would run them one after the other, and `$` checks the exit code of the last one only, so a failure of the first would go unnoticed. A newline is well formed where the shell reads it as continuing the list: after `&&`, `||` or `|`, and where no command has begun, after `;`, `&` or `(`. Commands that depend on each other are joined with `&&`, or written as commands of their own;
   - `|>` or `<|`, lask's application operators (6.2), which the shell would read as a pipe and a redirection, as `uname -s |> trim` would be read as `uname -s | > trim`. The diagnostic suggests the braced form, `${uname -s} |> trim`. Written apart, as `| >`, they are the shell's operators and are not reported.
 - A command consisting only of assignments or redirections is a command, as in the shell: `FOO=1` and `> out.txt` are well formed. A trailing `;` or `&` ends a list and is well formed.
-- The check is not made where the environment may be the `local` environment of a Windows host, whose shell is `cmd.exe` (10.2): on such a host it is made only when the environment is known from the text to be a container environment, written as a container environment expression directly or through top-level bindings.
-- There instead, a command string that holds a newline is the static error `E-TYPE-COMMAND-SYNTAX`: `cmd.exe /c` runs the first line of what it is given and nothing after it, so a braced command spanning lines would run only its start.
 - Examples: `$[#local] make &&`, `$[#local] cat >`, `$[#local] echo "unterminated` and `$[#local] | grep x` are `E-TYPE-COMMAND-SYNTAX`. `$[#local] for f in *.go; do gofmt -l $f; done`, `$[#local] echo #!{flags} &&` and `$[#local] echo hi # it's` are not, because reading stops at `for`, at the raw hole, and at the comment.
 
 Environment specification rules:
@@ -2655,6 +2653,11 @@ Type conformance:
 
 The execution environment profiles specified by this specification are `local` and `docker`. Both are self-contained on the host running Lask. Environments that span hosts are not provided: their contents cannot be pinned, they carry state between runs, and no boundary can be placed around what they may do. A remote host is reached by running a client for it inside a container (`$[#alpine:3.20] ssh ...`), which keeps the tool that reaches it pinned.
 
+The host running Lask is a POSIX system, such as Linux or macOS. Windows is not a host: on Windows, Lask runs inside WSL 2, where the host is the Linux distribution it runs in.
+
+- Both profiles therefore run a command string with a POSIX shell, `/bin/sh`, so a command string has one meaning, its escaping one form, and its syntax one check (6.6), whichever environment it runs in.
+- The container engines a Windows machine runs Linux containers with already run them in a WSL 2 virtual machine, so a project that uses containers on Windows already depends on it.
+
 - `local`: local process execution on the calling host
   - Written `#local`. It takes no options.
 - `docker`: execution inside a container
@@ -2713,7 +2716,7 @@ Each profile has at least the following execution attributes.
 How this implementation launches a command:
 
 - `docker`: the container is started with the image's entrypoint replaced by `/bin/sh`, and the command string is run by it as `/bin/sh -c <command string>` would run it. This implementation gives the command string to `/bin/sh` on its standard input, which the shell reads to the end, with its builtins alone, before running the command with that input empty, as a command's is: so the command string is on no command line, neither the engine client's on the host nor the shell's in the container, both of which the host's process list shows. An image must therefore provide `/bin/sh`; an image without a shell (a distroless or `scratch`-based tool image) cannot run a command, and is wrapped in an image that has one.
-- `local`: the command string is run by the host's shell, `/bin/sh -c` on POSIX systems and `cmd.exe /c` on Windows.
+- `local`: the command string is run by the host's shell, as `/bin/sh -c <command string>`.
 
 Implementations may extend with additional profiles, but must not break compatible behavior with the above 2 profiles.
 
@@ -5246,7 +5249,7 @@ The built-in library provides at least the following functions.
 Semantics:
 
 - These are pure, lexical operations on strings. They never consult the filesystem, and therefore take no `Environment`: `dirname` of a path that does not exist is still its parent, and `normalize_path` never resolves a symbolic link.
-- Paths are POSIX paths whatever the host operating system is: `/` is the only separator, and no drive letter or backslash is recognized. A path computed on the host therefore still means the same thing inside a container, which is the case these functions exist for (10.8).
+- Paths are POSIX paths, as the host's are (10.2): `/` is the only separator, and no drive letter or backslash is recognized. A path computed on the host therefore still means the same thing inside a container, which is the case these functions exist for (10.8).
 - `path_join(parts)` joins the parts with a single `/`, dropping empty parts, and normalizes the result. A part that is absolute discards everything before it. An empty array yields the empty string.
 - `dirname(p)` returns everything before the final component: `"a/b/c"` gives `"a/b"`, a path with no separator gives `"."`, and a child of the root gives `"/"`.
 - `basename(p)` returns the final component, ignoring trailing separators: `"a/b/c.txt"` gives `"c.txt"` and `"a/b/"` gives `"b"`.

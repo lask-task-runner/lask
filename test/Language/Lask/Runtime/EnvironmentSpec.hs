@@ -148,22 +148,8 @@ spec = do
                      "-c", "cat > 'out.txt'"
                    ]
 
-    -- A Windows base directory always carries a drive letter, so the
-    -- colon-separated `-v` form read `C` as the source and `/work` as
-    -- the mode, and the daemon answered `invalid mode: /work`.
-    it "keeps a Windows drive letter in the source, not in the mount separator" $
-      dockerArgs "C:\\proj" "lask-0" "alpine:3.20" Map.empty "uname -a"
-        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
-                     "--init",
-                     "--mount", "type=bind,source=C:\\proj,target=/work",
-                     "-w", "/work",
-                     "--entrypoint", "/bin/sh",
-                     "alpine:3.20",
-                     "-c", "uname -a"
-                   ]
-
-    -- The same defect on a POSIX host: a colon is legal in a directory
-    -- name there, so this is reachable without Windows at all.
+    -- The colon-separated `-v` form would read the part after the
+    -- colon as the target, so the source must be its own field.
     it "keeps a colon inside a POSIX base directory out of the mount separator" $
       dockerArgs "/tmp/a:b" "lask-0" "alpine:3.20" Map.empty "uname -a"
         `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",

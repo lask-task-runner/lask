@@ -542,19 +542,16 @@ execArgs spec =
 -- | Mount the base directory (spec 10.2, 10.5).
 --
 -- @--mount@ rather than @-v@, because @-v@ packs source, target and
--- mode into one colon-separated field. A Windows base directory such
--- as @C:\\proj@ is then read as source @C@, target @\\proj@ and mode
--- @\/work@, and the daemon rejects it with @invalid mode: \/work@; a
--- POSIX directory whose name contains a colon breaks the same way.
--- @--mount@ names each part, so the separator never has to be guessed
--- — which is what 10.5 asks for when it requires implementations to
--- absorb path separator differences.
+-- mode into one colon-separated field. A base directory whose name
+-- contains a colon, such as @\/tmp\/a:b@, is then read as source
+-- @\/tmp\/a@, target @b@ and mode @\/work@, and the daemon rejects it.
+-- @--mount@ names each part, so the separator never has to be guessed.
 --
 -- Two consequences are deliberate. @--mount@ refuses a source that
 -- does not exist where @-v@ would silently create it, which is the
 -- better failure for a base directory. And its fields are split on
 -- commas, so a base directory containing one is still out of reach;
--- that is rarer than a drive letter, which every Windows path has.
+-- that is rarer than a colon.
 --
 -- A file is hidden under @/dev/null@, read-only: it reads as empty,
 -- and nothing written to it goes anywhere.
