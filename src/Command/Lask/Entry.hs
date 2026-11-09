@@ -139,12 +139,10 @@ cmdRunEval printResult runOpts = do
     Just n -> pure n
     Nothing -> usageError opts "no function specified (use --help to list the module's functions)"
   let fnName = kebabToSnake rawName
-  -- The public symbols of the module, re-exported ones included; a
+  -- The public functions of the module, re-exported ones included: a
   -- declaration marked `internal` is not part of any surface (spec 5),
-  -- so it is not callable from the CLI either.
-  (key, cd) <- case publicDecl compiled fnName of
-    Just found -> pure found
-    Nothing -> noSuchFunction opts rawName (publicNames compiled)
+  -- and a plain value binding is not a function (11.2).
+  (key, cd) <- cliFunction opts compiled rawName
 
   -- Which keyword arguments are flags depends on their types, so the
   -- tokens are split against the parameters (spec 11.2).
@@ -395,9 +393,14 @@ cmdHelp subcommand runOpts = do
       -- Without a parse there are no declarations to describe.
       when (isNothing (partialModule partial)) $ exitWith (ExitFailure 1)
       let fnName = kebabToSnake rawName
+      -- Help is for what the command line can call: a plain value
+      -- binding has none (spec 11.2, 11.6).
+      let isFunction (n, h) = fhFunction (helpOf [] (n, h))
       found <- case lookup fnName declsByName of
-        Just h -> pure h
-        Nothing -> noSuchFunction opts rawName (map fst declsByName)
+        Just h
+          | isFunction (fnName, h) -> pure h
+          | otherwise -> notAFunction opts rawName
+        Nothing -> noSuchFunction opts rawName [n | d@(n, _) <- declsByName, isFunction d]
       let envs = case core of
             Just c -> nub (sort (collectEnvRefsFrom c (hsKey found)))
             Nothing -> []
@@ -423,19 +426,6 @@ data HelpSource = HelpSource
     _hsDecl :: AST.Decl,
     hsKey :: (FilePath, Text)
   }
-
--- | The declaration a CLI name of the entry module invokes (spec 11.2),
--- with its key: a public symbol the module declares or re-exports,
--- followed to where it is declared.
-publicDecl :: Compiled -> Text -> Maybe ((FilePath, Text), CoreDecl)
-publicDecl compiled n = do
-  key <- lookup n (entryPublicValues (compiledProgram compiled) (compiledScopes compiled))
-  cd <- Map.lookup key (cpDecls (compiledCore compiled))
-  pure (key, cd)
-
--- | The names the CLI can invoke in the entry module (spec 11.2).
-publicNames :: Compiled -> [Text]
-publicNames compiled = map fst (entryPublicValues (compiledProgram compiled) (compiledScopes compiled))
 
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
@@ -519,10 +509,8 @@ cmdSecrets isCheck o = do
     Nothing -> pure AllVariables
     Just fn -> do
       compiled <- compileOrExit opts
-      case publicDecl compiled (kebabToSnake fn) of
-        Nothing -> noSuchFunction opts fn (publicNames compiled)
-        Just (key, _) ->
-          pure (maybe AllVariables (OnlyVariables fn) (collectEnvReadsFrom (compiledCore compiled) key))
+      (key, _) <- cliFunction opts compiled fn
+      pure (maybe AllVariables (OnlyVariables fn) (collectEnvReadsFrom (compiledCore compiled) key))
   if isCheck
     then secretsCheck (optJsonFormat opts) (secretsRead o) env scope
     else secretsList (optJsonFormat opts) env scope

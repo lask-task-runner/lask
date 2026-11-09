@@ -61,7 +61,6 @@ import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST (TextPart (..), exprSpan)
 import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), programWords)
 import Language.Lask.ErrorCode
-import Language.Lask.Utils (kebabToSnake)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
@@ -778,9 +777,8 @@ cmdEnvsList opts function = do
   scope <- case function of
     Nothing -> pure Nothing
     Just fn ->
-      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
-        k : _ -> pure (Just k)
-        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+      -- A public function of the entry module, as run takes it (spec 11.2).
+      Just . fst <$> cliFunction opts compiled fn
   lock <- loadLockMaybe paths
   backend <- resolveBackend
   daemon <- daemonReachable backend
@@ -866,9 +864,8 @@ cmdEnvsCommands opts function verbose = do
   scope <- case function of
     Nothing -> pure Nothing
     Just fn ->
-      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
-        k : _ -> pure (Just k)
-        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+      -- A public function of the entry module, as run takes it (spec 11.2).
+      Just . fst <$> cliFunction opts compiled fn
   lock <- loadLockMaybe paths
   let sites = Map.elems (Map.fromList [(csSpan c, c) | c <- collectCommandSites core scope])
       uses = Map.fromList [(cuSpan u, u) | u <- cpCommandUses core]
@@ -1050,9 +1047,8 @@ cmdEnvsAccessListing listing opts function verbose = do
   scope <- case function of
     Nothing -> pure Nothing
     Just fn ->
-      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
-        k : _ -> pure (Just k)
-        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+      -- A public function of the entry module, as run takes it (spec 11.2).
+      Just . fst <$> cliFunction opts compiled fn
   lock <- loadLockMaybe paths
   let cons = snd (withinConstraints (compiledProgram compiled))
       sites = collectUseSites cons core scope
@@ -1417,9 +1413,8 @@ cmdEnvsSecrets opts function = do
   scope <- case function of
     Nothing -> pure Nothing
     Just fn ->
-      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
-        k : _ -> pure (Just k)
-        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+      -- A public function of the entry module, as run takes it (spec 11.2).
+      Just . fst <$> cliFunction opts compiled fn
   lock <- loadLockMaybe paths
   let cons = snd (withinConstraints (compiledProgram compiled))
       sites = collectUseSites cons core scope

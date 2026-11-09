@@ -8,6 +8,10 @@ module Command.Lask.Common
     usageError,
     usageErrorSuggesting,
     noSuchFunction,
+    cliCallable,
+    cliFunctionNames,
+    cliFunction,
+    notAFunction,
     renderDiags,
     renderDiagsLines,
     diagJson,
@@ -23,7 +27,12 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
+import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
 import Language.Lask (Compiled (..), compileFile)
+import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
+import Language.Lask.Module.Resolve (entryPublicValues)
+import Language.Lask.Types (Type (TyFun))
 import Language.Lask.Deps.Lock
 import Language.Lask.Diagnostic (Diagnostic (..), didYouMean)
 import Language.Lask.ErrorCode
@@ -68,6 +77,51 @@ noSuchFunction :: CommonOpts -> Text -> [Text] -> IO a
 noSuchFunction opts wanted functions =
   usageErrorSuggesting opts ("no such function: '" <> wanted <> "'") $
     map snakeToKebab (suggest (kebabToSnake wanted) functions)
+
+-- | Whether the CLI can call a declaration (spec 11.2): its type is a
+-- function type. That is a function declaration, or a value binding
+-- whose value is a function; a plain value is not called.
+cliCallable :: CoreDecl -> Bool
+cliCallable cd = isJust (cdParams cd) || isFun (cdType cd)
+  where
+    isFun (TyFun _ _) = True
+    isFun _ = False
+
+-- | The public symbols of the entry module the CLI can call, re-exported
+-- ones included, with the declaration each names.
+cliFunctions :: Compiled -> [(Text, ((FilePath, Text), CoreDecl))]
+cliFunctions compiled =
+  [ (n, (key, cd))
+  | (n, key) <- entryPublicValues (compiledProgram compiled) (compiledScopes compiled),
+    Just cd <- [Map.lookup key (cpDecls (compiledCore compiled))],
+    cliCallable cd
+  ]
+
+-- | The names 'cliFunction' accepts, as declared.
+cliFunctionNames :: Compiled -> [Text]
+cliFunctionNames = map fst . cliFunctions
+
+-- | The function a name on the command line gives (spec 11.2, 11.4,
+-- 11.10), after the @-@ to @_@ mapping: a public function of the entry
+-- module, or a usage error. A name of a plain value is told so.
+cliFunction :: CommonOpts -> Compiled -> Text -> IO ((FilePath, Text), CoreDecl)
+cliFunction opts compiled raw = do
+  let n = kebabToSnake raw
+  case lookup n (cliFunctions compiled) of
+    Just found -> pure found
+    Nothing
+      | n `elem` map fst (entryPublicValues (compiledProgram compiled) (compiledScopes compiled)) ->
+          notAFunction opts raw
+      | otherwise -> noSuchFunction opts raw (cliFunctionNames compiled)
+
+-- | A name on the command line that names a plain value binding, which
+-- the CLI does not call (spec 11.2).
+notAFunction :: CommonOpts -> Text -> IO a
+notAFunction opts raw =
+  usageError opts $
+    "'" <> raw <> "' is a value, not a function: the command line calls functions; declare it as '"
+      <> kebabToSnake raw
+      <> "()' to call it"
 
 -- | Diagnostics for stdout (@check@): a JSON array in json mode.
 renderDiags :: Bool -> [Diagnostic] -> Text
