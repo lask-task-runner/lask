@@ -684,6 +684,22 @@ spec = do
       failsWith "f(v: String | Null): String = cast(v)\ng() = f(null)" "g" ERuntimeCast
     it "serializes a union as the member the value is (spec 13.1)" $
       evalsTo "f(): Array<String | Null> = [\"a\", null]" "f" "[\"a\",null]"
+    -- A type parameter has no run-time check, so narrowing to one
+    -- passes the value as it is (spec 6.4, 8.5).
+    it "narrows to a type parameter without checking it (spec 6.4)" $ do
+      let orDefault = "or_default<T>(x: T | Null, d: T): T = case (x) {\n  Null -> d\n  else -> x\n}\n"
+      evalsTo (orDefault <> "g(): String = or_default(\"x\", \"y\")") "g" "\"x\""
+      evalsTo (orDefault <> "g(): Number = or_default(null, 3)") "g" "3"
+      evalsTo (orDefault <> "g(): Record<a: Number> = or_default({a: 1}, {a: 2})") "g" "{\"a\":1}"
+    it "narrows to a type that holds a type parameter, checking only the rest" $ do
+      evalsTo
+        "count<T>(xs: Array<T> | Null): Number = case (xs) {\n  Null -> 0\n  else -> size(xs)\n}\ng(): Number = do {\n  v: Array<String> | Null = [\"a\", \"b\"]\n  count(v)\n}"
+        "g"
+        "2"
+      evalsTo
+        "ks<T>(m: Map<T> | Null): Array<String> = case (m) {\n  Null -> []\n  else -> keys(m)\n}\ng(): Array<String> = do {\n  m: Map<Number> | Null = {\"b\": 1, \"a\": 2}\n  ks(m)\n}"
+        "g"
+        "[\"a\",\"b\"]"
     -- A runnable with run options does not conform to Environment
     -- (spec 4.4); an environment conforms to Runnable.
     it "does not take a runnable with run options for an environment (spec 4.4, 15.8)" $ do
