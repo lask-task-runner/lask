@@ -482,7 +482,7 @@ Type identity is structural (4.4), so every union is reduced to a canonical form
 Well-formedness of a union:
 
 - `Void` must not be a member of a union (`E-TYPE-ILLFORMED`), as in every other position other than a function return type and the type argument of `AsyncHandle`.
-- Every member of a union must be a data type: `Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, and `Array` / `Map` / `Record` composed of them — the same set that `cast` may target (15.8). A union having a member that contains `Function<...>` or `AsyncHandle<T>` is a static error (`E-TYPE-ILLFORMED`).
+- Every member of a union must be a data type: `Number`, `String`, `Bool`, `Null`, `Environment`, `Runnable`, `Any`, and `Array` / `Map` / `Record` composed of them — the same set that `cast` may target (15.8). A data type is not necessarily directly serializable: `Environment` and `Runnable` are written as tagged metadata (4.5). A union having a member that contains `Function<...>` or `AsyncHandle<T>` is a static error (`E-TYPE-ILLFORMED`).
 - The reason for the second rule is that a union is only useful if a program can get back out of it, and both ways out — the runtime type check of `cast` (15.8) and the type dispatch of `case` (6.4) — are defined for data types alone. A type such as `Function<Number, Number> | Null` would be inhabited but unusable, and it is rejected where it is written rather than where it is used.
 
 Optional fields:
@@ -684,12 +684,13 @@ Type parameters within the body of their declaration (rigidity):
 
 - Directly serializable
   - `Any`, `Number`, `String`, `Bool`, `Null`
-  - `Array<T>`, `Map<T>`, `Record<field1: T1, field2: T2, ...>`
-  - `T1 | T2 | ...` (every member of a union is a data type by the well-formedness rules of 4.2, so a union is always directly serializable; a value serializes as the member it actually is, 13.1)
+  - `Array<T>`, `Map<T>` and `Record<field1: T1, field2: T2, ...>` whose element, value and field types are directly serializable
+  - `T1 | T2 | ...` whose members are all directly serializable
 - Not directly serializable
   - `Void`, `Environment`, `Runnable`
   - `AsyncHandle<T>`
   - `Function<T1, T2, ..., R>`
+- A composite type or a union that holds a type that is not directly serializable is serialized all the same, part by part (13.1). A union value serializes as the member it actually is, so `Environment | Null` writes `null` or the tagged metadata of the environment. Every union member is a data type (4.2), and `Environment` and `Runnable` are the only data types that are not directly serializable.
 - Function values are converted to reference metadata (`FunctionRef`; 13.2) in execution records and external output.
 - Likewise, `Void`, `Environment` and `Runnable` are converted to a tagged metadata representation (13.1) in external output. Restoration by deserialization is not guaranteed for either (the round-trip rules of 13.1).
 
@@ -1415,7 +1416,7 @@ Evaluation rules:
 - A `ForExpr` evaluates the target collection, then traverses the elements from left to right, applies the body block, and aggregates the results into an array in the same order (following `map` of 8.5).
 - A `CaseExpr` with a scrutinee evaluates the scrutinee exactly once, before any arm head. It then tests the heads in order, top to bottom and left to right within an arm, and stops at the first head that selects: a value head selects when it is equal to the scrutinee, and a type head selects when the scrutinee passes the runtime type check for that type. The remaining heads are not evaluated or tested, and only the body of the selected arm is evaluated. When no head selects, the body of the `else` arm is evaluated.
 - A type head is tested and never evaluated: it is a type, not an expression, so it can neither fail nor have an effect.
-- Because 15.8 accepts a record value and a map value for either of `Record<...>` and `Map<T>`, two type heads of one `case` can both match the same runtime value. Order decides, as it does for value heads: the first arm that selects wins.
+- Because 15.8 accepts a record value and a map value for either of `Record<...>` and `Map<T>`, two type heads of one `case` can both match the same runtime value. Order decides, as it does for value heads: the first arm that selects wins. The same holds of `Runnable` and `Environment`: an environment value passes the check for `Runnable`, which it conforms to (4.4), so an `Environment` arm placed after a `Runnable` arm is never selected.
 - A `CaseExpr` without a scrutinee evaluates the conditions in order and stops at the first that is `true`, evaluating only that arm's body. When none is `true`, the body of the `else` arm is evaluated.
 - If evaluation of the scrutinee or of an arm head fails, the whole expression fails at that point, and no further head or body is evaluated (8.10).
 - The interior of a `Block` follows the same statement rules as a `do` block (6.5), and the value of the block is the value of its final statement. The value of an empty block with no statements is `Void` (6.5).
@@ -5183,12 +5184,12 @@ Type migration via `cast`:
 
 - `cast(v)` checks at runtime whether the value `v` conforms to the target type `T`, and if it conforms, returns `v` as a value of type `T`. Together with the type dispatch of `case` (6.4), which runs the same check without failing, it is one of the two means of migration from `Any` or from a union to a concrete type (4.4). Use `cast` where any other kind of value is an error, and `case` where the other kinds are to be handled.
 - The target type `T` must be uniquely concretized from the expected type at the reference position (4.4) (e.g., `user: Record<name: String> = cast(from_json(stdin))`).
-- The target type `T` is limited to data types (`Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, `Array`/`Map`/`Record` composed of them, and unions of those). A `cast` to a type containing `Void`, `Function`, or `AsyncHandle` is a static error (`E-TYPE-ILLFORMED`). Every well-formed union is a legal target, because 4.2 already restricts a union's members to this same set.
+- The target type `T` is limited to data types (`Number`, `String`, `Bool`, `Null`, `Environment`, `Runnable`, `Any`, `Array`/`Map`/`Record` composed of them, and unions of those). A `cast` to a type containing `Void`, `Function`, or `AsyncHandle` is a static error (`E-TYPE-ILLFORMED`). Every well-formed union is a legal target, because 4.2 already restricts a union's members to this same set.
 - `cast` is also the way out of a union when only one member is expected and any other is an error: `cast(v)` at target `String` on a `v: String | Null` succeeds when the value is a string and fails with `E-RUNTIME-CAST` when it is null. When the absent case is to be handled rather than rejected, use `case` (6.4), which tests without failing.
 
 Runtime type check rules for `cast`:
 
-- Basic types: the kind of the runtime value matches the target type.
+- Basic types: the kind of the runtime value matches the target type. An environment value also passes the check for `Runnable`, which it conforms to (4.4).
 - `Array<T>`: the value is an array value and every element conforms at runtime to `T`.
 - `Map<T>`: every value conforms at runtime to `T`.
 - `Record<...>`: every required field of the target type is present, no key outside its field set is present, and each value conforms at runtime to the corresponding field type. An optional field (4.2) may be absent, and is checked only when present. A missing required key fails, as it always has.
