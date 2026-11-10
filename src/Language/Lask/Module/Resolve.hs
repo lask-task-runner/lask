@@ -213,10 +213,18 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
       DValue n _ _ _ -> goValue gs ds rest sp n
       DFunction n _ _ _ _ _ -> goValue gs ds rest sp n
       DTypeAlias n _ _ ->
-        let dups =
-              [ dupDiag sp n
-                | userType n (gsTypes gs) || n `Set.member` builtinTypeAliasNames
-              ]
+        -- The names the grammar reads as types of its own (spec 4.2)
+        -- are no more an alias's than the built-in aliases are: one
+        -- declared would never be referred to.
+        let dups
+              | n `elem` builtinTypeNames =
+                  [ mkDiagnostic ENameDuplicate StageStatic sp $
+                      "'" <> n <> "' is the name of a built-in type, which no type alias can take"
+                  ]
+              | otherwise =
+                  [ dupDiag sp n
+                    | userType n (gsTypes gs) || n `Set.member` builtinTypeAliasNames
+                  ]
          in go gs {gsTypes = Map.insert n (TAlias (lmPath lm) n) (gsTypes gs)} (dups <> ds) rest
       DImportNamed specs path ->
         let key = resolveKey path
