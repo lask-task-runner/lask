@@ -46,8 +46,6 @@ data ErrorCode
   | EModuleUnresolved
   | EModuleDeepImport
   | EModuleLockStale
-  | EModuleRevMoved
-  | EModuleHashMismatch
   | EModuleConfirmTarget
   | ERuntimeDivByZero
   | ERuntimeCommandNonzero
@@ -65,6 +63,8 @@ data ErrorCode
   | EIoImageDigest
   | EIoCommandMissing
   | EIoFs
+  | EIoModuleHashMismatch
+  | EIoModuleRevMoved
   | EIoDataDecode
   | EIoSecretProvider
   | EIoSecretRef
@@ -131,8 +131,6 @@ codeText c = case c of
   EModuleUnresolved -> "E-MODULE-UNRESOLVED"
   EModuleDeepImport -> "E-MODULE-DEEP-IMPORT"
   EModuleLockStale -> "E-MODULE-LOCK-STALE"
-  EModuleRevMoved -> "E-MODULE-REV-MOVED"
-  EModuleHashMismatch -> "E-MODULE-HASH-MISMATCH"
   EModuleConfirmTarget -> "E-MODULE-CONFIRM-TARGET"
   ERuntimeDivByZero -> "E-RUNTIME-DIV-BY-ZERO"
   ERuntimeCommandNonzero -> "E-RUNTIME-COMMAND-NONZERO"
@@ -150,6 +148,8 @@ codeText c = case c of
   EIoImageDigest -> "E-IO-IMAGE-DIGEST"
   EIoCommandMissing -> "E-IO-COMMAND-MISSING"
   EIoFs -> "E-IO-FS"
+  EIoModuleHashMismatch -> "E-IO-MODULE-HASH-MISMATCH"
+  EIoModuleRevMoved -> "E-IO-MODULE-REV-MOVED"
   EIoDataDecode -> "E-IO-DATA-DECODE"
   EIoSecretProvider -> "E-IO-SECRET-PROVIDER"
   EIoSecretRef -> "E-IO-SECRET-REF"

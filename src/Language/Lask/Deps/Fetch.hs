@@ -28,7 +28,7 @@ import Language.Lask.Deps.Lock (LockEntry (..), childPath, lockDisagreement)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Hash (hashFile, hashTree, symlinksUnder)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
-import Language.Lask.ErrorCode (ErrorCode (EIoEnvResolve, EModuleHashMismatch, EModuleRevMoved), Stage (StageIo))
+import Language.Lask.ErrorCode (ErrorCode (EIoEnvResolve, EIoModuleHashMismatch, EIoModuleRevMoved), Stage (StageIo))
 import Language.Lask.Span (Span (NoSpan))
 import System.Directory
   ( createDirectoryIfMissing,
@@ -69,7 +69,7 @@ data Pinned = Pinned
 --
 -- A git entry whose lock pins a commit for the same reference is
 -- checked against the remote first: a reference that now names another
--- commit is @E-MODULE-REV-MOVED@, whatever the cache holds. Otherwise
+-- commit is @E-IO-MODULE-REV-MOVED@, whatever the cache holds. Otherwise
 -- the pinned commit, not the reference, is what gets fetched, so the
 -- hash check verifies what the lock pins.
 --
@@ -80,7 +80,7 @@ data Pinned = Pinned
 -- from the locked one: a changed @rev@ over an unchanged @hash@ must
 -- not silently keep the old content.
 --
--- A hash mismatch is @E-MODULE-HASH-MISMATCH@, and nothing is placed
+-- A hash mismatch is @E-IO-MODULE-HASH-MISMATCH@, and nothing is placed
 -- in the cache.
 ensureEntry :: FilePath -> Maybe LockEntry -> Text -> DepEntry -> IO (Either Diagnostic Pinned)
 ensureEntry cacheDir locked name entry = case entry of
@@ -110,7 +110,7 @@ ensureEntry cacheDir locked name entry = case entry of
   where
     -- The hash the lock pins holds for the source it was pinned from:
     -- an entry that now names another repository, reference or URL is
-    -- a new pin, fetched without it (spec 5, 11.5). E-MODULE-HASH-MISMATCH
+    -- a new pin, fetched without it (spec 5, 11.5). E-IO-MODULE-HASH-MISMATCH
     -- is for content that changed under an unchanged reference.
     expected = lkHash <$> mfilter (isNothing . lockDisagreement entry) locked
     single = entryIsSingleFile entry
@@ -126,7 +126,7 @@ ensureEntry cacheDir locked name entry = case entry of
           | Just h <- expected,
             computedHash /= h -> do
               cleanup tmpPath
-              pure . Left . mkDiagnostic EModuleHashMismatch StageIo NoSpan $
+              pure . Left . mkDiagnostic EIoModuleHashMismatch StageIo NoSpan $
                 "dependency '"
                   <> name
                   <> "': content hash mismatch (locked "
@@ -146,7 +146,7 @@ ensureEntry cacheDir locked name entry = case entry of
               pure (Right (Pinned computedHash commit True))
 
     moved ref commit old =
-      mkDiagnostic EModuleRevMoved StageIo NoSpan $
+      mkDiagnostic EIoModuleRevMoved StageIo NoSpan $
         "dependency '"
           <> name
           <> "': "

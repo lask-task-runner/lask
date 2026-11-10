@@ -79,7 +79,7 @@ trigger c = case c of
       -- The project file now asks for a source the lock never saw.
       writeFile (proj </> "lask.json") "{\"dependencies\": {\"notify\": {\"url\": \"file:///elsewhere.lask\"}}}"
       run ["check"]
-  EModuleRevMoved -> Scripted 3 $ \lask ->
+  EIoModuleRevMoved -> Scripted 3 $ \lask ->
     withGitDep lask $ \repo _ run -> do
       -- The first sync pins the commit the tag names.
       void (run ["sync"])
@@ -90,7 +90,7 @@ trigger c = case c of
   -- A confirm entry of the project file that names no function.
   EModuleConfirmTarget ->
     Check [("main.lask", "a(): String = \"a\"\n"), ("lask.json", "{\"confirm\": {\"b\": {}}}")]
-  EModuleHashMismatch -> Scripted 3 $ \lask ->
+  EIoModuleHashMismatch -> Scripted 3 $ \lask ->
     withUrlDep lask $ \published _ run -> do
       writeFile published "send(x: String): String = concat(\"evil:\", x)\n"
       run ["sync"]
