@@ -389,7 +389,7 @@ This chapter defines the types of values that Lask handles, type annotations, ty
 Type              = UnionType .
 UnionType         = SingleType { "|" SingleType } .
 SingleType        = BaseType | ArrayType | MapType | RecordType | AsyncHandleType | FunctionType | NamedType .
-BaseType          = "Any" | "Number" | "String" | "Bool" | "Null" | "Void" | "Environment" .
+BaseType          = "Any" | "Number" | "String" | "Bool" | "Null" | "Void" | "Environment" | "Runnable" .
 ArrayType         = "Array" "<" Type ">" .
 MapType           = "Map" "<" Type ">" .
 RecordType        = "Record" "<" [ RecordFieldType { "," RecordFieldType } ] ">" .
@@ -415,6 +415,7 @@ Representation of Function types:
 Definition of named types:
 
 - Named types are defined by the type alias declaration `type`.
+- The names the grammar reads as types of its own — those of `BaseType` (`Any`, `Number`, `String`, `Bool`, `Null`, `Void`, `Environment`, `Runnable`) and of the type constructors (`Array`, `Map`, `Record`, `AsyncHandle`, `Function`) — always denote those types, so no type alias and no type parameter can take one. Declaring one is a duplicate definition error (`E-NAME-DUPLICATE`), as declaring a built-in type alias (`Error`, `CommandResult`, ...) is.
 - The form is `type TypeName = Type`, or `type TypeName<A, B> = Type` for an alias with parameters (below).
 - A type alias defined in another module is referenced either by its bare name (`upper_id`), after bringing it in with a named import, or, when the defining module is brought in with a namespace import (5), qualified as `namespace.TypeName` (`QualifiedNamedType`). Either form takes type arguments where the alias has parameters (`m.Pair<Number, String>`). The two forms name the same declaration; a module may use either, or both, for the same type. `namespace` must be a namespace bound by a `NamespaceImport` in the current module, and `TypeName` must be a public type alias of the module that namespace refers to (5, "Public scope and visibility"); otherwise it is an undefined reference error. `QualifiedNamedType` is recognized only in type-annotation position (wherever `Type` appears in this grammar) — it does not extend to a namespace chain (`m.n.TypeName`) and does not change how `namespace.symbol` is resolved as a value or function reference (7.2).
 - Example: `type Strings = Array<String>`
@@ -425,7 +426,7 @@ Type parameters:
 - A function declaration (5) and a type alias may declare type parameters, written `<T>` or `<A, B>` after the name. Within their scope, each stands for a type that the use site determines.
 - An `upper_id` in type position resolves to a type parameter when one of that name is in scope, and to a `NamedType` otherwise. A qualified `namespace.TypeName` is never a type parameter.
 - A type parameter's scope is: for a function, its parameter types, its return type, and the type annotations inside its body (6.5); for a type alias, the right-hand side of the alias.
-- Declaring a type parameter whose name is that of a type alias visible at the declaration is a duplicate definition error (`E-NAME-DUPLICATE`). Shadowing is not permitted, so a type name means one thing throughout a declaration.
+- Declaring a type parameter whose name is that of a type alias visible at the declaration, or of a type the grammar reads as its own (above), is a duplicate definition error (`E-NAME-DUPLICATE`). Shadowing is not permitted, so a type name means one thing throughout a declaration.
 - A type parameter that appears in no position is permitted. Nothing determines it and nothing needs to.
 - Type parameters are not written at a use site: a call instantiates them from the argument types and the expected type (4.4), and there is no syntax for giving them explicitly.
 
@@ -2664,7 +2665,7 @@ This chapter defines the execution environments that can be specified when invok
 
 Rules:
 
-- `Environment` must not be overridden by user-defined type aliases or value declarations.
+- `Environment` and `Runnable` are names of `BaseType`, and no type alias can take them (4.2).
 - `Environment` values must be resolvable to at least the following 2 profiles.
   - `local`: `#local` (local execution)
   - `docker`: a registry-reference head `#<image>` or a recipe head `#./<Dockerfile>` (container execution)
