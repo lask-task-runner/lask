@@ -11,7 +11,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock (LockEntry (..), LockFile (..))
-import Language.Lask.Diagnostic (diagCode)
+import Language.Lask.Diagnostic (diagCode, diagNotes)
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader
 import Language.Lask.Syntax.Parser (parseModule)
@@ -224,6 +224,18 @@ spec = do
         -- dependency file, so its bare import must not resolve.
         [(".", DepsFile (Map.fromList [("kit", DepGit "https://x/kit" "v1"), ("notify", notifyEntry)]) Map.empty)]
         EModuleUnresolved
+    it "names the modules of a cycle in the order they import one another" $ do
+      let notesOf files = do
+            r <- loadProgramEnv (fakeEnv files []) "main.lask"
+            pure (either (concatMap diagNotes) (const []) r)
+      notesOf
+        [ ("main.lask", "import { a } from \"./a.lask\"\nf() = a"),
+          ("a.lask", "import { b } from \"./b.lask\"\na = b"),
+          ("b.lask", "import { a } from \"./a.lask\"\nb = a")
+        ]
+        `shouldReturn` ["cycle: a.lask -> b.lask -> a.lask"]
+      notesOf [("main.lask", "import { f } from \"./main.lask\"\ng() = 1")]
+        `shouldReturn` ["cycle: main.lask -> main.lask"]
     it "detects cycles inside external trees" $
       failsWith
         [ ("main.lask", "import { hello } from \"kit\"\nf() = hello()"),

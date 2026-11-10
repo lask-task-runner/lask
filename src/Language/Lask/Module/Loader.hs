@@ -271,8 +271,11 @@ loadProgramEnv env entryPath = do
         Left ds -> pure (Left ds)
         Right (done', order') -> loadAll visiting done' order' rest
 
+    -- The modules from the first visit of @path@ back to it, in the
+    -- order they import one another. @visiting@ is the stack of the
+    -- modules being loaded, innermost first.
     showCycle path visiting =
-      let chain = reverse (path : takeWhile (/= path) visiting) <> [path]
+      let chain = path : reverse (takeWhile (/= path) visiting) <> [path]
        in foldr1 (\a b -> a <> " -> " <> b) chain
 
 -- | Resolve one import path (spec chapter 5): local (@./@\/@..\/@)

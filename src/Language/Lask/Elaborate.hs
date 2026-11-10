@@ -622,6 +622,11 @@ typeVarsOf ctx path tps = do
       | Just _ <- Map.lookup path (ctxScopes ctx) >>= Map.lookup v . gsTypes =
           abort . diag ENameDuplicate vsp $
             "type parameter '" <> v <> "' has the name of a type alias in scope"
+      -- The grammar reads these as its own types, so a parameter of
+      -- that name would never be referred to (spec 4.2).
+      | v `elem` builtinTypeNames =
+          abort . diag ENameDuplicate vsp $
+            "type parameter '" <> v <> "' has the name of a built-in type"
       | length [() | w <- names, w == v] > 1 =
           abort (diag ENameDuplicate vsp ("duplicate type parameter: '" <> v <> "'"))
       | otherwise = pure ()

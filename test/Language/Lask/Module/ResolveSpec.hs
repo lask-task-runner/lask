@@ -85,6 +85,13 @@ spec = do
     it "rejects redefining builtin type aliases" $
       failsWith [("main.lask", "type Error = Record<code: Number>")] ENameDuplicate
 
+    -- The grammar reads these as its own types, so an alias of the name
+    -- would never be referred to (spec 4.2).
+    it "rejects a type alias named like a type of the grammar" $
+      mapM_
+        (\n -> failsWith [("main.lask", "type " <> n <> " = String")] ENameDuplicate)
+        ["Any", "Number", "String", "Bool", "Null", "Void", "Environment", "Runnable", "Array", "Map", "Record", "AsyncHandle", "Function"]
+
   describe "namespace imports" $ do
     it "resolves namespace member references" $
       ok
