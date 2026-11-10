@@ -3754,7 +3754,7 @@ Sources of help information:
 - The signature (the kind of each parameter, its type, and its default value) is taken from the result of static verification (7.5).
 - Default values are displayed as their source text and **must not be evaluated**, since evaluating them may have side effects.
 - The default value of a parameter marked `!!` (6.10) is displayed as `<secret>` and must never be displayed in plaintext (12.8).
-- The environments used are enumerated by the reachability analysis of 11.4. A recipe-form environment is shown by its Dockerfile path. When the enumeration yields only `#local`, the section is omitted.
+- The environments used are enumerated by the reachability analysis of 11.4, and each is shown as `envs list` shows it: its head in the notation of 6.7 (`#local`, `#golang:1.22`, `#./infra/builder.Dockerfile`) and its kind (`local`, `registry` or `recipe`), `#local` first and the others in order of their notation. When the enumeration yields only `#local`, the section is omitted.
 - When the project file asks for confirmation before the function (Chapter 5), a `Confirmation:` section states the condition (`requires confirmation when env is prod or production`), and JSON output carries it as `confirm` (`null` otherwise). An editor hover shows the same.
 
 Rendering rules:
@@ -3772,7 +3772,7 @@ Text output (`--format text`, the default). For the declaration:
 ```lask
 // Build the project and publish the artifact.
 //
-// The build runs in the `builder` environment; the artifact is
+// The build runs in the image infra/builder.Dockerfile builds; the artifact is
 // uploaded only when `--publish` is set.
 //
 // @param target   Build target name.
@@ -3792,7 +3792,7 @@ build - Build the project and publish the artifact.
 Usage:
   lask run build <target> [--out-dir <String>] [--publish]
 
-The build runs in the `builder` environment; the artifact is
+The build runs in the image infra/builder.Dockerfile builds; the artifact is
 uploaded only when `--publish` is set.
 
 Parameters:
@@ -3808,7 +3808,7 @@ Returns:
       The path of the produced artifact.
 
 Environments:
-  builder  docker  golang:1.22
+  #./infra/builder.Dockerfile  recipe
 
 Examples:
   lask run build release --out-dir dist --publish true
@@ -3836,7 +3836,7 @@ JSON output (`--format json`) is the structured form of the same information, in
   "function": "build",
   "location": {"line": 12, "column": 1},
   "summary": "Build the project and publish the artifact.",
-  "description": "The build runs in the `builder` environment; the artifact is\nuploaded only when `--publish` is set.",
+  "description": "The build runs in the image infra/builder.Dockerfile builds; the artifact is\nuploaded only when `--publish` is set.",
   "params": [
     {"name": "target", "kind": "positional", "type": "String",
      "default": null, "required": false, "secret": false, "doc": "Build target name."},
@@ -3846,13 +3846,14 @@ JSON output (`--format json`) is the structured form of the same information, in
      "default": "false", "required": false, "secret": false, "doc": "Whether to upload the artifact."}
   ],
   "returns": {"type": "String", "doc": "The path of the produced artifact."},
-  "environments": [{"name": "builder", "kind": "docker", "target": "golang:1.22"}],
+  "environments": [{"environment": "#./infra/builder.Dockerfile", "kind": "recipe"}],
   "examples": ["lask run build release --out-dir dist --publish true"]
 }
 ```
 
 - `kind` is `function-help` for the help of a single function, and `function-list` for the function list. The latter holds `functions`, an array of objects with `name`, `summary`, and `signature`.
 - `kind` for a parameter is one of `positional` / `variadic` / `keyword`.
+- `environments` holds one object per environment, `environment` (the head) and `kind`, as the `--format json` output of `envs list` names them (11.4).
 - `default` is `null` for a parameter that has no default value, and `"<secret>"` for a parameter marked `!!`.
 - `required` is `true` for a required keyword parameter (6.1), and `false` for every other parameter. A positional parameter is always required by its kind, so the field speaks only of keyword parameters.
 - A field whose information is unavailable is `null`; a section that is omitted in text output is an empty array.
@@ -4242,7 +4243,7 @@ JSON format (with `--format json`):
 
 - Each line of the command execution log is output as one object of the JSON Lines of 12.2.
 - Required fields for all lines: `timestamp`, `level`, `traceId`, `exec` (execution number).
-- Start line: in addition to `event: "start"`, `command` (the executed command string) and `env` (the metadata representation of 13.1; named environments include `name`) are required.
+- Start line: in addition to `event: "start"`, `command` (the executed command string) and `env` (the metadata representation of 13.1) are required.
 - Relay lines: `stream` (`1` or `2`) and `message` (the line's content) are required. `command` and `env` may be omitted (correlated with the start line via `exec`).
 - Exit line: `event: "exit"` and `code` (exit code) are required.
 - Killed line: `event: "killed"` is required. It has no `code`: the command did not exit on its own.
