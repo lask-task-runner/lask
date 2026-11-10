@@ -194,6 +194,32 @@ withTypeVars vs ctx = ctx {ctxTypeVars = Set.fromList (map fst vs), ctxBounds = 
 boundMap :: [(Text, Maybe Bound)] -> Map Text Bound
 boundMap vs = Map.fromList [(v, b) | (v, Just b) <- vs]
 
+-- | 'withTypeVars' for a lambda's own type parameters (spec 6.1),
+-- which add to those of the declaration it is written in.
+addTypeVars :: [(Text, Maybe Bound)] -> Ctx -> Ctx
+addTypeVars vs ctx =
+  ctx
+    { ctxTypeVars = ctxTypeVars ctx <> Set.fromList (map fst vs),
+      ctxBounds = ctxBounds ctx <> boundMap vs
+    }
+
+-- | The type variables a generic local binding generalized (spec 6.1):
+-- its type parameters, renamed apart by where the lambda is written as
+-- @T\@line:column@. An @\@@ cannot occur in an identifier, so no source
+-- names one, and 'renderType' shows the part before it.
+generalizedVars :: Type -> [Text]
+generalizedVars t = nub (filter (T.isInfixOf "@") (typeVars t))
+
+-- | A lambda with type parameters is generic, and a function value has
+-- no type variables of its own (spec 4.4): it is bound to a name, by
+-- a top-level declaration or a binding of a block, which instantiates
+-- it at each reference. Anywhere else it is an error.
+monoLambda :: Span -> [TypeParam] -> TC ()
+monoLambda _ [] = pure ()
+monoLambda sp _ =
+  abort . diag ETypeIllformed sp $
+    "a lambda with type parameters has to be bound to a name: a function value has no type parameters of its own; bind it first, or write it without them"
+
 -- | The bound of a type parameter in scope, if it has one.
 boundOf :: Ctx -> Text -> Maybe Bound
 boundOf ctx v = Map.lookup v (ctxBounds ctx)
@@ -217,7 +243,7 @@ holds ctx = satisfiesNamed (boundOf ctx)
 boundViolation :: Ctx -> Span -> Text -> Text -> Bound -> Type -> Diagnostic
 boundViolation ctx sp callee v b t =
   diag ETypeBound sp $
-    "'" <> callee <> "' requires " <> v <> " to " <> wanted <> ", but here it is " <> renderType t <> hint
+    "'" <> callee <> "' requires " <> T.takeWhile (/= '@') v <> " to " <> wanted <> ", but here it is " <> renderType t <> hint
   where
     wanted = case b of
       BoundNamed nb -> "be " <> renderNamedBound nb
@@ -254,6 +280,9 @@ data St = St
     -- | The probed words each declaration dispatches through.
     stDispatched :: Map Key (Set (FilePath, Text)),
     stSchemaUses :: [SchemaUse],
+    -- | Bounds of the type variables generic local bindings generalized
+    -- (spec 6.1), by their renamed names ('generalize').
+    stLocalBounds :: Map Text Bound,
     stFailures :: Failures
   }
 
@@ -466,6 +495,7 @@ elaborateRecovering prog scopes nameErrors =
           stCurrent = [],
           stDispatched = Map.empty,
           stSchemaUses = [],
+          stLocalBounds = Map.empty,
           stFailures = Failures [] failedDecls failedAliases failedWords
         }
     internal =
@@ -634,6 +664,13 @@ headerType ctx key@(path, name) = case lookupDeclAst ctx key of
       posTys <- paramHeaderTypes ctx' path ps
       (,) vs . TyFun posTys <$> typeFromS ctx' path rt
     DValue _ _ (Just t) _ -> (,) [] <$> typeFromS ctx path t
+    -- A lambda with its return type written gives the type as a
+    -- function declaration does (spec 6.1).
+    DValue _ _ Nothing (Expr _ (ELambda tps ps (Just rt) _)) -> do
+      vs <- typeVarsOf ctx path tps
+      let ctx' = withTypeVars vs ctx
+      posTys <- paramHeaderTypes ctx' path ps
+      (,) vs . TyFun posTys <$> typeFromS ctx' path rt
     _ ->
       abort . diag ETypeMismatch sp $
         "recursive declaration '" <> name <> "' needs a return type annotation"
@@ -712,10 +749,17 @@ standIn ctx key@(path, name) = case lookupDeclAst ctx key of
           params <- headerParams ctx' ps
           ret <- typeFromS ctx' path rt
           pure (Just (stub sp (map fst vs) (funType params ret) (Just params) (boundMap vs)))
+    DValue _ _ Nothing (Expr _ (ELambda tps ps (Just rt) _))
+      | annotated ps -> do
+          vs <- typeVarsOf ctx path tps
+          let ctx' = withTypeVars vs ctx
+          params <- headerParams ctx' ps
+          ret <- typeFromS ctx' path rt
+          pure (Just (stub sp (map fst vs) (funType params ret) (Just params) (boundMap vs)))
     DValue _ _ (Just ann) rhs -> do
       t <- typeFromS ctx path ann
       case exprF rhs of
-        ELambda ps _ _
+        ELambda _ ps _ _
           | annotated ps -> do
               params <- headerParams ctx ps
               pure (Just (stub sp [] t (Just params) Map.empty))
@@ -759,19 +803,26 @@ elabDecl ctx0 path (Decl sp f) = case f of
     pure (CoreDecl path name (map fst vs) ty lam (Just params) (boundMap vs))
   DValue name sec ann rhs -> do
     let ctx = ctx0
+    case (exprF rhs, ann) of
+      (ELambda (_ : _) _ _ _, Just t) ->
+        abort . diag ETypeIllformed (stypeSpan t) $
+          "a binding of a lambda with type parameters takes no type annotation: the lambda gives its types"
+      _ -> pure ()
     annTy <- traverse (typeFromS ctx path) ann
     case exprF rhs of
       -- A directly lambda-valued binding keeps declaration parameter
-      -- info (callable with keyword arguments, spec 7.5).
-      ELambda ps rt body -> do
-        (lam, ty, params) <- elabLambda ctx path Map.empty (exprSpan rhs) (Just name) ps rt body
+      -- info (callable with keyword arguments, spec 7.5), and its type
+      -- parameters, as a function declaration does (6.1).
+      ELambda tps ps rt body -> do
+        vs <- typeVarsOf ctx path tps
+        (lam, ty, params) <- elabLambda (withTypeVars vs ctx) path Map.empty (exprSpan rhs) (Just name) ps rt body
         -- A function-typed binding can never be a secret (6.10 allows
         -- only String); report that before the annotation check.
         _ <- applySecrecy sp name sec ty lam
         case annTy of
           Just t | not (conforms ctx ty t) -> mismatch sp t ty
           Just t -> pure (CoreDecl path name [] t lam (Just params) Map.empty)
-          Nothing -> pure (CoreDecl path name [] ty lam (Just params) Map.empty)
+          Nothing -> pure (CoreDecl path name (map fst vs) ty lam (Just params) (boundMap vs))
       _ -> do
         (core, ty) <- case annTy of
           Just t -> (,) <$> check ctx path Map.empty rhs t <*> pure t
@@ -1088,7 +1139,8 @@ infer ctx path locals (Expr sp f) = case f of
     fields <- objectFields ctx path locals kvs
     let recTy = TyRecord (Map.fromList [(k, requiredField t) | (k, _, t) <- fields])
     pure (Core sp (CRecordLit [(k, c) | (k, c, _) <- fields]), recTy)
-  ELambda ps rt body -> do
+  ELambda tps ps rt body -> do
+    monoLambda sp tps
     requiredAsValue sp "a lambda" ps
     (lam, ty, _) <- elabLambda ctx path locals sp Nothing ps rt body
     pure (lam, ty)
@@ -1319,8 +1371,9 @@ check ctx path locals e@(Expr sp f) expected = case f of
         cs <- mapM (\el -> check ctx path locals el t) es
         pure (Core sp (CArray cs))
   EObject kvs -> checkObject ctx path locals sp kvs expected
-  ELambda ps rt body
+  ELambda tps ps rt body
     | TyFun expPs _ <- expected -> do
+        monoLambda sp tps
         (lam, ty, _) <- elabLambdaAgainst ctx path locals sp ps rt body expPs
         unless (conforms ctx ty expected) (mismatch sp expected ty)
         pure lam
@@ -1344,6 +1397,18 @@ check ctx path locals e@(Expr sp f) expected = case f of
     (c, t) <- elabCall ctx path locals sp fn args (Just expected)
     unless (conforms ctx t expected) (mismatch sp expected t)
     pure c
+  -- A generic local function referenced as a value: the expected type
+  -- has to determine every one of its type variables (spec 4.4, 6.1).
+  EVar n
+    | Just t <- Map.lookup n locals,
+      gvs@(_ : _) <- generalizedVars t -> do
+        subst <- unifyOrFail sp t expected Map.empty
+        bounds <- gets stLocalBounds
+        refBounds ctx sp n (Map.restrictKeys bounds (Set.fromList gvs)) subst
+        let t' = applySubst subst t
+        unless (null (generalizedVars t') && conforms ctx t' expected) (mismatch sp expected t')
+        recordVar sp n t' Nothing
+        pure (Core sp (CVar (LocalRef n)))
   EVar n
     | not (Map.member n locals),
       Just (VTopLevel defPath defName) <- lookupValueTarget ctx path n -> do
@@ -1456,7 +1521,7 @@ lookupValueTarget ctx path n =
 declAsValue :: Ctx -> Span -> Text -> Key -> TC ()
 declAsValue ctx sp n key = case lookupDeclAst ctx key of
   Just (Decl _ (DFunction _ _ ps _ _ _)) -> requiredAsValue sp ("'" <> n <> "'") ps
-  Just (Decl _ (DValue _ _ _ (Expr _ (ELambda ps _ _)))) -> requiredAsValue sp ("'" <> n <> "'") ps
+  Just (Decl _ (DValue _ _ _ (Expr _ (ELambda _ ps _ _)))) -> requiredAsValue sp ("'" <> n <> "'") ps
   _ -> pure ()
 
 requiredAsValue :: Span -> Text -> [Param] -> TC ()
@@ -1467,6 +1532,10 @@ requiredAsValue sp what ps = case [k | Param _ (PKeyword k _ _ Nothing) <- ps] o
 
 inferVar :: Ctx -> FilePath -> Locals -> Span -> Text -> TC (Core, Type)
 inferVar ctx path locals sp n = case Map.lookup n locals of
+  Just t
+    | not (null (generalizedVars t)) ->
+        abort . diag ETypeMismatch sp $
+          "cannot infer the type of '" <> n <> "' without an expected type: it declares type parameters"
   Just t -> do
     recordVar sp n t Nothing
     pure (Core sp (CVar (LocalRef n)), t)
@@ -1802,7 +1871,32 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
     -- An annotation is the expected type for the right-hand side and
     -- the declared type of the binding (spec 4.3, 6.5); without one,
     -- the binding adopts the type of its right-hand side.
-    elabBind locals ssp n sec ann e unannotated = do
+    elabBind locals ssp n sec ann e unannotated
+      | ELambda tps@(_ : _) ps rt body <- exprF e = do
+          case ann of
+            Just t ->
+              () <$ abort (diag ETypeIllformed (stypeSpan t) "a binding of a lambda with type parameters takes no type annotation: the lambda gives its types")
+            Nothing -> pure ()
+          vs <- typeVarsOf ctx path tps
+          -- A type name means one thing throughout a declaration (4.2).
+          mapM_
+            ( \(TypeParam (Spanned vsp v) _) ->
+                when (v `Set.member` ctxTypeVars ctx) $
+                  abort . diag ENameDuplicate vsp $
+                    "type parameter '" <> v <> "' is already a type parameter of the declaration it is written in"
+            )
+            tps
+          requiredAsValue (exprSpan e) "a lambda" ps
+          (lam, ty, _) <- elabLambda (addTypeVars vs ctx) path locals (exprSpan e) Nothing ps rt body
+          -- Generalized: each reference instantiates it (6.1).
+          let tag = case spanStart (exprSpan e) of
+                Position _ l c -> "@" <> T.pack (show l) <> ":" <> T.pack (show c)
+              ren = Map.fromList [(v, TyVar (v <> tag)) | (v, _) <- vs]
+              ty' = applySubst ren ty
+          modify (\st -> st {stLocalBounds = stLocalBounds st <> Map.fromList [(v <> tag, b) | (v, Just b) <- vs]})
+          c' <- applySecrecy ssp n sec ty' lam
+          pure (c', ty')
+      | otherwise = do
       annTy <- traverse (typeFromS ctx path) ann
       (c, t) <- case annTy of
         Just t -> do
@@ -2936,6 +3030,21 @@ elabCall ctx path locals sp fn args mExpected = do
 
     resolveCallee = case exprF fn of
       EVar n
+        | Just t <- Map.lookup n locals,
+          gvs@(_ : _) <- generalizedVars t,
+          TyFun ps _ <- t -> do
+            -- A generic local function, instantiated at this call as a
+            -- generic declaration is (spec 4.4, 6.1). It is a value, so
+            -- it takes positional arguments only (7.5).
+            bounds <- gets stLocalBounds
+            recordVar (exprSpan fn) n t Nothing
+            pure $
+              CalleeStatic
+                (Core (exprSpan fn) (CVar (LocalRef n)))
+                gvs
+                (Map.restrictKeys bounds (Set.fromList gvs))
+                t
+                (StaticParams [("#" <> T.pack (show i), p) | (i, p) <- zip [1 :: Int ..] ps] Nothing [] [])
         | Map.member n locals -> valueCallee
         | otherwise -> case lookupValueTarget ctx path n of
             Just (VTopLevel p dn) -> staticFromDecl (p, dn)
@@ -2948,7 +3057,8 @@ elabCall ctx path locals sp fn args mExpected = do
       EDot inner (Spanned _ fld)
         | Just key <- namespaceExpr ctx path locals inner ->
             staticFromDecl (namespaceMember (ctxScopes ctx) key fld)
-      ELambda ps rt body -> do
+      ELambda tps ps rt body -> do
+        monoLambda (exprSpan fn) tps
         (lam, ty, params) <- elabLambda ctx path locals (exprSpan fn) Nothing ps rt body
         pure (CalleeStatic lam [] Map.empty ty params)
       _ -> valueCallee
@@ -2978,8 +3088,8 @@ elabCall ctx path locals sp fn args mExpected = do
           -- variables, which the header does carry. A function with a
           -- required keyword parameter cannot be called as a value
           -- (7.5), so its annotations have to give the parameters.
-          params <- case lookupDeclAst ctx key of
-            Just (Decl _ (DFunction _ _ ps _ _ _))
+          params <- case lookupDeclAst ctx key >>= declaredParams of
+            Just ps
               | not (null [k | Param _ (PKeyword k _ _ Nothing) <- ps]) ->
                   if annotated ps
                     then Just <$> headerStaticParams (withTypeVars vs ctx) p ps
@@ -2992,6 +3102,13 @@ elabCall ctx path locals sp fn args mExpected = do
           cd <- demandOrStandIn ctx key
           recordVar (exprSpan fn) n (cdType cd) (Just key)
           pure (Just (Core (exprSpan fn) (CVar (TopRef p n)), cdTypeVars cd, cdBounds cd, cdType cd, cdParams cd))
+
+    -- The parameters a declaration writes: a function declaration's,
+    -- or those of the lambda a binding is (spec 6.1).
+    declaredParams (Decl _ df) = case df of
+      DFunction _ _ ps _ _ _ -> Just ps
+      DValue _ _ _ (Expr _ (ELambda _ ps _ _)) -> Just ps
+      _ -> Nothing
 
     -- Static binding per 7.5 for declarations. A declaration that
     -- binds type variables (spec 4.2) is instantiated here, through
@@ -3116,7 +3233,7 @@ elabCall ctx path locals sp fn args mExpected = do
     -- A lambda argument adopts concrete parameter types from the
     -- (partially instantiated) pattern.
     inferWithHint argExpr p = case (exprF argExpr, p) of
-      (ELambda ps rt body, TyFun expPs _)
+      (ELambda [] ps rt body, TyFun expPs _)
         | all (settled ctx) expPs -> do
             (lam, ty, _) <- elabLambdaAgainst ctx path locals (exprSpan argExpr) ps rt body expPs
             pure (lam, ty)

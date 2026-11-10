@@ -224,7 +224,8 @@ data ExprF
   | EVar Text
   | EArray [Expr]
   | EObject [(Spanned Text, Expr)]
-  | ELambda [Param] (Maybe SType) Expr
+  | -- | Type parameters (spec 4.2, 6.1), parameters, return type, body.
+    ELambda [TypeParam] [Param] (Maybe SType) Expr
   | ECall Expr [Arg]
   | EDot Expr (Spanned Text)
   | EIndex Expr Expr
@@ -360,7 +361,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EString ps -> EString (map stripPart ps)
   EArray es -> EArray (map stripSpansExpr es)
   EObject kvs -> EObject [(Spanned NoSpan k, stripSpansExpr v) | (Spanned _ k, v) <- kvs]
-  ELambda ps t b -> ELambda (map stripParam ps) (fmap stripSpansType t) (stripSpansExpr b)
+  ELambda tps ps t b -> ELambda (map stripTypeParam tps) (map stripParam ps) (fmap stripSpansType t) (stripSpansExpr b)
   ECall fn as -> ECall (stripSpansExpr fn) (map stripArg as)
   EDot e (Spanned _ n) -> EDot (stripSpansExpr e) (Spanned NoSpan n)
   EIndex e i -> EIndex (stripSpansExpr e) (stripSpansExpr i)

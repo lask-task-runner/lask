@@ -806,13 +806,16 @@ pObjectLit = do
 pLambda :: P Expr
 pLambda = do
   s <- sym TBackslash
+  -- A lambda may declare type parameters, as a function declaration
+  -- does (spec 6.1): `\<T>(x: T): T -> x`.
+  tps <- pTypeParams
   _ <- sym TLParen
   ps <- pParamList
   _ <- sym TRParen
   rt <- optional (sym TColon *> pType)
   _ <- sym TArrow
   body <- pExpr
-  pure (Expr (s <> exprSpan body) (ELambda ps rt body))
+  pure (Expr (s <> exprSpan body) (ELambda tps ps rt body))
 
 pEnvExpr :: P Expr
 pEnvExpr = do

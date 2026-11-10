@@ -1170,7 +1170,7 @@ languageCompletion path src (Position pl pc)
       listToMaybe $
         [ps | AST.Decl _ (AST.DFunction n _ ps _ _ _) <- AST.moduleDecls m, n == declName]
           <> [ ps
-             | AST.Decl _ (AST.DValue n _ _ (AST.Expr _ (AST.ELambda ps _ _))) <- AST.moduleDecls m,
+             | AST.Decl _ (AST.DValue n _ _ (AST.Expr _ (AST.ELambda _ ps _ _))) <- AST.moduleDecls m,
                n == declName
              ]
 

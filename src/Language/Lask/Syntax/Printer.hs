@@ -627,11 +627,12 @@ exprBody flat a b f = case f of
   EObject kvs -> do
     open <- tokFrom TLBrace a
     list "{" "}" True open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) (entry ksp v) | (Spanned ksp _, v) <- kvs]
-  ELambda ps rt body -> do
+  ELambda tps ps rt body -> do
+    dtp <- typeParams tps
     open <- tokFrom TLParen a
     dps <- params open ps
     drt <- traverse ty rt
-    joinAfter ("\\" <> dps <> annot drt) "->" (startOf (exprSpan body)) (\broken -> exprOn body (broken || flat))
+    joinAfter ("\\" <> dtp <> dps <> annot drt) "->" (startOf (exprSpan body)) (\broken -> exprOn body (broken || flat))
   ECall g as -> do
     dg <- expr g
     open <- tokFrom TLParen (endOf (exprSpan g))

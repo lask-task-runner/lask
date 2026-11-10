@@ -768,6 +768,16 @@ spec = do
       evalsTo "f(): Record<a: Number, b?: String> = {a: 1}" "f" "{\"a\":1}"
       evalsTo "f(): Record<a: Number, b?: String | Null> = {a: 1, b: null}" "f" "{\"a\":1,\"b\":null}"
 
+  describe "lambdas with type parameters (spec 6.1)" $ do
+    it "runs a generic binding at every instantiation, at top level and in a block" $ do
+      evalsTo "ident = \\<T>(x: T): T -> x\ng(): String = \"#{ident(1)} #{ident(\"a\")}\"" "g" "\"1 a\""
+      evalsTo
+        "g(): Array<String> = do {\n  both = \\<T: comparable>(x: T, y: T): Bool -> x == y\n  [to_string(both(1, 1)), to_string(both(\"a\", \"b\"))]\n}"
+        "g"
+        "[\"true\",\"false\"]"
+    it "recurses through a lambda binding with a return type" $
+      evalsTo "count = \\(n: Number): Number -> n < 1 ? 0 : 1 + count(n - 1)\ng(): Number = count(3)" "g" "3"
+
   describe "user type parameters (spec 4.2, 4.4)" $ do
     it "runs one body at every instantiation" $ do
       evalsTo

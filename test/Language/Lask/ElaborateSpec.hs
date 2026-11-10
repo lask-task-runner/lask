@@ -219,6 +219,41 @@ spec = do
         "f(): Number = size(concat_array(cast(from_json(\"[1]\")), cast(from_json(\"[2]\"))))"
         ETypeMismatch
 
+  describe "lambdas with type parameters (spec 6.1)" $ do
+    it "makes a top-level binding generic, as a function declaration" $ do
+      hasType "ident = \\<T>(x: T): T -> x\nf() = ident(1)" "f" "Function<Number>"
+      hasType "ident = \\<T>(x: T): T -> x\nf() = ident(\"a\")" "f" "Function<String>"
+      accepts "ident = \\<T>(x: T): T -> x\nf(): Array<Number> = map([1], ident)"
+    it "keeps the keyword parameters of a top-level binding" $
+      accepts "pick = \\<T>(c: Bool, --a: T, --b: T): T -> c ? a : b\nf(): String = pick(true, a = \"x\", b = \"y\")"
+    it "makes a binding in a block generic, instantiated at each reference" $ do
+      accepts "f(): String = do {\n  id = \\<T>(x: T): T -> x\n  n: Number = id(1)\n  id(\"s\")\n}"
+      accepts "f(): Array<Number> = do {\n  id = \\<T>(x: T): T -> x\n  map([1, 2], id)\n}"
+    it "adds to the type parameters of the declaration it is in" $
+      accepts "outer<U>(u: U): U = do {\n  wrap = \\<T>(x: T): Array<T> -> [x]\n  wrap(u)[0]\n}"
+    it "holds a generic local to its bounds" $
+      rejects "f(): Number = do {\n  sq = \\<T: orderable>(x: T): T -> x\n  sq([1])[0]\n}" ETypeBound
+    it "keeps its type parameters opaque in its body" $
+      rejects "f(): Number = do {\n  id = \\<T>(x: T): T -> x + 1\n  id(1)\n}" ETypeMismatch
+    it "needs an expected type to reference a generic local as a value" $
+      rejects "f() = do {\n  id = \\<T>(x: T): T -> x\n  g = id\n  1\n}" ETypeMismatch
+    it "rejects one that is not bound to a name" $ do
+      rejects "f(): Array<Number> = map([1], \\<T>(x: T): T -> x)" ETypeIllformed
+      rejects "f() = (\\<T>(x: T): T -> x)(1)" ETypeIllformed
+    it "rejects an annotation on a binding of one" $
+      rejects "g: Function<Number, Number> = \\<T>(x: T): T -> x" ETypeIllformed
+    it "rejects a type parameter the enclosing declaration has" $
+      rejects "outer<T>(u: T): T = do {\n  w = \\<T>(x: T): T -> x\n  w(u)\n}" ENameDuplicate
+    it "takes positional arguments only for a generic local" $
+      rejects "f(): Number = do {\n  id = \\<T>(x: T): T -> x\n  id(1, k = 2)\n}" ETypeKeyword
+
+  describe "recursion through a lambda binding (spec 6.1)" $ do
+    it "takes the lambda's return type as the binding's" $ do
+      accepts "count = \\(n: Number): Number -> n < 1 ? 0 : 1 + count(n - 1)"
+      accepts "walk = \\<T>(xs: Array<T>): Number -> is_empty(xs) ? 0 : 1 + walk(drop(xs, 1))"
+    it "still needs a type from somewhere" $
+      rejects "loop = \\(n: Number) -> n < 1 ? 0 : loop(n - 1)" ETypeMismatch
+
   describe "user type parameters (spec 4.2, 4.4)" $ do
     it "instantiates a declaration per call" $ do
       hasType
