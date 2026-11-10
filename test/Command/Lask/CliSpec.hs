@@ -2159,6 +2159,18 @@ spec = beforeAll findLask $ do
         resOut r `shouldContain` "test    Run the tests."
         resOut r `shouldNotContain` "scratch"
 
+    -- A leading `_` stays: `-build-all` would be read as an option
+    -- (spec 11.6).
+    it "keeps the underscore that leads a name, so that what it shows can be typed" $ \lask ->
+      withProject [("main.lask", "// Build.\n_build_all(--_dry_run = false, --out_dir = \"dist\"): String = \"b #{out_dir}\"\n")] $ \dir -> do
+        l <- runLask lask dir ["run", "--help"] ""
+        resOut l `shouldContain` "_build-all  Build."
+        h <- runLask lask dir ["run", "_build-all", "--help"] ""
+        resOut h `shouldContain` "lask run _build-all [--_dry-run] [--out-dir <String>]"
+        r <- runLask lask dir ["eval", "_build-all", "--_dry-run", "--out-dir", "x"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"b x\"\n"
+
     -- A plain value binding is not a function the command line calls
     -- (spec 11.2), so it has no help either.
     it "lists functions only, and gives no help on a plain value binding" $ \lask ->

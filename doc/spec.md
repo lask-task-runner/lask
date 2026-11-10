@@ -286,7 +286,7 @@ The contiguous block of comments directly above a declaration (Chapter 5) is the
 ```ebnf
 identifier = lower_id | upper_id .
 lower_id   = ( "a" … "z" | "_" ) { letter | decimal_digit | "_" } .
-upper_id   = ( "A" … "Z" | "_" ) { letter | decimal_digit | "_" } .
+upper_id   = "A" … "Z" { letter | decimal_digit | "_" } .
 letter        = "A" … "Z" | "a" … "z" .
 decimal_digit = "0" … "9" .
 ```
@@ -294,6 +294,7 @@ decimal_digit = "0" … "9" .
 Rules:
 
 - Identifiers cannot contain `-`. Because `-` is always interpreted as a binary operator (6.2), `a-b` is unambiguously parsed as `a - b` (subtraction).
+- The two are told apart by their first character alone. An identifier that begins with `_` is a `lower_id`, whatever follows: `_X` is the name of a value, and no type, type alias or type parameter is named with a leading `_`. Since a type head of `case` (6.4) is recognized by its leading `upper_id`, `_X` written there is a value head.
 - Multi-word identifiers are composed in snake case using `_` (`show_version`).
 - The name mapping for calling functions from the CLI with `-`-separated names (`show-version`) is defined in 11.2. Because identifiers cannot contain `-`, this mapping is collision-free.
 
@@ -3757,7 +3758,7 @@ Sources of help information:
 
 Rendering rules:
 
-- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
+- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. An `_` that leads a name is kept, since a word on the command line that begins with `-` is read as an option: the function `_build_all` is shown as `_build-all`, and its parameter `_dry_run` as `--_dry-run`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
 - In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`. A required keyword parameter (6.1) is rendered without the brackets, `--name <Type>`, and a flag (11.2) without the type, `[--name]`.
 - In the parameter list, a required keyword parameter is marked `(required)` after its type, in place of a default value.
 - A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
