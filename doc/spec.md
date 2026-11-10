@@ -938,8 +938,7 @@ Namespace re-export:
 - A namespace is not a value: `m.ns` written where a value is expected is an error before type checking (`E-NAME-UNDEFINED`), as is a member that is not a public symbol of the module the namespace refers to.
 - It brings no name in: only `ns` is published, and what it holds is reached only qualified, so the rule above still holds. A type alias is referenced through one namespace only (`m.TypeName`, 4.2); a public type of a re-exported namespace is reached by importing that module, or by the alias's own re-export.
 - The public functions and values of a namespace the entry module re-exports are invoked and listed by the CLI under their qualified name, `lask eval python.env --image ...` (11.2, 11.6), through any number of namespaces.
-- Same-name collision rules are those of namespace imports.
-- Same-name collision rules are those of named imports. `ExportDecl` edges participate in the acyclicity requirement of the module dependency graph.
+- Same-name collision rules are those of namespace imports: `ns` must not be the name of a top-level declaration, of a name brought in by a named import or re-export, or of another namespace.
 
 Evaluation timing of top-level declarations:
 
@@ -956,6 +955,7 @@ Rules for same-name symbol collisions:
 Handling of circular imports:
 
 - The module dependency graph must be a directed acyclic graph (DAG). This requirement extends across external dependencies.
+- Every form that names a module is an edge of the graph: a named or namespace import, a command import (`import command { ... } from`), and every re-export (`export { ... } from`, `export * as ns from`, `export command { ... } from`). A cycle through any of them is `E-MODULE-CYCLE`.
 - If a circular import is detected, it is a module resolution error before execution.
 
 External dependencies:
