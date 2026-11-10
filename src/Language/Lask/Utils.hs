@@ -31,14 +31,21 @@ class Pretty a where
 kebabToSnake :: Text -> Text
 kebabToSnake = T.map (\c -> if c == '-' then '_' else c)
 
--- | The inverse of 'kebabToSnake': how the CLI writes a name.
+-- | The inverse of 'kebabToSnake': how the CLI writes a name (spec
+-- 11.6). An @_@ that separates words is written @-@; one that leads
+-- the name is kept, since a word beginning with @-@ on the command
+-- line is read as an option.
 --
 -- Example:
 --
 -- >>> snakeToKebab (T.pack "show_version")
 -- "show-version"
+-- >>> snakeToKebab (T.pack "_build_all")
+-- "_build-all"
 snakeToKebab :: Text -> Text
-snakeToKebab = T.map (\c -> if c == '_' then '-' else c)
+snakeToKebab t = leading <> T.map (\c -> if c == '_' then '-' else c) rest
+  where
+    (leading, rest) = T.span (== '_') t
 
 safeReadFile :: FilePath -> ExceptT String IO Text
 safeReadFile filePath = do
