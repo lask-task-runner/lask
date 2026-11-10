@@ -2171,6 +2171,20 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 0
         resOut r `shouldBe` "\"b x\"\n"
 
+    -- The environments a function reaches are named as envs list names
+    -- them: the head and its kind, the host first (spec 11.4, 11.6).
+    it "shows the environments a function uses as envs list does" $ \lask ->
+      withProject
+        [ ("main.lask", "both(): String = do {\n  $[#golang:1.22] go version\n  $[#./infra/builder.Dockerfile] make\n  $[#local] uname\n}\n"),
+          ("infra/builder.Dockerfile", "FROM alpine:3.22.2\n")
+        ]
+        $ \dir -> do
+          t <- runLask lask dir ["run", "both", "--help"] ""
+          resOut t
+            `shouldContain` "Environments:\n  #local                       local\n  #./infra/builder.Dockerfile  recipe\n  #golang:1.22                 registry\n"
+          j <- runLask lask dir ["run", "--format", "json", "both", "--help"] ""
+          resOut j `shouldContain` "\"environments\":[{\"environment\":\"#local\",\"kind\":\"local\"},{\"environment\":\"#./infra/builder.Dockerfile\",\"kind\":\"recipe\"},{\"environment\":\"#golang:1.22\",\"kind\":\"registry\"}]"
+
     -- A plain value binding is not a function the command line calls
     -- (spec 11.2), so it has no help either.
     it "lists functions only, and gives no help on a plain value binding" $ \lask ->

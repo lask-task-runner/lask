@@ -313,11 +313,10 @@ section header body = T.intercalate "\n" (header : map ("  " <>) body)
 -- | Drop the fields that would only repeat one another: a bare
 -- @#local@ is just @local@, and an image head is labelled by its own
 -- image.
+-- | One environment as @envs list@ writes it (spec 11.4, 11.6): its
+-- head and its kind.
 envRow :: EnvRef -> [Text]
-envRow ref
-  | refLabel ref == refTarget ref && refKind ref == refTarget ref = [refKind ref]
-  | refLabel ref == refTarget ref = [refKind ref, refTarget ref]
-  | otherwise = [refLabel ref, refKind ref, refTarget ref]
+envRow ref = [refHead ref, refKind ref]
 
 -- | Left-align rows into columns padded to the widest cell.
 columns :: [[Text]] -> [Text]
@@ -418,9 +417,8 @@ listed fh = fhFunction fh && not (fhHidden fh)
 envJson :: EnvRef -> A.Value
 envJson ref =
   A.object
-    [ (AK.fromText "name", A.String (refLabel ref)),
-      (AK.fromText "kind", A.String (refKind ref)),
-      (AK.fromText "target", A.String (refTarget ref))
+    [ (AK.fromText "environment", A.String (refHead ref)),
+      (AK.fromText "kind", A.String (refKind ref))
     ]
 
 maybeText :: Maybe Text -> A.Value

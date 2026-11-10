@@ -104,7 +104,7 @@ commandHooks runner =
 -- task (spec 11.4). Images are named as written, @golang:1.22@;
 -- @local@ is the host.
 environments :: Program -> Text -> [Text]
-environments prog name = nub (map refLabel (collectEnvRefsFrom (progCore prog) (programModule, name)))
+environments prog name = nub (map (T.drop 1 . refHead) (collectEnvRefsFrom (progCore prog) (programModule, name)))
 
 -- | The environment variables a task can read by name, as @lask
 -- secrets@ reports them (spec 11.10). 'Nothing' when a name is

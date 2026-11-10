@@ -12,7 +12,7 @@ import Command.Lask.Common
 import Command.Lask.Project (cmdDepsAdd, cmdDepsGraph, cmdDepsList, cmdDepsRm, cmdEnvsAccess, cmdEnvsCommands, cmdEnvsFiles, cmdEnvsList, cmdEnvsNetwork, cmdEnvsSecrets, cmdSync)
 import Command.Lask.Complete (completionScript)
 import Command.Lask.Fmt (cmdFmt)
-import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, reachableDecls, readsStdin)
+import Command.Lask.Envs (EnvRef (..), collectEnvReadsFrom, collectEnvRefsFrom, reachableDecls, readsStdin)
 import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
@@ -24,7 +24,7 @@ import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
-import Data.List (nub, sort)
+import Data.List (nub, sortOn)
 import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
@@ -425,7 +425,9 @@ cmdHelp subcommand runOpts = do
           | otherwise -> notAFunction opts rawName
         Nothing -> noSuchFunction opts rawName [n | d@(n, _) <- declsByName, isFunction d]
       let envs = case core of
-            Just c -> nub (sort (collectEnvRefsFrom c (hsKey found)))
+            -- Ordered as envs list orders them (spec 11.4): the host
+            -- first, then by notation.
+            Just c -> nub (sortOn (\r -> (refKind r /= "local", refHead r)) (collectEnvRefsFrom c (hsKey found)))
             Nothing -> []
           fh = helpOf envs (fnName, found)
       if optJsonFormat opts
