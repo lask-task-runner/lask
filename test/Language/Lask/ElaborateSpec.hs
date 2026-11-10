@@ -295,6 +295,10 @@ spec = do
       accepts "ident<T>(x: T): T = x\nf(xs: Array<Number>): Array<Number> = map(xs, ident)"
     it "rejects a type parameter that collides with an alias" $
       rejects "type T = Number\nf<T>(x: T): T = x" ENameDuplicate
+    -- `String` would still be read as the type of strings (spec 4.2).
+    it "rejects a type parameter named like a type of the grammar" $ do
+      rejects "f<String>(x: String): String = x" ENameDuplicate
+      rejects "f<Map>(x: Number): Number = x" ENameDuplicate
     it "allows a type parameter that appears nowhere" $
       accepts "f<T>(x: Number): Number = x"
     it "checks a default against the rigid parameter (spec 6.1)" $ do
