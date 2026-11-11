@@ -66,7 +66,21 @@ type Sample =
      'TNumber :| 'TNull,
      'TNumber :| 'TString,
      'TNumber :| 'TString :| 'TNull,
-     VT :| 'TNull
+     VT :| 'TNull,
+     -- Variance (spec 4.4): containers and record fields covariant,
+     -- function parameters contravariant and results covariant.
+     'TArray 'TEnv,
+     'TArray 'TRunnable,
+     'TMap ('TNumber :| 'TNull),
+     'TAsync 'TString,
+     'TAsync ('TString :| 'TNull),
+     Rec '["a" := ('TNumber :| 'TNull)],
+     Rec '["a" :? 'TNumber],
+     'TFun '[ 'TAny] 'TString,
+     'TFun '[ 'TString] 'TString,
+     'TFun '[ 'TString] ('TString :| 'TNull),
+     'TFun '[ 'TString] 'TVoid,
+     'TFun '[ 'TString] 'TAny
    ]
 
 -- | One row of comparisons: our answer and Types' for one case.
