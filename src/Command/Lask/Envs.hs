@@ -36,10 +36,13 @@ import Language.Lask.Runtime.Image (Recipe (..), recipeSource)
 import Language.Lask.Span (Span (..))
 import Language.Lask.Types (Type (..))
 
+-- | An environment a declaration can reach, as @envs list@ names it
+-- (spec 11.4): its head, in the notation of 6.7, and its kind.
 data EnvRef = EnvRef
-  { refLabel :: Text,
-    refKind :: Text,
-    refTarget :: Text
+  { -- | @#local@, @#golang:1.22@, @#./infra/Dockerfile@.
+    refHead :: Text,
+    -- | @local@, @registry@ or @recipe@.
+    refKind :: Text
   }
   deriving (Show, Eq, Ord)
 
@@ -145,10 +148,10 @@ envRefsIn c = case coreF c of
 mkRef :: Text -> [(Text, Core)] -> EnvRef
 mkRef kind args = case kind of
   "docker" -> case (lookup "image" args, lookup "dockerfile" args) of
-    (Just (Core _ (CStrLit img)), _) -> EnvRef img "docker" img
-    (_, Just (Core _ (CStrLit df))) -> EnvRef (recipeSource df) "docker" ("recipe " <> recipeSource df)
-    _ -> EnvRef "docker" "docker" "?"
-  _ -> EnvRef kind kind kind
+    (Just (Core _ (CStrLit img)), _) -> EnvRef ("#" <> img) "registry"
+    (_, Just (Core _ (CStrLit df))) -> EnvRef ("#" <> recipeSource df) "recipe"
+    _ -> EnvRef "#?" "registry"
+  _ -> EnvRef ("#" <> kind) kind
 
 -- | Every sub-expression of a core node, transitively.
 descendants :: Core -> [Core]
