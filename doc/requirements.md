@@ -18,8 +18,6 @@ Existing CI/CD tools and task runners suffer from the following problems.
    - Mechanisms for detecting errors before execution (missing arguments, typos, type checking) are weak, and problems are often noticed only when they become runtime errors.
 4. **Implicit dependence on the execution environment (host)**
    - Results vary depending on packages installed on the host machine ("It works on my machine").
-5. **Retention of execution history**
-   - Mechanisms for storing and referencing execution logs and artifacts as CI/CD execution history are weak.
 
 ## 3. Core Requirements (Value Proposition)
 
@@ -62,7 +60,7 @@ To solve these problems, Lask satisfies the following core requirements.
 6. **Editor integration**: A server capability for editor integration is provided.
 
 ### 4.3 Execution and Evaluation Functionality
-1. **Name resolution and scope**: Scope resolution must be performed consistently based on the precedence of local bindings such as arguments, the current module, imported modules, and built-in functions (built-ins have the lowest precedence, and shadowing by user definitions is permitted).
+1. **Name resolution and scope**: Scope resolution must be performed consistently based on the precedence of local bindings such as arguments, the current module, imported modules, and built-in functions (built-ins have the lowest precedence, and shadowing by user definitions is permitted). The core functions that the language's own syntax is normalized to, and the standard input reference, are the exception: they cannot be redefined, so that the meaning of the syntax cannot be changed by a definition.
 2. **Parallel task execution**: A parallelism mechanism must be provided to evaluate task calls and groups of shell commands with no dependencies concurrently for efficient execution.
 3. **I/O management**: I/O must be handled for command execution (local/container, etc.), and streams (standard output/error) must be routed appropriately.
 4. **Ingestion of external input**: A mechanism must be provided to transparently reference and use runtime command-line arguments and standard input within scripts.
@@ -92,8 +90,8 @@ This section describes the specifications that must be satisfied.
 
 * **Data types and serialization**
   * Input and output of data types must be handled in a serializable and human-readable format.
-  * Function values (including lambdas and closures), Void, and execution environment values (Environment) must not be direct serialization targets; they must be handled as metadata representations referenceable in execution records.
-   * Supported types must be defined separately as basic types and composite types.
+  * Function values (including lambdas and closures), Void, asynchronous handles, and execution environment values (Environment, Runnable) must not be direct serialization targets; they must be handled as metadata representations referenceable in execution records.
+   * Supported types must be defined separately as basic types, composite types and union types.
    * Basic types:
       * Any: A general-purpose type that accepts any value.
       * Number: A numeric type handling integers and floating-point numbers.
@@ -106,19 +104,23 @@ This section describes the specifications that must be satisfied.
       * Map<T>: A map type with string keys (keys are always String).
       * Record<...>: A record type with fixed fields.
       * Function<Args..., R>: A function type with argument types and a return type (including lambda expressions and higher-order functions).
+      * AsyncHandle<T>: A handle to the result of an asynchronous computation, resolved by waiting for it.
+   * Union types:
+      * T1 | T2 | ...: A type whose values are those of any one of its members. It is how a value that may be absent is typed (String | Null), and a program must move from it to one member explicitly.
    * Special types:
-      * Environment: A built-in type representing an execution environment (local/container/remote). It has a special standing distinct from basic types: values can only be constructed by environment expressions, and serialization is limited to a metadata representation.
+      * Environment: A built-in type representing an execution environment (local/container). It has a special standing distinct from basic types: values can only be constructed by environment expressions, and serialization is limited to a metadata representation.
+      * Runnable: An execution environment together with the options it is run with (resource limits, network, mounts and the like). An Environment is a Runnable with no options.
    * Note: The error value type Error is not a new basic type; it is provided as a built-in record type alias composed of basic types (Record<code: Number, message: String>).
 
 * **Standard I/O and pipes**
-  * Data must be passable between functions through standard I/O.
+  * Data must be passable between invocations through standard I/O: the result one invocation outputs must be usable as the standard input of the next, so that tasks can be composed on the command line as easily as `lask eval f | lask run g`. Within one program, functions pass data through arguments and return values.
   * A scheme in which standard input is received until EOF and then passed to function evaluation must be supported; receiving during execution is out of scope.
   * Standard input must be received as a UTF-8 string, and structuring such as line splitting or JSON interpretation must be performed explicitly with in-language standard functions (split, from_json, etc.). No mechanism is provided to switch the decoding method via runtime options (to prevent the meaning of the program from changing per invocation).
 
 * **Execution model and error handling**
   * Execution must be sequential by default while allowing parallel execution.
    * Means for specifying asynchronous invocation and waiting must be provided.
-  * Normally, execution must terminate immediately when a runtime error occurs.
+  * Normally, a runtime error that is not recovered from must stop the execution: nothing after the failure is evaluated. What is needed to stop cleanly still runs before the process exits — the clean-up of the work already started (finally blocks, stopping running commands and containers) and the wait for asynchronous computations that were started.
   * A mechanism for recovering from errors must be provided.
   * On failure, an error code and an error message must be returned.
 
@@ -128,8 +130,8 @@ This section describes the specifications that must be satisfied.
   * Abstract types are not supported.
 
 * **Execution environment**
-  * The execution environment must be specifiable at command invocation.
-  * The local environment, Docker containers, remote servers, and the like must be targetable as execution environments.
+  * The execution environment of every command must be stated in the program itself, so that the environments a program uses can be known and pinned by reading it. Nothing outside the program (a command-line option, a setting) supplies or replaces an environment; an invocation may choose among the environments the program names, through the arguments it passes.
+  * The local environment and containers must be targetable as execution environments.
 
 * **Observability and execution records**
   * Stack traces must be recordable at all times.
