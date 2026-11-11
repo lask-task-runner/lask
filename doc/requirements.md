@@ -130,7 +130,7 @@ This section describes the specifications that must be satisfied.
   * Abstract types are not supported.
 
 * **Execution environment**
-  * The execution environment of every command must be stated in the program itself, so that the environments a program uses can be known and pinned by reading it. Nothing outside the program (a command-line option, a setting) supplies or replaces an environment; an invocation may choose among the environments the program names, through the arguments it passes.
+  * The execution environments a program may use must be identifiable before it runs. Nothing outside the program (a command-line option, a setting) supplies or replaces an environment; an invocation may choose among the environments the program names, through the arguments it passes.
   * The local environment and containers must be targetable as execution environments.
 
 * **Observability and execution records**
