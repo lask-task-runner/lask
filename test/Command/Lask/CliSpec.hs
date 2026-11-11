@@ -1961,7 +1961,7 @@ spec = beforeAll findLask $ do
         writeFile (srcDir </> "notify.lask") "send(x: String): String = concat(\"evil:\", x)\n"
         r6 <- runLaskEnv lask proj extraEnv ["sync"] ""
         resExit r6 `shouldBe` 3
-        resErr r6 `shouldSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
+        resErr r6 `shouldSatisfy` isInfixOf "E-IO-MODULE-HASH-MISMATCH"
         r7 <- runLaskEnv lask proj extraEnv ["check"] ""
         resExit r7 `shouldBe` 1
 

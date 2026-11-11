@@ -1045,13 +1045,13 @@ Consistency:
 
 Fetching and verification:
 
-- Dependencies are fetched into a per-project, content-addressed cache and verified against `hash` by the CLI (`lask sync`; 11.7). A verification failure is `E-MODULE-HASH-MISMATCH`.
+- Dependencies are fetched into a per-project, content-addressed cache and verified against `hash` by the CLI (`lask sync`; 11.7). A verification failure is `E-IO-MODULE-HASH-MISMATCH`.
 - The cache is located at `.lask/deps` under the base directory for module resolution, unless `LASK_CACHE_DIR` names another directory. A project may therefore be copied, cache included, to a machine without network access.
 - Where the cache is does not reach the lock file. A recipe written in a dependency is recorded, in its lock key and in the context path its hash covers (10.3), by its path under `.lask/deps`, as if the cache were in its default place, and read from wherever `LASK_CACHE_DIR` puts it. A lock written on one machine therefore holds on another whose cache is elsewhere.
 - The presence of an entry is not taken as proof of its content: a cache may be shared between projects or written by something other than `sync`. Every subcommand that resolves a dependency verifies its entry against `hash` when it uses it, at most once per resolution. An entry that is itself a symbolic link does not verify. `sync` replaces an entry that does not verify with a fresh fetch.
 - A dependency must not contain symbolic links: their content would depend on the machine that reads them, outside what `hash` covers. A source that contains one is refused when it is fetched. The content hash of a tree never follows a link; it covers the link's own path and target text.
 - A local import (`./`, `../`) in a module of a dependency must resolve inside that dependency's tree; a single-file dependency has no local imports. Otherwise it is `E-MODULE-UNRESOLVED`. What a dependency loads is thereby what its `hash` covers.
-- If a tag recorded as `requested` later resolves to a different commit, `sync` reports `E-MODULE-REV-MOVED`. This is distinguished from `E-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
+- If a tag recorded as `requested` later resolves to a different commit, `sync` reports `E-IO-MODULE-REV-MOVED`. This is distinguished from `E-IO-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
 - `check`, `run`, `eval`, and `envs` must not access the network for module resolution. If a declared dependency is not present in the cache, or fails verification, it is a static error (`E-MODULE-UNRESOLVED`).
 - An external module may itself have a `lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted) and are recorded in the root project's lock file, each under its dependency path (`parent>child`).
 - A `lask.json` that a fetched dependency carries but that is not a valid project file is a failure of that dependency in `sync` and `deps add`, reported with the dependency it belongs to; its dependencies are not taken to be none.
@@ -3710,7 +3710,7 @@ Rules (`list`):
   - `not locked (lask sync)`: declared, with no lock entry.
   - `not in lask.json (lask sync drops it)` (`not declared by its parent` for a transitive one): a lock entry nothing declares.
   - `unknown: its parent is not cached (lask sync)`: a transitive dependency whose parent's tree, which declares it, is not in the cache.
-  - `stale: <reason> (lask sync)`: the lock entry disagrees with the declaration: another repository or URL, or another requested reference (`locked v0.3.0, declared v0.4.0`). This is exactly the disagreement for which reading the program is `E-MODULE-LOCK-STALE` (Chapter 5), and for which `sync` pins the entry afresh. Nothing else makes an entry stale: a newer revision upstream is not known without the network, and a tag moved upstream is found by `sync` (`E-MODULE-REV-MOVED`).
+  - `stale: <reason> (lask sync)`: the lock entry disagrees with the declaration: another repository or URL, or another requested reference (`locked v0.3.0, declared v0.4.0`). This is exactly the disagreement for which reading the program is `E-MODULE-LOCK-STALE` (Chapter 5), and for which `sync` pins the entry afresh. Nothing else makes an entry stale: a newer revision upstream is not known without the network, and a tag moved upstream is found by `sync` (`E-IO-MODULE-REV-MOVED`).
   - `unused (lask sync --prune)`: a direct dependency no `.lask` file of the project imports.
   - `not cached (lask sync)`: the cache does not hold the content the lock pins.
   - `ok`.
@@ -3742,7 +3742,7 @@ Output and exit codes:
 - `list` and `graph` write a table and a tree to stdout; with `--format json`, an array and a nested object.
 - `0`: the operation completed successfully.
 - `1`: the project file or the lock file is malformed or violates the schema (Chapter 5); or a policy violation was detected before fetching.
-- `3`: a fetch or verification failure in `add` (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`).
+- `3`: a fetch or verification failure in `add` (network failure, `E-IO-MODULE-HASH-MISMATCH`, `E-IO-MODULE-REV-MOVED`).
 - `4`: CLI usage error, including `rm` of a dependency still imported or not declared, and `graph` of a name the lock does not hold.
 
 ### 11.6 Help Display (`--help`)
@@ -3898,9 +3898,9 @@ lask sync [--module <path>] [--frozen] [--prune]
 Rules (modules):
 
 - `sync` resolves every declared dependency — including transitive dependencies — fetches it into the per-project cache (Chapter 5), and verifies it against its hash.
-- A reference recorded as `rev` is resolved to a full commit SHA once and pinned thereafter. A subsequent resolution of the same reference to a different SHA is `E-MODULE-REV-MOVED`.
+- A reference recorded as `rev` is resolved to a full commit SHA once and pinned thereafter. A subsequent resolution of the same reference to a different SHA is `E-IO-MODULE-REV-MOVED`.
 - Fetched sources are stored content-addressed; re-running `sync` with an unchanged project file performs no network access for already-verified entries.
-- A hash verification failure is reported as `E-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
+- A hash verification failure is reported as `E-IO-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
 - An entry whose lock record is stale (11.5) is pinned afresh: its new content is not held to the hash recorded for the old source.
 - A direct dependency no `.lask` file of the project imports (11.5) is reported with a warning. With `--prune` it is removed first, as `deps rm` removes one (11.5): from `lask.json`, from the lock with the dependencies under it, and from the project's own cache.
 
@@ -3940,7 +3940,7 @@ Exit codes:
 
 - `0`: the operation completed successfully.
 - `1`: the project file or the lock file is missing (while dependencies are declared), malformed, stale under `--frozen`, or violates the schema (Chapter 5); a policy violation was detected before fetching; or the program has a static error.
-- `3`: a fetch, verification, or image materialization failure, or a declared command missing from its image (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`, `E-IO-COMMAND-MISSING`).
+- `3`: a fetch, verification, or image materialization failure, or a declared command missing from its image (network failure, `E-IO-MODULE-HASH-MISMATCH`, `E-IO-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`, `E-IO-COMMAND-MISSING`).
 - `4`: CLI usage error.
 
 ### 11.8 Command Invocation (`cmd`)
@@ -4547,6 +4547,8 @@ Category list:
 - `IO`: external I/O error
 - `CLI`: CLI usage error
 
+The category of a code gives its classification (14.1): `SYNTAX` is a syntax error; `NAME`, `TYPE` and `MODULE` are static errors; `RUNTIME` is a runtime error; `IO` is an external I/O error; and `CLI` is a CLI usage error. Its default exit code follows from the classification (14.8). A code whose failure arises at an external boundary is an `IO` code whatever it concerns: a dependency that does not fetch or verify while `sync` or `deps add` fetches it is `E-IO-MODULE-...`, while a dependency the program cannot be resolved against is `E-MODULE-...`.
+
 Naming rules:
 
 - Use only uppercase Latin letters and hyphens.
@@ -4582,7 +4584,6 @@ Representative codes:
 - `E-TYPE-BOUND`
 - `E-MODULE-CYCLE`
 - `E-MODULE-UNRESOLVED`
-- `E-MODULE-HASH-MISMATCH`
 - `E-MODULE-CONFIRM-TARGET`
 - `E-RUNTIME-DIV-BY-ZERO`
 - `E-RUNTIME-COMMAND-NONZERO`
@@ -4603,6 +4604,8 @@ Representative codes:
 - `E-IO-SECRET-UNREACHABLE`
 - `E-IO-SECRET-AUTH`
 - `E-IO-SECRET-NOT-FOUND`
+- `E-IO-MODULE-HASH-MISMATCH`
+- `E-IO-MODULE-REV-MOVED`
 - `E-CLI-USAGE`
 - `E-CLI-NOT-CONFIRMED`
 
@@ -4758,7 +4761,8 @@ Representative examples:
 - `E-IO-IMAGE-MISSING`: a required container image has not been materialized (10.3)
 - `E-IO-COMMAND-MISSING`: a command word declared on a container image names a program the image does not provide, as `sync` probed it (Chapter 5, 11.7)
 - `E-IO-IMAGE-DIGEST`: a pulled image's digest does not match the pinned digest (10.3)
-- `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
+- `E-IO-MODULE-HASH-MISMATCH`: a dependency fetched by `sync` or `deps add` differs from the content hash the lock pins (Chapter 5, 11.5, 11.7)
+- `E-IO-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
 - `E-IO-FS`: filesystem access failure (the filesystem functions of 15.11)
 - `E-IO-DATA-DECODE`: failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8)
 - `E-IO-SECRET-PROVIDER`, `E-IO-SECRET-REF`, `E-IO-SECRET-UNREACHABLE`, `E-IO-SECRET-AUTH`, `E-IO-SECRET-NOT-FOUND`: failure resolving a secret reference (9.8)
