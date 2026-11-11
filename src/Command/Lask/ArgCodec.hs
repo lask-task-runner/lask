@@ -43,6 +43,7 @@ import Language.Lask.Types
     renderType,
     requiredField,
     satisfiesNamed,
+    varDisplay,
   )
 import Language.Lask.Suggest (suggest)
 import Language.Lask.Utils (kebabToSnake, snakeToKebab)
@@ -242,7 +243,17 @@ instantiateForCli vs bounds ps
     at = applySubst (Map.fromList [(v, widest v) | v <- vs])
     widest v = case Map.lookup v bounds of
       Just (BoundType b) -> b
+      -- One that a parameter without an annotation gave rise to (4.3),
+      -- with a named bound, takes the text as written: every named
+      -- bound admits String, and a body that only interpolates or
+      -- compares a value does not say it wants a number.
+      Just (BoundNamed _) | implicitVar v -> TyString
       _ -> TyAny
+
+-- | A type parameter that inference made (spec 4.3), not one the
+-- source writes: its name carries a part no source can write.
+implicitVar :: Text -> Bool
+implicitVar = T.isSuffixOf "%"
 
 -- | A type parameter with a named bound is instantiated from the
 -- arguments the CLI decoded, as a call instantiates it from the types
@@ -262,11 +273,11 @@ checkCliBounds bounds params posVals kwVals =
       [t]
         | satisfiesNamed (const Nothing) nb t -> Right ()
         | otherwise ->
-            Left ("the arguments make " <> v <> " " <> renderType t <> ", which is not " <> renderNamedBound nb)
+            Left ("the arguments make " <> varDisplay v <> " " <> renderType t <> ", which is not " <> renderNamedBound nb)
       ts ->
         Left
           ( "the arguments give "
-              <> v
+              <> varDisplay v
               <> " more than one type ("
               <> T.intercalate ", " (map renderType ts)
               <> "); it has to be one "

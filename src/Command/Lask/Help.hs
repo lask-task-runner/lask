@@ -29,6 +29,7 @@ import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import Command.Lask.ArgCodec (isFlagType)
 import Command.Lask.Envs (EnvRef (..))
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -36,7 +37,7 @@ import Language.Lask.Doc (DocComment (..))
 import Language.Lask.Elaborate (CoreDecl (..), StaticParams (..))
 import Language.Lask.Span (Position (..), Span (..), spanText)
 import qualified Language.Lask.Syntax.AST as AST
-import Language.Lask.Types (Type (..), renderType)
+import Language.Lask.Types (Type (..), renderBound, renderType, varDisplay)
 import Language.Lask.Utils (snakeToKebab)
 
 data ParamKind = ParamPositional | ParamVariadic | ParamKeyword
@@ -102,7 +103,7 @@ buildFunctionHelp ::
 buildFunctionHelp path src decl mCore doc envs =
   FunctionHelp
     { fhName = declName decl,
-      fhTypeParams = declTypeParams decl,
+      fhTypeParams = declTypeParams decl <> inferredTypeParams,
       fhModule = path,
       fhLine = declLine decl,
       fhSummary = docSummary doc,
@@ -118,6 +119,16 @@ buildFunctionHelp path src decl mCore doc envs =
     }
   where
     params = cdParams =<< mCore
+
+    -- Those its unannotated parameters' types gave it (spec 4.3),
+    -- after the ones it writes.
+    inferredTypeParams = case mCore of
+      Just cd ->
+        [ varDisplay v <> maybe "" ((": " <>) . renderBound) (Map.lookup v (cdBounds cd))
+        | v <- cdTypeVars cd,
+          "%" `T.isSuffixOf` v
+        ]
+      Nothing -> []
 
     isFunctionType = case cdType <$> mCore of
       Just (TyFun _ _) -> True

@@ -12,6 +12,7 @@ module Language.Lask.Types
     unionMembers,
     dataType,
     renderType,
+    varDisplay,
     conformsTo,
     conformsUnder,
     applySubst,
@@ -72,6 +73,13 @@ data Type
     -- that invariant; pattern matching on it is fine anywhere.
     TyUnion [Type]
   deriving (Show, Eq, Ord)
+
+-- | The name a type variable is shown by. A variable renamed apart
+-- (a generalized local one, @T\@line:column@) or one that inference
+-- made (@T%@, @?x%3@; spec 4.3) carries a part no source can write,
+-- and is shown without it.
+varDisplay :: Text -> Text
+varDisplay = T.takeWhile (\c -> c /= '@' && c /= '%')
 
 -- | The union of a member and any number of further members, reduced
 -- to the canonical form of 4.2: members are flattened, @Any@ absorbs
@@ -225,7 +233,7 @@ renderType t = case t of
   TyAsync e -> "AsyncHandle<" <> renderType e <> ">"
   TyFun ps r -> "Function<" <> T.intercalate ", " (map renderType (ps <> [r])) <> ">"
   -- A generalized variable (Elaborate.generalizedVars) shows as written.
-  TyVar v -> T.takeWhile (/= '@') v
+  TyVar v -> varDisplay v
   TyUnion ts -> T.intercalate " | " (map renderType ts)
   where
     renderField k
