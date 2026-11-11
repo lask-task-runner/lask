@@ -424,9 +424,9 @@ Definition of named types:
 
 Type parameters:
 
-- A function declaration (5) and a type alias may declare type parameters, written `<T>` or `<A, B>` after the name. Within their scope, each stands for a type that the use site determines.
+- A function declaration (5) and a type alias may declare type parameters, written `<T>` or `<A, B>` after the name, and so may a lambda, after its `\` (6.1). Within their scope, each stands for a type that the use site determines.
 - An `upper_id` in type position resolves to a type parameter when one of that name is in scope, and to a `NamedType` otherwise. A qualified `namespace.TypeName` is never a type parameter.
-- A type parameter's scope is: for a function, its parameter types, its return type, and the type annotations inside its body (6.5); for a type alias, the right-hand side of the alias.
+- A type parameter's scope is: for a function or a lambda, its parameter types, its return type, and the type annotations inside its body (6.5); for a type alias, the right-hand side of the alias.
 - Declaring a type parameter whose name is that of a type alias visible at the declaration, or of a type the grammar reads as its own (above), is a duplicate definition error (`E-NAME-DUPLICATE`). Shadowing is not permitted, so a type name means one thing throughout a declaration.
 - A type parameter that appears in no position is permitted. Nothing determines it and nothing needs to.
 - Type parameters are not written at a use site: a call instantiates them from the argument types and the expected type (4.4), and there is no syntax for giving them explicitly.
@@ -653,7 +653,7 @@ The meaning of types is defined by the following rules.
 
 Polymorphic types:
 
-- A signature contains type variables when it belongs to a built-in symbol defined by this specification (core functions and functions of the built-in library; chapters 6 and 15), or to a declaration that declares type parameters (4.2). The two are checked by one set of rules, given below.
+- A signature contains type variables when it belongs to a built-in symbol defined by this specification (core functions and functions of the built-in library; chapters 6 and 15), or to a declaration that declares type parameters (4.2), or to a name bound to a lambda that does (6.1). These are checked by one set of rules, given below.
 - An `upper_id` in a type annotation that is not a type parameter in scope is a `NamedType`, resolved as a type alias reference; if there is no corresponding declaration (for the qualified form: no such namespace, or no public type alias of that name in the module it refers to), it is an undefined reference error.
 - A signature containing type variables is treated as a type scheme, and is instantiated to concrete types independently for each call and then checked. Within a single call, type variables of the same name must be bound to the same concrete type.
 - Instantiation is determined from the argument types and the contextual expected type. If a single concrete type cannot be determined, it is an inference failure error (4.3).
@@ -743,7 +743,7 @@ Declaration termination rules:
 - `as` and `from` are not continuation tokens (6.5). An `import` declaration must be written on one line, except inside the braces of `NamedImports` (which may span multiple lines by the open-bracket continuation rule). The closing `}` and the `from` clause must be placed on the same line.
 - A line-leading `(` or `[` does not continue the preceding declaration and is interpreted as the start of a new declaration. Since a top-level declaration begins with `import`, `type`, or an identifier, this case results in a syntax error.
 - The optional `!!` marker on a `ValueDecl` name declares a secret binding (6.10); it does not affect parsing of the rest of the declaration.
-- A `<` following the name of a `FunctionDecl` or a `TypeAliasDecl` begins its type parameters (4.2), and needs no lookahead to recognize: the name of a declaration is otherwise followed by `(`, `!!`, `:` or `=`, and a declaration never begins with an expression, so `<` can be nothing else there. A `ValueDecl` takes no type parameters, having no place to instantiate them.
+- A `<` following the name of a `FunctionDecl` or a `TypeAliasDecl` begins its type parameters (4.2), and needs no lookahead to recognize: the name of a declaration is otherwise followed by `(`, `!!`, `:` or `=`, and a declaration never begins with an expression, so `<` can be nothing else there. A `ValueDecl` takes no type parameters after its name, having no place to instantiate them; a lambda it binds may declare its own (6.1).
 - Type parameters are not part of a declaration's name. `first<T>` declares the symbol `first`, which is what an import, an export and a duplicate-definition check see.
 - `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
@@ -1131,7 +1131,7 @@ PositionalParameter   = lower_id [ "!!" ] [ ":" Type ] .
 VariadicParameter     = "..." lower_id [ ":" ArrayType ] .
 KeywordParameters     = KeywordParameter { "," KeywordParameter } .
 KeywordParameter      = "--" lower_id [ "!!" ] [ ":" Type ] [ "=" Expression ] .
-LambdaExpr            = "\\" "(" [ FunctionParameterList ] ")" [ ":" Type ] "->" Expression .
+LambdaExpr            = "\\" [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" Type ] "->" Expression .
 ```
 
 Meaning of the parameter notation:
@@ -1188,11 +1188,28 @@ g1 = greet("alice")
 g2 = greet("alice", prefix = "hi")
 ```
 
-Desugaring rules for function declarations:
+Lambdas with type parameters:
 
-- `name(p1, p2, ..., pn) = body` is equivalent to `name = \(p1, p2, ..., pn) -> body`.
-- The parameter specification of `FunctionDecl` follows the same rules as the `FunctionParameterList` of `LambdaExpr`.
-- Therefore, the notation of including parameters in a declaration is syntactic sugar for the notation of assigning a lambda expression as a value.
+- A lambda may declare type parameters, written `<T>` or `<A, B: orderable>` after the `\`, as a function declaration does (4.2): `\<T>(x: T): T -> x`. Within the lambda they are opaque, as in a declaration (4.4), and they add to the type parameters of the declaration the lambda is written in. A name that is already one of those is a duplicate definition error (`E-NAME-DUPLICATE`): a type name means one thing throughout a declaration.
+- A function value has no type variables of its own (4.4), so a lambda with type parameters is generic only where it is bound to a name: by a top-level `ValueDecl`, or by a `BindStmt` of a block (6.5). The name is then generic, and each reference instantiates it as a reference to a generic declaration is instantiated (4.4): a call from its arguments and the expected type, and a reference as a value from the expected type alone.
+  - A top-level binding is a generic declaration in every respect, keyword parameters, defaults and variadic collection included (7.5), and the command line calls it as one (11.2).
+  - A binding of a block is a value, so a call of it takes positional arguments only (7.5). It is generic for the rest of the block.
+- A lambda with type parameters written anywhere else (an argument, a return value, an element, a callee written in place) is a static error (`E-TYPE-ILLFORMED`): it would be instantiated where it stands, so its type parameters could stand for nothing. A binding of one takes no type annotation, since the lambda gives its types; one with an annotation is `E-TYPE-ILLFORMED`.
+
+```lask
+largest = \<T: orderable>(xs: Array<T>): T -> last(sort(xs))
+
+labels(): String = do {
+  both = \<T: comparable>(x: T, y: T): Bool -> x == y
+  "#{both(1, 1)} #{both("a", "b")} #{largest(["b", "c", "a"])}"
+}
+```
+
+Function declarations and lambdas:
+
+- `name(p1, p2, ..., pn) = body` binds the same function as `name = \(p1, p2, ..., pn) -> body`, and a call of either is checked and evaluated alike: both keep their declaration parameter information (7.5), so keyword arguments, defaults and variadic collection work through either. The parameter specification of `FunctionDecl` follows the same rules as the `FunctionParameterList` of `LambdaExpr`, and both may declare type parameters (above).
+- The two are not interchangeable in every respect, so the first is not sugar for the second. Only a function declaration may carry an access constraint (`within`, Chapter 5), which is a property of a declaration rather than of a value.
+- A declaration that refers to itself is checked against the type its annotations give, since it is still being checked when the reference is reached: for a function declaration, its return type and the types of its positional parameters; for a binding, the type annotation of the binding, or, when the binding is a lambda with its return type written, that lambda's type. A recursive declaration that gives neither is a static error (`E-TYPE-MISMATCH`).
 
 Equivalence example:
 

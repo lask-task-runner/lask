@@ -187,8 +187,11 @@ buildFunctionHelp path src decl mCore doc envs =
 -- bound as written: @T@, @T: orderable@.
 declTypeParams :: AST.Decl -> [Text]
 declTypeParams d = case AST.declF d of
-  AST.DFunction _ tps _ _ _ _ -> [T.drop 1 (T.dropEnd 1 (AST.renderTypeParams [tp])) | tp <- tps]
+  AST.DFunction _ tps _ _ _ _ -> rendered tps
+  AST.DValue _ _ _ (AST.Expr _ (AST.ELambda tps _ _ _)) -> rendered tps
   _ -> []
+  where
+    rendered tps = [T.drop 1 (T.dropEnd 1 (AST.renderTypeParams [tp])) | tp <- tps]
 
 -- | The declaration's name with its type parameters, for the places
 -- that describe it rather than ask for it to be typed (spec 11.6).
@@ -223,7 +226,7 @@ isFunctionDecl d = case AST.declF d of
 declParams :: AST.Decl -> [AST.Param]
 declParams d = case AST.declF d of
   AST.DFunction _ _ ps _ _ _ -> ps
-  AST.DValue _ _ _ (AST.Expr _ (AST.ELambda ps _ _)) -> ps
+  AST.DValue _ _ _ (AST.Expr _ (AST.ELambda _ ps _ _)) -> ps
   _ -> []
 
 -- Text rendering ---------------------------------------------------------------

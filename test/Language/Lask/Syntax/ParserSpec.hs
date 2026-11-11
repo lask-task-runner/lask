@@ -465,9 +465,20 @@ spec = do
       pExpr "\\(x: Number): Number -> x + 1"
         `shouldBe` Right
           ( ELambda
+              []
               [Param NoSpan (PPositional "x" Public (Just (ty SNumber)))]
               (Just (ty SNumber))
               (ex (EBin OpAdd (var "x") (num 1)))
+          )
+
+    it "parses the type parameters of a lambda (spec 6.1)" $
+      pExpr "\\<T, U: orderable>(x: T): T -> x"
+        `shouldBe` Right
+          ( ELambda
+              [tparam "T", TypeParam (Spanned NoSpan "U") (Just (SBoundNamed (Spanned NoSpan "orderable")))]
+              [Param NoSpan (PPositional "x" Public (Just (ty (SNamed Nothing "T" []))))]
+              (Just (ty (SNamed Nothing "T" [])))
+              (var "x")
           )
 
     it "parses string interpolation" $

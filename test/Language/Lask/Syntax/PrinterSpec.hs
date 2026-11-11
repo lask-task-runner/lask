@@ -55,6 +55,9 @@ spec = do
           "export { a } from \"./lib\""
         ]
 
+    it "keeps the type parameters of a lambda (spec 6.1)" $
+      ["ident = \\<T>(x:T):T->x"] `formatsTo` ["ident = \\<T>(x: T): T -> x"]
+
     it "keeps how literals are spelt" $
       unchanged ["x = ['raw \\n', \"a\\tb #{1.50}\", 1.50, 007]"]
 

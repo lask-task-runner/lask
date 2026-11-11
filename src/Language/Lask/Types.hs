@@ -224,7 +224,8 @@ renderType t = case t of
       <> ">"
   TyAsync e -> "AsyncHandle<" <> renderType e <> ">"
   TyFun ps r -> "Function<" <> T.intercalate ", " (map renderType (ps <> [r])) <> ">"
-  TyVar v -> v
+  -- A generalized variable (Elaborate.generalizedVars) shows as written.
+  TyVar v -> T.takeWhile (/= '@') v
   TyUnion ts -> T.intercalate " | " (map renderType ts)
   where
     renderField k

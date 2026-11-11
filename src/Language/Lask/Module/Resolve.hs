@@ -34,6 +34,7 @@ import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Span (Span)
 import Language.Lask.Syntax.AST
+import Language.Lask.Syntax.Scope (childExprs, paramDefaults)
 
 data ValueTarget
   = -- | Defining module and name.
@@ -341,10 +342,19 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
         [ v
         | Decl _ f <- moduleDecls (lmModule lm),
           v <- case f of
-            DFunction _ tps _ _ _ _ -> typeParamNames tps
+            DFunction _ tps ps _ _ body -> typeParamNames tps <> lambdaParams (paramDefaults ps <> [body])
             DTypeAlias _ tps _ -> typeParamNames tps
+            DValue _ _ _ e -> lambdaParams [e]
             _ -> []
         ]
+    -- Those of the lambdas written anywhere in these expressions.
+    lambdaParams es =
+      [ v
+      | e <- concatMap universe es,
+        ELambda tps _ _ _ <- [exprF e],
+        v <- typeParamNames tps
+      ]
+    universe e = e : concatMap universe (childExprs e)
 
     -- A type bound names types like any annotation; a named bound is
     -- checked by the elaborator, which knows the set (spec 4.2).
@@ -465,7 +475,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       EArray es -> concatMap (checkExpr sc) es
       EObject kvs -> concatMap (checkExpr sc . snd) kvs
       EString ps -> concatMap (checkPart sc) ps
-      ELambda ps t body ->
+      ELambda _ ps t body ->
         checkParams sc ps
           <> maybe [] checkType t
           <> checkExpr (paramNames ps : sc) body
