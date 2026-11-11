@@ -1020,7 +1020,8 @@ Lock file:
     "deploy-kit>notify": {"url": "https://example.com/tasks/notify.lask", "hash": "sha256-..."}
   },
   "images": {
-    "deploy-kit#sha256-71bc...": {"kind": "recipe", "tag": "lask/deploy-kit/sha256-71bc..."},
+    "#infra/Dockerfile": {"kind": "recipe", "tag": "lask/71bc04d9e2aa..."},
+    "#.lask/deps/sha256-0cad.../images/unix/Dockerfile": {"kind": "recipe", "tag": "lask/9e46282b8259..."},
     "#alpine:3.20": {"kind": "registry", "ref": "alpine:3.20", "digest": "sha256:..."},
     "#golang:1.25": {"kind": "registry", "ref": "golang:1.25", "digest": "sha256:...", "commands": {"go": "present", "gofmt": "present"}}
   }
@@ -1031,9 +1032,9 @@ Lock file:
 - `rev` in the lock must be a full 40-hexadecimal-digit commit SHA. `requested` preserves the reference that was resolved.
 - `hash` (a content hash of the fetched source) is required for every entry, in the form `sha256-` followed by 64 lower-case hexadecimal digits. The same entry must always yield identical source code.
 - A lock entry whose `hash` or `rev` is not of its form is a static error (`E-MODULE-LOCK-STALE`).
-- `images` records the container images the resolved graph requires (10.3). Keys are `<dependency path>#<image key>`, where the dependency path is empty for the root project.
-- A registry reference is recorded once for the whole graph, under the empty path, whichever module writes it: one reference names one image wherever it appears, and resolving it when a command runs (10.4) needs nothing but the reference. Its entry holds the reference as written (`ref`) and the digest it is pinned to (`digest`).
-- The egress proxy (10.12) is recorded as a registry reference written with its digest, under the empty path, when the program requires it.
+- `images` records the container images the resolved graph requires (10.3). A key is `#` followed by the image: a registry reference as written in its head (6.7) (`#alpine:3.20`), or the path of a recipe's Dockerfile relative to the base directory, written without a leading `./` (`#infra/Dockerfile` for the head `#./infra/Dockerfile`). A recipe written in a dependency is keyed by its path under `.lask/deps` (Fetching and verification, below), which holds the dependency's content hash, so the recipes of two dependencies never share a key unless they are the same content. A recipe built with no network is keyed with `(build_network = "none")` after its path (10.3).
+- A registry reference is recorded once for the whole graph, whichever module writes it: one reference names one image wherever it appears, and resolving it when a command runs (10.4) needs nothing but the reference. Its entry holds the reference as written (`ref`) and the digest it is pinned to (`digest`).
+- The egress proxy (10.12) is recorded as a registry reference written with its digest, when the program requires it.
 - An entry that no image of the program references any more is dropped when the images are next materialized.
 - `commands` records, for each command word declared on the image that `sync` probes (11.7), whether the image provides it: `"present"` or `"missing"`. A word that was not probed has no key, and an entry with none has no `commands`. Any other value is a static error (`E-MODULE-LOCK-STALE`).
 
@@ -2786,7 +2787,7 @@ Materialization:
 - A reference written with a digest (`#alpine@sha256:...`) pins itself: it is recorded with that digest.
 - A reference with `platform` is pulled for that platform. The digest the lock records is the one the reference resolves to, which for a multi-platform image is that of its index and covers every platform; the same reference used with several platforms is one lock entry, materialized once per platform.
 - The pin moves only when the program does. Writing another reference — a new tag — materializes a new image; the same tag pointing somewhere new upstream changes nothing until its entry is removed from the lock.
-- A recipe is built, for its `platform` if one is given. The resulting image is tagged `lask/<dependency path>/<recipe hash>`, where the recipe hash covers the Dockerfile, the build context, the declared build arguments, and the platform. A changed recipe therefore yields a different image and cannot reuse a cached one.
+- A recipe is built, for its `platform` if one is given. The resulting image is tagged `lask/<recipe hash>`, the recipe hash being the 64 lower-case hexadecimal digits of a SHA-256 that covers the contents of the Dockerfile, the path of the build context, the declared build arguments, the platform, and a build with no network (below). A changed recipe therefore yields a different image and cannot reuse a cached one. The tag names no dependency: a recipe in a dependency has a context path under `.lask/deps` that holds the dependency's content hash (Chapter 5), so two dependencies share an image only when their recipes are the same content.
 - Builds are performed with no host mount other than the declared context, without privileged mode, and without host networking.
 - What a build's steps reach is the network the engine gives a build, unless the recipe is given `build_network = "none"`, which builds it with no network at all. A recipe a dependency writes builds as it is written, so what a project's builds may reach is read in its recipes, and `sync`'s summary and `envs list` show a recipe built with no network as `(no network)`. A build cannot be given `egress` (10.12): an engine places a build's steps on no network Lask makes, so it is reached either without a network or with the engine's own.
 - A recipe built with no network is an image of its own: its hash covers that too, so an image a build with the network made is never taken for one, and its lock entry is keyed `#<Dockerfile>(build_network = "none")`. A recipe built with the default network hashes as it did before `build_network` was covered, whether it gives `"default"` or nothing.
