@@ -2736,7 +2736,7 @@ The run options this implementation provides:
 - A list or table option also takes a value already typed `Array<String>` or `Map<String>`, and `egress` one typed `Array<String> | Null`. Containers are invariant (4.4), so such a value does not conform to the nullable element type; it holds no null to leave out, and means the same.
 - An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing, except for `egress`, which lists what a container may reach rather than what it is given, so that an empty list admits no destination (10.12). This is how an argument says "not given" — a function that builds a runnable passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
 - `workdir` is the explicit working directory 10.5 gives precedence over the default.
-- `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
+- `env` sets variables of the container over those its image and engine give, and over the proxy's of `egress` (10.6).
 - A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the engine client's command line (10.10) and sets its value in the client's environment, from which the client takes it. A variable the client reads itself cannot be set for it that way, since that would change which engine it reaches or how; it is written instead, with its value, to a file the client is given with `--env-file`, in a directory of its own that only the user can enter, and removed once the client has exited (for a `with_container` session, once its container has started). Since the file holds a variable to a line, such a variable whose name is empty or holds `=` or a line break, or whose value holds a line break, is refused when the command is launched (`E-IO-ENV-RESOLVE`) rather than put on a command line. A variable the client reads itself is, in any case, a name ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, and, by engine:
   - `docker`: a name beginning with `DOCKER_`.
   - `podman`: a name beginning with `CONTAINER_`, `CONTAINERS_`, `PODMAN_`, `BUILDAH_` or `XDG_`, or `TMPDIR` or `REGISTRY_AUTH_FILE`.
@@ -2824,7 +2824,7 @@ Failure rules:
 
 Determinism:
 
-- For the same `Environment` value, the same environment definition file content, and the same execution settings, the environment resolution result must be deterministic.
+- The same environment value and the same lock file resolve to the same image: the digest a registry reference is pinned to, or the tag of a recipe (10.3). Resolution reads nothing else.
 
 ### 10.5 Working Directory Rules
 
@@ -2844,21 +2844,11 @@ Portability requirements:
 
 ### 10.6 Environment Variable Rules
 
-The execution environment constructs the environment variable set `E` at process launch.
+The variables a command is started with depend on its environment, and on nothing outside the program: no CLI option or setting supplies or replaces them (10.1).
 
-Construction rules:
-
-1. Obtain the execution environment's default variables as the base set.
-2. Apply override variables from implementation settings or CLI specification.
-3. Exclude variables prohibited by security policy.
-
-Conflict rules:
-
-- If the same key is supplied by multiple sources, resolve with the precedence: explicit specification > implementation settings > environment defaults.
-
-Compatibility rules:
-
-- Case sensitivity of variable names is execution-infrastructure dependent, but must be handled with consistent rules within the same infrastructure.
+- `local`: the command inherits the process environment of lask as it is. A variable that holds a secret reference is seen as the reference, not as the secret (9.8). `#local` takes no run options (10.2), so nothing is added or removed.
+- `docker`: the command sees the variables the image and the engine give a container, with the variables of the run option `env` (10.2) set over them. A container given `egress` is also given the variables of the proxy, unless `env` sets them (10.12), and a command run in a `with_container` session carries the marker variable of 15.5. No variable of lask's own process reaches a container unless `env` passes it, as `{"TOKEN": get_env("TOKEN")}` does.
+- Where two of these set the same variable, `env` wins over the variables of the proxy, and both win over the image and the engine. The marker of a session is set by lask on each command it runs there, and `env` does not replace it.
 
 ### 10.7 Permission Boundary
 
