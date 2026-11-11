@@ -1689,7 +1689,7 @@ Lexical rules:
 - If the line ends with `\`, it is a continuation line; the `\` and the newline are removed and the next line is concatenated.
 - Inside the command string, the shell's `;`, quotation marks, pipes, etc. can be used without escaping.
 - `#{` starts an interpolation, and `#!{` a raw hole. To include a literal `#{` or `#!{`, write `\#{` or `\#!{`. A `#` followed by neither `{` nor `!{` is treated as an ordinary character, so `$ echo '#!/bin/sh'` needs no escape.
-- A raw hole exists only in a command string. In an interpreted string (3.4), `#!{` is ordinary text: `"#!{x}"` is the five characters it shows.
+- A raw hole exists only in a command string. In an interpreted string (3.3), `#!{` is ordinary text: `"#!{x}"` is the five characters it shows.
 - Inside `do`, the newline that terminates a command string simultaneously serves as statement termination (6.5).
 - An unbraced command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run(#local, "git --version") |> trim`.
 - All tokens on the same line after an unbraced command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. A command that has to be followed on its line — by `|> trim`, by the `)` of a call, by the `,` of a list — is written braced: `${git --version} |> trim`, `retry(delays, \() -> ${make test})`.
@@ -2626,11 +2626,13 @@ deploy(
 Form:
 
 ```ebnf
-SecretReference = "{" , Scheme , "://" , Body , "}" ;
-Scheme          = lower , { lower | digit | "+" | "." | "-" } ;
-Body            = char , { char } ;   (* scheme-specific *)
+SecretReference = "{" Scheme "://" Body "}" .
+Scheme          = lower_letter { lower_letter | decimal_digit | "+" | "." | "-" } .
+lower_letter    = "a" … "z" .
+Body            = ref_char { ref_char } .
 ```
 
+- The grammar is that of a variable's value, not of Lask source. `ref_char` is any character, and a reference ends at the value's last `}`, so that `Body` may hold a `}` of its own. What `Body` means is the scheme's.
 - A variable is a reference only when its **whole** value has this form. A reference embedded in a longer value (`"x-{vault://...}"`) is not recognized, and the value is read as it is.
 - A value that starts with `{`, a scheme and `://` but does not end the reference with its closing `}` is a malformed reference (`E-IO-SECRET-REF`), never an ordinary value: a mistyped reference must not be handed on as a password.
 - The scheme selects the store. The schemes an implementation provides are listed below; any other is `E-IO-SECRET-PROVIDER`.
@@ -2653,9 +2655,13 @@ Reading:
 The `vault` scheme (HashiCorp Vault, and stores serving the same HTTP API, such as OpenBao):
 
 ```ebnf
-VaultBody = Path , [ "?version=" , digit , { digit } ] , "#" , Field ;
-Path      = Name , { "/" , Name } ;
+VaultBody = Path [ "?version=" Version ] "#" Field .
+Path      = Name { "/" Name } .
+Version   = decimal_digit { decimal_digit } .
+Field     = ref_char { ref_char } .
 ```
+
+- A `Name` is one or more characters other than `/`, `?` and `#`, and is neither `.` nor `..`. The path ends at the first `?` or `#`, and the field is everything after the first `#`. `Version` is a positive integer, and `version` is the only parameter a reference takes. A body outside this form is `E-IO-SECRET-REF`.
 
 - The path is written as `vault kv get` takes it, and the field names one key of the secret: `{vault://secret/app#password}`. The field is required.
 - Whether the path is on a key/value version 2 mount is asked of the server. There the path is read at its `data/` location and `version` selects a version, the latest when omitted. On any other mount the path is read as written, and a `version` is `E-IO-SECRET-REF`. When the server will not say, the path is read as written.
