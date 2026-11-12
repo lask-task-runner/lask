@@ -49,7 +49,7 @@ import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Control.Exception (IOException)
 import qualified Control.Exception as E
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
-import Data.List (minimumBy, partition, sortOn)
+import Data.List (minimumBy, partition, sortOn, tails)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, listToMaybe, mapMaybe, maybeToList)
 import Data.Ord (comparing)
@@ -439,12 +439,19 @@ lexSemanticTokensWith commandWordSpans fileName src =
         schema [] = []
 
     -- @within@ is a keyword only directly before the brace of an
-    -- access constraint (spec 3.3, 5), where no identifier can stand:
-    -- a name is never followed by @{@.
+    -- access constraint, or the name of one (spec 3.3, 5), and
+    -- @access@ only before the name it declares: no identifier stands
+    -- there, since a name is never followed by @{@ or by another name.
     withinSpans toks =
       [ sp
-      | (prev, Tok.Spanned sp (Tok.TLowerId "within"), Tok.Spanned _ Tok.TLBrace) <- zip3 (Nothing : map Just toks) toks (drop 1 toks),
-        fmap Tok.spannedValue prev /= Just Tok.TDot
+      | (prev, Tok.Spanned sp (Tok.TLowerId w), next : after) <- zip3 (Nothing : map Just toks) toks (drop 1 (tails toks)),
+        fmap Tok.spannedValue prev /= Just Tok.TDot,
+        case (w, Tok.spannedValue next, map Tok.spannedValue (take 1 after)) of
+          ("within", Tok.TLBrace, _) -> True
+          ("within", Tok.TUpperId _, _) -> True
+          ("within", Tok.TLowerId _, [Tok.TDot]) -> True
+          ("access", Tok.TUpperId _, _) -> True
+          _ -> False
       ]
 
     spanStart (S.Span s _) = Just s

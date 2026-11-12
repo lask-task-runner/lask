@@ -44,6 +44,7 @@ module Language.Lask.Core.Access
 
     -- * Constraints
     Covering (..),
+    renderCovering,
     Constraints,
     withinConstraints,
     coveringsOf,
@@ -75,6 +76,7 @@ import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticPara
 import Language.Lask.ErrorCode (AdvisoryCode (..), ErrorCode (..), Stage (..))
 import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
+import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), buildScopes)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
 import Language.Lask.Runtime.Eval (evalCore, mkRtCtx)
 import Language.Lask.Runtime.Image (Recipe (..))
@@ -901,8 +903,8 @@ targetAccess t = case tHead t of
     publish
       | computed "publish" = Nothing
       | otherwise = case opt "publish" of
-          Nothing -> Just False
-          Just (Known v) -> not . null <$> strings v
+          Nothing -> Just []
+          Just (Known v) -> map parsePublish <$> strings v
           _ -> Nothing
 
 -- Constraints -----------------------------------------------------------
@@ -913,9 +915,16 @@ data Covering = Covering
   { cvModule :: FilePath,
     cvFunction :: Maybe Text,
     cvSpan :: Span,
-    cvConstraint :: Constraint
+    cvConstraint :: Constraint,
+    -- | The @access@ declaration it is written by, as it is named.
+    cvName :: Maybe Text
   }
   deriving (Show, Eq, Ord)
+
+-- | A constraint as what it covers writes it: by its name, or by its
+-- fields.
+renderCovering :: Covering -> Text
+renderCovering cv = maybe (renderConstraint (cvConstraint cv)) ("within " <>) (cvName cv)
 
 -- | The constraints of each module: its own, and those of its
 -- functions.
@@ -930,19 +939,59 @@ coveringsOf cons (p, n) = case Map.lookup p cons of
 
 -- | Read the access constraints of a program (spec 5, 10.11): what
 -- each module and function is written with, and @E-TYPE-WITHIN-SPEC@
--- for one that is not a constraint.
+-- for one that is not a constraint. A constraint written by name is
+-- that of the @access@ declaration it names, which is reported once,
+-- where it is declared.
 withinConstraints :: Program -> ([Diagnostic], Constraints)
 withinConstraints prog =
   let perModule = [(lmPath lm, moduleConstraints (lmPath lm) (AST.moduleDecls (lmModule lm))) | lm <- Map.elems (progModules prog)]
-   in (concat [ds | (_, (ds, _)) <- perModule], Map.fromList [(p, c) | (p, (_, c)) <- perModule])
+   in ( aliasDiags <> concat [ds | (_, (ds, _)) <- perModule],
+        Map.fromList [(p, c) | (p, (_, c)) <- perModule]
+      )
   where
+    scopes = buildScopes prog
+    -- Each access declaration, read once.
+    declared =
+      Map.fromList
+        [ ((lmPath lm, n), readAlias w)
+        | lm <- Map.elems (progModules prog),
+          AST.Decl _ (AST.DAccess n w) <- AST.moduleDecls (lmModule lm)
+        ]
+    aliasDiags = concat [ds | Left ds <- Map.elems declared]
+    readAlias w = do
+      c <- parseSpec w
+      case conSecrets c of
+        Just (SecretsNamed ((_, sp) : _)) ->
+          Left [mkDiagnostic ETypeWithinSpec StageStatic sp "an access declaration gives 'secrets' only as false: the secrets a constraint names are bindings of what it covers"]
+        _ -> Right c
+
+    -- The constraint a name gives, where it is written: 'Nothing' when
+    -- the name resolves to nothing, which name resolution reports.
+    resolveRef path q n = do
+      gs <- Map.lookup path scopes
+      gs' <- case q of
+        Nothing -> pure gs
+        Just ns -> Map.lookup ns (gsNamespaces gs) >>= (`Map.lookup` scopes)
+      Map.lookup n (gsTypes gs')
+
     moduleConstraints path decls =
       let modules = [(sp, w) | AST.Decl sp (AST.DWithin w) <- decls]
           functions = [(n, w) | AST.Decl _ (AST.DFunction n _ _ _ (Just w) _) <- decls]
           second = [mkDiagnostic ETypeWithinSpec StageStatic sp "a module has at most one module constraint" | (sp, _) <- drop 1 modules]
-          read' fn w@(AST.AccessSpec sp _) = case parseSpec w of
-            Left ds -> (ds, Nothing)
-            Right c -> ([], Just (Covering path fn sp c))
+          read' fn w = case w of
+            AST.AccessSpec sp _ -> case parseSpec w of
+              Left ds -> (ds, Nothing)
+              Right c -> ([], Just (Covering path fn sp c Nothing))
+            AST.AccessRef sp q n ->
+              let named = maybe "" (<> ".") q <> n
+               in case resolveRef path q n of
+                    Just (TAlias defPath defName)
+                      | Just r <- Map.lookup (defPath, defName) declared ->
+                          -- A declaration that does not read is reported
+                          -- where it is declared.
+                          ([], either (const Nothing) (\c -> Just (Covering path fn sp c (Just named))) r)
+                    Just _ -> ([mkDiagnostic ETypeWithinSpec StageStatic sp ("'" <> named <> "' is a type, not an access constraint")], Nothing)
+                    Nothing -> ([], Nothing)
           (mds, mc) = case modules of
             (_, w) : _ -> read' Nothing w
             [] -> ([], Nothing)
@@ -953,17 +1002,19 @@ withinConstraints prog =
 
 -- | An access constraint from its fields (spec 10.11), each a literal.
 parseSpec :: AST.AccessSpec -> Either [Diagnostic] Constraint
-parseSpec (AST.AccessSpec _ fields) =
-  case [d | Left d <- results] <> duplicates of
-    [] -> Right (foldl (\c f -> f c) noConstraint [f | Right f <- results])
-    ds -> Left ds
+parseSpec w = case w of
+  AST.AccessRef sp _ _ -> Left [mkDiagnostic ETypeWithinSpec StageStatic sp "an access declaration is written with braces"]
+  AST.AccessSpec _ fields ->
+    let results = map field fields
+        duplicates =
+          [ err sp ("duplicate field '" <> k <> "'")
+          | (i, (Spanned sp k, _)) <- zip [0 :: Int ..] fields,
+            k `elem` [k' | (Spanned _ k', _) <- take i fields]
+          ]
+     in case [d | Left d <- results] <> duplicates of
+          [] -> Right (foldl (\c f -> f c) noConstraint [f | Right f <- results])
+          ds -> Left ds
   where
-    results = map field fields
-    duplicates =
-      [ err sp ("duplicate field '" <> k <> "'")
-      | (i, (Spanned sp k, _)) <- zip [0 :: Int ..] fields,
-        k `elem` [k' | (Spanned _ k', _) <- take i fields]
-      ]
     err = mkDiagnostic ETypeWithinSpec StageStatic
     field (Spanned ksp k, v) = case k of
       "files" -> case literal v of
@@ -973,34 +1024,48 @@ parseSpec (AST.AccessSpec _ fields) =
               either (Left . err (AST.exprSpan v)) (\t -> Right (\c -> c {conFiles = Just t})) (accessTable pairs)
         _ -> Left (err (AST.exprSpan v) "'files' takes \"rw\", \"ro\", \"none\", or a table of them with \".\"")
       "volumes" -> case literal v of
-        Just (SBool False) -> Right (\c -> c {conVolumes = Just []})
+        Just (SBool False) -> Right (\c -> c {conVolumes = Just (VolumesListed [])})
+        Just (SBool True) -> Right (\c -> c {conVolumes = Just VolumesAny})
         Just (SMap kvs)
           | Just pairs <- mapM str kvs,
             Right vs <- mapM volume pairs ->
-              Right (\c -> c {conVolumes = Just vs})
+              Right (\c -> c {conVolumes = Just (VolumesListed vs)})
           | Just pairs <- mapM str kvs,
             Left e <- mapM volume pairs ->
               Left (err (AST.exprSpan v) e)
-        _ -> Left (err (AST.exprSpan v) "'volumes' takes false, or a table of host paths and volume names to \"rw\" or \"ro\"")
-      "network" -> case literal v of
-        Just (SStr "none") -> Right (\c -> c {conNetwork = Just (BoundClass NetNone)})
-        Just (SStr "default") -> Right (\c -> c {conNetwork = Just (BoundClass NetDefault)})
+        _ -> Left (err (AST.exprSpan v) "'volumes' takes false, true, or a table of host paths and volume names to \"rw\" or \"ro\"")
+      "outbound" -> case literal v of
+        Just (SBool False) -> Right (\c -> c {conOutbound = Just (BoundClass NetNone)})
+        Just (SBool True) -> Right (\c -> c {conOutbound = Just (BoundClass NetDefault)})
         Just (SArr xs)
-          | Just ts <- mapM (\x -> case x of SStr t -> Just t; _ -> Nothing) xs ->
-              either (Left . err (AST.exprSpan v)) (\es -> Right (\c -> c {conNetwork = Just (BoundEgress es)})) (mapM parseEgressEntry ts)
-        _ -> Left (err (AST.exprSpan v) "'network' takes \"none\", \"default\", or an array of egress entries such as [\"registry.npmjs.org:443\"]")
-      "publish" -> case literal v of
-        Just (SBool b) -> Right (\c -> c {conPublish = Just b})
-        _ -> Left (err (AST.exprSpan v) "'publish' takes false or true")
+          | Just ts <- strings xs ->
+              either (Left . err (AST.exprSpan v)) (\es -> Right (\c -> c {conOutbound = Just (BoundEgress es)})) (mapM parseEgressEntry ts)
+        _ -> Left (err (AST.exprSpan v) "'outbound' takes false, true, or an array of egress entries such as [\"registry.npmjs.org:443\"]")
+      "inbound" -> case literal v of
+        Just (SBool False) -> Right (\c -> c {conInbound = Just (InboundListed [])})
+        Just (SBool True) -> Right (\c -> c {conInbound = Just InboundAny})
+        Just (SArr xs)
+          | Just ts <- strings xs ->
+              either (Left . err (AST.exprSpan v)) (\es -> Right (\c -> c {conInbound = Just (InboundListed es)})) (mapM parseInboundEntry ts)
+        _ -> Left (err (AST.exprSpan v) "'inbound' takes false, true, or an array of host addresses, each with a port where it is limited to one, such as [\"127.0.0.1:8080\"]")
+      "runs" -> case literal v of
+        Just (SBool False) -> Right (\c -> c {conRuns = Just []})
+        Just (SArr xs)
+          | Just ts <- strings xs,
+            not (null ts),
+            Just ps <- mapM parseProfile ts ->
+              Right (\c -> c {conRuns = Just (nub ps)})
+        _ -> Left (err (AST.exprSpan v) "'runs' takes false, or an array of \"local\" and \"container\"")
       "secrets" -> case AST.exprF v of
         AST.EBool False -> Right (\c -> c {conSecrets = Just SecretsNone})
         AST.EArray xs
           | Just names <- mapM (\x -> case AST.exprF x of AST.EVar n -> Just (n, AST.exprSpan x); _ -> Nothing) xs ->
               Right (\c -> c {conSecrets = Just (SecretsNamed names)})
         _ -> Left (err (AST.exprSpan v) "'secrets' takes false, or an array of the names of secret bindings, such as [token]")
-      _ -> Left (err ksp ("unknown field '" <> k <> "': a constraint takes files, volumes, network, publish and secrets"))
-    str (k, SStr s) = Just (k, s)
+      _ -> Left (err ksp ("unknown field '" <> k <> "': a constraint takes files, volumes, outbound, inbound, secrets and runs"))
+    str (k, SStr s') = Just (k, s')
     str _ = Nothing
+    strings = mapM (\x -> case x of SStr t -> Just t; _ -> Nothing)
     volume (k, m) = do
       mode <- case m of
         "rw" -> Right ModeRw
@@ -1069,9 +1134,19 @@ siteFindings core u = case usKind u of
           f <- checkAccess (cvConstraint cv) (targetAccess t)
         ]
           <> [(maybe (maybe (inCovered cv) viaSpan tvia) viaSpan via, f) | (via, tvia, _, _, f) <- secretFindings core cv u]
-          <> [(inCovered cv, Unproven "environment") | usDynamic u]
+          <> [(inCovered cv, unknownEnv cv) | usDynamic u]
+          -- A constraint that admits no use is broken by any, whatever
+          -- its environment, including one a parameter gives.
+          <> [(inCovered cv, Exceeds "runs" (usedHere (usKind u))) | usParam u, conRuns (cvConstraint cv) == Just []]
     ]
   where
+    unknownEnv cv
+      | conRuns (cvConstraint cv) == Just [] = Exceeds "runs" (usedHere (usKind u))
+      | otherwise = Unproven "environment"
+    usedHere k = case k of
+      UseFile _ _ -> "a filesystem function uses an environment here"
+      UseSession -> "with_container starts a container here"
+      _ -> "a command runs here"
     -- Where a constraint is broken: in what it covers. A use written
     -- there is reported where it is written; one reached through a
     -- call, at the call that leads out of what the constraint covers,
@@ -1086,14 +1161,17 @@ siteFindings core u = case usKind u of
       _ -> usSpan u
     finding cv sp f =
       let (code, msg) = case f of
-            Exceeds k what -> (ETypeWithinExceeded, what <> ", which " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " does not allow (" <> k <> ")")
-            Unproven "environment" -> (ETypeWithinUnproven, "the environment here is not known without running the program, so " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " cannot be shown to hold")
-            Unproven k -> (ETypeWithinUnproven, "'" <> option k <> "' is not known here without running the program, so " <> renderConstraint (cvConstraint cv) <> " of " <> coveredLabel cv <> " cannot be shown to hold")
+            Exceeds k what -> (ETypeWithinExceeded, what <> ", which " <> renderCovering cv <> " of " <> coveredLabel cv <> " does not allow (" <> k <> ")")
+            Unproven "environment" -> (ETypeWithinUnproven, "the environment here is not known without running the program, so " <> renderCovering cv <> " of " <> coveredLabel cv <> " cannot be shown to hold")
+            Unproven k -> (ETypeWithinUnproven, "'" <> option k <> "' is not known here without running the program, so " <> renderCovering cv <> " of " <> coveredLabel cv <> " cannot be shown to hold")
        in withNote ("reached through " <> T.intercalate " → " (usPath u <> [usDecl u | lastMay (usPath u) /= Just (usDecl u)]) <> ", at " <> location (usSpan u)) $
             withNote ("the constraint is at " <> location (cvSpan cv)) $
               mkDiagnostic code StageStatic sp msg
+    -- The run option a component is read from.
     option k = case k of
       "files" -> "base_access"
+      "outbound" -> "network"
+      "inbound" -> "publish"
       other -> other
     lastMay xs = if null xs then Nothing else Just (last xs)
 

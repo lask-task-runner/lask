@@ -39,8 +39,21 @@ module Language.Lask.Access
     NetReach (..),
     NetBound (..),
 
+    -- * Published ports
+    BindAddr (..),
+    Published (..),
+    parsePublish,
+    InboundEntry (..),
+    parseInboundEntry,
+    renderInboundEntry,
+
     -- * Constraints
     Constraint (..),
+    VolumeBound (..),
+    InboundBound (..),
+    Profile (..),
+    profileText,
+    parseProfile,
     noConstraint,
     bounds,
     renderConstraint,
@@ -409,15 +422,19 @@ renderEgressEntry (EgressEntry h port) = host <> ":" <> T.pack (show port)
       EgressName n -> n
       EgressWildcard n -> "*." <> n
       EgressAddr4 os -> T.intercalate "." (map (T.pack . show) os)
-      EgressAddr6 gs -> "[" <> ipv6 gs <> "]"
-    ipv6 gs =
-      let runs = [(i, len) | (i, len) <- zeroRuns gs, len >= 2]
-          hexT n = T.pack (showHex' n)
-       in case sortOn (\(i, len) -> (negate len, i)) runs of
-            (i, len) : _ ->
-              T.intercalate ":" (map hexT (take i gs)) <> "::" <> T.intercalate ":" (map hexT (drop (i + len) gs))
-            [] -> T.intercalate ":" (map hexT gs)
-    zeroRuns gs = go 0 gs
+      EgressAddr6 gs -> "[" <> renderIPv6 gs <> "]"
+
+-- | An IPv6 address in its shortest form (RFC 5952).
+renderIPv6 :: [Int] -> Text
+renderIPv6 gs =
+  let zeroes = [(i, len) | (i, len) <- zeroRuns, len >= 2]
+      hexT n = T.pack (showHex' n)
+   in case sortOn (\(i, len) -> (negate len, i)) zeroes of
+        (i, len) : _ ->
+          T.intercalate ":" (map hexT (take i gs)) <> "::" <> T.intercalate ":" (map hexT (drop (i + len) gs))
+        [] -> T.intercalate ":" (map hexT gs)
+  where
+    zeroRuns = go 0 gs
       where
         go _ [] = []
         go i xs@(x : rest)
@@ -449,31 +466,194 @@ data NetReach
   | NetEgress [EgressEntry]
   deriving (Show, Eq)
 
--- | What a constraint's @network@ admits: up to a class, or what the
--- entries it gives cover.
+-- | What a constraint's @outbound@ admits: up to a class (@false@ is
+-- 'NetNone', @true@ 'NetDefault'), or what the entries it gives cover.
 data NetBound
   = BoundClass NetClass
   | BoundEgress [EgressEntry]
   deriving (Show, Eq, Ord)
 
+-- Published ports ---------------------------------------------------------
+
+-- | A host address a port is published on: an IPv4 address as its four
+-- octets, an IPv6 one as its eight groups. The unspecified addresses,
+-- @0.0.0.0@ and @::@, are every interface of their family.
+data BindAddr = BindAddr4 [Int] | BindAddr6 [Int]
+  deriving (Show, Eq, Ord)
+
+renderBindAddr :: BindAddr -> Text
+renderBindAddr a = case a of
+  BindAddr4 os -> T.intercalate "." (map (T.pack . show) os)
+  BindAddr6 gs -> renderIPv6 gs
+
+-- | Read an address as an entry of @inbound@ writes it, an IPv6 one
+-- with or without brackets.
+parseBindAddr :: Text -> Maybe BindAddr
+parseBindAddr t
+  | Just inner <- T.stripPrefix "[" t >>= T.stripSuffix "]" = BindAddr6 <$> parseIPv6 inner
+  | Just a <- parseIPv4 t = Just (BindAddr4 a)
+  | otherwise = BindAddr6 <$> parseIPv6 t
+
+-- | What an entry of @publish@ opens on the host (spec 10.11): the
+-- addresses it listens on, and the host ports, 'Nothing' where the
+-- engine chooses them.
+data Published = Published
+  { pbAddrs :: [BindAddr],
+    pbPorts :: Maybe (Int, Int)
+  }
+  deriving (Show, Eq, Ord)
+
+-- | Read an entry of @publish@ as the client's @--publish@ does,
+-- @[[<ip>:][<hostPort>]:]<containerPort>[/<proto>]@, with an IPv6
+-- address in brackets and a port as a range where it is one. An entry
+-- that names no address listens on every interface of both families;
+-- one this does not read is taken to open every port there.
+--
+-- >>> parsePublish "127.0.0.1:8080:80"
+-- Published {pbAddrs = [BindAddr4 [127,0,0,1]], pbPorts = Just (8080,8080)}
+-- >>> parsePublish "8000-8010:80-90/udp"
+-- Published {pbAddrs = [BindAddr4 [0,0,0,0],BindAddr6 [0,0,0,0,0,0,0,0]], pbPorts = Just (8000,8010)}
+-- >>> parsePublish "[::1]::80"
+-- Published {pbAddrs = [BindAddr6 [0,0,0,0,0,0,0,1]], pbPorts = Nothing}
+parsePublish :: Text -> Published
+parsePublish t = maybe (Published everywhere Nothing) id $ do
+  let body = fst (T.breakOn "/" t)
+  (addrs, rest) <- case T.stripPrefix "[" body of
+    Just v6 -> do
+      let (inner, after) = T.breakOn "]" v6
+      gs <- parseIPv6 inner
+      rest <- T.stripPrefix "]:" after
+      pure ([BindAddr6 gs], T.splitOn ":" rest)
+    Nothing -> case T.splitOn ":" body of
+      [ip, h, c] -> do
+        a <- parseIPv4 ip
+        pure ([BindAddr4 a], [h, c])
+      parts -> pure (everywhere, parts)
+  case rest of
+    [c] -> Published addrs Nothing <$ portRange c
+    [h, c] -> do
+      _ <- portRange c
+      ports <- if T.null h then Just Nothing else Just <$> portRange h
+      pure (Published addrs ports)
+    _ -> Nothing
+  where
+    everywhere = [BindAddr4 [0, 0, 0, 0], BindAddr6 (replicate 8 0)]
+
+-- | A port, or a range of them, from 1 to 65535.
+portRange :: Text -> Maybe (Int, Int)
+portRange t = case T.splitOn "-" t of
+  [a] -> (\p -> (p, p)) <$> port a
+  [a, b] -> do
+    lo <- port a
+    hi <- port b
+    if lo <= hi then Just (lo, hi) else Nothing
+  _ -> Nothing
+  where
+    port p = case T.unpack p of
+      ds@(d : _)
+        | all (`elem` ['0' .. '9']) ds,
+          d /= '0',
+          length ds <= 5,
+          let n = read ds :: Int,
+          n <= 65535 ->
+            Just n
+      _ -> Nothing
+
+-- | One entry of a constraint's @inbound@ (spec 10.11): an address a
+-- port may be published on, and the ports, 'Nothing' for any.
+data InboundEntry = InboundEntry
+  { ibAddr :: BindAddr,
+    ibPorts :: Maybe (Int, Int)
+  }
+  deriving (Show, Eq, Ord)
+
+-- | Read an entry of @inbound@: @<addr>@ or @<addr>:<port>@, the port
+-- a range where it is one, and an IPv6 address in brackets when a port
+-- follows it.
+--
+-- >>> parseInboundEntry "127.0.0.1:8080"
+-- Right (InboundEntry {ibAddr = BindAddr4 [127,0,0,1], ibPorts = Just (8080,8080)})
+-- >>> renderInboundEntry <$> parseInboundEntry "[::1]:8000-8010"
+-- Right "[::1]:8000-8010"
+-- >>> renderInboundEntry <$> parseInboundEntry "::1"
+-- Right "::1"
+-- >>> parseInboundEntry "localhost"
+-- Left "'localhost' is not <addr> or <addr>:<port>, with an IP address"
+parseInboundEntry :: Text -> Either Text InboundEntry
+parseInboundEntry t = maybe (Left ("'" <> t <> "' is not <addr> or <addr>:<port>, with an IP address")) Right $
+  case parseBindAddr t of
+    Just a -> Just (InboundEntry a Nothing)
+    Nothing -> do
+      let (before, p) = T.breakOnEnd ":" t
+      host <- T.stripSuffix ":" before
+      -- An IPv6 address is bracketed when a port follows it, which
+      -- would otherwise read as its last group.
+      a <- case parseBindAddr host of
+        Just (BindAddr6 _) | not ("[" `T.isPrefixOf` host) -> Nothing
+        other -> other
+      ports <- portRange p
+      pure (InboundEntry a (Just ports))
+
+-- | An entry as Lask writes it back.
+renderInboundEntry :: InboundEntry -> Text
+renderInboundEntry (InboundEntry a ports) = case ports of
+  Nothing -> renderBindAddr a
+  Just r -> host <> ":" <> renderRange r
+  where
+    host = case a of
+      BindAddr6 _ -> "[" <> renderBindAddr a <> "]"
+      _ -> renderBindAddr a
+
+renderRange :: (Int, Int) -> Text
+renderRange (lo, hi)
+  | lo == hi = T.pack (show lo)
+  | otherwise = T.pack (show lo) <> "-" <> T.pack (show hi)
+
 -- Constraints -----------------------------------------------------------
+
+-- | The kinds of environment a use runs in (spec 10.2): the host, or a
+-- container.
+data Profile = ProfileLocal | ProfileContainer
+  deriving (Show, Eq, Ord, Enum, Bounded)
+
+profileText :: Profile -> Text
+profileText p = case p of
+  ProfileLocal -> "local"
+  ProfileContainer -> "container"
+
+parseProfile :: Text -> Maybe Profile
+parseProfile t = case t of
+  "local" -> Just ProfileLocal
+  "container" -> Just ProfileContainer
+  _ -> Nothing
+
+-- | What a constraint's @volumes@ admits: any volume, or the host paths
+-- and named volumes it lists, with the widest mode each may be mounted
+-- with (@false@ lists none).
+data VolumeBound = VolumesAny | VolumesListed [(VolumeSource, Mode)]
+  deriving (Show, Eq, Ord)
+
+-- | What a constraint's @inbound@ admits: any published port, or those
+-- its entries cover (@false@ lists none).
+data InboundBound = InboundAny | InboundListed [InboundEntry]
+  deriving (Show, Eq, Ord)
 
 -- | An access constraint (spec 10.11): the bound on each component,
 -- 'Nothing' where it gives none.
 data Constraint = Constraint
   { conFiles :: Maybe AccessTable,
-    -- | The host paths and named volumes it admits, with the widest
-    -- mode each may be mounted with; @Just []@ for @false@.
-    conVolumes :: Maybe [(VolumeSource, Mode)],
-    conNetwork :: Maybe NetBound,
-    conPublish :: Maybe Bool,
-    conSecrets :: Maybe SecretBound
+    conVolumes :: Maybe VolumeBound,
+    conOutbound :: Maybe NetBound,
+    conInbound :: Maybe InboundBound,
+    conSecrets :: Maybe SecretBound,
+    -- | The kinds of environment it admits; @Just []@ for @false@.
+    conRuns :: Maybe [Profile]
   }
   deriving (Show, Eq, Ord)
 
 -- | @within {}@.
 noConstraint :: Constraint
-noConstraint = Constraint Nothing Nothing Nothing Nothing Nothing
+noConstraint = Constraint Nothing Nothing Nothing Nothing Nothing Nothing
 
 -- | Whether a constraint gives any field.
 bounds :: Constraint -> Bool
@@ -481,8 +661,8 @@ bounds c = c /= noConstraint
 
 -- | A constraint as it is written.
 --
--- >>> renderConstraint (Constraint (Just [(".", ModeRo), ("dist", ModeRw)]) (Just []) (Just (BoundClass NetNone)) Nothing Nothing)
--- "within { files: { \".\": \"ro\", \"dist\": \"rw\" }, volumes: false, network: \"none\" }"
+-- >>> renderConstraint noConstraint {conFiles = Just [(".", ModeRo), ("dist", ModeRw)], conVolumes = Just (VolumesListed []), conOutbound = Just (BoundClass NetNone), conRuns = Just [ProfileContainer]}
+-- "within { files: { \".\": \"ro\", \"dist\": \"rw\" }, volumes: false, outbound: false, runs: [\"container\"] }"
 renderConstraint :: Constraint -> Text
 renderConstraint c =
   "within {"
@@ -493,9 +673,10 @@ renderConstraint c =
       [ "files: " <> files t | Just t <- [conFiles c]
       ]
         <> ["volumes: " <> volumes v | Just v <- [conVolumes c]]
-        <> ["network: " <> network n | Just n <- [conNetwork c]]
-        <> ["publish: " <> (if p then "true" else "false") | Just p <- [conPublish c]]
+        <> ["outbound: " <> outbound n | Just n <- [conOutbound c]]
+        <> ["inbound: " <> inbound b | Just b <- [conInbound c]]
         <> ["secrets: " <> secrets b | Just b <- [conSecrets c]]
+        <> ["runs: " <> list (map (quote . profileText) ps) | Just ps <- [conRuns c]]
     secrets b = case b of
       SecretsNone -> "false"
       SecretsNamed ns -> "[" <> T.intercalate ", " (map fst ns) <> "]"
@@ -503,12 +684,20 @@ renderConstraint c =
       [(".", m)] -> quote (modeText m)
       _ -> "{ " <> T.intercalate ", " [quote k <> ": " <> quote (modeText m) | (k, m) <- t] <> " }"
     volumes v = case v of
-      [] -> "false"
-      _ -> "{ " <> T.intercalate ", " [quote (sourceText src) <> ": " <> quote (modeText m) | (src, m) <- v] <> " }"
+      VolumesAny -> "true"
+      VolumesListed [] -> "false"
+      VolumesListed vs -> "{ " <> T.intercalate ", " [quote (sourceText src) <> ": " <> quote (modeText m) | (src, m) <- vs] <> " }"
+    outbound b = case b of
+      BoundClass NetNone -> "false"
+      BoundClass _ -> "true"
+      BoundEgress es -> list (map (quote . renderEgressEntry) es)
+    inbound b = case b of
+      InboundAny -> "true"
+      InboundListed [] -> "false"
+      InboundListed es -> list (map (quote . renderInboundEntry) es)
+    -- @false@ admits nothing, as an empty list would.
+    list xs = if null xs then "false" else "[" <> T.intercalate ", " xs <> "]"
     quote t = "\"" <> t <> "\""
-    network b = case b of
-      BoundClass n -> quote (netClassText n)
-      BoundEgress es -> "[" <> T.intercalate ", " (map (quote . renderEgressEntry) es) <> "]"
 
 sourceText :: VolumeSource -> Text
 sourceText s = case s of
@@ -520,9 +709,9 @@ sourceText s = case s of
 -- or the host, which is unbounded in every one.
 --
 -- 'AccessSet' holds files, volumes, the network's class with the value
--- of @network@ as written, and whether a port is published.
+-- of @network@ as written, and what each entry of @publish@ opens.
 data AccessSet
-  = AccessSet (Maybe AccessTable) (Maybe [Volume]) (Maybe NetReach) (Maybe Bool)
+  = AccessSet (Maybe AccessTable) (Maybe [Volume]) (Maybe NetReach) (Maybe [Published])
   | -- | The host, and why: @#local@, or a volume that gives what the
     -- host has ('hostEquivalent').
     HostAccess Text
@@ -542,30 +731,40 @@ findingField f = case f of
 -- | What keeps an access set from being within a constraint (spec
 -- 10.11); none when it is within it.
 --
--- >>> let c = noConstraint {conFiles = Just [(".", ModeRo), ("dist", ModeRw)], conNetwork = Just (BoundClass NetNone)}
--- >>> checkAccess c (AccessSet (Just [(".", ModeRo), ("dist", ModeRw)]) (Just []) (Just (NetReach NetNone (Just "none"))) (Just False))
+-- >>> let c = noConstraint {conFiles = Just [(".", ModeRo), ("dist", ModeRw)], conOutbound = Just (BoundClass NetNone)}
+-- >>> checkAccess c (AccessSet (Just [(".", ModeRo), ("dist", ModeRw)]) (Just []) (Just (NetReach NetNone (Just "none"))) (Just []))
 -- []
--- >>> checkAccess c (AccessSet (Just [(".", ModeRw)]) (Just []) (Just (NetReach NetDefault Nothing)) (Just False))
--- [Exceeds "files" "\".\" is \"rw\", wider than \"ro\"",Exceeds "network" "the network is \"default\""]
--- >>> checkAccess c (AccessSet (Just [(".", ModeRo)]) Nothing Nothing (Just False))
--- [Unproven "network"]
+-- >>> checkAccess c (AccessSet (Just [(".", ModeRw)]) (Just []) (Just (NetReach NetDefault Nothing)) (Just []))
+-- [Exceeds "files" "\".\" is \"rw\", wider than \"ro\"",Exceeds "outbound" "the network is \"default\""]
+-- >>> checkAccess c (AccessSet (Just [(".", ModeRo)]) Nothing Nothing (Just []))
+-- [Unproven "outbound"]
 -- >>> checkAccess c (HostAccess "#local reaches the whole host")
--- [Exceeds "files" "#local reaches the whole host",Exceeds "network" "#local reaches the whole host"]
+-- [Exceeds "files" "#local reaches the whole host",Exceeds "outbound" "#local reaches the whole host"]
+-- >>> checkAccess noConstraint {conRuns = Just [ProfileContainer]} (HostAccess "#local reaches the whole host")
+-- [Exceeds "runs" "#local reaches the whole host"]
+-- >>> checkAccess noConstraint {conInbound = Just (InboundListed [InboundEntry (BindAddr4 [127,0,0,1]) Nothing])} (AccessSet Nothing Nothing Nothing (Just [parsePublish "8080:80"]))
+-- [Exceeds "inbound" "a port is published on 0.0.0.0:8080"]
 checkAccess :: Constraint -> AccessSet -> [Finding]
 checkAccess c a = case a of
   HostAccess why ->
     [ Exceeds k why
-    | (k, True) <- [("files", isJust' (conFiles c)), ("volumes", isJust' (conVolumes c)), ("network", isJust' (conNetwork c)), ("publish", isJust' (conPublish c))]
+    | (k, True) <- [("files", isJust' (conFiles c)), ("volumes", isJust' (conVolumes c)), ("outbound", isJust' (conOutbound c)), ("inbound", isJust' (conInbound c))]
     ]
+      <> runsWithin ProfileLocal why
   AccessSet files vols net pub ->
     concat
       [ maybe [] (\bound -> maybe [Unproven "files"] (filesWithin bound) files) (conFiles c),
         maybe [] (\bound -> maybe [Unproven "volumes"] (volumesWithin bound) vols) (conVolumes c),
-        maybe [] (\bound -> maybe [Unproven "network"] (networkWithin bound) net) (conNetwork c),
-        maybe [] (\bound -> maybe [Unproven "publish"] (publishWithin bound) pub) (conPublish c)
+        maybe [] (\bound -> maybe [Unproven "outbound"] (networkWithin bound) net) (conOutbound c),
+        maybe [] (\bound -> maybe [Unproven "inbound"] (inboundWithin bound) pub) (conInbound c),
+        runsWithin ProfileContainer "it runs in a container"
       ]
   where
     isJust' = maybe False (const True)
+
+    runsWithin p why = case conRuns c of
+      Just ps | p `notElem` ps -> [Exceeds "runs" why]
+      _ -> []
 
     filesWithin bound t =
       take 1
@@ -576,12 +775,14 @@ checkAccess c a = case a of
           m > b
         ]
 
-    volumesWithin bound vs =
-      take 1
-        [ Exceeds "volumes" (q (sourceText (volSource v)) <> " is mounted " <> q (modeText (volMode v)))
-        | v <- vs,
-          not (any (>= volMode v) [m | (k, m) <- bound, covers k (volSource v)])
-        ]
+    volumesWithin bound vs = case bound of
+      VolumesAny -> []
+      VolumesListed listed ->
+        take 1
+          [ Exceeds "volumes" (q (sourceText (volSource v)) <> " is mounted " <> q (modeText (volMode v)))
+          | v <- vs,
+            not (any (>= volMode v) [m | (k, m) <- listed, covers k (volSource v)])
+          ]
 
     covers k src = case (k, src) of
       (VolumeHost kp, VolumeHost p) -> kp == p || (kp <> "/") `T.isPrefixOf` p || kp == "/"
@@ -590,19 +791,34 @@ checkAccess c a = case a of
 
     networkWithin bound reach = case (bound, reach) of
       (BoundClass b, NetReach cls written)
-        | cls > b -> [Exceeds "network" ("the network is " <> q (maybe (netClassText cls) id written))]
+        | cls > b -> [Exceeds "outbound" ("the network is " <> q (maybe (netClassText cls) id written))]
         | otherwise -> []
       (BoundEgress _, NetReach NetNone _) -> []
-      (BoundEgress _, NetReach cls written) -> [Exceeds "network" ("the network is " <> q (maybe (netClassText cls) id written))]
+      (BoundEgress _, NetReach cls written) -> [Exceeds "outbound" ("the network is " <> q (maybe (netClassText cls) id written))]
       -- An egress that lists nothing reaches nothing, as none does.
-      (BoundClass NetNone, NetEgress es) -> take 1 [Exceeds "network" ("egress lists " <> q (renderEgressEntry e)) | e <- es]
+      (BoundClass NetNone, NetEgress es) -> take 1 [Exceeds "outbound" ("egress lists " <> q (renderEgressEntry e)) | e <- es]
       (BoundClass _, NetEgress _) -> []
       (BoundEgress bs, NetEgress es) ->
-        take 1 [Exceeds "network" ("egress lists " <> q (renderEgressEntry e)) | e <- es, not (any (`egressCovers` e) bs)]
+        take 1 [Exceeds "outbound" ("egress lists " <> q (renderEgressEntry e)) | e <- es, not (any (`egressCovers` e) bs)]
 
-    publishWithin bound p
-      | p && not bound = [Exceeds "publish" "a port is published"]
-      | otherwise = []
+    inboundWithin bound ps = case bound of
+      InboundAny -> []
+      InboundListed es ->
+        take 1
+          [ Exceeds "inbound" ("a port is published on " <> opened addr (pbPorts p))
+          | p <- ps,
+            addr <- pbAddrs p,
+            not (any (\e -> ibAddr e == addr && portsCover (ibPorts e) (pbPorts p)) es)
+          ]
+
+    portsCover bound ports = case (bound, ports) of
+      (Nothing, _) -> True
+      (Just (lo, hi), Just (a', b')) -> lo <= a' && b' <= hi
+      (Just _, Nothing) -> False
+
+    opened addr ports = case ports of
+      Nothing -> renderInboundEntry (InboundEntry addr Nothing) <> ", on a port the engine chooses"
+      Just r -> renderInboundEntry (InboundEntry addr (Just r))
 
     q t = "\"" <> t <> "\""
 

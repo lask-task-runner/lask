@@ -21,7 +21,7 @@ where
 
 import Command.Lask.Common
 import Command.Lask.DepUse (ImportSite (..), projectImports)
-import Language.Lask.Core.Access (Carried (..), Covering (..), Flow (..), OptVal (..), SVal (..), Secret (..), SecretKind (..), Target (..), UseKind (..), UseSite (..), Via (..), channelFlows, collectUseSites, coveringsOf, programMarksSecrets, secretFindings, targetAccess, targetParametric, withinConstraints)
+import Language.Lask.Core.Access (Carried (..), Covering (..), renderCovering, Flow (..), OptVal (..), SVal (..), Secret (..), SecretKind (..), Target (..), UseKind (..), UseSite (..), Via (..), channelFlows, collectUseSites, coveringsOf, programMarksSecrets, secretFindings, targetAccess, targetParametric, withinConstraints)
 import Command.Lask.Envs (CommandSite (..), HeadImage (..), HeadUse (..), Requirer (..), collectCommandSites, collectHeadUses)
 import Command.Lask.Images
 import Language.Lask.Runtime.Container (ContainerBackend (..), resolveBackend)
@@ -51,7 +51,7 @@ import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Access (AccessTable, Channel (..), Constraint (..), Finding (..), channelText, exposedChannel, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, hostEquivalent, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume, renderConstraint)
+import Language.Lask.Access (AccessTable, Channel (..), Constraint (..), Finding (..), channelText, exposedChannel, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, hostEquivalent, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume)
 import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Core.AST (Core (..))
 import Language.Lask.Elaborate (CommandUse (..), CoreProgram (..))
@@ -1087,7 +1087,7 @@ cmdEnvsAccessListing listing opts function verbose = do
           case (listing, scope) of
             (ListAccess, Just key) -> TIO.putStrLn $ case coveringsOf cons key of
               [] -> "within: none"
-              cvs -> T.intercalate " and " (map (renderConstraint . cvConstraint) cvs)
+              cvs -> T.intercalate " and " (map (renderCovering) cvs)
             _ -> pure ()
           let (header, cellsOf) = case listing of
                 ListFiles ->
@@ -1154,6 +1154,9 @@ targetCheck s t
 -- | The same for an environment the program does not show.
 dynamicCheck :: UseSite -> Text
 dynamicCheck s
+  -- A constraint that admits no use is exceeded whatever the
+  -- environment is (spec 10.11).
+  | (usDynamic s || usParam s) && any (\cv -> conRuns (cvConstraint cv) == Just []) (usUnder s) = "exceeded"
   | null (usUnder s) || not (usDynamic s) = "—"
   | otherwise = "unproven"
 
@@ -1495,7 +1498,7 @@ cmdEnvsSecrets opts function = do
           case scope of
             Just key -> TIO.putStrLn $ case coveringsOf cons key of
               [] -> "within: none"
-              cvs -> T.intercalate " and " (map (renderConstraint . cvConstraint) cvs)
+              cvs -> T.intercalate " and " (map (renderCovering) cvs)
             Nothing -> pure ()
           let header = ["SECRET", "CHANNEL", "ENVIRONMENT", "NETWORK", "CHECK", "REQUIRED BY"]
               cells r = [plain (secretCell r), plain (channelCell r), plain (environmentCell r), plain (networkOf r), checkCell (arCheck (srEnv r)), plain (requiredCell (arBy (srEnv r)))]
