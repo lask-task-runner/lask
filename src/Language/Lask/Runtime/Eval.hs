@@ -271,6 +271,13 @@ binOp _ op a b = case op of
       PLe -> pure (VBool (x <= y))
       PGt -> pure (VBool (x > y))
       PGe -> pure (VBool (x >= y))
+    -- Strings order by code point (spec 6.2, 15.4).
+    (VString x, VString y) -> case op of
+      PLt -> pure (VBool (x < y))
+      PLe -> pure (VBool (x <= y))
+      PGt -> pure (VBool (x > y))
+      PGe -> pure (VBool (x >= y))
+      _ -> internal "non-numeric operands"
     _ -> internal "non-numeric operands"
   where
     divS x y = realToFrac (realToFrac x / realToFrac y :: Double)

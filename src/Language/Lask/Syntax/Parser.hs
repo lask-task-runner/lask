@@ -661,7 +661,8 @@ operatorTable =
   [ [binL OpMul, binL OpDiv],
     [binL OpAdd, binL OpSub],
     [binL OpEq, binL OpNe, binL OpLt, binL OpLe, binL OpGt, binL OpGe],
-    [binL OpAnd, binL OpOr],
+    [binL OpAnd],
+    [binL OpOr],
     [binL OpPipeR, binL OpPipeL, binL OpCompR, binL OpCompL]
   ]
   where
@@ -675,6 +676,10 @@ pUnary =
         s <- op OpNot
         e <- pUnary
         pure (Expr (s <> exprSpan e) (ENot e)),
+      do
+        s <- op OpSub
+        e <- pUnary
+        pure (Expr (s <> exprSpan e) (ENeg e)),
       do
         s <- kw KAsync
         e <- pUnary

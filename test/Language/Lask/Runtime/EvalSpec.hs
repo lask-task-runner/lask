@@ -141,6 +141,19 @@ spec = do
       evalsTo "x = 10 / 4" "x" "2.5"
     it "evaluates comparisons and logic with short-circuit" $
       evalsTo "f(): Bool = 1 < 2 && !(2 == 3)" "f" "true"
+    it "binds && tighter than || (spec 6.2)" $ do
+      evalsTo "f(): Bool = true || false && false" "f" "true"
+      evalsTo "f(): Bool = false && true || true" "f" "true"
+      evalsTo "f(): Bool = (true || false) && false" "f" "false"
+    it "orders strings by code point" $ do
+      evalsTo "f(): Bool = \"apple\" < \"banana\"" "f" "true"
+      evalsTo "f(): Bool = \"B\" < \"a\"" "f" "true"
+      evalsTo "f(): Bool = \"b\" <= \"b\" && \"c\" > \"b\" && \"a\" >= \"a\"" "f" "true"
+    it "negates with unary minus, binding tighter than the binary operators" $ do
+      evalsTo "f() = -2 * 3" "f" "-6"
+      evalsTo "f() = 1 - -2" "f" "3"
+      evalsTo "f() = -(1 + 2)" "f" "-3"
+      evalsTo "f(): Bool = -1 < 0" "f" "true"
     it "short-circuits && without evaluating the right side" $
       evalsTo "f(): Bool = false && get({\"a\": true}, \"missing\")" "f" "false"
     it "compares structurally" $

@@ -231,6 +231,8 @@ data ExprF
   | EIndex Expr Expr
   | EBin Op Expr Expr
   | ENot Expr
+  | -- | Unary minus, @-e@ (spec 6.2).
+    ENeg Expr
   | EDo Block
   | -- | 'Nothing' is an @if@ without @else@, whose value is @null@
     -- (or nothing, for a @Void@ block) when the condition is false
@@ -367,6 +369,7 @@ stripSpansExpr (Expr _ f) = Expr NoSpan $ case f of
   EIndex e i -> EIndex (stripSpansExpr e) (stripSpansExpr i)
   EBin o a b -> EBin o (stripSpansExpr a) (stripSpansExpr b)
   ENot e -> ENot (stripSpansExpr e)
+  ENeg e -> ENeg (stripSpansExpr e)
   EDo b -> EDo (stripBlock b)
   EIf c t e -> EIf (stripSpansExpr c) (stripBlock t) (fmap stripBlock e)
   ECond c a b -> ECond (stripSpansExpr c) (stripSpansExpr a) (stripSpansExpr b)

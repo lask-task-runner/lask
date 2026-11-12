@@ -49,8 +49,8 @@ notStringifiable = task "not_stringifiable" $ "vet " <> str (lines_ "a")
 noSuchField :: Task '[] 'TNumber
 noSuchField = task "no_such_field" $ field @"cod" (runAll go "version")
 
-orderedStrings :: Task '[] 'TBool
-orderedStrings = task "ordered_strings" $ "a" <. "b"
+orderedVoid :: Task '[] 'TBool
+orderedVoid = task "ordered_void" $ done <. done
 
 comparedVoid :: Task '[] 'TBool
 comparedVoid = task "compared_void" $ done ==. done
@@ -136,8 +136,8 @@ spec = describe "Language.Lask.Embed rejects at compile time" $ do
     rejected notStringifiable ["Array<String> cannot be interpolated"]
   it "a field the record does not have (E-TYPE-ACCESS)" $
     rejected noSuchField ["the record has no field \"cod\""]
-  it "ordering strings, which Lask orders only as numbers" $
-    rejected orderedStrings ["Couldn't match type", "TNumber", "TString"]
+  it "ordering a type that is not orderable" $
+    rejected orderedVoid ["Void is not orderable"]
   it "comparing Void" $
     rejected comparedVoid ["Void is not comparable"]
   it "a Void parameter (E-TYPE-ILLFORMED)" $

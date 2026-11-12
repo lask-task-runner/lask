@@ -425,6 +425,18 @@ spec = do
       pExpr "1 + 2 == 3"
         `shouldBe` Right (EBin OpEq (ex (EBin OpAdd (num 1) (num 2))) (num 3))
 
+    it "parses && above || (spec 6.2)" $ do
+      pExpr "a || b && c"
+        `shouldBe` Right (EBin OpOr (var "a") (ex (EBin OpAnd (var "b") (var "c"))))
+      pExpr "a && b || c"
+        `shouldBe` Right (EBin OpOr (ex (EBin OpAnd (var "a") (var "b"))) (var "c"))
+
+    it "parses unary minus tightest" $ do
+      pExpr "-a * b"
+        `shouldBe` Right (EBin OpMul (ex (ENeg (var "a"))) (var "b"))
+      pExpr "a - -b"
+        `shouldBe` Right (EBin OpSub (var "a") (ex (ENeg (var "b"))))
+
     it "parses pipes at the lowest precedence" $
       pExpr "a && b |> f"
         `shouldBe` Right (EBin OpPipeR (ex (EBin OpAnd (var "a") (var "b"))) (var "f"))
