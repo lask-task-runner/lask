@@ -1278,8 +1278,10 @@ data Branch a = Branch
 -- branch's diagnostic is the report. A statement whose value is
 -- discarded (the first argument) is not held to @T | Null@ being a
 -- type, as an if without else is not ('elabIfNoElse'), and keeps @T@.
-joinBranches :: Bool -> Span -> [Branch a] -> TC ([a], Type)
-joinBranches discarded sp branches = go [] Nothing Nothing (zip [0 :: Int ..] branches)
+-- A branch of a wider type, one the shared type conforms to, widens it
+-- (4.3): which branch comes first does not decide the type.
+joinBranches :: Ctx -> Bool -> Span -> [Branch a] -> TC ([a], Type)
+joinBranches ctx discarded sp branches = go [] Nothing Nothing (zip [0 :: Int ..] branches)
   where
     -- @done@ holds the branches elaborated so far, by position;
     -- @pending@ those that did not infer on their own, still to be
@@ -1296,6 +1298,8 @@ joinBranches discarded sp branches = go [] Nothing Nothing (zip [0 :: Int ..] br
             r2 <- tryTC (branchInfer b)
             case r2 of
               Right (a, TyNull) -> go ((i, Right (a, True)) : done) mAnchor mErr rest
+              -- A wider branch: the branches so far conform to it too.
+              Right (a, u) | conforms ctx t u -> go ((i, Right (a, False)) : done) (Just u) mErr rest
               _ -> abort err
       Nothing -> do
         r <- tryTC (branchInfer b)
@@ -1338,7 +1342,7 @@ joinBranches discarded sp branches = go [] Nothing Nothing (zip [0 :: Int ..] br
 elabIfElse :: Ctx -> FilePath -> Locals -> Span -> Expr -> Block -> Block -> Bool -> TC (Core, Type)
 elabIfElse ctx path locals sp c t el discarded = do
   condCore <- check ctx path locals c TyBool
-  (stmtss, ty) <- joinBranches discarded sp [blockBranch ctx path locals t, blockBranch ctx path locals el]
+  (stmtss, ty) <- joinBranches ctx discarded sp [blockBranch ctx path locals t, blockBranch ctx path locals el]
   (thenStmts, elseStmts) <- case stmtss of
     [a, b] -> pure (a, b)
     _ -> abort (diag ETypeMismatch sp "an if has two branches")
@@ -2107,7 +2111,7 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
       Just t | t /= TyAny -> do
         cs <- mapM (`checkArm` t) bodies
         pure (cs, t)
-      _ -> joinBranches discarded sp (map armBranch bodies)
+      _ -> joinBranches ctx discarded sp (map armBranch bodies)
 
     checkArm ((lcls, wrap), b) t = wrap <$> check ctx path lcls b t
 
@@ -2208,7 +2212,7 @@ elabTry ctx path locals sp body mCatch mFin mExpected discarded = do
           -- Null (spec 4.3, 6.9); context-typed calls like fail may
           -- appear in either (15.7).
           (stmtss, ty) <-
-            joinBranches discarded sp [blockBranch ctx path locals body, blockBranch ctx path handlerLocals handler]
+            joinBranches ctx discarded sp [blockBranch ctx path locals body, blockBranch ctx path handlerLocals handler]
           case stmtss of
             [bodyStmts, hStmts] -> pure (coreOf body bodyStmts, coreOf handler hStmts, ty)
             _ -> abort (diag ETypeMismatch sp "a try with catch has two branches")
@@ -2965,22 +2969,10 @@ bindEnvOptions ctx path locals sig unknown = foldM step []
           Nothing -> abort (unknownEnvOption n (diag ETypeEnvConstruct asp (unknown n)))
 
     -- A list or table option is declared with nullable elements, so
-    -- that a literal can hold a null to leave out (10.2). Containers
-    -- are invariant (4.4), so a value already typed as a list or table
-    -- of strings would not conform to that; it holds no null to leave
-    -- out, and is accepted as it is.
-    checkEnvArg e ty = case ty of
-      TyArray el | el == nullableText -> orPlain (TyArray TyString)
-      TyMap el | el == nullableText -> orPlain (TyMap TyString)
-      _ | ty == mkUnion (TyArray nullableText) [TyNull] -> orPlain (mkUnion (TyArray TyString) [TyNull])
-      _ -> check ctx path locals e ty
-      where
-        nullableText = mkUnion TyString [TyNull]
-        orPlain plain = do
-          r <- tryTC (check ctx path locals e ty)
-          case r of
-            Right c -> pure c
-            Left d -> either (const (abort d)) pure =<< tryTC (check ctx path locals e plain)
+    -- that a literal can hold a null to leave out (10.2). A value
+    -- already typed as a list or table of strings conforms to that as
+    -- it is, containers being covariant (4.4).
+    checkEnvArg e ty = check ctx path locals e ty
 
 -- Calls (spec 7.5) ------------------------------------------------------------------------
 

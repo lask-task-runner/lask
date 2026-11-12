@@ -463,8 +463,33 @@ spec = do
       accepts "f(): String | Null = \"a\"\ng(): String | Null = null"
     it "rejects the union where a member is required" $
       rejects "f(x: String | Null): String = x" ETypeMismatch
-    it "does not lift the union through a constructor (spec 4.4)" $
-      rejects "f(xs: Array<String>): Array<String | Null> = xs" ETypeMismatch
+    it "lets a container of narrower elements stand where wider ones are wanted (spec 4.4)" $ do
+      accepts "show(xs: Array<Any>): String = to_json(xs)\nh(): String = do {\n  ns: Array<Number> = [1, 2]\n  show(ns)\n}"
+      accepts "es(): Array<Environment> = [#local]\nn(rs: Array<Runnable>): Number = size(rs)\ng(): Number = n(es())"
+      accepts "m(): Map<String> = {\"a\": \"x\"}\nf(x: Map<String | Null>): Number = 1\ng(): Number = f(m())"
+      accepts "h(): AsyncHandle<String> = async \"x\"\nf(x: AsyncHandle<String | Null>): Number = 1\ng(): Number = f(h())"
+    it "widens the field types of a record, and keeps its fields (spec 4.4)" $ do
+      accepts "r(): Record<a: String> = {a: \"x\"}\nf(x: Record<a: String | Null>): Number = 1\ng(): Number = f(r())"
+      rejects "r(): Record<a: String, b: Number> = {a: \"x\", b: 1}\nf(x: Record<a: String>): Number = 1\ng(): Number = f(r())" ETypeMismatch
+      rejects "r(): Record<a: String> = {a: \"x\"}\nf(x: Record<a?: String>): Number = 1\ng(): Number = f(r())" ETypeMismatch
+    it "lets a function that takes more or returns less stand in (spec 4.4)" $ do
+      accepts "p(n: Number): String = \"x\"\napply(g: Function<Number, String | Null>): Number = 1\nf(): Number = apply(p)"
+      accepts "p(x: Any): String = \"x\"\napply(g: Function<String, String>): Number = 1\nf(): Number = apply(p)"
+      rejects "p(x: String): String = x\napply(g: Function<Any, String>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
+      rejects "p(n: Number): String | Null = null\napply(g: Function<Number, String>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
+    it "does not let a Void result stand for a value (spec 4.4)" $
+      rejects "p(n: Number): Void = log(\"x\")\napply(g: Function<Number, Any>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
+    it "still instantiates a type variable inside a function type exactly (spec 4.4)" $
+      rejects "show(x: Any): Void = log(to_json(x))\nf(): Void = for_each([\"a\"], show)" ETypeMismatch
+    it "types branches of conforming types at the wider, in either order (spec 4.3)" $ do
+      hasType "n(): Array<String> = [\"a\"]\nw(): Array<String | Null> = [null]\nf(c: Bool) = c ? n() : w()" "f" "Function<Bool, Array<String | Null>>"
+      hasType "n(): Array<String> = [\"a\"]\nw(): Array<String | Null> = [null]\nf(c: Bool) = c ? w() : n()" "f" "Function<Bool, Array<String | Null>>"
+      hasType "f(c: Bool) = if (c) { #alpine:3.20 } else { #alpine:3.20{memory: \"1g\"} }" "f" "Function<Bool, Runnable>"
+    -- Containers are covariant (spec 4.4): the union is lifted through
+    -- them, in the one direction.
+    it "lifts the union through a constructor, and not the other way (spec 4.4)" $ do
+      accepts "f(xs: Array<String>): Array<String | Null> = xs"
+      rejects "f(xs: Array<String | Null>): Array<String> = xs" ETypeMismatch
     it "checks a literal element-wise against a union element type" $
       accepts "xs: Array<String | Null> = [\"a\", null]"
     it "checks an object literal against the one record or map member of a union (spec 4.3)" $ do
@@ -798,8 +823,8 @@ spec = do
     it "accepts null for a container option, and in the elements of a list or table" $
       accepts
         "f(--u: String | Null = null): Runnable = #a:1{user: u, env: {\"A\": u, \"B\": \"\"}, tmpfs: [u], init: null, cpus: null}"
-    -- Containers are invariant (4.4): a list or table already typed
-    -- without null has to be accepted as it is.
+    -- Containers are covariant (4.4): a list or table already typed
+    -- without null conforms to one whose elements may be null.
     it "accepts a list or table of strings that is not a literal" $
       accepts
         "xs: Array<String> = [\"/tmp\"]\nm: Map<String> = {\"A\": \"1\"}\nmk(): Map<String> = m\ne = #a:1{tmpfs: xs, env: mk(), volumes: xs, add_hosts: m}"

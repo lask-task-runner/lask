@@ -256,8 +256,11 @@ applySubst s t = case t of
 
 
 -- | @conformsTo t u@: an expression of type @t@ may be placed where
--- @u@ is requiredField (spec 4.4). Reflexive structural identity, plus
--- @Any@ as the sole top type. No variance.
+-- @u@ is required (spec 4.4): reflexive, with @Any@ as the sole top
+-- type, unions, and an environment as a runnable; covariant in the
+-- contents of an array, a map, a handle and the field types of a
+-- record, since no value is ever changed; and for a function type,
+-- contravariant in its parameters and covariant in its result.
 conformsTo :: Type -> Type -> Bool
 conformsTo = conformsUnder (const Nothing)
 
@@ -278,6 +281,29 @@ conformsUnder upper = go
       -- An environment is a runnable with no run options (spec 4.4).
       | t == TyEnvironment, u == TyRunnable = True
       | TyVar v <- t, Just b <- upper v = go b u
+      -- No value is ever changed (15.4), so reading a container at a
+      -- wider element type is safe: Array<String> is an
+      -- Array<String | Null>.
+      | TyArray a <- t, TyArray b <- u = go a b
+      | TyMap a <- t, TyMap b <- u = go a b
+      | TyAsync a <- t, TyAsync b <- u = go a b
+      -- A record keeps its field set, and which fields may be absent:
+      -- only the field types widen.
+      | TyRecord fa <- t,
+        TyRecord fb <- u =
+          Map.keysSet fa == Map.keysSet fb
+            && and
+              [ fieldOptional x == fieldOptional y && go (fieldType x) (fieldType y)
+              | (x, y) <- Map.elems (Map.intersectionWith (,) fa fb)
+              ]
+      -- A function that takes more, or returns less, stands in for one
+      -- that takes less or returns more. A result of Void is no value,
+      -- and stands only for Void.
+      | TyFun ps r <- t,
+        TyFun qs s <- u =
+          length ps == length qs
+            && and (zipWith (flip go) ps qs)
+            && (r == s || (r /= TyVoid && s /= TyVoid && go r s))
       | otherwise = False
 
 -- | The named bounds of a type parameter (spec 4.2): a closed set of
