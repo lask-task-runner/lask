@@ -36,11 +36,23 @@ slowCleanup =
         [ "long(): String = try {",
           "  $[#alpine:3.22.2] sleep 30",
           "} finally {",
-          "  $[#local] sleep 20",
+          "  $[#local] sleep " <> cleanupSeconds,
           "}"
         ]
     )
   ]
+
+-- | How long the clean-up command sleeps: a duration no other process
+-- on the machine is likely to sleep for, so the check that it was
+-- killed with lask finds this test's process and no other.
+cleanupSeconds :: String
+cleanupSeconds = "20.0417"
+
+-- | How long to wait for the reaper, which is a process of its own
+-- that lask starts on its way out: on a loaded CI runner it can take
+-- longer than a few seconds to get there.
+reapTicks :: Int
+reapTicks = 600
 
 -- | Start @lask run long@ in the background, wait until its container
 -- command has started, and send it the signals given, a second apart.
@@ -113,16 +125,16 @@ spec = beforeAll findLask $ describe "signals (spec 11.12)" $ do
       (code, err) <- runSignalled lask dir state extra ["TERM", "TERM"]
       code `shouldBe` 143
       err `shouldSatisfy` isInfixOf "again: stopping at once"
-      waitFor 100 (reaped state)
+      waitFor reapTicks (reaped state)
       -- The clean-up's own command is killed with lask, not left behind.
-      out <- readProcess "sh" ["-c", "pgrep -f 'slee[p] 20' || true"] ""
+      out <- readProcess "sh" ["-c", "pgrep -f 'slee[p] " <> cleanupSeconds <> "' || true"] ""
       out `shouldBe` ""
 
   it "has the reaper remove the containers of an invocation killed with SIGKILL" $ \lask ->
     withFakeDocker $ \state extra -> withProject project $ \dir -> do
       (code, _) <- runSignalled lask dir state extra ["KILL"]
       code `shouldBe` (-9)
-      waitFor 100 (reaped state)
+      waitFor reapTicks (reaped state)
 
   it "passes SIGTERM on to the program cmd runs (spec 11.8)" $ \lask ->
     withProject [("main.lask", "internal command { \"sh\" } on #local\n")] $ \dir -> do
