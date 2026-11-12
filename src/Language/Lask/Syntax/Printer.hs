@@ -651,6 +651,11 @@ exprBody flat a b f = case f of
     -- @!!@ would lex as the secret marker.
     c <- srcText (startOf (exprSpan x)) (second (+ 1) (startOf (exprSpan x)))
     pure ("!" <> (if c == "!" then " " else mempty) <> dx)
+  ENeg x -> do
+    dx <- expr x
+    -- @--@ would lex as the keyword-parameter mark.
+    c <- srcText (startOf (exprSpan x)) (second (+ 1) (startOf (exprSpan x)))
+    pure ("-" <> (if c == "-" then " " else mempty) <> dx)
   EDo body -> ("do " <>) <$> block body
   EIf c t me -> do
     dc <- expr c

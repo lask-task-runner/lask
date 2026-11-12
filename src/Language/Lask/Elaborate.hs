@@ -1666,6 +1666,10 @@ infer ctx path locals (Expr sp f) = case f of
   EDot inner (Spanned fsp fld) -> elabDot ctx path locals sp inner fsp fld
   EIndex inner idx -> elabIndex ctx path locals sp inner idx
   EBin op a b -> elabBin ctx path locals sp op a b Nothing
+  -- -e is 0 - e (spec 6.2).
+  ENeg inner -> do
+    c <- check ctx path locals inner TyNumber
+    pure (Core sp (CBin PSub (Core sp (CNumber 0)) c), TyNumber)
   ENot inner -> do
     c <- check ctx path locals inner TyBool
     pure (Core sp (CNot c), TyBool)
@@ -2298,10 +2302,40 @@ elabBin ctx path locals sp op a b mExpected = case op of
       ca <- check ctx path locals a TyNumber
       cb <- check ctx path locals b TyNumber
       pure (Core sp (CBin p ca cb), TyNumber)
+    -- Both operands have one orderable type (spec 6.2): Number or
+    -- String. An operand that needs an expected type to be typed, as
+    -- a cast, takes the other's.
     compare' p = do
-      ca <- check ctx path locals a TyNumber
-      cb <- check ctx path locals b TyNumber
+      ra <- tryTC (infer ctx path locals a)
+      rb <- tryTC (infer ctx path locals b)
+      (ca, cb, t) <- case (ra, rb) of
+        (Right (ca, ta), Right (cb, tb)) -> do
+          used <- orderUse ta tb
+          unless used $ do
+            ab <- conformsM ctx sp ta tb
+            ba <- conformsM ctx sp tb ta
+            unless (ab && ba) (mismatch sp ta tb)
+          pure (ca, cb, ta)
+        (Right (ca, ta), Left _) -> (\cb -> (ca, cb, ta)) <$> check ctx path locals b ta
+        (Left _, Right (cb, tb)) -> (\ca -> (ca, cb, tb)) <$> check ctx path locals a tb
+        (Left d, Left _) -> abort d
+      ok <- holdsM ctx BOrderable t
+      unless ok $
+        abort (diag ETypeBound sp ("values of type " <> renderType t <> " cannot be ordered with <, <=, > or >=: only Number and String are orderable"))
       pure (Core sp (CBin p ca cb), TyBool)
+    -- A parameter whose type is still to be found, ordered (spec 4.3):
+    -- against a value of a type, it is used at that type; against
+    -- another such parameter, the two have one type. Either way it is
+    -- orderable.
+    orderUse ta tb = do
+      vs <- gets stInfer
+      case (openVar vs ta, openVar vs tb) of
+        (Just v, Just w) -> do
+          when (v /= w) (refineVar ctx v (TyVar w))
+          True <$ addVarBound w BOrderable
+        (Just v, Nothing) -> True <$ constrain ctx sp (TyVar v) (zonkWith vs tb)
+        (Nothing, Just w) -> True <$ constrain ctx sp (TyVar w) (zonkWith vs ta)
+        _ -> pure False
     -- One side has to fit where the other is, and the wider of the two
     -- -- the one conformed to -- has to be comparable (spec 6.2). For
     -- two non-union types that is the same as requiring them equal.

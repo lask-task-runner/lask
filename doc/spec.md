@@ -331,7 +331,7 @@ Lexical rules:
 - Consecutive newlines (blank lines) are treated as equivalent to a single newline token. Blank lines produce no declarations or statements.
 - Comments are treated the same as whitespace for the purposes of lexical analysis.
 - A line comment ends at a newline, and a block comment is enclosed by `/*` and `*/`.
-- Number literals do not include a sign. `-` and `+` are always interpreted as binary operators. Negative numbers cannot be expressed as literals and are constructed with expressions such as `0 - 1` (unary minus is not provided).
+- Number literals do not include a sign. A negative number is written with unary minus (6.2), `-1`, which is the expression `0 - 1` and not a literal. `+` is always a binary operator.
 - `env_head` is the leading token of an environment expression (6.7) and is read with longest match. It terminates at the position where a character that is not an `env_char` (whitespace, `]`, `,`, `)`, `}`, etc.) appears.
 - A `#` not followed by at least one `env_char` is a lexical error (except for the interpolation opener `#{` inside interpreted strings and command strings).
 - The character set of `env_char` is defined so that any Docker image reference including registry, repository, tag, and digest can be written. `@` is included for digest specification (e.g. `#alpine@sha256:...`). It also covers a relative path to a Dockerfile (`#./images/build/Dockerfile`, 6.7).
@@ -590,10 +590,10 @@ Inference of parameter types:
 
 A parameter written without a type annotation is not `Any`: its type is the one the body of its function needs it to have. This holds for the positional, variadic and required keyword parameters of a function declaration and of a lambda, at top level or in a block. A lambda checked against an expected type takes its parameter types from it (6.1), as before, and infers none.
 
-- **Uses.** Each place the body puts the parameter in a position that requires a type `U` — an argument of a callee whose parameter is `U`, an operand of an operator (6.2), the condition of `if` or `case`, the scrutinee of a `case` with value patterns (6.4) at the type of those patterns, an operand of `==` or `!=` (6.2) at the type of the other operand, the environment of a command (6.6), a binding or a return with an annotation, a field of a record literal with an expected type — is a *use* at `U`. A position that requires `Any`, such as the argument of `to_json` or `cast` (15.8), constrains nothing, since every type conforms to `Any`, and is not a use. The scrutinee of a `case` with type heads (6.4) is a use at `Any`: a type is dispatched on only in an `Any` or a union. Compared with `null`, a parameter is used at no type; compared with another parameter whose type is inferred, the two have one type.
+- **Uses.** Each place the body puts the parameter in a position that requires a type `U` — an argument of a callee whose parameter is `U`, an operand of an operator (6.2), the condition of `if` or `case`, the scrutinee of a `case` with value patterns (6.4) at the type of those patterns, an operand of `==`, `!=`, `<`, `<=`, `>` or `>=` (6.2) at the type of the other operand, the environment of a command (6.6), a binding or a return with an annotation, a field of a record literal with an expected type — is a *use* at `U`. A position that requires `Any`, such as the argument of `to_json` or `cast` (15.8), constrains nothing, since every type conforms to `Any`, and is not a use. The scrutinee of a `case` with type heads (6.4) is a use at `Any`: a type is dispatched on only in an `Any` or a union. Compared with `null`, a parameter is used at no type; compared or ordered with another parameter whose type is inferred, the two have one type.
 - **The inferred type** is the most general type that conforms (4.4) to every type the parameter is used at: the one a caller can pass the most values of. Used at `String` and at `String | Null`, a parameter is `String`; put at `Number` and at `Any`, it is `Number`; put only at `Any`, it is a type parameter (below), so that `wrap(x) = [to_json(x), x]` keeps the type of `x` in its result. A parameter used at two types that no type conforms to both of, such as `Number` and `String`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names both uses and suggests an annotation.
 - **A use at a type that has a type variable** in it, as an argument of a generic function (4.4) or as the element of an array the function takes, gives the parameter that shape, with the variable left to be inferred in turn: `size(xs)` makes `xs` an `Array<a>` for an `a` still to be found. A use inside a lambda the parameter is passed to counts as any other use.
-- **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (15.4). Where its uses need two of them, it has the one that entails the other (`orderable` entails both others); two of which neither entails the other, such as `comparable` and `stringifiable`, are a type error (`E-TYPE-BOUND`) that asks for an annotation: a type parameter has at most one bound, written or inferred. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
+- **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (6.2, 15.4). Where its uses need two of them, it has the one that entails the other (`orderable` entails both others); two of which neither entails the other, such as `comparable` and `stringifiable`, are a type error (`E-TYPE-BOUND`) that asks for an annotation: a type parameter has at most one bound, written or inferred. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
 - **A value put where the parameter is.** A parameter used at no type, which the body joins with values of one type, as the other branches of an `if` or a `case` (4.3) or as arguments a generic function needs to be of one type with it (4.4), has that type: `f(c: Bool, n) = c ? 0 : n` is `f(c: Bool, n: Number): Number`. `null` joins with any type and says nothing of it, so `c ? x : null` keeps `x` a type parameter.
 - **What the body cannot tell.** A field access (`u.name`) or an index (`u[0]`, `u["X"]`) on a parameter whose type is not otherwise known, or a function value called with arguments, does not say what the whole type is: Lask has no record type open to further fields. It is a type error that asks for an annotation (`E-TYPE-ACCESS`, `E-TYPE-CALL`).
 - **A parameter marked `!!`** (6.10) is used at `String | Null` by its marker, so it is `String` or `String | Null`.
@@ -1243,7 +1243,7 @@ The `f` and `g` above declare essentially the same function.
 ### 6.2 Operators
 
 ```ebnf
-unary_op  = "!" .
+unary_op  = "!" | "-" .
 binary_op = "*" | "/" | "+" | "-" | "==" | "!=" | "<" | "<=" | ">" | ">="
           | "&&" | "||" | "|>" | "<|" | ">>" | "<<" .
 ```
@@ -1252,13 +1252,14 @@ Operators are syntactic sugar for writing function application readably. Operato
 
 Operator precedence, from highest to lowest, is as follows.
 
-1. Unary operator `!`
+1. Unary operators `!` `-`
 2. Multiplicative operators `*` `/`
 3. Additive operators `+` `-`
 4. Comparison operators `==` `!=` `<` `<=` `>` `>=`
-5. Logical operators `&&` `||`
-6. Pipe and composition operators `|>` `<|` `>>` `<<`
-7. Conditional operator `? :`
+5. Logical AND `&&`
+6. Logical OR `||`
+7. Pipe and composition operators `|>` `<|` `>>` `<<`
+8. Conditional operator `? :`
 
 Operators of the same precedence associate from left to right, except the conditional operator, which associates from right to left.
 
@@ -1293,9 +1294,9 @@ The meaning of each operator is as follows.
 
 The types of the operators are as follows.
 
-- `!` is typed as `Function<Bool, Bool>`.
+- `!` is typed as `Function<Bool, Bool>`, and unary `-` as `Function<Number, Number>`: `-e` is `0 - e`.
 - `*`, `/`, `+`, `-` are typed as `Function<Number, Number, Number>`.
-- `<`, `<=`, `>`, `>=` are typed as `Function<Number, Number, Bool>`.
+- `<`, `<=`, `>`, `>=` are `<T: orderable> Function<T, T, Bool>` (4.4): both operands have one type, `Number` or `String` (or a type parameter whose bound entails `orderable`), and a type that is not orderable is `E-TYPE-BOUND`. Numbers are ordered by value, and strings by Unicode code point, as `sort` orders them (15.4).
 - `&&`, `||` are typed as `Function<Bool, Bool, Bool>`.
 - `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. In the terms of 4.4 they are `<T: comparable> Function<T, T, Bool>`, instantiated at the wider type, and a type that is not comparable is `E-TYPE-BOUND`. So `xs == ys` with `xs: Array<String>` and `ys: Array<String | Null>` compares at `Array<String | Null>`. A comparison with an `Any` side is never well-typed, since `Any` is not comparable.
 - The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Runnable`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, a union all of whose members are comparable types, and a type parameter whose bound entails `comparable` (4.4). This is the named bound `comparable` (4.2).
@@ -5014,7 +5015,7 @@ Ordering:
 
 - `sort(xs)` returns the elements in ascending order. The element type is bounded by `orderable`, so it is `Number` or `String`; any other element type is a static error (`E-TYPE-BOUND`).
 - `sort_by(xs, key)` sorts by the value of `key` applied once to each element, under the same bound on the key type `U`, and is stable: elements with equal keys keep their input order.
-- `String` ordering is lexicographic by Unicode code point. This definition is local to `sort` / `sort_by`, and does not extend the ordering operators `<` `<=` `>` `>=` of 6.2, which remain `Number`-only.
+- `String` ordering is lexicographic by Unicode code point. The ordering operators `<` `<=` `>` `>=` (6.2) order strings the same way.
 
 Searching:
 

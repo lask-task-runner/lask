@@ -481,6 +481,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
           <> checkExpr (paramNames ps : sc) body
       EBin _ a b -> checkExpr sc a <> checkExpr sc b
       ENot e -> checkExpr sc e
+      ENeg e -> checkExpr sc e
       EDo b -> checkBlock sc b
       EIf c t e -> checkExpr sc c <> checkBlock sc t <> maybe [] (checkBlock sc) e
       ECond c a b -> checkExpr sc c <> checkExpr sc a <> checkExpr sc b

@@ -115,6 +115,7 @@ childExprs (Expr _ f) = case f of
   EIndex e i -> [e, i]
   EBin _ a b -> [a, b]
   ENot e -> [e]
+  ENeg e -> [e]
   EDo b -> blockExprs b
   EIf c t mElse -> c : blockExprs t <> maybe [] blockExprs mElse
   ECond c a b -> [c, a, b]

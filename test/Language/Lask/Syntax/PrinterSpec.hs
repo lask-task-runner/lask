@@ -36,6 +36,10 @@ spec = do
                       "r: Record<a: String, b?: Number> = { a: \"x\", \"b-c\": 2 }"
                     ]
 
+    it "keeps unary minus apart from a minus it applies to" $
+      ["a=-1", "b=- -1", "c=1- -x", "d=-(1+2)"]
+        `formatsTo` ["a = -1", "b = - -1", "c = 1 - -x", "d = -(1 + 2)"]
+
     it "pads the braces of record literals, imports and command words, and not of annotation options" $
       [ "import {a,b as c} from \"./lib\"",
         "command {\"go\"} on #golang:1.25{env:{}}",

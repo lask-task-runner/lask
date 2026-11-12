@@ -495,6 +495,26 @@ spec = do
     it "types arithmetic as Number" $ hasType "x = 1 + 2 * 3" "x" "Number"
     it "rejects string operands of +" $ rejects "x = \"a\" + \"b\"" ETypeMismatch
     it "types comparisons as Bool" $ hasType "x = 1 < 2" "x" "Bool"
+    it "orders strings as well as numbers" $ do
+      hasType "x = \"a\" < \"b\"" "x" "Bool"
+      accepts "f<T: orderable>(a: T, b: T): Bool = a <= b"
+    it "orders only one orderable type" $ do
+      rejects "x = 1 < \"a\"" ETypeMismatch
+      rejects "x = true < false" ETypeBound
+      rejects "x = [1] < [2]" ETypeBound
+      rejects "f<T>(a: T, b: T): Bool = a < b" ETypeBound
+    it "gives an operand that needs an expected type the other's" $
+      accepts "f(s: String): Bool = cast(from_json(s)) < 3"
+    it "infers an ordered parameter from the other operand" $ do
+      hasType "f(x) = x < 1" "f" "Function<Number, Bool>"
+      hasType "f(s) = s >= \"m\"" "f" "Function<String, Bool>"
+      hasType "f(a, b) = a < b" "f" "Function<T, T, Bool>"
+      rejects "f(a, b) = a < b\ng() = f(true, false)" ETypeBound
+    it "types unary minus as Number" $ do
+      hasType "x = -1" "x" "Number"
+      hasType "f(n: Number) = -n * 2" "f" "Function<Number, Number>"
+      hasType "f(n) = -n" "f" "Function<Number, Number>"
+      rejects "x = -\"a\"" ETypeMismatch
     it "requires equal comparable types for ==" $ rejects "x = 1 == \"a\"" ETypeMismatch
     it "rejects == on functions" $
       rejects "f(x: Number) = x\ng(x: Number) = x\nb = f == g" ETypeBound
