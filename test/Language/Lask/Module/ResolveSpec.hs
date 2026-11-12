@@ -66,8 +66,9 @@ spec = do
     it "rejects duplicate top-level declarations" $
       failsWith [("main.lask", "a = 1\na = 2")] ENameDuplicate
 
-    it "rejects binding core function names" $
-      failsWith [("main.lask", "map(xs: Array<Any>) = xs")] ENameDuplicate
+    it "allows shadowing core functions (spec 7.2, 7.6)" $ do
+      ok [("main.lask", "map(xs: Array<Any>) = xs")]
+      ok [("main.lask", "run(target: String) = target\nfail(): Number = 1\nspawn = 1")]
 
     it "rejects binding stdin" $
       failsWith [("main.lask", "stdin = \"x\"")] ENameDuplicate
@@ -128,8 +129,8 @@ spec = do
     it "rejects duplicate parameters" $
       failsWith [("main.lask", "f(a, a) = a")] ENameDuplicate
 
-    it "rejects core names as parameters" $
-      failsWith [("main.lask", "f(fail) = fail")] ENameDuplicate
+    it "allows core names as parameters" $
+      ok [("main.lask", "f(fail: Number) = fail")]
 
     it "keyword defaults see preceding parameters" $
       ok [("main.lask", "f(a: Number, --b: Number = a) = b")]

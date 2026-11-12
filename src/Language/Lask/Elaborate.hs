@@ -936,30 +936,35 @@ applySecrecy sp name Secret ty core = do
   pure (markSecretCall sp core)
 
 checkSecretType :: Span -> Text -> Type -> TC ()
-checkSecretType sp name ty =
-  unless (secretType ty) $
-    abort . diag ETypeSecretNonString sp $
-      "'" <> name <> "!!' marks a secret binding, which must be String or String | Null, but its type is "
-        <> renderType ty
+checkSecretType sp name ty = do
+  vs <- gets stInfer
+  case openVar vs ty of
+    -- The marker is a use at String | Null (spec 4.3, 6.10).
+    Just v -> addUse sp v (mkUnion TyString [TyNull])
+    Nothing ->
+      unless (secretType ty) $
+        abort . diag ETypeSecretNonString sp $
+          "'" <> name <> "!!' marks a secret binding, which must be String or String | Null, but its type is "
+            <> renderType ty
 
 -- | The types a secret can have (spec 6.10): text, or text that may be
 -- absent. An absent secret has no text, and registers nothing.
 secretType :: Type -> Bool
 secretType ty = ty == TyString || ty == mkUnion TyString [TyNull]
 
--- | Rebind each @!!@-marked parameter through @mark_secret@ at the top
--- of the function body (spec 6.10). Done on the surface body, before
--- it is elaborated, so the rebinding goes through the ordinary block
--- and shadowing rules.
+-- | Rebind each @!!@-marked parameter as a @!!@-marked local binding
+-- of itself at the top of the function body (spec 6.10). Done on the
+-- surface body, before it is elaborated, so the rebinding goes through
+-- the ordinary block and shadowing rules; the binding registers the
+-- value through the built-in @mark_secret@, whatever that name is
+-- bound to in scope (7.6).
 wrapSecretParams :: [Text] -> Expr -> Expr
 wrapSecretParams [] body = body
 wrapSecretParams names body =
   Expr sp (EDo (Block sp (map bind names <> [Stmt sp (SExpr body)])))
   where
     sp = exprSpan body
-    bind n = Stmt sp (SBind n Public Nothing (call n))
-    call n =
-      Expr sp (ECall (Expr sp (EVar "mark_secret")) [Arg sp (APos (Expr sp (EVar n)))])
+    bind n = Stmt sp (SBind n Secret Nothing (Expr sp (EVar n)))
 
 -- Types from surface syntax -----------------------------------------------------
 

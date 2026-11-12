@@ -4,8 +4,9 @@
 --
 -- Resolution ranks (spec 7.2): 1 innermost local binding, 2 current
 -- module top level, 3 named imports, 4 namespace member, 5 builtins
--- (including the reserved @stdin@). Core function names and @stdin@
--- cannot be bound at any rank 1-4 position (@E-NAME-DUPLICATE@).
+-- (including the reserved @stdin@). @stdin@ cannot be bound at any
+-- rank 1-4 position (@E-NAME-DUPLICATE@); every other builtin can be
+-- shadowed, and syntactic sugar refers to builtins directly (7.6).
 module Language.Lask.Module.Resolve
   ( GlobalScope (..),
     ValueTarget (..),
@@ -327,7 +328,7 @@ dupDiag sp n =
 coreDiag :: Span -> Text -> Diagnostic
 coreDiag sp n =
   mkDiagnostic ENameDuplicate StageStatic sp $
-    "'" <> n <> "' is a core function or reserved identifier and cannot be bound"
+    "'" <> n <> "' is a reserved identifier and cannot be bound"
 
 -- Reference checking ---------------------------------------------------------
 

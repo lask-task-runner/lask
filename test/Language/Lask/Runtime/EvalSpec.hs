@@ -141,6 +141,16 @@ spec = do
       evalsTo "x = 10 / 4" "x" "2.5"
     it "evaluates comparisons and logic with short-circuit" $
       evalsTo "f(): Bool = 1 < 2 && !(2 == 3)" "f" "true"
+    it "expands sugar to the built-ins whatever their names are bound to (spec 7.6)" $ do
+      -- A user map is what a written call reaches; for still maps.
+      evalsTo "map(xs: Array<Number>, f: Function<Number, Number>): String = \"mine\"\nf() = for (x : [1, 2]) { x + 1 }" "f" "[2,3]"
+      evalsTo "map(xs: Array<Number>, f: Function<Number, Number>): String = \"mine\"\nf() = map([1], \\(x: Number): Number -> x)" "f" "\"mine\""
+      -- A local binding of the name does not reach the sugar either.
+      evalsTo "f() = do {\n  spawn = 1\n  h = async 2\n  (await h) + spawn\n}" "f" "3"
+      evalsTo "recover(): Number = 0\nf() = try { fail({code: 1, message: \"x\"}) } catch (e) { e.code + 10 }" "f" "11"
+      evalsTo "run(s: String): String = \"mine\"\nf() = $[#local] echo hi" "f" "\"hi\\n\""
+    it "registers a !! value through the built-in mark_secret whatever the name is bound to" $
+      evalsTo "mark_secret(s: String): String = \"mine\"\nf(x!!: String) = x\ng() = f(\"s\")" "g" "\"s\""
     it "binds && tighter than || (spec 6.2)" $ do
       evalsTo "f(): Bool = true || false && false" "f" "true"
       evalsTo "f(): Bool = false && true || true" "f" "true"

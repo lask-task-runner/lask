@@ -60,7 +60,7 @@ To solve these problems, Lask satisfies the following core requirements.
 6. **Editor integration**: A server capability for editor integration is provided.
 
 ### 4.3 Execution and Evaluation Functionality
-1. **Name resolution and scope**: Scope resolution must be performed consistently based on the precedence of local bindings such as arguments, the current module, imported modules, and built-in functions (built-ins have the lowest precedence, and shadowing by user definitions is permitted). The core functions that the language's own syntax is normalized to, and the standard input reference, are the exception: they cannot be redefined, so that the meaning of the syntax cannot be changed by a definition.
+1. **Name resolution and scope**: Scope resolution must be performed consistently based on the precedence of local bindings such as arguments, the current module, imported modules, and built-in functions (built-ins have the lowest precedence, and shadowing by user definitions is permitted). No definition can change the meaning of the language's own syntax: syntax refers to the built-ins it is normalized to directly, whatever their names are bound to. The standard input reference is the one name that cannot be redefined.
 2. **Parallel task execution**: A parallelism mechanism must be provided to evaluate task calls and groups of shell commands with no dependencies concurrently for efficient execution.
 3. **I/O management**: I/O must be handled for command execution (local/container, etc.), and streams (standard output/error) must be routed appropriately.
 4. **Ingestion of external input**: A mechanism must be provided to transparently reference and use runtime command-line arguments and standard input within scripts.

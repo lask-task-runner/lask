@@ -199,7 +199,7 @@ This section defines the principal terms used in this specification.
 - Serialization: The process of converting a value into an external representation so that it can be stored and transferred.
 - Core expression: An expression remaining after static expansion of syntactic sugar (7.6). The evaluation target of the dynamic semantics (Chapter 8).
 - Syntactic sugar: Surface syntax that is normalized into core expressions. Only the semantics of the expressions after normalization are normative (7.6).
-- Core function: A built-in function that is the normalization target of syntactic sugar, or is integral to a language feature. It cannot be declared or overridden by user code (7.2).
+- Core function: A built-in function that is the normalization target of syntactic sugar, or is integral to a language feature. Syntactic sugar refers to it directly, whatever its name is bound to in scope (7.6), so a user definition of the same name shadows it for ordinary references only (7.2).
 - Built-in library: The set of built-in symbols available without explicit imports (Chapter 15).
 - Pre-execution error: A failure detected and reported before function evaluation begins (environment resolution, argument binding, etc.).
 - Runnable: An execution environment together with run options for its container, such as `memory` or `network` (6.7, 15.5). An `Environment` is a `Runnable` with no options, so wherever a command takes a `Runnable`, an `Environment` may be given.
@@ -1347,7 +1347,7 @@ Syntax rules:
 - The operand of `AsyncExpr` / `AwaitExpr` is a `UnaryExpr`. Therefore `await h |> f` is interpreted as `(await h) |> f`. To mean `await (h |> f)`, make it explicit with parentheses.
 - `await` is a reserved word and can appear only in the form of an `AwaitExpr`. To pass it around as a function value, write `\(h) -> await h`.
 
-Here `spawn` and `await` are core functions and must not be directly declared or overridden by user code.
+Here `spawn` is the core function `async` expands to, and `async` refers to the built-in `spawn` whatever that name is bound to in scope (7.6). `await` is a reserved word, not a name.
 
 Typing rules:
 
@@ -1423,7 +1423,7 @@ Desugaring rules:
 - The final arm `else -> bz` expands to `bz` itself, as the false branch of the innermost `choose`.
 - `case` introduces no core function of its own, and no new evaluation rule: every form of it is a nested `choose`.
 
-Here `choose` is a core function that exists only to serve as a normalization target, and is not exposed in the built-in library (it cannot be referenced, declared, or overridden by user code). `map` / `filter` / `reduce` / `for_each` are functions of the built-in library (15.4) and at the same time core functions serving as normalization targets, and likewise must not be overridden.
+Here `choose` is a core function that exists only to serve as a normalization target, and is not exposed in the built-in library: no name refers to it. `map` / `for_each` are functions of the built-in library (15.4) and at the same time the normalization targets of `for`; `for` refers to the built-ins whatever those names are bound to in scope (7.6).
 
 Typing rules:
 
@@ -1710,7 +1710,7 @@ Desugaring rules:
 
 - `$2[env] cmd` is syntactic sugar for the expression above with its success branch replaced by `r.stderr`.
 - A form written without an environment specification (`$ cmd`, `$1 cmd`, `$2 cmd`, `$* cmd`) expands identically, with the environment supplied by dispatch (10.9) over the command string. When dispatch selects no environment the expression is a static error (`E-TYPE-COMMAND-NOENV`); there is no fallback.
-- Only core functions (normalization to `run`, `fail`, and `choose`), a record literal and the internal escaping of the holes (Escaping, below) appear in the expanded forms, so the behavior can never be changed by user definitions.
+- Only core functions (normalization to `run`, `fail`, and `choose`), a record literal and the internal escaping of the holes (Escaping, below) appear in the expanded forms, and they refer to the built-ins whatever those names are bound to in scope (7.6), so the behavior can never be changed by user definitions.
 - `#{e}` and `#!{e}` inside a `shell_string` are evaluated first as string interpolation, and the post-interpolation string is passed as the command body. The value of each `#{e}` hole is escaped before it is substituted, and that of each `#!{e}` hole is not (Escaping, below).
 
 Lexical rules:
@@ -1728,7 +1728,7 @@ Lexical rules:
 - An unbraced command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run(#local, "git --version") |> trim`.
 - All tokens on the same line after an unbraced command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. A command that has to be followed on its line — by `|> trim`, by the `)` of a call, by the `,` of a list — is written braced: `${git --version} |> trim`, `retry(delays, \() -> ${make test})`.
 
-Here `run` is a core function and must not be directly declared or overridden by user code (15.5).
+Here `run` is a core function (15.5), which the command sugar refers to whatever the name `run` is bound to in scope (7.6).
 
 Escaping:
 
@@ -1866,7 +1866,7 @@ Syntax rules:
 
 Desugaring rules:
 
-- `#head(image options){k1: e1, ..., kn: en}` is syntactic sugar for `runnable(#head(image options), k1 = e1, ..., kn = en)` (15.5). It refers to the built-in `runnable` whatever the name `runnable` is bound to in scope.
+- `#head(image options){k1: e1, ..., kn: en}` is syntactic sugar for `runnable(#head(image options), k1 = e1, ..., kn = en)` (15.5). It refers to the built-in `runnable` whatever the name `runnable` is bound to in scope (7.6).
 - The sugar is available on a head only. Run options for an environment held in a variable are given with `runnable(e, ...)`.
 
 Typing rules:
@@ -1971,7 +1971,7 @@ Definitions as functions:
 - `fail` is a core function that receives an `Error` value and raises that failure. It is used for re-raising within a handler and for raising user-defined errors.
 - `error` is a helper function for constructing error values (15.7).
 
-Here `recover` and `fail` are core functions and must not be directly declared or overridden by user code.
+Here `recover` and `fail` are core functions, which `try` refers to whatever those names are bound to in scope (7.6).
 
 Desugaring rules:
 
@@ -2046,7 +2046,7 @@ Desugaring rules:
   f(x: String) = do { x = mark_secret(x); body }
   ```
   The same transform applies to a `!!`-marked keyword parameter, after default-value completion (8.3).
-- `mark_secret` is a core function (15.9) and must not be directly declared or overridden by user code (7.2).
+- `mark_secret` is a core function (15.9). `!!` refers to the built-in `mark_secret` whatever that name is bound to in scope (7.6).
 
 Typing rules:
 
@@ -2117,7 +2117,7 @@ Resolution rules:
 - If no candidate exists at any precedence level, it is an undefined reference error.
 - Reserved words must not be bound as identifiers.
 - Symbols of the built-in library are resolved at the lowest level (fifth precedence), so a user-defined symbol of the same name always takes priority (shadowing; 15.1).
-- However, core function names specified as non-overridable (`spawn`, `choose`, `map`, `filter`, `reduce`, `for_each`, `run`, `recover`, `fail`, Chapter 6; `get_env`, `mark_secret`, 6.10/15.9) and `stdin` (9.3) must not be declared or bound at any of the first through fourth precedence levels. A violation is a duplicate definition error (`E-NAME-DUPLICATE`).
+- A built-in symbol, core functions included, may be shadowed at any of the first through fourth precedence levels. Syntactic sugar is not affected: it refers to the built-ins it is normalized to directly (7.6). Only `stdin` (9.3), a reserved identifier, must not be declared or bound at any of the first through fourth precedence levels; a violation is a duplicate definition error (`E-NAME-DUPLICATE`).
 
 ### 7.3 Scope and Shadowing
 
@@ -2217,6 +2217,8 @@ The expansion order during static verification is as follows.
 11. Command sugar expansion of `$ cmd` / `$[env] cmd`
 
 Type checking is performed on the core expressions after expansion. The meaning of the expansion result must be equivalent to that of the original syntax.
+
+Expansion is hygienic. Every core function an expansion produces (`spawn`, `choose`, `map`, `for_each`, `recover`, `fail`, `run`, `runnable`, `mark_secret`, and the others this chapter names) is the built-in itself, whatever that name is bound to where the sugar is written: a user definition of the same name shadows the built-in for references written in the source (7.2), and never for the sugar. A fresh name an expansion binds is one no source program can write, so it captures nothing and shadows nothing. Adding a form of sugar therefore never changes the meaning of a program that already uses its target's name.
 
 Two expansions are type-directed, and every other expansion is purely syntactic.
 
@@ -4890,7 +4892,7 @@ A built-in that looks something up says in its name what it does when the thing 
 Publication rules:
 
 - Symbols of the built-in library are positioned at the lowest level of name resolution (the 5th rank in 7.2). If a user definition declares a symbol with the same name, it may shadow it according to the ordinary name resolution rules.
-- However, core function names specified as "must not be overridden" in Chapter 6 cannot be declared or bound (7.2).
+- This holds for core functions too: syntactic sugar refers to the built-ins directly (7.6), so a user definition of a core function's name changes only the references written in the source. `stdin` is a reserved identifier and cannot be declared or bound (7.2, 9.3).
 
 Typing rules:
 
@@ -5032,7 +5034,7 @@ Semantics:
 - `map`/`filter`/`reduce`/`for_each` traverse the input array from left to right (evaluation rules in 8.5).
 - `reduce` requires an initial value.
 - `for_each` discards each application result and returns `Void`. It is used for iteration whose purpose is side effects.
-- `map`, `filter`, `reduce`, and `for_each` are core functions that include the normalization targets of the control structures of 6.4, and must not be overridden by user code (subject to the exception provision of 15.1).
+- `map` and `for_each` are the normalization targets of `for` (6.4). Like every built-in symbol they may be shadowed by a user definition (15.1), which `for` does not see (7.6).
 - `get` results in a runtime error (`E-RUNTIME-ACCESS`) when the key is absent. This is the same failure contract as index access `m[k]` (6.8, 8.9), and it is what the `get_` prefix means throughout the library (15.1). To tolerate a missing key, use `get_or`, or check in advance with `has_key`.
 - Every function in this section is pure and returns a new value. No built-in mutates the array, map, or record it is given (8.2).
 
@@ -5196,7 +5198,7 @@ The `Error` type:
 
 Semantics:
 
-- `recover` / `fail` follow the rules of 6.9 and 8.10. Both are core functions and must not be overridden by user code (7.2).
+- `recover` / `fail` follow the rules of 6.9 and 8.10. Both are core functions, which `try` refers to whatever those names are bound to in scope (7.6).
 - `error(code, message)` is a helper function that constructs an `Error` value equivalent to `{code: code, message: message}`.
 - The return type `T` of `fail` is concretized from the context's expected type (4.4).
 
@@ -5358,17 +5360,17 @@ The built-in library provides at least the following functions.
 
 Semantics:
 
-- `get_env(name)` returns the value of the process environment variable `name`. It presupposes that the variable is set, and a variable that is not set is a runtime error (`E-RUNTIME-ACCESS`) whose diagnostic names the variable (15.1, 14.5). This is the form for a variable the task requires in order to run at all, such as a credential: the failure names what is missing, at the point it is missing, instead of letting an absent value travel on. `get_env` is a core function (7.2) and must not be directly declared or overridden by user code.
+- `get_env(name)` returns the value of the process environment variable `name`. It presupposes that the variable is set, and a variable that is not set is a runtime error (`E-RUNTIME-ACCESS`) whose diagnostic names the variable (15.1, 14.5). This is the form for a variable the task requires in order to run at all, such as a credential: the failure names what is missing, at the point it is missing, instead of letting an absent value travel on.
 - `find_env(name)` returns the value of `name`, or `Null` when it is not set. Its result type is the union `String | Null` (4.2), which the caller resolves with `case` (6.4) — or with `cast` (15.8) when an unset variable is to be treated as an error after all. This is the form for a variable the task merely accepts.
 - `has_env(name)` is true when `name` is set in the process environment, including when it is set to the empty string.
 - `get_env_or(name, fallback)` returns the value of `name` when it is set, and `fallback` when it is not. It always returns a `String`, so it is the form to prefer wherever a missing variable has a sensible default, and it says at the call site what that default is.
 - The four differ only in what an unset variable means — a failure, a `Null`, a `Bool`, or a fallback — and follow the naming rules of 15.1. `find_env` is the only one of them whose result can be absent, and `get_env_or(name, fallback)` is exactly the `case` over `find_env(name)` that returns `fallback` for `Null`.
 - All four read the process environment of the Lask process itself. They do not read the variables of an execution `Environment` (10.6); a command reads those through the shell it runs in.
-- `find_env`, `has_env` and `get_env_or` are ordinary built-in symbols and may be shadowed by a user definition (15.1). Only `get_env` and `mark_secret` are core functions.
+- All four are built-in symbols and may be shadowed by a user definition (15.1). What a function reads from the environment (11.10) is found from the references that resolve to the built-ins, so a user function of one of these names reads nothing.
 - A variable holding a secret reference (9.8) is resolved by `get_env`, `find_env` and `get_env_or`, which return the value it names; `has_env` does not resolve it.
 - `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. The exception is a value resolved from a secret reference, which is registered (9.8). Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. `!!` accepts `String | Null` (6.10), so a credential that may be unset can be read with `find_env` and still be masked when present.
 - `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged. When `v` is `null`, nothing is registered (6.10).
-- `mark_secret` is a core function and must not be directly declared or overridden by user code (7.2). It is the desugaring target of `!!` secret bindings (6.10); user code may also call it directly to register a value that isn't declared with `!!`.
+- `mark_secret` is a core function, the desugaring target of `!!` secret bindings (6.10), which refer to the built-in whatever the name is bound to in scope (7.6). User code may also call it directly to register a value that isn't declared with `!!`; a user definition of the name shadows it there, as any built-in.
 - Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out; `String | Null` in, `String | Null` out) and no effect on control flow: it is not a source of failure.
 
 ### 15.10 Path Operations
