@@ -234,7 +234,12 @@ spec = do
   describe "the contextual keyword `within`" $ do
     it "marks a module constraint and a function's as keywords" $ do
       hasAtom "within { volumes: false }" (0, 0, 6, SemanticTokenTypes_Keyword)
-      hasAtom "f(): String within { network: \"none\" } = \"x\"" (0, 12, 6, SemanticTokenTypes_Keyword)
+      hasAtom "f(): String within { outbound: false } = \"x\"" (0, 12, 6, SemanticTokenTypes_Keyword)
+    it "marks `within` before a name, and `access` before the name it declares" $ do
+      hasAtom "within Offline" (0, 0, 6, SemanticTokenTypes_Keyword)
+      hasAtom "f() within m.Offline = 1" (0, 4, 6, SemanticTokenTypes_Keyword)
+      hasAtom "access Offline = { runs: false }" (0, 0, 6, SemanticTokenTypes_Keyword)
+      hasAtom "access = 1" (0, 0, 6, SemanticTokenTypes_Variable)
     it "leaves `within` an identifier elsewhere" $ do
       hasAtom "within = 1" (0, 0, 6, SemanticTokenTypes_Variable)
       hasAtom "f(within: Number) = within" (0, 20, 6, SemanticTokenTypes_Variable)

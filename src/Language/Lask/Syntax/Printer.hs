@@ -453,6 +453,7 @@ decl sp f = case f of
     dw <- traverse accessSpec w
     joinAfter (text n <> dtp <> dps <> annot drt <> maybe mempty (" within " <>) dw) "=" (startOf (exprSpan e)) (exprOn e)
   DWithin w -> ("within " <>) <$> accessSpec w
+  DAccess n w -> (("access " <> text n <> " = ") <>) <$> accessSpec w
   DCommand ns e sch -> do
     -- @export command { ... } on e@ is the only declaration whose span
     -- starts at its @export@.
@@ -489,11 +490,13 @@ secrecy Public = mempty
 secrecy Secret = "!!"
 
 -- | The braces of an access constraint (spec 5), spaced as an object
--- literal is.
+-- literal is, or the name of one.
 accessSpec :: AccessSpec -> P Doc
-accessSpec (AccessSpec sp fs) = do
-  open <- tokFrom TLBrace (startOf sp)
-  list "{" "}" True open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) ((\dv -> text k <> ": " <> dv) <$> expr v) | (Spanned ksp k, v) <- fs]
+accessSpec w = case w of
+  AccessSpec sp fs -> do
+    open <- tokFrom TLBrace (startOf sp)
+    list "{" "}" True open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) ((\dv -> text k <> ": " <> dv) <$> expr v) | (Spanned ksp k, v) <- fs]
+  AccessRef _ q n -> pure (text (maybe "" (<> ".") q <> n))
 
 annot :: Maybe Doc -> Doc
 annot = maybe mempty (": " <>)

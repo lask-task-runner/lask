@@ -343,7 +343,8 @@ Reserved words:
 - `import`, `export`, `internal`, `from`, `as`, `type`, `command`, `do`, `async`, `await`, `if`, `else`, `case`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
 - `return` is reserved but begins no construct: Lask has no return statement (6.5). It is kept so that a program written as in another language is told what to write instead, by a syntax error (`E-SYNTAX-UNEXPECTED-TOKEN`) rather than an undefined name.
 - `on` is not a reserved word. It is a contextual keyword recognized only within a command declaration (Chapter 5), directly after the closing brace of its command words, where no other token may appear; it remains usable as an identifier elsewhere. Because the position is lexical, an editor can show `on` as a keyword there without elaborating the module.
-- `within` is not a reserved word either. It is a contextual keyword recognized in two positions only (Chapter 5): at the start of a top-level declaration, directly followed by `{`, and in a function declaration, after its parameter list and return type and before its `=`. Neither position admits an identifier, so `within` remains usable as an identifier everywhere else.
+- `within` is not a reserved word either. It is a contextual keyword recognized in two positions only (Chapter 5): at the start of a top-level declaration, directly followed by `{`, by an `upper_id`, or by a `lower_id` and `.`, and in a function declaration, after its parameter list and return type and before its `=`. Neither position admits an identifier, so `within` remains usable as an identifier everywhere else.
+- `access` is a contextual keyword of the same kind, recognized only at the start of a top-level declaration, after its visibility marker if it has one, directly followed by an `upper_id` (Chapter 5). No declaration named `access` is followed by one, so `access` remains usable as an identifier everywhere else.
 - `stdin` is not a reserved word but is a reserved identifier (9.3), and must not be declared or rebound in user code.
 
 String interpolation:
@@ -728,7 +729,7 @@ This chapter defines modules, declarations, public symbols, and imports.
 ```ebnf
 Module        = { TopLevelDecl } .
 TopLevelDecl  = ( ImportDecl | ExportDecl | ModuleWithin
-                | [ Visibility ] ( CommandDecl | TypeAliasDecl | Declaration ) ) decl_end .
+                | [ Visibility ] ( CommandDecl | TypeAliasDecl | AccessDecl | Declaration ) ) decl_end .
 decl_end      = newline | ";" .
 Visibility    = "export" | "internal" .
 TypeAliasDecl = "type" upper_id [ TypeParams ] "=" Type .
@@ -737,8 +738,11 @@ ValueDecl   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 FunctionDecl = lower_id [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" Type ]
                [ WithinClause ] "=" Expression .
 
-ModuleWithin  = "within" AccessSpec .
-WithinClause  = "within" AccessSpec .
+ModuleWithin  = "within" AccessBound .
+WithinClause  = "within" AccessBound .
+AccessBound   = AccessSpec | AccessName .
+AccessName    = [ lower_id "." ] upper_id .
+AccessDecl    = "access" upper_id "=" AccessSpec .
 AccessSpec    = "{" [ AccessField { "," AccessField } ] "}" .
 AccessField   = lower_id ":" Expression .
 
@@ -767,7 +771,8 @@ Declaration termination rules:
 - `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
 - `schema` is a contextual keyword, like `on`: it is a keyword only after the environment of a command declaration, and remains usable as an identifier everywhere else. The environment expression ends before it, and it must be placed on the same line as the end of that expression; the schema expression may span lines by the open-bracket continuation rule.
-- `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none; the `AccessSpec` may span lines by the open-bracket continuation rule, and the `=` follows its closing `}`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
+- `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none; the `AccessSpec` may span lines by the open-bracket continuation rule, and the `=` follows its closing `}`, or the `AccessName`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
+- `access` is a contextual keyword (3.3). An `AccessDecl` is written on one line up to the `{` of its `AccessSpec`, which may span lines by the open-bracket continuation rule.
 
 Access constraints:
 
@@ -776,6 +781,15 @@ Access constraints:
 - A module constraint is a ceiling. A function's own constraint narrows it and cannot widen it: the constraint a function is checked against is the intersection of the two (10.11).
 - A module constraint belongs to the module it is written in. It does not cover a module that imports it, nor one it imports; the declarations of a module it imports are still checked as part of whatever in it calls them (10.11).
 - A `ValueDecl` takes no `WithinClause`. It is covered by its module's constraint.
+
+Access declarations:
+
+- An `AccessDecl` names an access constraint: `access Offline = { outbound: false, inbound: false }` declares `Offline`, and `within Offline`, as a `ModuleWithin` or a `WithinClause`, is the constraint its `AccessSpec` gives, as if its braces were written there. Nothing is evaluated: the name is replaced by what it names, and its fields are read and checked as 10.11 reads and checks those written in place.
+- The name of an access declaration is in the namespace of type aliases (4.2). It is a public symbol unless it is marked `internal`, is imported, renamed and re-exported as a type alias is, and is written qualified, `m.Offline`, through a namespace import, in an `AccessName` only. A type alias and an access declaration of one name in one module are a duplicate definition (`E-NAME-DUPLICATE`).
+- An `AccessName` names an access declaration visible in the module, by its bare name or qualified; anything else is a static error. A name that is neither an access declaration nor a type alias visible in the module, or a namespace with no such public symbol, is `E-NAME-UNDEFINED`; the name of a type alias, a built-in one included, is `E-TYPE-WITHIN-SPEC`. The name of an access declaration written where a type is is `E-NAME-UNDEFINED`, as an undefined type is (4.4): it is no type.
+- An `AccessDecl` takes an `AccessSpec` only, not the name of another declaration, so a name always stands for braces written once.
+- Its `secrets`, when given, is `false`. The names an array gives are secret bindings of what the constraint covers (10.11), which a declaration written apart from it has none of; any other value is `E-TYPE-WITHIN-SPEC`.
+- What is wrong with the fields of an access declaration is reported once, where it is declared, whether or not it is named. A constraint that names one is then checked as if it were not written.
 
 - `CommandWords` is written in braces in every form — a declaration, an import and a re-export — so that the three read alike. The braces may span lines by the open-bracket continuation rule; the closing `}` and the `on` or `from` that follows it must be placed on the same line. After `export command`, the word after the closing brace decides the form: `on` begins a command declaration, `from` a re-export.
 
@@ -925,7 +939,7 @@ Import path resolution:
 
 Public scope and visibility:
 
-- A `Declaration` or `TypeAliasDecl` declared at the top level is a public symbol of that module, unless it carries the `internal` marker.
+- A `Declaration`, `TypeAliasDecl` or `AccessDecl` declared at the top level is a public symbol of that module, unless it carries the `internal` marker.
 - Omitting the visibility marker is equivalent to `export`. The explicit form changes nothing about the meaning of the declaration; it exists so that a module can state its public surface where the surface matters.
 - A declaration marked `internal` is not a public symbol. It is therefore unreachable by external import, by local import from another file of the same tree, by `ExportDecl`, by CLI invocation (11.2), and from the function listing of help display (11.6). References from within the same module are unaffected.
 - An implementation may report the advisory diagnostic `W-EXPORT-INCONSISTENT` (14.2) when one file mixes explicit and omitted markers, because an omitted marker may then be misread as non-public. The meaning is unambiguous in either case, so this is never an error.
@@ -937,7 +951,7 @@ Import forms:
 - A named import `import { a, b } from "path"` brings only the specified names, among the public symbols of the target module, into the name resolution scope of the current module. If a specified name does not exist among the public symbols, it is an error before type checking.
 - `import { a as b } from "path"` brings in the public symbol `a` under the name `b` (renaming import). The identifiers before and after renaming must be of the same kind (`lower_id` with `lower_id`, `upper_id` with `upper_id`).
 - A namespace import `import * as m from "path"` refers to the target module through the namespace `m`. Public symbols are not brought in implicitly and are referenced in the form `m.symbol`.
-- Type aliases (`upper_id`) can be brought in by named import, which binds the bare name directly.
+- Type aliases and access declarations (`upper_id`) can be brought in by named import, which binds the bare name directly.
 - A namespace import also makes the target module's public type aliases available, in type-annotation position only, qualified as `m.TypeName` (`QualifiedNamedType`, 4.2). This is the one context where a namespace member is written into a grammar position other than an expression: elsewhere, a namespace import brings in no names of its own and is referenced only as `m.symbol` in expressions (above). Bringing a type in by named import and referencing it through its module's namespace both denote the same declaration; a module may use either form, or both, for the same type.
 - A namespaced type reference resolves against the same public/internal boundary as any other namespace reference: `m.TypeName` is well-formed only when `TypeName` is a public type alias (not `internal`) of the module `m` refers to.
 - No form is provided that unconditionally brings in all public symbols (the names to be brought in are made explicit in the declaration).
@@ -946,7 +960,7 @@ Re-export (`ExportDecl`):
 
 - `export { a, b } from "path"` is a named import whose bound names are, in addition, public symbols of the current module. The `ImportSpecifier` rules, including `as` renaming, are those of a named import.
 - Because the names are bound as declarations and not as values, a re-exported function retains its parameter list: keyword parameters, defaults, variadics, and arity are preserved, and calls through the re-exported name follow 7.5 exactly as calls through the original declaration do. (A value binding such as `f = m.f` produces a function value instead, and calls through function values cannot supply keyword arguments (6.1).)
-- Type aliases may be re-exported.
+- Type aliases and access declarations may be re-exported.
 - A name that is not a public symbol of the target module is an error before type checking.
 - `ImportPath` may be a local path or a dependency name. Re-exporting from a dependency republishes that dependency's symbols as part of the current module's public API.
 - No wildcard form is provided: there is no `export * from`. The names to be published are made explicit in the declaration, for the same reason that no bulk import form is provided.
@@ -1846,7 +1860,7 @@ Syntax rules:
 - `RunOptions` takes the run options of 10.2, by the same names as the keyword parameters of `runnable`. A run option takes any expression of its type, including a function's parameters and values read from outside the program (15.9). An image option, an unknown name or a duplicate is a static error (`E-TYPE-ENV-CONSTRUCT`). A key is a `lower_id`; the braces are not an object literal and build no value of their own.
 - `#local` with either list, even an empty one, is a static error (`E-TYPE-ENV-CONSTRUCT`).
 - A Docker image whose reference is `local` is written with its namespace, `#library/local`.
-- Environment profile names such as `local` / `docker` are not reserved words. In positions without `#`, they can be used as ordinary identifiers. `#docker` is the registry reference to the image `docker`.
+- Environment profile names such as `local` / `container` are not reserved words. In positions without `#`, they can be used as ordinary identifiers. `#docker` is the registry reference to the image `docker`.
 - Because `env_char` includes `.`, an accessor `.` cannot follow immediately after `env_head` (it is absorbed into the token). If processing is needed, first bind it to a variable.
 
 Desugaring rules:
@@ -2228,7 +2242,7 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-COMMAND-SCHEMA`: the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5)
 - `E-TYPE-COMMAND-OPTION`: a command string invokes a program in a way its command schema rules out (Chapter 5)
 - `E-TYPE-ENV-CONSTRUCT`: invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree, an `egress` entry that is not one or `egress` given with `network` or `publish`; 6.7, 10.2, 10.3, 10.12, 15.5)
-- `E-TYPE-WITHIN-SPEC`: an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, or a second module constraint; Chapter 5, 10.11)
+- `E-TYPE-WITHIN-SPEC`: an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, a name in the `secrets` of an access declaration, the name of a type where an access declaration is named, or a second module constraint; Chapter 5, 10.11)
 - `E-TYPE-WITHIN-EXCEEDED`: what a declaration covered by an access constraint can reach is shown to exceed it (10.11)
 - `E-TYPE-WITHIN-UNPROVEN`: what a declaration covered by an access constraint can reach cannot be determined statically, so it is not shown to stay within it (10.11)
 - `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
@@ -2412,7 +2426,7 @@ Stopping an abandoned command:
 An environment expression `#head(image options)` (6.7) is a core expression evaluated by the following procedure.
 
 1. Evaluate the argument expressions from left to right in written order.
-2. Return an `Environment` value consisting of the profile (`local` or `docker`) and the image the head names, with its image options.
+2. Return an `Environment` value consisting of the profile (`local` or `container`) and the image the head names, with its image options.
 3. If the evaluation of an argument expression fails, the entire environment expression fails.
 
 The sugar `#head(image options){run options}` has been expanded to `runnable(#head(image options), run options)` (7.6). An application of `runnable(e, k1 = e1, ..., kn = en)` (15.5) is evaluated as follows.
@@ -2712,7 +2726,7 @@ Rules:
 - `Environment` and `Runnable` are names of `BaseType`, and no type alias can take them (4.2).
 - `Environment` values must be resolvable to at least the following 2 profiles.
   - `local`: `#local` (local execution)
-  - `docker`: a registry-reference head `#<image>` or a recipe head `#./<Dockerfile>` (container execution)
+  - `container`: a registry-reference head `#<image>` or a recipe head `#./<Dockerfile>` (container execution)
 - The `env` argument of `run` must be normalized to an `Environment` or `Runnable` value at evaluation time.
 - There is no default execution environment. Every command execution expression determines its environment from the expression itself — from its environment specification, or by dispatch over its command string (6.6, 10.9) — and an expression that determines none is a static error (`E-TYPE-COMMAND-NOENV`). Local execution is written `#local`, like any other environment, or is registered for a program by a command declaration (Chapter 5).
 - No CLI option or other external configuration may supply or replace the environment of a command, or name its image. A value from outside the program may reach a run option, as an argument passed to a function that gives it to `runnable` (15.5); it cannot reach the image.
@@ -2725,7 +2739,7 @@ Type conformance:
 
 ### 10.2 Target Environment Profiles and Their Options
 
-The execution environment profiles specified by this specification are `local` and `docker`. Both are self-contained on the host running Lask. Environments that span hosts are not provided: their contents cannot be pinned, they carry state between runs, and no boundary can be placed around what they may do. A remote host is reached by running a client for it inside a container (`$[#alpine:3.20] ssh ...`), which keeps the tool that reaches it pinned.
+The execution environment profiles specified by this specification are `local` and `container`. Both are self-contained on the host running Lask. Environments that span hosts are not provided: their contents cannot be pinned, they carry state between runs, and no boundary can be placed around what they may do. A remote host is reached by running a client for it inside a container (`$[#alpine:3.20] ssh ...`), which keeps the tool that reaches it pinned.
 
 The host running Lask is a POSIX system, such as Linux or macOS. Windows is not a host: on Windows, Lask runs inside WSL 2, where the host is the Linux distribution it runs in.
 
@@ -2734,7 +2748,7 @@ The host running Lask is a POSIX system, such as Linux or macOS. Windows is not 
 
 - `local`: local process execution on the calling host
   - Written `#local`. It takes no options.
-- `docker`: execution inside a container
+- `container`: execution inside a container, run by the container engine of 10.10, whichever it is
   - The image is named by the head of the environment expression (6.7), in one of two forms.
     - **Registry reference**: `#<reference>`, an image in a registry. It may carry a registry, a tag or a digest, or none of them: a bare repository name names its `latest`. Whatever a reference names upstream, the lock pins the image it resolved to when it was materialized (10.3), so a reference that moves upstream does not move a run.
     - **Recipe**: `#./<path>`, a Dockerfile, with the image options `context`, naming its build context, and `build_args`, supplying the build arguments the recipe hash covers (10.3). `context` defaults to the directory containing the Dockerfile. `context` and `build_args` given to a registry reference are static errors (`E-TYPE-ENV-CONSTRUCT`), because there is then no build for them to reach.
@@ -2789,14 +2803,14 @@ Each profile has at least the following execution attributes.
 
 How this implementation launches a command:
 
-- `docker`: the container is started with the image's entrypoint replaced by `/bin/sh`, and the command string is run by it as `/bin/sh -c <command string>` would run it. This implementation gives the command string to `/bin/sh` on its standard input, which the shell reads to the end, with its builtins alone, before running the command with that input empty, as a command's is: so the command string is on no command line, neither the engine client's on the host nor the shell's in the container, both of which the host's process list shows. An image must therefore provide `/bin/sh`; an image without a shell (a distroless or `scratch`-based tool image) cannot run a command, and is wrapped in an image that has one.
+- `container`: the container is started with the image's entrypoint replaced by `/bin/sh`, and the command string is run by it as `/bin/sh -c <command string>` would run it. This implementation gives the command string to `/bin/sh` on its standard input, which the shell reads to the end, with its builtins alone, before running the command with that input empty, as a command's is: so the command string is on no command line, neither the engine client's on the host nor the shell's in the container, both of which the host's process list shows. An image must therefore provide `/bin/sh`; an image without a shell (a distroless or `scratch`-based tool image) cannot run a command, and is wrapped in an image that has one.
 - `local`: the command string is run by the host's shell, as `/bin/sh -c <command string>`.
 
 Implementations may extend with additional profiles, but must not break compatible behavior with the above 2 profiles.
 
 ### 10.3 Container Image Resolution and Materialization
 
-A `docker` environment names its image by its head, as a registry reference or as a recipe (10.2). Both forms are resolved to a concrete, immutable image ahead of execution and recorded in the lock file (Chapter 5).
+A `container` environment names its image by its head, as a registry reference or as a recipe (10.2). Both forms are resolved to a concrete, immutable image ahead of execution and recorded in the lock file (Chapter 5).
 
 Statically known images:
 
@@ -2831,15 +2845,15 @@ Environment resolution is performed immediately before command launch by `run`.
 Resolution procedure:
 
 1. Evaluate the `env` expression to obtain an `Environment` value (profile, image and options).
-2. Classify the value's profile as one of `local` / `docker`.
-3. For `docker`, resolve its image to the image recorded in the lock file (10.3).
+2. Classify the value's profile as one of `local` / `container`.
+3. For `container`, resolve its image to the image recorded in the lock file (10.3).
 4. Normalize into an executable concrete runtime configuration.
 
 Resolution rules:
 
-- A `docker` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3), and runs as that image: a registry reference as its repository at the pinned digest. If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`, and the diagnostic names `lask sync`. An image is told absent only by a daemon that answers: when the daemon cannot be reached, it is `E-IO-ENV-RESOLVE`, which `lask sync` would not mend.
+- A `container` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3), and runs as that image: a registry reference as its repository at the pinned digest. If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`, and the diagnostic names `lask sync`. An image is told absent only by a daemon that answers: when the daemon cannot be reached, it is `E-IO-ENV-RESOLVE`, which `lask sync` would not mend.
 - A reference written with a digest resolves to itself, entry or not.
-- Every image a `docker` value can carry was written as a head (6.7), so a missing entry means only that the lock is behind the program; there is no image the lock cannot record.
+- Every image a `container` value can carry was written as a head (6.7), so a missing entry means only that the lock is behind the program; there is no image the lock cannot record.
 
 Failure rules:
 
@@ -2858,7 +2872,7 @@ The working directory (cwd) is the base for relative path resolution during comm
 Rules:
 
 - The default cwd for `local` is the project base directory where execution started.
-- The default cwd for `docker` is the working directory determined by the implementation inside the container.
+- The default cwd for `container` is the working directory determined by the implementation inside the container.
   - This implementation bind-mounts the project base directory in the container, read-write at `/work` unless the run options `base_mount` and `base_access` (10.2) move it or narrow what it permits, and uses the path it is mounted at as the default cwd. A relative path in a command therefore names the same file on the host and in the container wherever the base directory is mounted, and a file the command writes there is on the host afterwards, where the mount permits writing.
 - An explicit specification takes precedence over the default cwd.
 - If the cwd does not exist or is inaccessible, it is a pre-execution error.
@@ -2872,7 +2886,7 @@ Portability requirements:
 The variables a command is started with depend on its environment, and on nothing outside the program: no CLI option or setting supplies or replaces them (10.1).
 
 - `local`: the command inherits the process environment of lask as it is. A variable that holds a secret reference is seen as the reference, not as the secret (9.8). `#local` takes no run options (10.2), so nothing is added or removed.
-- `docker`: the command sees the variables the image and the engine give a container, with the variables of the run option `env` (10.2) set over them. A container given `egress` is also given the variables of the proxy, unless `env` sets them (10.12), and a command run in a `with_container` session carries the marker variable of 15.5. No variable of lask's own process reaches a container unless `env` passes it, as `{"TOKEN": get_env("TOKEN")}` does.
+- `container`: the command sees the variables the image and the engine give a container, with the variables of the run option `env` (10.2) set over them. A container given `egress` is also given the variables of the proxy, unless `env` sets them (10.12), and a command run in a `with_container` session carries the marker variable of 15.5. No variable of lask's own process reaches a container unless `env` passes it, as `{"TOKEN": get_env("TOKEN")}` does.
 - Where two of these set the same variable, `env` wins over the variables of the proxy, and both win over the image and the engine. The marker of a session is set by lask on each command it runs there, and `env` does not replace it.
 
 ### 10.7 Permission Boundary
@@ -2886,10 +2900,10 @@ Each profile must explicitly have the following permission boundaries.
 Rules:
 
 - `local` is bounded above by the calling process's privileges.
-- `docker` is bounded above by the privileges within the container isolation boundary.
+- `container` is bounded above by the privileges within the container isolation boundary.
 - The filesystem functions (15.11) are bounded by the same boundary as command execution in the environment they are given: they see exactly the filesystem that environment's commands see, and never the host's filesystem by default. There is no filesystem access that does not name an environment.
 - If execution is impossible due to insufficient privileges, it is a runtime error, and the cause must be reported in a diagnosable form.
-- Within a `docker` environment, the part of the filesystem and network boundaries that reaches past the container — the host paths it may read or write, and the networks it may reach or be reached from — is decided by its run options, and is described by its access set (10.11), together with the secrets it is given. A container given `egress` reaches only the destinations it lists (10.12). An access constraint bounds it statically, and `envs files`, `envs network`, `envs access` and `envs secrets` (11.4) list it.
+- Within a `container` environment, the part of the filesystem and network boundaries that reaches past the container — the host paths it may read or write, and the networks it may reach or be reached from — is decided by its run options, and is described by its access set (10.11), together with the secrets it is given. A container given `egress` reaches only the destinations it lists (10.12). An access constraint bounds it statically, and `envs files`, `envs network`, `envs access` and `envs secrets` (11.4) list it.
 
 Security requirements:
 
@@ -3015,10 +3029,10 @@ Engines:
 
 ### 10.11 Access Constraints
 
-An access constraint bounds the host files and the networks that the commands of what it covers may reach, and the secrets they may be given. It is written on a function or on a module (Chapter 5), and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
+An access constraint bounds the host files and the networks that the commands of what it covers may reach, the connections they may accept, the secrets they may be given, and the kinds of environment they may run in. It is written on a function or on a module (Chapter 5), by its fields or by the name of an access declaration, and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
 
 ```lask
-within { network: "none", volumes: false }
+within { outbound: false, volumes: false }
 
 node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: "none"}
 
@@ -3039,8 +3053,8 @@ Access sets:
 - The **access set** of a use describes what its container reaches past itself, and what it is given. It has five components. The first four are read from the run options of its environment:
   - `files`: a table from paths relative to the base directory to `"rw"`, `"ro"` or `"none"`, read from `base_access` (10.2): `{".": "rw"}` when it is not given, `{".": m}` when it is the mode `m`, and the table when it is one.
   - `volumes`: the host paths and named volumes the `volumes` option mounts, each with `"rw"` or `"ro"`. This implementation reads an entry as `[<source>:]<target>[:<options>]`: a source beginning with `/` is a host path, any other source a named volume, and an entry with no source adds nothing, since an anonymous volume holds nothing from the host. The mode is `"ro"` when the options include `ro`, and `"rw"` otherwise.
-  - `network`: `none`, the entries of `egress`, `default` or `host`. It is the entries of `egress` when `egress` is given (10.12). Otherwise it is read from `network`: `none` for `"none"`; `host` for `"host"`; `default` when it is not given, for `"bridge"` and `"default"`, and for any other name of a network (letters, digits, `_`, `.` and `-`, beginning with a letter or digit); and `host` for any other value, such as one naming another container's or a namespace's network (`container:<name>`), whose reach is not known.
-  - `publish`: whether `publish` has an entry.
+  - `outbound`: `none`, the entries of `egress`, `default` or `host`. It is the entries of `egress` when `egress` is given (10.12). Otherwise it is read from `network`: `none` for `"none"`; `host` for `"host"`; `default` when it is not given, for `"bridge"` and `"default"`, and for any other name of a network (letters, digits, `_`, `.` and `-`, beginning with a letter or digit); and `host` for any other value, such as one naming another container's or a namespace's network (`container:<name>`), whose reach is not known.
+  - `inbound`: the host addresses and ports the entries of `publish` open. This implementation reads an entry as `[[<ip>:][<hostPort>]:]<containerPort>[/<proto>]`, an IPv6 address in brackets, a port as a range where it is one: it opens the host ports it names, or ports the engine chooses when it names none, on its address, or on every interface of both families, `0.0.0.0` and `::`, when it names none. An entry it does not read this way opens any port on every interface.
 - The fifth, `secrets`, is read from the values the use is given (Secret flow, below): the secrets that reach it, each with the **channel** by which it does:
   - `env <NAME>`: in the value of the variable `NAME` of the `env` option.
   - `option <name>`: in any other run option, or in a key of `env`. These are given to the engine client on its command line (10.10).
@@ -3049,25 +3063,28 @@ Access sets:
 - No other run option enters an access set. `base_mount` moves the base directory without widening what reaches it, and `read_only`, `tmpfs`, `cap_drop`, `dns`, `dns_search` and `add_hosts` stay inside the container or the network it is already on.
 - `egress` enters the access set, and must be static as `network` must (Resolution, below).
 - A run option that reaches past the container in another way — a device, a privilege, a namespace of the host — must not be provided unless this section gives it a place in the access set.
-- A use in `#local` reaches everything its process can (10.7). Its access set is unbounded in `files`, `volumes`, `network` and `publish`; its `secrets` are read as for any other use.
-- So is a use that mounts a host path that gives a container what the host has, whatever its mode: the root, `/`; the kernel's interfaces, `/proc`, `/sys` and `/dev`, and what is under them; the socket or the state of a container engine, which starts any container with any option (`/var/run/docker.sock`, `/run/docker.sock`, `/run/containerd`, `/run/podman`, `/var/lib/docker`, `/var/lib/containerd`, `/var/lib/containers`, and any path ending in `/docker.sock`, `/podman.sock`, `/containerd.sock` or `/buildkitd.sock`); the host's configuration and root's home, `/etc`, `/root` and `/boot`; and any directory that holds one of those, such as `/var/run`. A path is read with `.` and `..` resolved as written, and no link is followed. A constraint that admits the volume does not make it less than the host, so it is within no constraint that gives `files`, `volumes`, `network` or `publish`.
+- A use in `#local` reaches everything its process can (10.7). Its access set is unbounded in `files`, `volumes`, `outbound` and `inbound`; its `secrets` are read as for any other use.
+- So is a use that mounts a host path that gives a container what the host has, whatever its mode: the root, `/`; the kernel's interfaces, `/proc`, `/sys` and `/dev`, and what is under them; the socket or the state of a container engine, which starts any container with any option (`/var/run/docker.sock`, `/run/docker.sock`, `/run/containerd`, `/run/podman`, `/var/lib/docker`, `/var/lib/containerd`, `/var/lib/containers`, and any path ending in `/docker.sock`, `/podman.sock`, `/containerd.sock` or `/buildkitd.sock`); the host's configuration and root's home, `/etc`, `/root` and `/boot`; and any directory that holds one of those, such as `/var/run`. A path is read with `.` and `..` resolved as written, and no link is followed. A constraint that admits the volume does not make it less than the host, so it is within no constraint that gives `files`, `volumes`, `outbound` or `inbound`, and it is counted as `local` by `runs` (below).
 
 Constraints:
 
-- An access constraint is written as an `AccessSpec` (Chapter 5). Its fields bound the components of the same name:
+- An access constraint is written as an `AccessSpec`, or by the name of an `AccessDecl` that gives one (Chapter 5). Its fields bound the components of the same name, and `runs` the kind of environment of each use:
   - `files`: `"rw"`, `"ro"`, `"none"`, or a table of them, as `base_access` takes them (10.2), with `"."` required.
-  - `volumes`: `false`, admitting none, or a table from host paths (absolute, normalized as for `base_mount`) and volume names to `"rw"` or `"ro"`.
-  - `network`: `"none"`, `"default"`, or an array of egress entries, written as `egress` takes them (10.12), admitting a use whose `egress` only lists destinations they cover.
-  - `publish`: `false` or `true`.
+  - `volumes`: `false`, admitting none; `true`, admitting any; or a table from host paths (absolute, normalized as for `base_mount`) and volume names to `"rw"` or `"ro"`.
+  - `outbound`: `false`, admitting no network; `true`, admitting any network but the host's; or an array of egress entries, written as `egress` takes them (10.12), admitting a use whose `egress` only lists destinations they cover.
+  - `inbound`: `false`, admitting no published port; `true`, admitting any; or an array of host addresses a port may be published on, each `<addr>` or `<addr>:<port>`, the port a range where it is one (`"127.0.0.1:8000-8010"`). An address is an IPv4 address or an IPv6 one, in brackets when a port follows it (`"::1"`, `"[::1]:8080"`); `0.0.0.0` and `::` are written to admit every interface of their family. Only where a port is opened is bounded, not who may connect to it.
   - `secrets`: `false`, admitting none, or an array of names, written as identifiers (`[key, token]`), admitting the secrets bound to them, and those only in `env`. A name is one of the secret bindings (6.10) of what the constraint covers: for a function's constraint, a `!!`-marked parameter of the function or a `!!`-marked binding in its body; for either, a top-level value of the module that is a secret binding. A binding through `mark_secret` (`a = mark_secret(e)`) is one, as 6.10 makes it. Any other name is `E-TYPE-WITHIN-SPEC`. A secret of another module is named by binding it, marked, to a name of this one.
-- Every value is a literal, containing no interpolation. A field not given leaves its component unbounded, and `within {}` constrains nothing. Any other field or value is `E-TYPE-WITHIN-SPEC`.
+  - `runs`: `false`, admitting no use at all, or a non-empty array of the kinds of environment (10.2) a use may run in, `"local"` and `"container"`. A use in `#local` runs in `local`, and so does one in a container whose volume gives what the host has (Access sets, above); any other use in a container runs in `container`.
+- The values follow one rule: a field not given leaves its component unbounded, `false` admits nothing, `true` admits anything a container can be given, and an array or table admits what it lists. `files` alone is written with modes, as `base_access` is, and `secrets` and `runs` take no `true`, which would be no bound.
+- Every value is a literal, containing no interpolation, and `within {}` constrains nothing. Any other field or value is `E-TYPE-WITHIN-SPEC`.
 - An access set is **within** a constraint when each component the constraint bounds is:
   - `files`: for `"."` and for every key of either table, the mode the access set gives the path is no wider than the mode the constraint gives it, both read by the longest key that is the path or an ancestor of it (10.2), where `"none"` < `"ro"` < `"rw"`. Modes change only at keys, so these paths are enough.
-  - `volumes`: every host path is the key, or under a key, of a host path the constraint gives a mode no narrower than its own; every named volume is a key of its own with such a mode. Paths are compared by their components as written; a symbolic link on the host is not followed.
-  - `network`: no wider, where `none` < the entries of `egress` < `default` < `host`. A use's `egress` is within an array the constraint gives when each of its entries is covered by one of the array (10.12, Entries), within `"default"` whatever it lists, and within `"none"` when it lists nothing, since it then reaches nothing. Two arrays are compared only by coverage, so `["*.github.com:443"]` admits `egress: ["api.github.com:443"]` and not the reverse.
-  - `publish`: not `true` when the constraint gives `false`.
+  - `volumes`: anything, when the constraint gives `true`; otherwise every host path is the key, or under a key, of a host path the constraint gives a mode no narrower than its own; every named volume is a key of its own with such a mode. Paths are compared by their components as written; a symbolic link on the host is not followed.
+  - `outbound`: no wider, where `none` < the entries of `egress` < `default` < `host`, `false` admitting `none` and `true` admitting `default`. A use's `egress` is within an array the constraint gives when each of its entries is covered by one of the array (10.12, Entries), within `true` whatever it lists, and within `false` when it lists nothing, since it then reaches nothing. Two arrays are compared only by coverage, so `["*.github.com:443"]` admits `egress: ["api.github.com:443"]` and not the reverse.
+  - `inbound`: anything, when the constraint gives `true`; otherwise every address each entry of `publish` opens a port on is an address of the array, compared as addresses, whose port, when it gives one, holds every host port the entry opens. An entry whose host ports the engine chooses is admitted only by an address the array gives with no port, and one that names no address only when both `0.0.0.0` and `::` are given.
   - `secrets`: none when the constraint gives `false`; otherwise every secret is bound to one of the names the constraint gives (Secret flow, below), and reaches the use by the channel `env`. The channels `option`, `command` and `file` are within no constraint that gives `secrets`, and a secret bound to no name — one marked by a `mark_secret` that no binding takes — is within none either.
-- The access set of `#local` is within no constraint that gives `files`, `volumes`, `network` or `publish`: the host cannot be bounded by any of them. Its `secrets` are checked as any use's.
+- A use is within `runs` when its kind of environment is one the array gives. A constraint that gives `runs: false` is exceeded by every use, whatever its environment, whether it is resolved or not, and whether a parameter gives it or not.
+- The access set of `#local` is within no constraint that gives `files`, `volumes`, `outbound` or `inbound`, whatever their values: the host cannot be bounded by any of them. Its `secrets` are checked as any use's, and `runs` as above, so `runs: ["container"]` excludes the host without bounding anything else.
 - The constraint a declaration is checked against is the module constraint of its module together with its own, if it has one. An access set is within it when it is within both, so a function's constraint can narrow its module's and never widen it.
 
 Resolution:
@@ -3107,7 +3124,7 @@ Secret flow:
 
 Checking:
 
-- For every declaration covered by a constraint, every use it reaches is checked against the constraint the declaration is checked against. A use whose access set is resolved and is not within it is `E-TYPE-WITHIN-EXCEEDED`. A use whose access set is unresolved is `E-TYPE-WITHIN-UNPROVEN`: a constraint holds only of what is shown to hold it.
+- For every declaration covered by a constraint, every use it reaches is checked against the constraint the declaration is checked against. A use whose access set is resolved and is not within it is `E-TYPE-WITHIN-EXCEEDED`. A use whose access set is unresolved is `E-TYPE-WITHIN-UNPROVEN`: a constraint holds only of what is shown to hold it. Under `runs: false` it is `E-TYPE-WITHIN-EXCEEDED`, since no environment would be within it.
 - A parametric use is checked at each call that resolves it, and at the invocation that resolves it from the command line.
 - Whether or not a constraint covers it, a secret that reaches a use by the channel `option` or `command` is the advisory `W-SECRET-COMMAND-LINE` (14.2), placed where the secret enters the option or the command string, or, when it enters through a parameter, at the call that gives it. The diagnostic names the secret and the use, and suggests giving the value in `env`, to a program that reads the variable itself: expanded into a program's arguments by the shell (`--password "$PASSWORD"`), it is on that program's command line all the same.
 
@@ -3115,15 +3132,33 @@ Checking:
 alpine = #alpine:3.22.2
 sealed = #alpine:3.22.2{network: "none"}
 
-release_of(e: Runnable): String within { network: "none" } =
+release_of(e: Runnable): String within { outbound: false } =
   $[e] cat /etc/alpine-release
 
 ok(): String = release_of(sealed)
 bad(): String = release_of(alpine)   // E-TYPE-WITHIN-EXCEEDED: network default, at this call
 
 // E-TYPE-WITHIN-UNPROVEN: the network is read from outside the program.
-probe(): String within { network: "none" } =
+probe(): String within { outbound: false } =
   $[runnable(alpine, network = get_env("NET"))] true
+```
+
+```lask fragment
+access Contained = { runs: ["container"] }
+access Pure = { runs: false }
+access Loopback = { inbound: ["127.0.0.1", "::1"], outbound: false }
+
+// E-TYPE-WITHIN-EXCEEDED: it runs in local.
+kernel(): String within Contained = $[#local] uname -s
+
+sum(xs: Array<Number>): Number within Pure = reduce(xs, 0, \(a: Number, x: Number) -> a + x)
+
+serve(): String within Loopback =
+  $[#nginx:1.27{publish: ["127.0.0.1:8080:80", "[::1]:8080:80"], network: "none"}] nginx
+
+// E-TYPE-WITHIN-EXCEEDED: a port is published on 0.0.0.0:8080, and on :: too.
+open_to_all(): String within Loopback =
+  $[#nginx:1.27{publish: ["8080:80"], network: "none"}] nginx
 ```
 
 ```lask fragment
@@ -3159,7 +3194,7 @@ leak(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secret
 ```lask
 npm = #node:24.21.0-alpine3.24{egress: ["registry.npmjs.org:443"]}
 
-fetch(): String within { network: ["registry.npmjs.org:443", "*.github.com:443"] } =
+fetch(): String within { outbound: ["registry.npmjs.org:443", "*.github.com:443"] } =
   $[npm] npm ci
 ```
 
@@ -3476,12 +3511,12 @@ Columns:
 - `KIND`: `local`, `registry` or `recipe`.
 - `PINNED`: what the lock resolves it to: the digest of a registry reference, the content-addressed tag of a recipe, shown to its first twelve hexadecimal digits (`sha256:be7c8de0160a`, `lask/b61fd44bd7eb`). `—` when there is nothing to resolve or the lock does not pin it yet.
 - `REQUIRED BY`: where each head naming it is written: the module — a file of the project by its path, a dependency by its name — and the declaration, or the command word of the entry module whose environment it is; `(default --<name>)` when the head is the default of a keyword parameter (10.3). A head that dispatch copies into a command string (10.9) is shown where it is written. Two are shown, and how many more.
-- `STATUS`: `ok` for `local`; for a `docker` environment `present`, `missing (lask sync)`, `not pinned (lask sync)`, or `?` when the daemon cannot be reached.
+- `STATUS`: `ok` for `local`; for a `container` environment `present`, `missing (lask sync)`, `not pinned (lask sync)`, or `?` when the daemon cannot be reached.
 
 Rules:
 
 - The container engine is asked once whether it can be reached, and then whether each pinned image is present. Nothing is pulled or built, and no command runs in any environment.
-- When the daemon cannot be reached, a warning on stderr says so and why, and every `docker` status is `?`.
+- When the daemon cannot be reached, a warning on stderr says so and why, and every `container` status is `?`.
 - `envs list` reports; it does not fail. A missing or unpinned image, or a daemon that cannot be reached, is a status, and the exit code is `0`.
 - After the table, one line counts the environments by kind and by status.
 
@@ -3592,7 +3627,7 @@ Enumeration rules:
 Common columns:
 
 - `ENVIRONMENT`: the head, in the notation of `envs list`, followed in braces by the names of the options the listing shows that are given (`#node:24.21.0-alpine3.24{base_access,network}`), or `(dynamic)`. Rows are ordered as `envs commands` orders environments.
-- `CHECK`: what the constraints covering the uses of the row (10.11) find: `ok`, `exceeded` or `unproven`, the worst of them when they differ, or `—` when no use of the row is covered by one. A use left to a parameter of the function enumerated from is `—`: each call of it, and its invocation, is where it is checked.
+- `CHECK`: what the constraints covering the uses of the row (10.11) find: `ok`, `exceeded` or `unproven`, the worst of them when they differ, or `—` when no use of the row is covered by one. A use left to a parameter of the function enumerated from is `—`: each call of it, and its invocation, is where it is checked. A use covered by `runs: false` is `exceeded` whatever its environment is.
 - The listings are made whether or not the program keeps to its constraints: they are where what a constraint finds is seen whole.
 - `REQUIRED BY`: the declarations whose uses are in the row, in the notation of `envs list`, two shown and how many more. A parametric use resolved at a call is shown as the declaration of the call, `→`, and the declaration the use is written in (`main.lask: ok → release_of`), unless the call is in the declaration the use is written in.
 - An entry that reaches past what the base directory alone gives is marked `!`: the host for `#local`, a volume, a `default` or `host` network, and a published port. A volume that gives what the host has (10.11) is marked `! (host)`. An `egress` network is not marked: it reaches only the destinations it lists, which are shown.
@@ -3616,7 +3651,7 @@ Columns (`envs access`):
 
 - `FILES`: the `files` table of the row in one line (`. ro, dist rw, .env none`), followed by the number of volumes when there are any; `host (unbounded)` for `#local`.
 - `NETWORK`: as for `envs network`, followed by `+ inbound` when `publish` has an entry.
-- With `<function>`, the table is preceded by one line giving the constraint the function is checked against (10.11), or none.
+- With `<function>`, the table is preceded by one line giving the constraint the function is checked against (10.11), as it is written, by its fields or `within Name`, or none.
 
 Output and exit codes:
 
@@ -3651,7 +3686,7 @@ ENVIRONMENT                        NETWORK             EGRESS                  I
 6 rows (1 local, 4 registry, 1 dynamic): 1 ok, 1 exceeded, 4 unconstrained
 
 $ lask envs access build
-within { network: "none", volumes: false, files: { ".": "ro", "dist": "rw" } }
+within { outbound: false, volumes: false, files: { ".": "ro", "dist": "rw" } }
 ENVIRONMENT                                    FILES          NETWORK  CHECK  REQUIRED BY
 #node:24.21.0-alpine3.24{base_access,network}  . ro, dist rw  none     ok     main.lask: build
 
@@ -3993,7 +4028,7 @@ Execution rules:
 Stream rules:
 
 - The program's stdin and stdout are always those of the `cmd` process. `cmd` produces no evaluation result, so its stdout belongs to the program (11.3), and `lask cmd` can therefore be piped exactly as the program it runs can.
-- When stdin, stdout and stderr are all terminals, stderr is attached to the program as well, and a terminal is allocated in the `docker` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
+- When stdin, stdout and stderr are all terminals, stderr is attached to the program as well, and a terminal is allocated in the `container` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
 - Otherwise the program's standard error is relayed as the command execution log (12.3). The relay is applied to standard error only: relaying standard output would either duplicate it or withhold it from the pipe, and interactivity and pipeability both take precedence over the completeness of the relay.
 - The start line and the exit line of 12.3 are emitted in every case, so every invocation is recorded with its environment, its argument vector and its exit status.
 - `INT` and `TERM` are forwarded to the program, and the container must be removed on exit, including on signal (11.12).

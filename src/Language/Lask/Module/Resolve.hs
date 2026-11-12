@@ -145,7 +145,10 @@ modulePublics lm =
     valueName (DValue n _ _ _) = Just n
     valueName (DFunction n _ _ _ _ _) = Just n
     valueName _ = Nothing
+    -- An access declaration shares the namespace of type aliases
+    -- (spec 5), and is imported and exported as one is.
     typeName (DTypeAlias n _ _) = Just n
+    typeName (DAccess n _) = Just n
     typeName _ = Nothing
 
 -- | The declaration a namespace member @m.x@ refers to, where @m@
@@ -213,20 +216,10 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
     go gs ds (Decl sp f : rest) = case f of
       DValue n _ _ _ -> goValue gs ds rest sp n
       DFunction n _ _ _ _ _ -> goValue gs ds rest sp n
-      DTypeAlias n _ _ ->
-        -- The names the grammar reads as types of its own (spec 4.2)
-        -- are no more an alias's than the built-in aliases are: one
-        -- declared would never be referred to.
-        let dups
-              | n `elem` builtinTypeNames =
-                  [ mkDiagnostic ENameDuplicate StageStatic sp $
-                      "'" <> n <> "' is the name of a built-in type, which no type alias can take"
-                  ]
-              | otherwise =
-                  [ dupDiag sp n
-                    | userType n (gsTypes gs) || n `Set.member` builtinTypeAliasNames
-                  ]
-         in go gs {gsTypes = Map.insert n (TAlias (lmPath lm) n) (gsTypes gs)} (dups <> ds) rest
+      DTypeAlias n _ _ -> goType gs ds rest sp n
+      -- An access declaration is bound where a type alias is (spec 5);
+      -- which of the two a name is, its declaration says.
+      DAccess n _ -> goType gs ds rest sp n
       DImportNamed specs path ->
         let key = resolveKey path
             (gs', newDs) = foldl (addImport key) (gs, []) specs
@@ -249,6 +242,20 @@ buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
       -- namespace import does; being public as well is 'modulePublics'.
       DExportNamespace alias path -> goNamespace gs ds rest sp alias path
       where
+        -- The names the grammar reads as types of its own (spec 4.2)
+        -- are no more an alias's than the built-in aliases are: one
+        -- declared would never be referred to.
+        goType gs' ds' rest' sp' n =
+          let dups
+                | n `elem` builtinTypeNames =
+                    [ mkDiagnostic ENameDuplicate StageStatic sp' $
+                        "'" <> n <> "' is the name of a built-in type, which no type alias can take"
+                    ]
+                | otherwise =
+                    [ dupDiag sp' n
+                      | userType n (gsTypes gs') || n `Set.member` builtinTypeAliasNames
+                    ]
+           in go gs' {gsTypes = Map.insert n (TAlias (lmPath lm) n) (gsTypes gs')} (dups <> ds') rest'
         goNamespace gs' ds' rest' sp' alias path =
           let key = resolveKey path
               dups =
@@ -363,10 +370,11 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
 
     checkDecl (Decl _ f) = case f of
       DValue _ _ t e -> maybe [] checkType t <> checkExpr [] e
-      DFunction _ tps ps t _ body ->
+      DFunction _ tps ps t w body ->
         concatMap checkBound tps
           <> checkParams [] ps
           <> maybe [] checkType t
+          <> maybe [] checkAccessRef w
           <> checkExpr [paramNames ps] body
       DTypeAlias _ tps t -> concatMap checkBound tps <> checkType t
       -- The environment of a command declaration is checked for
@@ -380,8 +388,35 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       DImportNamespace {} -> []
       DExportNamespace {} -> []
       -- The values of an access constraint are literals, read without
-      -- names (spec 10.11); one that is not is reported as such.
-      DWithin {} -> []
+      -- names (spec 10.11); one that is not is reported as such. Its
+      -- name, where it is written as one, is resolved here.
+      DWithin w -> checkAccessRef w
+      DAccess {} -> []
+
+    -- The name of an access declaration, resolved as a type name is.
+    -- That it names an access declaration and not a type alias is
+    -- checked where the constraint is read ("Language.Lask.Core.Access").
+    checkAccessRef w = case w of
+      AccessSpec {} -> []
+      AccessRef sp Nothing n
+        | Map.member n (gsTypes gs) -> []
+        | otherwise ->
+            [ suggesting n [t | (t, TAlias _ _) <- Map.toList (gsTypes gs)] $
+                mkDiagnostic ENameUndefined StageStatic sp ("undefined access constraint: '" <> n <> "'")
+            ]
+      AccessRef sp (Just ns) n -> case Map.lookup ns (gsNamespaces gs) of
+        Just key -> case Map.lookup key publics of
+          Just pub
+            | n `Set.member` pubTypes pub -> []
+          pub ->
+            [ suggesting n (maybe [] (Set.toList . pubTypes) pub) $
+                mkDiagnostic ENameUndefined StageStatic sp $
+                  "namespace '" <> ns <> "' has no public access constraint '" <> n <> "'"
+            ]
+        Nothing ->
+          [ suggesting ns (Map.keys (gsNamespaces gs)) $
+              mkDiagnostic ENameUndefined StageStatic sp ("undefined namespace: '" <> ns <> "'")
+          ]
 
     -- A command word can be imported only if the target exports it.
     -- A missing module is reported by the loader, not here.

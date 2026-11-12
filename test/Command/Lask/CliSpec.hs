@@ -1423,13 +1423,13 @@ spec = beforeAll findLask $ do
             "within { volumes: false }\n\
             \alpine = #alpine:3.20\n\
             \sealed = #alpine:3.20{network: \"none\"}\n\
-            \release_of(e: Runnable): String within { network: \"none\" } = $[e] cat /etc/alpine-release\n\
+            \release_of(e: Runnable): String within { outbound: false } = $[e] cat /etc/alpine-release\n\
             \ok(): String = release_of(sealed)\n\
             \bad(): String = release_of(alpine)\n\
-            \probe() within { network: \"none\" } = $[runnable(alpine, network = get_env(\"NET\"))] true\n\
+            \probe() within { outbound: false } = $[runnable(alpine, network = get_env(\"NET\"))] true\n\
             \host() within { files: \"ro\" } = $[#local] ls\n\
             \ship() = $[#docker:27{volumes: [\"/var/run/docker.sock:/var/run/docker.sock\"]}] docker ps\n\
-            \twice(f: Function<String>): String within { network: \"none\" } = f()\n\
+            \twice(f: Function<String>): String within { outbound: false } = f()\n\
             \pick = release_of\n"
           )
         ]
@@ -1453,7 +1453,7 @@ spec = beforeAll findLask $ do
           resOut network `shouldSatisfy` isInfixOf "ok        main.lask: ok → release_of"
           resOut network `shouldSatisfy` isInfixOf "unproven  main.lask: probe"
           access <- runLask lask dir ["envs", "access", "release-of"] ""
-          resOut access `shouldSatisfy` isInfixOf "within { volumes: false } and within { network: \"none\" }"
+          resOut access `shouldSatisfy` isInfixOf "within { volumes: false } and within { outbound: false }"
     it "evaluates run options that can only compute, as a library builds them (spec 10.11)" $ \lask ->
       withProject
         [ ( "lib.lask",
@@ -1508,7 +1508,7 @@ spec = beforeAll findLask $ do
     it "checks what an invocation gives a parameter before anything runs (spec 10.11)" $ \lask ->
       withProject
         [ ( "main.lask",
-            "f(--net: String = \"none\"): String within { network: \"none\" } = $[runnable(#alpine:3.20, network = net)] echo hi\n"
+            "f(--net: String = \"none\"): String within { outbound: false } = $[runnable(#alpine:3.20, network = net)] echo hi\n"
           )
         ]
         $ \dir -> do
@@ -1521,7 +1521,7 @@ spec = beforeAll findLask $ do
           kept <- runLask lask dir ["eval", "f"] ""
           resErr kept `shouldNotSatisfy` isInfixOf "E-TYPE-WITHIN"
     it "checks the command words cmd runs against the module constraint (spec 5)" $ \lask ->
-      withProject [("main.lask", "within { network: \"none\" }\ncommand { \"uname\" } on #local\n")] $ \dir -> do
+      withProject [("main.lask", "within { outbound: false }\ncommand { \"uname\" } on #local\n")] $ \dir -> do
         -- Declaring a word on the host is not a use; running it is.
         static <- runLask lask dir ["check"] ""
         resExit static `shouldBe` 0
@@ -1629,6 +1629,55 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", "takes(--hosts: Array<String> | Null = null): String = \"x\"\ne(): String = takes(hosts = [])\nr = #alpine:3.20{egress: []}\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""
         resExit r `shouldBe` 0
+    it "names constraints with access, and bounds runs and inbound (spec 5, 10.11)" $ \lask -> do
+      withProject
+        [ ("policy.lask", "export access Offline = { runs: [\"container\"], outbound: false, inbound: false, volumes: false }\n"),
+          ( "main.lask",
+            "import { Offline } from \"./policy.lask\"\n\
+            \import * as p from \"./policy.lask\"\n\
+            \access Pure = { runs: false }\n\
+            \access Loop = { inbound: [\"127.0.0.1:8080\", \"::1\"] }\n\
+            \a() within Offline = $[#alpine:3.22{network: \"none\"}] true\n\
+            \b() within p.Offline = $[#alpine:3.22] true\n\
+            \c() within Pure = $[#alpine:3.22] true\n\
+            \d(e: Runnable) within Pure = $[e] true\n\
+            \f() within Pure = \"pure\"\n\
+            \g() within Loop = $[#nginx:1.27{publish: [\"127.0.0.1:8080:80\", \"[::1]:9000:80\"]}] true\n\
+            \h() within Loop = $[#nginx:1.27{publish: [\"8080:80\"]}] true\n\
+            \i() within { runs: [\"container\"] } = $[#local] true\n\
+            \j() within { runs: [\"local\"] } = $[#local] true\n\
+            \k() within { outbound: true, volumes: true } = $[#alpine:3.22{volumes: [\"/data:/d\"]}] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let withinLines = filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))
+          length withinLines `shouldBe` 5
+          resOut r `shouldSatisfy` isInfixOf "main.lask:6:24-6:44: E-TYPE-WITHIN-EXCEEDED [static]: the network is \"default\", which within p.Offline of 'b' does not allow (outbound)"
+          resOut r `shouldSatisfy` isInfixOf "it runs in a container, which within Pure of 'c' does not allow (runs)"
+          resOut r `shouldSatisfy` isInfixOf "a command runs here, which within Pure of 'd' does not allow (runs)"
+          resOut r `shouldSatisfy` isInfixOf "a port is published on 0.0.0.0:8080, which within Loop of 'h' does not allow (inbound)"
+          resOut r `shouldSatisfy` isInfixOf "#local reaches the whole host, which within { runs: [\"container\"] } of 'i' does not allow (runs)"
+      withProject
+        [ ( "main.lask",
+            "type T = String\n\
+            \access Pure = { runs: false }\n\
+            \access Named = { secrets: [x] }\n\
+            \k() within T = \"x\"\n\
+            \l(x: Pure) = x\n\
+            \m() within Pur = 1\n\
+            \n() within { network: \"none\" } = 1\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          resOut r `shouldSatisfy` isInfixOf "main.lask:3:28-3:29: E-TYPE-WITHIN-SPEC [static]: an access declaration gives 'secrets' only as false"
+          resOut r `shouldSatisfy` isInfixOf "main.lask:4:12-4:13: E-TYPE-WITHIN-SPEC [static]: 'T' is a type, not an access constraint"
+          resOut r `shouldSatisfy` isInfixOf "main.lask:5:6-5:10: E-NAME-UNDEFINED [static]: 'Pure' is an access constraint, not a type"
+          resOut r `shouldSatisfy` isInfixOf "main.lask:6:12-6:15: E-NAME-UNDEFINED [static]: undefined access constraint: 'Pur'"
+          resOut r `shouldSatisfy` isInfixOf "unknown field 'network': a constraint takes files, volumes, outbound, inbound, secrets and runs"
     it "checks egress entries, and what within admits of them (spec 10.11, 10.12)" $ \lask -> do
       withProject [("main.lask", "a = #alpine:3.20{egress: [\"x.com\"]}\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""
@@ -1639,10 +1688,10 @@ spec = beforeAll findLask $ do
       withProject
         [ ( "main.lask",
             "npm = #alpine:3.20{egress: [\"registry.npmjs.org:443\"]}\n\
-            \a(): String within { network: [\"registry.npmjs.org:443\"] } = $[npm] true\n\
-            \b(): String within { network: [\"*.github.com:443\"] } = $[#alpine:3.20{egress: [\"api.github.com:443\", \"github.com:443\"]}] true\n\
-            \c(): String within { network: \"none\" } = $[#alpine:3.20{egress: []}] true\n\
-            \d(): String within { network: [\"a.com:443\"] } = $[#alpine:3.20] true\n"
+            \a(): String within { outbound: [\"registry.npmjs.org:443\"] } = $[npm] true\n\
+            \b(): String within { outbound: [\"*.github.com:443\"] } = $[#alpine:3.20{egress: [\"api.github.com:443\", \"github.com:443\"]}] true\n\
+            \c(): String within { outbound: false } = $[#alpine:3.20{egress: []}] true\n\
+            \d(): String within { outbound: [\"a.com:443\"] } = $[#alpine:3.20] true\n"
           )
         ]
         $ \dir -> do
@@ -1653,8 +1702,8 @@ spec = beforeAll findLask $ do
           -- lists nothing is within none, and a container that may
           -- reach anything is within no list.
           length withinLines `shouldBe` 2
-          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: egress lists \"github.com:443\", which within { network: [\"*.github.com:443\"] } of 'b'"
-          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: the network is \"default\", which within { network: [\"a.com:443\"] } of 'd'"
+          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: egress lists \"github.com:443\", which within { outbound: [\"*.github.com:443\"] } of 'b'"
+          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: the network is \"default\", which within { outbound: [\"a.com:443\"] } of 'd'"
           network <- runLask lask dir ["envs", "network"] ""
           resOut network `shouldSatisfy` isInfixOf "registry.npmjs.org:443"
           resOut network `shouldSatisfy` isInfixOf "(none)"
