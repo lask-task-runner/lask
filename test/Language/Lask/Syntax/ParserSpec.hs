@@ -315,14 +315,14 @@ spec = do
           ]
 
     it "parses an access constraint on a function, after its return type (spec 5)" $
-      pModule "f(): String within { network: \"none\" } = \"x\""
+      pModule "f(): String within { outbound: false } = \"x\""
         `shouldBe` Right
           [ DFunction
               "f"
               []
               []
               (Just (ty SString))
-              (Just (AccessSpec NoSpan [(Spanned NoSpan "network", ex (EString [TPChunk NoSpan "none"]))]))
+              (Just (AccessSpec NoSpan [(Spanned NoSpan "outbound", ex (EBool False))]))
               (ex (EString [TPChunk NoSpan "x"]))
           ]
 
@@ -332,6 +332,16 @@ spec = do
           [ DWithin (AccessSpec NoSpan [(Spanned NoSpan "volumes", ex (EBool False))]),
             DValue "within" Public Nothing (num 1),
             dfun "within" [Param NoSpan (PPositional "x" Public Nothing)] Nothing (var "x")
+          ]
+
+    it "parses an access declaration, and a constraint written by its name (spec 5)" $
+      pModule "access Offline = { runs: false }\nwithin Offline\nf() within m.Offline = 1\naccess = 1\naccess(x) = x"
+        `shouldBe` Right
+          [ DAccess "Offline" (AccessSpec NoSpan [(Spanned NoSpan "runs", ex (EBool False))]),
+            DWithin (AccessRef NoSpan Nothing "Offline"),
+            DFunction "f" [] [] Nothing (Just (AccessRef NoSpan (Just "m") "Offline")) (num 1),
+            DValue "access" Public Nothing (num 1),
+            dfun "access" [Param NoSpan (PPositional "x" Public Nothing)] Nothing (var "x")
           ]
 
     it "parses type parameters on a type alias, and arguments on a reference" $ do

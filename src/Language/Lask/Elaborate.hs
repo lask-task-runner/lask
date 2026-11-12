@@ -590,6 +590,7 @@ unitsHolding prog ds =
       DImportNamespace alias _ -> ([(path, alias)], [], [])
       DExportNamespace alias _ -> ([(path, alias)], [], [])
       DWithin _ -> ([], [], [])
+      DAccess n _ -> ([], [(path, n)], [])
     imported path specs =
       ([(path, v) | (v, False) <- bad], [(path, v) | (v, True) <- bad], [])
       where
@@ -1041,6 +1042,11 @@ aliasType ctx path sp qualifier n args = do
     -- A parameterised alias is elaborated once with its parameters
     -- standing for themselves, and each reference substitutes its type
     -- arguments into that body (spec 4.2).
+    -- An access declaration shares the namespace of type aliases, and
+    -- is no type (spec 5).
+    Just (TAlias defPath defName)
+      | declaresAccess defPath defName ->
+          abort (diag ENameUndefined sp ("'" <> n <> "' is an access constraint, not a type; it is written after within"))
     Just (TAlias defPath defName) -> do
       (params, body) <- aliasBody ctx (defPath, defName)
       unless (length args == length params) $
@@ -1067,6 +1073,9 @@ aliasType ctx path sp qualifier n args = do
     noArgs =
       unless (null args) $
         abort (diag ETypeArity sp ("'" <> n <> "' takes no type arguments"))
+    declaresAccess defPath defName = case Map.lookup defPath (progModules (ctxProg ctx)) of
+      Just lm -> not (null [() | Decl _ (DAccess a _) <- moduleDecls (lmModule lm), a == defName])
+      Nothing -> False
 
 -- | The body of a declared type alias, with the type parameters it
 -- binds, elaborated once and cached. A parameterised alias is

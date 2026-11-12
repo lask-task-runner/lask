@@ -54,9 +54,9 @@ trigger c = case c of
   ETypeCommandOption ->
     check "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { closed: true } } }\nv() = $ go -x\n"
   ETypeEnvConstruct -> check "e = #local(memory = \"1g\")\n"
-  ETypeWithinSpec -> check "within { network: \"host\" }\n"
-  ETypeWithinExceeded -> check "f() within { network: \"none\" } = $[#alpine:3.20] true\n"
-  ETypeWithinUnproven -> check "f() within { network: \"none\" } = $[runnable(#alpine:3.20, network = get_env(\"NET\"))] true\n"
+  ETypeWithinSpec -> check "within { outbound: \"host\" }\n"
+  ETypeWithinExceeded -> check "f() within { outbound: false } = $[#alpine:3.20] true\n"
+  ETypeWithinUnproven -> check "f() within { outbound: false } = $[runnable(#alpine:3.20, network = get_env(\"NET\"))] true\n"
   ETypeAccess -> check "u = {name: \"a\"}\nn = u.nope\n"
   ETypeFieldDuplicate -> check "r = {a: 1, a: 2}\n"
   ETypeCaseDuplicate -> check "f(x: String) = case (x) {\n  \"a\" -> 1\n  \"b\", \"a\" -> 2\n  else -> 3\n}\n"

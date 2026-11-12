@@ -76,8 +76,12 @@ data DeclF
     -- lambda binding), with the type parameters it declares (spec 4.2)
     -- and its access constraint (spec 5, 10.11).
     DFunction Text [TypeParam] [Param] (Maybe SType) (Maybe AccessSpec) Expr
-  | -- | @within { ... }@ (spec 5): the module constraint.
+  | -- | @within { ... }@ or @within Name@ (spec 5): the module
+    -- constraint.
     DWithin AccessSpec
+  | -- | @access Name = { ... }@ (spec 5): a named access constraint.
+    -- The parser gives it braces, never a name.
+    DAccess Text AccessSpec
   | -- | @export { a, b as c } from "path"@ (spec 5): a named import
     -- whose bound names are also public symbols of this module.
     DExportFrom [ImportSpec] Text
@@ -98,8 +102,12 @@ data DeclF
   deriving (Show, Eq)
 
 -- | An access constraint as written (spec 5, 10.11): the span of its
--- braces, and each field with its value. The braces build no value.
-data AccessSpec = AccessSpec Span [(Spanned Text, Expr)]
+-- braces, and each field with its value, or the name of an @access@
+-- declaration, with the namespace it is qualified by. The braces build
+-- no value, and the name is no type.
+data AccessSpec
+  = AccessSpec Span [(Spanned Text, Expr)]
+  | AccessRef Span (Maybe Text) Text
   deriving (Show, Eq)
 
 -- | Whether a binding carries the @!!@ secret marker (spec 6.10).
@@ -333,11 +341,14 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
       (fmap stripAccess w)
       (stripSpansExpr e)
   DWithin w -> DWithin (stripAccess w)
+  DAccess n w -> DAccess n (stripAccess w)
   DCommand ns e sch -> DCommand (map stripWord ns) (stripSpansExpr e) (fmap stripSpansExpr sch)
   DImportCommands ns path -> DImportCommands (map stripWord ns) path
   DExportCommandsFrom ns path -> DExportCommandsFrom (map stripWord ns) path
   where
-    stripAccess (AccessSpec _ fs) = AccessSpec NoSpan [(Spanned NoSpan k, stripSpansExpr v) | (Spanned _ k, v) <- fs]
+    stripAccess w = case w of
+      AccessSpec _ fs -> AccessSpec NoSpan [(Spanned NoSpan k, stripSpansExpr v) | (Spanned _ k, v) <- fs]
+      AccessRef _ q n -> AccessRef NoSpan q n
     stripWord (Spanned _ n) = Spanned NoSpan n
     stripSpec (ImportSpec _ n a) = ImportSpec NoSpan n a
 

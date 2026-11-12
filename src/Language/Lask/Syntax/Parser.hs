@@ -226,6 +226,7 @@ pModule = do
       DValue n _ _ _ -> Just n
       DFunction n _ _ _ _ _ -> Just n
       DTypeAlias n _ _ -> Just n
+      DAccess n _ -> Just n
       _ -> Nothing
 
     -- Top-level declarations, each ended by a terminator or the end of
@@ -322,7 +323,7 @@ pTopLevel =
       pure (Decl (s <> e) (DExportFrom specs path), False)
 
 pDecl :: P Decl
-pDecl = choice [pImport, pTypeAliasDecl, pValueOrFunction]
+pDecl = choice [pImport, pTypeAliasDecl, pAccessDecl, pValueOrFunction]
 
 -- | @command { "go", "gofmt" } on #golang:1.25@ (spec ch. 5).
 pCommandDecl :: P Decl
@@ -461,19 +462,26 @@ pValueOrFunction = do
         pure (Decl (sp <> exprSpan e) (DValue name sec t e))
     ]
 
--- | An access constraint, @within { field: value, ... }@ (spec 5).
--- @within@ is a contextual keyword: where it is read, no identifier
--- can stand, so it stays usable as one everywhere else (spec 3.3).
+-- | An access constraint, @within { field: value, ... }@ or
+-- @within Name@ (spec 5). @within@ is a contextual keyword: where it
+-- is read, no identifier can stand, so it stays usable as one
+-- everywhere else (spec 3.3).
 pWithin :: P AccessSpec
 pWithin = snd <$> pWithinSpanned
 
 pWithinSpanned :: P (Span, AccessSpec)
 pWithinSpanned = do
   Spanned s () <- withinKw
+  (end, w) <- choice [pAccessBraces, pAccessRef]
+  pure (s <> end, w)
+
+-- | The braces of an access constraint, with the span they cover.
+pAccessBraces :: P (Span, AccessSpec)
+pAccessBraces = do
   open <- sym TLBrace
   fs <- sepBy field (sym TComma)
   close <- sym TRBrace
-  pure (s <> close, AccessSpec (open <> close) fs)
+  pure (open <> close, AccessSpec (open <> close) fs)
   where
     field = do
       k <- lowerId
@@ -481,19 +489,43 @@ pWithinSpanned = do
       v <- pExpr
       pure (k, v)
 
+-- | The name of an @access@ declaration, @Name@ or @ns.Name@.
+pAccessRef :: P (Span, AccessSpec)
+pAccessRef = do
+  q <- optional (try (lowerId <* sym TDot))
+  Spanned nsp n <- upperId
+  let sp = maybe nsp (\(Spanned qsp _) -> qsp <> nsp) q
+  pure (sp, AccessRef sp (spannedValue <$> q) n)
+
 withinKw :: P (Spanned ())
 withinKw = matchTok "within" $ \t -> case t of
   TLowerId "within" -> Just ()
   _ -> Nothing
 
 -- | A module constraint (spec 5): @within@ at the start of a
--- declaration, followed by @{@, which no declaration named @within@
--- can be.
+-- declaration, followed by @{@, a type name or @ns.@, which no
+-- declaration named @within@ can be.
 pModuleWithin :: P Decl
 pModuleWithin = do
-  _ <- try (lookAhead (withinKw *> sym TLBrace))
+  _ <- try (lookAhead (withinKw *> choice [() <$ sym TLBrace, () <$ upperId, () <$ (lowerId *> sym TDot)]))
   (sp, w) <- pWithinSpanned
   pure (Decl sp (DWithin w))
+
+-- | @access Name = { ... }@ (spec 5). @access@ is a contextual
+-- keyword like @within@: no declaration named @access@ is followed by
+-- a type name.
+pAccessDecl :: P Decl
+pAccessDecl = do
+  _ <- try (lookAhead (accessKw *> upperId))
+  Spanned s () <- accessKw
+  Spanned _ name <- upperId
+  _ <- sym TAssign
+  (end, w) <- pAccessBraces
+  pure (Decl (s <> end) (DAccess name w))
+  where
+    accessKw = matchTok "access" $ \t -> case t of
+      TLowerId "access" -> Just ()
+      _ -> Nothing
 
 -- | The optional @!!@ secret marker following a bound name (spec 6.10).
 pSecrecy :: P Secrecy
