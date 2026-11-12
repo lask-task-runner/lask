@@ -119,8 +119,8 @@ spec = do
   describe "declarations and calls (spec 4.3, 7.5)" $ do
     it "types annotated functions" $
       hasType "add2(x: Number, y: Number): Number = x + y" "add2" "Function<Number, Number, Number>"
-    it "defaults unannotated parameters to Any" $
-      hasType "identity(x) = x" "identity" "Function<Any, Any>"
+    it "makes an unconstrained unannotated parameter a type parameter" $
+      hasType "identity(x) = x" "identity" "Function<T, T>"
     it "infers keyword parameter types from defaults" $
       hasType "inc(--x = 0) = x + 1" "inc" "Function<Number>"
     it "accepts keyword calls and defaults" $
@@ -169,6 +169,81 @@ spec = do
       accepts "fact(n: Number): Number = if (n == 0) { 1 } else { n * fact(n - 1) }"
     it "rejects recursion without a return annotation" $
       rejects "f(n: Number) = f(n)" ETypeMismatch
+
+  describe "inference of parameter types (spec 4.3)" $ do
+    it "takes the type a parameter is used at" $ do
+      hasType "inc(x) = x + 1" "inc" "Function<Number, Number>"
+      hasType "shout(s) = to_upper(s)" "shout" "Function<String, String>"
+      hasType "f(c, n) = c ? n : 0" "f" "Function<Bool, Number, Number>"
+      hasType "f(xs) = do {\n  for (x : xs) { x + 1 }\n}" "f" "Function<Array<Number>, Array<Number>>"
+    it "takes the greatest type every use conforms to" $ do
+      hasType "g(s: String | Null): Number = 1\nf(x) = g(x) + length(x)" "f" "Function<String, Number>"
+      hasType "f(x) = do {\n  j = to_json(x)\n  x + 1\n}" "f" "Function<Number, Number>"
+    it "rejects uses no one type conforms to, asking for an annotation" $
+      rejects "f(x) = length(x) + x" ETypeMismatch
+    it "gives a parameter the shape a generic use needs" $ do
+      hasType "count(xs) = size(xs)" "count" "Function<Array<T>, Number>"
+      hasType "f(xs) = size(xs) + xs[0]" "f" "Function<Array<Number>, Number>"
+      hasType "f(xs, x) = contains_array(xs, x)" "f" "Function<Array<T>, T, Bool>"
+    it "makes a parameter used at no type a type parameter" $ do
+      hasType "pair(a, b) = [a, b]" "pair" "Function<T, U, Array<Any>>"
+      hasType "wrap(x) = [to_json(x), x]" "wrap" "Function<T, Array<Any>>"
+      hasType "first(a, b) = a" "first" "Function<T, U, T>"
+      hasType "f(x) = do {\n  _ = to_json(x)\n  x\n}" "f" "Function<T, T>"
+    it "instantiates an inferred type parameter at each call" $ do
+      hasType "identity(x) = x\nf() = identity(1)" "f" "Function<Number>"
+      hasType "identity(x) = x\nf() = identity(\"a\")" "f" "Function<String>"
+    it "bounds an inferred type parameter by what its uses need" $ do
+      accepts "greet(name) = \"hi #{name}\"\nf() = greet(1)"
+      rejects "greet(name) = \"hi #{name}\"\nf() = greet([1])" ETypeBound
+      accepts "same(a, b) = a == b\nf() = same(1, 2)"
+      rejects "same(a, b) = a == b\nf() = same(1, \"a\")" ETypeMismatch
+      hasType "sorted(xs) = sort(xs)" "sorted" "Function<Array<T>, Array<T>>"
+      rejects "sorted(xs) = sort(xs)\nf() = sorted([true])" ETypeBound
+    it "keeps the stronger of two bounds one entails" $
+      accepts "f(xs, x) = contains_array(sort(xs), x)\ng() = f([1], 2)"
+    it "rejects a parameter that needs two bounds neither entails" $
+      rejects "f(a, b) = a == b ? \"#{a}\" : \"\"" ETypeBound
+    it "takes the type of the values a parameter is joined with, when used at none" $ do
+      hasType "f(c: Bool, n) = c ? 0 : n" "f" "Function<Bool, Number, Number>"
+      hasType "f(xs, x) = contains_array(xs, \"a\") ? x : 1" "f" "Function<Array<String>, Number, Number>"
+      hasType "f(c: Bool, x) = c ? x : null" "f" "Function<Bool, T, T | Null>"
+    it "takes a comparison with a value as a use at its type" $
+      hasType "f(x) = x == \"a\"" "f" "Function<String, Bool>"
+    it "uses the scrutinee of a case at the type of its value heads" $
+      hasType "f(t) = case (t) {\n  \"amd64\" -> 1\n  \"arm64\" -> 2\n  else -> 0\n}" "f" "Function<String, Number>"
+    it "takes the scrutinee of a case with type heads as Any" $
+      hasType "f(x) = case (x) {\n  String -> 1\n  else -> 0\n}" "f" "Function<Any, Number>"
+    it "asks for an annotation where the body cannot tell the whole type" $ do
+      rejects "f(u) = u.name" ETypeAccess
+      rejects "f(u) = u[\"name\"]" ETypeAccess
+      rejects "f(g) = g(1)" ETypeCall
+    it "types a !! parameter as String or String | Null" $ do
+      hasType "f(x!!) = x" "f" "Function<String | Null, String | Null>"
+      hasType "f(x!!) = length(x)" "f" "Function<String, Number>"
+    it "infers variadic and required keyword parameters" $ do
+      hasType "f(...xs) = sum(xs)" "f" "Function<Array<Number>, Number>"
+      accepts "f(--n) = n + 1\ng() = f(n = 1)"
+      rejects "f(--n) = n + 1\ng() = f(n = \"a\")" ETypeMismatch
+    it "does not let a call decide the type" $
+      rejects "inc(x) = x + 1\nf() = inc(\"a\")" ETypeMismatch
+    it "lets an annotation win over inference" $
+      hasType "f(x: Number | String) = x" "f" "Function<Number | String, Number | String>"
+    it "checks a recursive call against the inferred types, without making it a use" $ do
+      hasType "count(n): Number = n < 1 ? 0 : 1 + count(n - 1)" "count" "Function<Number, Number>"
+      rejects "count(n): Number = n < 1 ? 0 : 1 + count(\"a\")" ETypeMismatch
+      hasType "f(x, n): Number = n < 1 ? 0 : f(x, n - 1)" "f" "Function<T, Number, Number>"
+    it "rejects a cycle of calls through another unannotated declaration" $ do
+      rejects "a(n): Number = n < 1 ? 0 : b(n - 1)\nb(n: Number): Number = a(n)" ETypeMismatch
+      accepts "a(n: Number): Number = n < 1 ? 0 : b(n - 1)\nb(n: Number): Number = a(n)"
+    it "infers the parameters of a lambda bound to a name, generically" $ do
+      hasType "inc = \\(x) -> x + 1" "inc" "Function<Number, Number>"
+      accepts "f(): String = do {\n  id = \\(x) -> x\n  n: Number = id(1)\n  id(\"s\")\n}"
+    it "makes an unconstrained parameter of an unbound lambda Any" $
+      accepts "f() = (\\(x) -> to_json(x))(1)"
+    it "names inferred type parameters apart from written ones and aliases" $ do
+      hasType "f<T>(a: T, b) = b" "f" "Function<T, U, U>"
+      hasType "type T = Number\nf(a) = a" "f" "Function<U, U>"
 
   describe "builtin polymorphism (spec 4.4)" $ do
     it "instantiates map per call" $
@@ -681,7 +756,7 @@ spec = do
     it "keeps a type that already admits Null" $
       hasType "f(c: Bool) = if (c) { find_env(\"A\") } else { null }" "f" "Function<Bool, String | Null>"
     it "is absorbed by Any" $
-      hasType "f(c: Bool, x) = if (c) { x } else { null }" "f" "Function<Bool, Any, Any>"
+      hasType "f(c: Bool, x: Any) = if (c) { x } else { null }" "f" "Function<Bool, Any, Any>"
     it "types branches that are all null as Null" $
       hasType "f(c: Bool) = c ? null : null" "f" "Function<Bool, Null>"
     it "still lets a context-typed branch take the type of the others" $ do

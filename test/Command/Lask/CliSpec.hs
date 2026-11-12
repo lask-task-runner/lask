@@ -483,6 +483,42 @@ spec = beforeAll findLask $ do
         resOut r `shouldContain` "largest<T: orderable>"
         resOut r `shouldContain` "label<T: Number | String>"
 
+  describe "functions with inferred parameter types from the CLI (spec 4.3, 11.2)" $ do
+    let proj =
+          [ ( "main.lask",
+              "tag(version) = \"v#{version}\"\n\
+              \inc(n) = n + 1\n\
+              \ident(x) = x\n"
+            )
+          ]
+
+    it "takes the text as written for an inferred bounded type parameter" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "tag", "1.0"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"v1.0\"\n"
+
+    it "decodes a parameter at the type inferred for it" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "inc", "41"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "42\n"
+        bad <- runLask lask dir ["eval", "inc", "x"] ""
+        resExit bad `shouldBe` 4
+
+    it "instantiates an inferred unbounded type parameter at Any" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "ident", "[1,2]"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "[1,2]\n"
+
+    it "shows the inferred type parameters where it describes the declaration" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "--help"] ""
+        resOut r `shouldContain` "tag<T: stringifiable>"
+        resOut r `shouldContain` "ident<T>"
+        resOut r `shouldNotContain` "%"
+
   -- A re-exported name is a public symbol of the module (spec 5), so
   -- the CLI reaches it as it reaches one the module declares.
   describe "re-exported functions from the CLI (spec 5, 11.2, 11.6)" $ do
