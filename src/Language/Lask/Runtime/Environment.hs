@@ -183,7 +183,7 @@ runDeclaredCommand ::
   ImagePins ->
   FilePath ->
   CommandLogSink ->
-  -- | Force the relay even on a terminal (@--format json@).
+  -- | Force the relay even on a terminal (@--log-format json@).
   Bool ->
   EnvValue ->
   -- | Program name (the declared command word).

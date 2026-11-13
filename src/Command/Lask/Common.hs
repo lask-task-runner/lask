@@ -17,11 +17,16 @@ module Command.Lask.Common
     diagJson,
     loadLockOrExit,
     encodeJsonText,
+    outputFormat,
+    outputJson,
+    jsonOut,
   )
 where
 
 import Command.Lask.Options (CommonOpts (..))
+import Command.Lask.ArgCodec (OutputFormat (..))
 import qualified Data.Aeson as A
+import qualified Data.Aeson.Encode.Pretty as AP
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -49,7 +54,7 @@ compileOrExit opts = do
   case r of
     Right compiled -> pure compiled
     Left ds -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+      TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) ds)
       exitWith (ExitFailure 1)
 
 
@@ -60,7 +65,7 @@ usageError opts msg = usageErrorSuggesting opts msg []
 -- names close to it (spec 14.3).
 usageErrorSuggesting :: CommonOpts -> Text -> [Text] -> IO a
 usageErrorSuggesting opts msg suggestions = do
-  if optJsonFormat opts
+  if optLogJson opts
     then
       TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode . A.object $
         [("code", A.String (codeText ECliUsage)), ("message", A.String msg)]
@@ -183,7 +188,7 @@ loadLockOrExit opts = do
   r <- loadLockFile (baseDir </> defaultLockFileName)
   case r of
     Left d -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+      TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) [d])
       exitWith (ExitFailure 1)
     Right Nothing -> do
       TIO.hPutStrLn stderr (codeText EModuleLockStale <> ": no lock file; run 'lask sync'")
@@ -191,5 +196,22 @@ loadLockOrExit opts = do
     Right (Just lf) -> pure lf
 
 -- | A JSON value as one line of text.
+-- | What stdout is written in (spec 11.3): what @--output@ says, or
+-- the command's own default.
+outputFormat :: OutputFormat -> CommonOpts -> OutputFormat
+outputFormat dflt opts = maybe dflt id (optOutput opts)
+
+-- | Whether a command whose report defaults to text writes it as JSON.
+outputJson :: CommonOpts -> Bool
+outputJson opts = outputFormat OutputText opts /= OutputText
+
+-- | JSON written to stdout, formatted when @--output pretty-json@ asks
+-- for it.
+jsonOut :: CommonOpts -> Text -> Text
+jsonOut opts t = case optOutput opts of
+  Just OutputPrettyJson
+    | Just v <- A.decodeStrict (TE.encodeUtf8 t) -> TE.decodeUtf8 (BL.toStrict (AP.encodePretty (v :: A.Value)))
+  _ -> t
+
 encodeJsonText :: A.Value -> Text
 encodeJsonText = TE.decodeUtf8 . BL.toStrict . A.encode

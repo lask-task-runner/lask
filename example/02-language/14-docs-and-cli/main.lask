@@ -6,7 +6,7 @@
 //   lask run --help                  # every task in this module
 //   lask run publish --help          # one task, from the comment below
 //   lask eval publish --tag v1.2.0 --dry-run true
-//   lask eval --stdout-encode pretty-json matrix
+//   lask eval --output pretty-json matrix
 
 known_tags: Map<String> = {
   "latest": "the moving tag",
@@ -81,13 +81,13 @@ greet(name: String, --loudly: Bool = false): String =
 // Return something structured, to show the output encodings.
 //
 // `eval` writes the return value to stdout as JSON by default;
-// `--stdout-encode pretty-json` indents it and `text` writes a string
+// `--output pretty-json` indents it and `text` writes a string
 // value unquoted. `run` writes nothing at all.
 //
 // Note where that option goes: everything after the function name
 // belongs to the *function*, so Lask's own options come before it.
 //
-// @example lask eval --stdout-encode pretty-json matrix
+// @example lask eval --output pretty-json matrix
 matrix(): Array<Record<name: String, image: String>> = [
   { name: "api", image: "python:3.12.14-alpine3.24" },
   { name: "web", image: "node:24.22.1-alpine3.24" }

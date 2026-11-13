@@ -12,7 +12,9 @@ import Command.Lask.Harness
 import Control.Monad (void)
 import Data.List (isInfixOf)
 import qualified Data.Text as T
-import Language.Lask.ErrorCode (ErrorCode (..), codeText)
+import Language.Lask.ErrorCode (AdvisoryCode (..), ErrorCode (..), advisoryText, codeText)
+import qualified Data.Set as Set
+import Text.Regex.TDFA (getAllTextMatches, (=~))
 import Language.Lask.SecretStore.FakeVault (FakeVault (..), withFakeVault)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
@@ -222,9 +224,42 @@ exitOf ExitSuccess = 0
 exitOf (ExitFailure n) = n
 
 spec :: Spec
-spec = beforeAll findLask $
-  describe "error codes (spec 14)" $
-    mapM_ (\c -> it (T.unpack (codeText c)) (raises c)) [minBound .. maxBound]
+spec = do
+  beforeAll findLask $ do
+    describe "error codes (spec 14)" $
+      mapM_ (\c -> it (T.unpack (codeText c)) (raises c)) [minBound .. maxBound]
+    describe "advisory codes (spec 14.2)" $
+      mapM_ (\c -> it (T.unpack (advisoryText c)) (advises c)) [minBound .. maxBound]
+  -- The table of 14.2 is the complete list (spec 14.2): every code the
+  -- implementation has is in it, and it has no other, and no code is
+  -- named anywhere in the specification without being in it.
+  describe "the code table of spec 14.2" $ do
+    specText <- runIO (readFile "doc/spec.md")
+    let tableCodes = Set.fromList [c | l <- lines specText, [[_, c]] <- [l =~ ("^\\| `([EW]-[A-Z0-9-]+)` \\|" :: String) :: [[String]]]]
+        mentioned = Set.fromList (map (filter (/= '`')) (getAllTextMatches (specText =~ ("`[EW]-[A-Z][A-Z0-9]*(-[A-Z0-9]+)+`" :: String))))
+        implemented = Set.fromList (map (T.unpack . codeText) [minBound .. maxBound :: ErrorCode] <> map (T.unpack . advisoryText) [minBound .. maxBound :: AdvisoryCode])
+    it "lists exactly the codes the implementation has" $
+      tableCodes `shouldBe` implemented
+    it "has every code the specification names" $
+      mentioned `Set.difference` tableCodes `shouldBe` Set.empty
+
+-- | How to make @lask check@ (or a run, for the one advisory reported at
+-- run time) report one advisory code, with the exit code unaffected.
+advises :: AdvisoryCode -> FilePath -> Expectation
+advises c lask = withProject [("main.lask", src)] $ \dir -> do
+  r <- runLask lask dir args ""
+  resExit r `shouldBe` 0
+  (resOut r <> resErr r) `shouldSatisfy` isInfixOf (T.unpack (advisoryText c))
+  where
+    (src, args) = case c of
+      WAsyncUnused -> ("f(): String = do {\n  async \"x\"\n  \"done\"\n}\n", ["check"])
+      WAsyncUnawaited -> ("f(): String = do {\n  h = async \"x\"\n  \"ok\"\n}\n", ["eval", "f"])
+      WCommandOption -> ("command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"-v\"] }] } } }\nv() = $ go -x\n", ["check"])
+      WSecretCommandLine -> ("token!!: String = get_env(\"TOKEN\")\ninline(): String = $[#alpine:3.20] echo #{token}\n", ["check"])
+      WRegexPattern -> ("f(s: String): Bool = regex_test(s, \"a(b\")\n", ["check"])
+      WDocParamUnknown -> ("// Greets.\n// @param nmae who\ngreet(name: String): String = name\n", ["check"])
+      WCliParamShadowed -> ("show(--help: Bool = false): Bool = help\n", ["check"])
+      WExportInconsistent -> ("export a() = 1\nb() = 2\n", ["check"])
 
 raises :: ErrorCode -> FilePath -> Expectation
 raises c lask = case trigger c of

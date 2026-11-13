@@ -85,7 +85,7 @@ newLineWriter h = do
 textCommandLog :: (Text -> IO ()) -> CommandLogSink
 textCommandLog write = write . renderCommandLogText
 
--- | JSON Lines sink for @--format json@ (spec 12.2, 12.3).
+-- | JSON Lines sink for @--log-format json@ (spec 12.2, 12.3).
 jsonCommandLog :: TraceId -> (Text -> IO ()) -> CommandLogSink
 jsonCommandLog traceId write = write . renderCommandLogJson traceId
 

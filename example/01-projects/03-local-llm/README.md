@@ -34,7 +34,7 @@ ollama_offline = #ollama/ollama:0.12.5{volumes: [models_volume], network: "none"
 `ask` returns the answer as a value, so `eval` can hand it to the next program. The prompt goes through `shell_quote`, so quotes, `$(...)` or `;` in it reach the model as text:
 
 ```bash
-lask eval --stdout-encode text ask "Name three colours"
+lask eval --output text ask "Name three colours"
 ```
 
 A prompt that itself starts with `--` would be taken for an option by Lask's own command line, so pass it as a JSON string: `lask eval ask '"--help me write a CLI flag"'`.

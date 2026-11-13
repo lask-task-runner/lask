@@ -279,7 +279,7 @@ The contiguous block of comments directly above a declaration (Chapter 5) is the
   - `@example <text>`: a usage example. Multiple occurrences are permitted and are displayed in order of appearance.
   - `@hidden`: excludes the declaration from listings (11.6). Help requested by name is still displayed.
 - Unknown tags are not errors; they are carried through into the description as written (forward compatibility).
-- An `@param` that names a parameter the declaration does not have is not an error either. It may be reported as the advisory diagnostic `W-DOC-PARAM-UNKNOWN` (14.2).
+- An `@param` that names a parameter the declaration does not have is not an error either. It is reported as the advisory diagnostic `W-DOC-PARAM-UNKNOWN` (14.2).
 - Documentation comments have no effect on static or dynamic semantics. They are consumed by editor integration (`serve`) and by help display (11.6).
 
 ### 3.2 Identifiers
@@ -866,7 +866,7 @@ Public scope and visibility:
 - A `Declaration`, `TypeAliasDecl` or `AccessDecl` declared at the top level is a public symbol of that module, unless it carries the `internal` marker.
 - Omitting the visibility marker is equivalent to `export`. The explicit form changes nothing about the meaning of the declaration; it exists so that a module can state its public surface where the surface matters.
 - A declaration marked `internal` is not a public symbol. It is therefore unreachable by external import, by local import from another file of the same tree, by `ExportDecl`, by CLI invocation (11.2), and from the function listing of help display (11.6). References from within the same module are unaffected.
-- An implementation may report the advisory diagnostic `W-EXPORT-INCONSISTENT` (14.2) when one file mixes explicit and omitted markers, because an omitted marker may then be misread as non-public. The meaning is unambiguous in either case, so this is never an error.
+- The advisory diagnostic `W-EXPORT-INCONSISTENT` (14.2) is reported when one file mixes explicit and omitted markers, because an omitted marker may then be misread as non-public. The meaning is unambiguous in either case, so this is never an error.
 - Local bindings defined inside a module (function parameters, bindings inside `do`, etc.) are not public.
 - The same top-level symbol name must not be declared more than once within the same module.
 
@@ -2151,38 +2151,7 @@ Two expansions are type-directed, and every other expansion is purely syntactic.
 
 ### 7.7 Static Errors
 
-The error kinds reported by static verification include at least the following.
-
-- `E-NAME-UNDEFINED`: undefined reference
-- `E-NAME-DUPLICATE`: duplicate definition
-- `E-TYPE-MISMATCH`: type mismatch
-- `E-TYPE-ARITY`: function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2)
-- `E-TYPE-KEYWORD`: invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5)
-- `E-TYPE-CALL`: invalid call (calling a non-function value, etc.)
-- `E-TYPE-COMMAND-ENV`: invalid command execution environment type, at a command execution expression or a command declaration (6.6, Chapter 5)
-- `E-TYPE-COMMAND-NOENV`: a command execution expression with no environment specification for which dispatch selects no environment (6.6, 10.9)
-- `E-TYPE-COMMAND-CONFLICT`: one command string selects environments not known to be one (10.9)
-- `E-TYPE-COMMAND-EFFECT`: the environment of a command declaration can reach an effect (Chapter 5)
-- `E-TYPE-COMMAND-NAME`: a command declaration names a program that could never be recognized in a command string (Chapter 5)
-- `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5)
-- `E-TYPE-COMMAND-SYNTAX`: a command string is not well formed as POSIX shell syntax (6.6)
-- `E-TYPE-COMMAND-SCHEMA`: the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5, Appendix A)
-- `E-TYPE-COMMAND-OPTION`: a command string invokes a program in a way its command schema rules out (Chapter 5, Appendix A)
-- `E-TYPE-ENV-CONSTRUCT`: invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree, an `egress` entry that is not one or `egress` given with `network` or `publish`; 6.7, 10.2, 10.3, 10.12, 15.5)
-- `E-TYPE-WITHIN-SPEC`: an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, a name in the `secrets` of an access declaration, the name of a type where an access declaration is named, or a second module constraint; Chapter 5, 10.11)
-- `E-TYPE-WITHIN-EXCEEDED`: what a declaration covered by an access constraint can reach is shown to exceed it (10.11)
-- `E-TYPE-WITHIN-UNPROVEN`: what a declaration covered by an access constraint can reach cannot be determined statically, so it is not shown to stay within it (10.11)
-- `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
-- `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
-- `E-TYPE-CASE-DUPLICATE`: two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4)
-- `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`; 4.2, 6.4, 15.8)
-- `E-TYPE-SECRET-NON-STRING`: `!!` applied to a binding whose type is not `String` (6.10)
-- `E-TYPE-BOUND`: a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 6.2, 6.4, 6.6)
-- `E-MODULE-CYCLE`: module circular dependency
-- `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
-- `E-MODULE-DEEP-IMPORT`: an external import naming a path inside a dependency tree rather than its entry module (Chapter 5)
-- `E-MODULE-LOCK-STALE`: the lock file is missing, incomplete, or inconsistent with the project file (Chapter 5)
-- `E-MODULE-CONFIRM-TARGET`: a `confirm` entry of the project file names a function, a parameter or a value that does not fit the program (Chapter 5)
+The errors static verification reports are the codes of the classes syntax and static in the table of 14.2.
 
 Error diagnostics include at least the following.
 
@@ -3217,7 +3186,9 @@ lask <subcommand> [options]
 Common options:
 
 - `--module <path>`: specifies the target module for execution. When unspecified, `main.lask` in the execution directory is used.
-- `--format <text|json>`: specifies the display format of CLI responses.
+- `--output <text|json|pretty-json>`: what is written to **stdout**: the evaluation result of `eval`, and the report of a command — the diagnostics of `check`, the tables of `envs`, `deps`, `secrets` and `sync`, the list of `fmt`, and help (11.6). `json` is compact JSON and `pretty-json` the same JSON indented. Its default is `json` for the evaluation result of `eval`, which is meant to be read by another program, and `text` for every report and for help. `run` and `cmd` write no result of their own (11.3), so it applies to them only for help.
+- `--log-format <text|json>`: what is written to **stderr**: logs, the command execution log, diagnostics and execution events (Chapter 12). `json` is JSON Lines, one object per line (12.2). The default is `text`.
+- The two are independent, one per stream, so that a CI job can read the logs of a run as JSON Lines while what it prints stays text, or the other way round.
 - `--trace-id <id>`: specifies the execution trace identifier.
 - `--no-color`: disables decorative colors in the output.
 - `--help` / `-h`: displays usage. For `run` / `eval`, when a function name is given, the help of that function is displayed (11.6).
@@ -3273,7 +3244,7 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 
 - The invocation syntax of `run` and `eval` is identical. The rules of this section (function-name mapping, keyword arguments, binding, decoding) apply equally to both.
 - When `--module` is unspecified, `main.lask` is the target. Therefore the minimal form is `lask run <function> [args ...]` / `lask eval <function> [args ...]`.
-- Options of `lask` itself (`--module`, `--arg-decode`, `--format`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
+- Options of `lask` itself (`--module`, `--arg-decode`, `--output`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
 - The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
 - `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
 - For `cmd`, no token after the command name is intercepted, `--help` included: those tokens are the invoked program's own arguments (11.8). The help of the subcommand is obtained with `lask cmd --help`, with no command name.
@@ -3361,10 +3332,9 @@ Standard input contract:
 
 Standard output contract:
 
-- `--stdout-encode <text|json|pretty-json>` may be specified.
-- The default when unspecified is `json`.
+- What is written to stdout is written in the format `--output` gives (11.1): `text`, `json` or `pretty-json`, `json` by default for the evaluation result of `eval` and `text` for everything else.
 - `text` is human-readable display, `json` is machine-readable display, and `pretty-json` is formatted JSON display.
-- `eval` outputs the evaluation result to stdout with the specified encoding.
+- `eval` outputs the evaluation result to stdout in that format.
 - `run` does not output the evaluation result to stdout. `run` must not output anything to stdout.
 - `cmd` produces no evaluation result. Its stdout is the invoked program's stdout, passed through unchanged and never relayed (11.8), so the rule for evaluation results does not apply to it and the output of `lask cmd` can be piped.
 - The one exception is help display (11.6). When `--help` is given, no function is evaluated, so the contract for evaluation results does not apply and `run` writes the help to stdout.
@@ -3375,7 +3345,7 @@ Standard error contract:
 
 - stderr is the output destination for logs (9.6). During execution of `run` / `eval`, the command execution log (12.3) is output to stderr in real time.
 - On execution failure, the error code, a summary, and, as necessary, position information are output to stderr.
-- When `--format json` is specified, stderr output uses JSON Lines as the canonical form (12.2).
+- When `--log-format json` is specified, stderr output uses JSON Lines as the canonical form (12.2).
 - Secrets must not be output in plaintext to stderr.
 
 Exit code contract:
@@ -3450,7 +3420,7 @@ Rules:
 
 Output and exit codes:
 
-- The table is on stdout. With `--format json` it is an array with one object per environment: `environment`, `kind`, `pinned` (in full, or `null`), `required_by` (every place, in full) and `status`.
+- The table is on stdout. With `--output json` it is an array with one object per environment: `environment`, `kind`, `pinned` (in full, or `null`), `required_by` (every place, in full) and `status`.
 - Exit codes: `0` when the environments were listed; `1` for static errors (invalid module, invalid lock file); `4` for CLI usage errors (nonexistent function name, etc.) (following the classification in 11.3).
 
 Execution example:
@@ -3508,7 +3478,7 @@ Rules (`--verbose`):
 Output and exit codes:
 
 - The table is on stdout, followed by one line counting the environments, the programs and the commands.
-- With `--format json` the output is the same whether or not `--verbose` is given: an array with one object per environment: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `programs` (an array of `program` and `used_by`, every place in full) and `commands` (an array of `command`, `programs`, `module`, `line`, `declaration` and `via`, the environment expression, `null` when it is the head of the environment).
+- With `--output json` the output is the same whether or not `--verbose` is given: an array with one object per environment: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `programs` (an array of `program` and `used_by`, every place in full) and `commands` (an array of `command`, `programs`, `module`, `line`, `declaration` and `via`, the environment expression, `null` when it is the head of the environment).
 - Exit codes: as for `envs list`.
 
 Execution example:
@@ -3584,7 +3554,7 @@ Columns (`envs access`):
 Output and exit codes:
 
 - The table is on stdout, followed by one line counting the rows by kind and by `CHECK`, where `—` is counted as `unconstrained`.
-- With `--format json` each is an array with one object per row: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `check` (`null` for `—`), `required_by` (every place, in full), and `files`, `network`, or both for `envs access`:
+- With `--output json` each is an array with one object per row: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `check` (`null` for `—`), `required_by` (every place, in full), and `files`, `network`, or both for `envs access`:
   - `files`: an array with one object per line of `envs files`, `target`, `source` and `access`, without the `!` mark.
   - `network`: `class` (`none`, `egress`, `default`, `host`, `computed`, or `dynamic`), `name` (the value of `network`, or `null`), `egress` (the entries of `egress`, or `null` when it is not given), `inbound` (the entries of `publish`) and `name_resolution` (the entries of the `NAME RESOLUTION` column).
   - `reads`, for `envs files --verbose`: an array of `function`, `path` and `declaration`, the calls of filesystem functions with a literal path.
@@ -3648,7 +3618,7 @@ Columns:
 Output and exit codes:
 
 - The table is on stdout, followed by one line counting the rows by `CHECK`, as for `envs access`.
-- With `--format json`, an array with one object per row: `secret` (`module`, `declaration`, `name` and `kind` — `value`, `parameter`, `binding` or `mark_secret` — and `location`; `null` for `(unknown)`), `channel` (`kind`: `env`, `option`, `command` or `file`, and `name`, `null` for `command`, `file`, and a variable of `env` whose name is not static), `environment`, `kind`, `network` (as for `envs network`), `check` and `required_by`.
+- With `--output json`, an array with one object per row: `secret` (`module`, `declaration`, `name` and `kind` — `value`, `parameter`, `binding` or `mark_secret` — and `location`; `null` for `(unknown)`), `channel` (`kind`: `env`, `option`, `command` or `file`, and `name`, `null` for `command`, `file`, and a variable of `env` whose name is not static), `environment`, `kind`, `network` (as for `envs network`), `check` and `required_by`.
 - It reports, and does not fail, as `envs access` does.
 
 Execution example:
@@ -3718,7 +3688,7 @@ Rules (`rm`):
 
 Output and exit codes:
 
-- `list` and `graph` write a table and a tree to stdout; with `--format json`, an array and a nested object.
+- `list` and `graph` write a table and a tree to stdout; with `--output json`, an array and a nested object.
 - `0`: the operation completed successfully.
 - `1`: the project file or the lock file is malformed or violates the schema (Chapter 5); or a policy violation was detected before fetching.
 - `3`: a fetch or verification failure in `add` (network failure, `E-IO-MODULE-HASH-MISMATCH`, `E-IO-MODULE-REV-MOVED`).
@@ -3742,7 +3712,7 @@ lask eval [--module <path>] [lask options ...] --help
 - Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
 - A function that declares type parameters (4.2) is displayed with them and their bounds, as `first<T>` or `largest<T: orderable>`, where its declaration is being described: the heading of its help, the list of a module's functions, and an editor hover. Where the name is instead something to type — the usage line, a completion candidate, the function argument of `lask run` — it appears plain, since the type parameters are not written at a use site (4.2). A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
 - The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
-- If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. An implementation may report the advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2).
+- If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. The advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2) is reported for it.
 - Help display takes precedence over argument binding. Binding errors (11.2) are not reported when `--help` is present: `lask run build --out_dir 1 --help` displays the help and exits `0`.
 
 Sources of help information:
@@ -3764,7 +3734,7 @@ Rendering rules:
 - A re-exported function is listed and described under the name the module publishes, from the declaration it names: the documentation comment, parameters and location are those of the file that declares it.
 - The function list omits declarations marked `@hidden` (3.1), and shows only the name for functions that have no summary.
 
-Text output (`--format text`, the default). For the declaration:
+Text output (`--output text`, the default). For the declaration:
 
 ```lask
 // Build the project and publish the artifact.
@@ -3824,7 +3794,7 @@ Functions in main.lask:
   uninstall
 ```
 
-JSON output (`--format json`) is the structured form of the same information, intended for reuse by editor integration.
+JSON output (`--output json`) is the structured form of the same information, intended for reuse by editor integration.
 
 ```json
 {
@@ -3850,7 +3820,7 @@ JSON output (`--format json`) is the structured form of the same information, in
 
 - `kind` is `function-help` for the help of a single function, and `function-list` for the function list. The latter holds `functions`, an array of objects with `name`, `summary`, and `signature`.
 - `kind` for a parameter is one of `positional` / `variadic` / `keyword`.
-- `environments` holds one object per environment, `environment` (the head) and `kind`, as the `--format json` output of `envs list` names them (11.4).
+- `environments` holds one object per environment, `environment` (the head) and `kind`, as the `--output json` output of `envs list` names them (11.4).
 - `default` is `null` for a parameter that has no default value, and `"<secret>"` for a parameter marked `!!`.
 - `required` is `true` for a required keyword parameter (6.1), and `false` for every other parameter. A positional parameter is always required by its kind, so the field speaks only of keyword parameters.
 - A field whose information is unavailable is `null`; a section that is omitted in text output is an empty array.
@@ -3911,8 +3881,8 @@ General rules:
 Progress and the summary:
 
 - While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
-- On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--format json` each of these is a JSON Lines event.
-- When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--format json` the summary is one object, `modules` and `images`.
+- On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--log-format json` each of these is a JSON Lines event.
+- When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--output json` the summary is one object, `modules` and `images`.
 - The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the container engine.
 
 Exit codes:
@@ -3969,7 +3939,7 @@ Exit code rules:
 Rules (`--help`):
 
 - `lask cmd --help` (or `-h`), with no command name, displays the CLI option help followed by the list of command words, in the way `lask run --help` lists functions (11.6).
-- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
+- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--output json`.
 - An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
 - The list is produced with no network access and no build, on the same terms as `envs` (11.4).
 - The option help is displayed whatever state the target module is in. When the module does not compile, its diagnostics go to stderr, the list is omitted, and the exit code is `0`.
@@ -3978,7 +3948,7 @@ Execution example:
 
 ```text
 $ lask cmd --help
-Usage: lask cmd [--module PATH] [--format text|json] [--trace-id ID] [--no-color]
+Usage: lask cmd [--module PATH] [--output text|json|pretty-json] [--log-format text|json] [--trace-id ID] [--no-color]
                 [-h|--help] [COMMAND] [ARGS...]
 ...
 
@@ -4067,7 +4037,7 @@ Scope:
 - The stores checked are those enabled in `LASK_SECRETS` and those the references in scope name, so that a store can be checked before any variable refers to it.
 - A reference is not read by default, because reading can have effects: a store that issues a credential on every read issues one. `--read` also reads each reference and checks that its field exists; a credential issued by that read under a lease is revoked at once.
 - It exits `0` when every stage and every reference passed, and `3` otherwise (14.8).
-- With `--format json`, the report is one JSON document on stdout: `{"stores": [...], "malformed": [...]}`, where each store has its `scheme`, `target`, `stages` and `references`, and each stage or reference has a `status` of `ok`, `NG` or `skipped`, a `message`, and the error `code` when it failed.
+- With `--output json`, the report is one JSON document on stdout: `{"stores": [...], "malformed": [...]}`, where each store has its `scheme`, `target`, `stages` and `references`, and each stage or reference has a `status` of `ok`, `NG` or `skipped`, a `message`, and the error `code` when it failed.
 
 Example:
 
@@ -4119,7 +4089,7 @@ Rules:
 
 - A file with a syntax error is left as it is, and its diagnostics are reported as `check` reports them (14.3). The other files are still formatted.
 - Before a file is written, the result is checked to lex to the same tokens and comments, and to parse to the same module, as the source. A result that fails this check is a defect of the implementation: the file is left as it is and the failure is reported.
-- The files that were changed (with `--check`, the files that are not formatted) are listed on stdout, one per line, or as a JSON array of paths with `--format json`.
+- The files that were changed (with `--check`, the files that are not formatted) are listed on stdout, one per line, or as a JSON array of paths with `--output json`.
 - It exits `0` when nothing failed; with `--check`, only when every file is formatted already. A file that does not parse, or is not formatted under `--check`, exits `1`; a file that cannot be read or written exits `3` (14.8); a `<path>` that does not exist is a CLI usage error and exits `4`.
 
 Example:
@@ -4198,7 +4168,7 @@ Output rules:
 - `info` and below are classified as operational logs, and `warn` / `error` as diagnostic logs.
 - `error`-level logs must be cross-referenceable with the corresponding failure event (12.6).
 - The line format of the default text display is implementation-defined. However, each line contains `level` and `message`, and the command execution log (12.3) follows the text-format provisions.
-- When `--format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3)).
+- When `--log-format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3)).
 
 ### 12.3 Command Execution Log
 
@@ -4236,7 +4206,7 @@ Output example:
 2026-07-23T10:15:05.002Z [#golang:1.22:1] exit 0
 ```
 
-JSON format (with `--format json`):
+JSON format (with `--log-format json`):
 
 - Each line of the command execution log is output as one object of the JSON Lines of 12.2.
 - Required fields for all lines: `timestamp`, `level`, `traceId`, `exec` (execution number).
@@ -4309,7 +4279,7 @@ Rules:
 
 - In-flight diagnostics must not corrupt the primary result (the stdout output of `eval`).
 - Human-oriented progress display must be output to stderr or a dedicated channel.
-- When `--format json` is specified, progress diagnostics may be output as structured events.
+- When `--log-format json` is specified, progress diagnostics may be output as structured events.
 
 ### 12.8 Protection of Sensitive Information and Retention Policy
 
@@ -4533,75 +4503,86 @@ Naming rules:
 
 - Use only uppercase Latin letters and hyphens.
 
-Representative codes:
+Codes:
 
-- `E-SYNTAX-UNEXPECTED-TOKEN`
-- `E-SYNTAX-CASE-ELSE`
-- `E-NAME-UNDEFINED`
-- `E-NAME-DUPLICATE`
-- `E-TYPE-MISMATCH`
-- `E-TYPE-ARITY`
-- `E-TYPE-CALL`
-- `E-TYPE-COMMAND-ENV`
-- `E-TYPE-COMMAND-NOENV`
-- `E-TYPE-COMMAND-CONFLICT`
-- `E-TYPE-COMMAND-EFFECT`
-- `E-TYPE-COMMAND-NAME`
-- `E-TYPE-COMMAND-DUPLICATE`
-- `E-TYPE-COMMAND-SYNTAX`
-- `E-TYPE-COMMAND-SCHEMA`
-- `E-TYPE-COMMAND-OPTION`
-- `E-TYPE-ENV-CONSTRUCT`
-- `E-TYPE-WITHIN-SPEC`
-- `E-TYPE-WITHIN-EXCEEDED`
-- `E-TYPE-WITHIN-UNPROVEN`
-- `E-TYPE-ACCESS`
-- `E-TYPE-FIELD-DUPLICATE`
-- `E-TYPE-CASE-DUPLICATE`
-- `E-TYPE-KEYWORD`
-- `E-TYPE-ILLFORMED`
-- `E-TYPE-SECRET-NON-STRING`
-- `E-TYPE-BOUND`
-- `E-MODULE-CYCLE`
-- `E-MODULE-UNRESOLVED`
-- `E-MODULE-CONFIRM-TARGET`
-- `E-RUNTIME-DIV-BY-ZERO`
-- `E-RUNTIME-COMMAND-NONZERO`
-- `E-RUNTIME-ACCESS`
-- `E-RUNTIME-CAST`
-- `E-RUNTIME-VALUE`
-- `E-RUNTIME-REGEX`
-- `E-RUNTIME-TIMEOUT`
-- `E-RUNTIME-UNTIL-EXHAUSTED`
-- `E-RUNTIME-SESSION-CLOSED`
-- `E-RUNTIME-INTERRUPTED`
-- `E-IO-STDIN-READ`
-- `E-IO-ENV-RESOLVE`
-- `E-IO-FS`
-- `E-IO-DATA-DECODE`
-- `E-IO-SECRET-PROVIDER`
-- `E-IO-SECRET-REF`
-- `E-IO-SECRET-UNREACHABLE`
-- `E-IO-SECRET-AUTH`
-- `E-IO-SECRET-NOT-FOUND`
-- `E-IO-MODULE-HASH-MISMATCH`
-- `E-IO-MODULE-REV-MOVED`
-- `E-CLI-USAGE`
-- `E-CLI-NOT-CONFIRMED`
+The table below is the complete list of codes. An implementation reports every one of them where this specification says it occurs, and reports no code the table does not have, so that a program reading diagnostics can rely on the table alone. The class of a code follows from its category, and the exit code from its class (14.8); the meaning names the section that defines when the code occurs.
+
+| Code | Class | Exit code | Meaning |
+|---|---|---|---|
+| `E-SYNTAX-UNEXPECTED-TOKEN` | syntax | `1` | a token the grammar does not allow where it stands (Chapter 3, 6) |
+| `E-SYNTAX-CASE-ELSE` | syntax | `1` | a `case` with no arms, with no `else` arm, with more than one, or with one that is not last (6.4) |
+| `E-NAME-UNDEFINED` | static | `1` | undefined reference |
+| `E-NAME-DUPLICATE` | static | `1` | duplicate definition |
+| `E-TYPE-MISMATCH` | static | `1` | type mismatch |
+| `E-TYPE-ARITY` | static | `1` | function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2) |
+| `E-TYPE-CALL` | static | `1` | invalid call (calling a non-function value, etc.) |
+| `E-TYPE-COMMAND-ENV` | static | `1` | invalid command execution environment type, at a command execution expression or a command declaration (6.6, Chapter 5) |
+| `E-TYPE-COMMAND-NOENV` | static | `1` | a command execution expression with no environment specification for which dispatch selects no environment (6.6, 10.9) |
+| `E-TYPE-COMMAND-CONFLICT` | static | `1` | one command string selects environments not known to be one (10.9) |
+| `E-TYPE-COMMAND-EFFECT` | static | `1` | the environment of a command declaration can reach an effect (Chapter 5) |
+| `E-TYPE-COMMAND-NAME` | static | `1` | a command declaration names a program that could never be recognized in a command string (Chapter 5) |
+| `E-TYPE-COMMAND-DUPLICATE` | static | `1` | the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5) |
+| `E-TYPE-COMMAND-SYNTAX` | static | `1` | a command string is not well formed as POSIX shell syntax (6.6) |
+| `E-TYPE-COMMAND-SCHEMA` | static | `1` | the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5, Appendix A) |
+| `E-TYPE-COMMAND-OPTION` | static | `1` | a command string invokes a program in a way its command schema rules out (Chapter 5, Appendix A) |
+| `E-TYPE-ENV-CONSTRUCT` | static | `1` | invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree, an `egress` entry that is not one or `egress` given with `network` or `publish`; 6.7, 10.2, 10.3, 10.12, 15.5) |
+| `E-TYPE-WITHIN-SPEC` | static | `1` | an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, a name in the `secrets` of an access declaration, the name of a type where an access declaration is named, or a second module constraint; Chapter 5, 10.11) |
+| `E-TYPE-WITHIN-EXCEEDED` | static | `1` | what a declaration covered by an access constraint can reach is shown to exceed it (10.11) |
+| `E-TYPE-WITHIN-UNPROVEN` | static | `1` | what a declaration covered by an access constraint can reach cannot be determined statically, so it is not shown to stay within it (10.11) |
+| `E-TYPE-ACCESS` | static | `1` | invalid accessor (field access on a non-`Record`, unknown field, invalid index type) |
+| `E-TYPE-FIELD-DUPLICATE` | static | `1` | duplicate record field name or object literal key (4.2) |
+| `E-TYPE-CASE-DUPLICATE` | static | `1` | two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4) |
+| `E-TYPE-KEYWORD` | static | `1` | invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5) |
+| `E-TYPE-ILLFORMED` | static | `1` | violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`; 4.2, 6.4, 15.8) |
+| `E-TYPE-SECRET-NON-STRING` | static | `1` | `!!` applied to a binding whose type is not `String` (6.10) |
+| `E-TYPE-BOUND` | static | `1` | a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 6.2, 6.4, 6.6) |
+| `E-MODULE-CYCLE` | static | `1` | module circular dependency |
+| `E-MODULE-UNRESOLVED` | static | `1` | unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5) |
+| `E-MODULE-DEEP-IMPORT` | static | `1` | an external import naming a path inside a dependency tree rather than its entry module (Chapter 5) |
+| `E-MODULE-LOCK-STALE` | static | `1` | the lock file is missing, incomplete, or inconsistent with the project file (Chapter 5) |
+| `E-MODULE-CONFIRM-TARGET` | static | `1` | a `confirm` entry of the project file names a function, a parameter or a value that does not fit the program (Chapter 5) |
+| `E-RUNTIME-DIV-BY-ZERO` | runtime | `2`¹ | invalid arithmetic |
+| `E-RUNTIME-COMMAND-NONZERO` | runtime | `2`¹ | failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6) |
+| `E-RUNTIME-ACCESS` | runtime | `2`¹ | index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9) |
+| `E-RUNTIME-CAST` | runtime | `2`¹ | failure of the runtime type check of `cast` (15.8) |
+| `E-RUNTIME-VALUE` | runtime | `2`¹ | a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13); or `runnable` was given a run option for a `local` environment (8.8, 15.5) |
+| `E-RUNTIME-REGEX` | runtime | `2`¹ | a malformed regular expression pattern (15.3) |
+| `E-RUNTIME-TIMEOUT` | runtime | `2`¹ | the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10). |
+| `E-RUNTIME-UNTIL-EXHAUSTED` | runtime | `2`¹ | the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10). |
+| `E-RUNTIME-SESSION-CLOSED` | runtime | `2`¹ | a command was run with the session of a `with_container` whose body had returned, or was running in it when it did (15.5). |
+| `E-RUNTIME-INTERRUPTED` | runtime | `2`¹ | a `run` or `eval` was stopped by SIGINT or SIGTERM (11.12). Its `Error` has `code` `128 + n` for the signal `n`. It is an abandonment, not a failure of the program, so no `catch` block sees it. |
+| `E-IO-STDIN-READ` | external I/O | `3`¹ | stdin read failure |
+| `E-IO-ENV-RESOLVE` | external I/O | `3`¹ | execution environment resolution failure, including a container engine that cannot be reached or cannot run the container (10.4, 10.10) |
+| `E-IO-IMAGE-MISSING` | external I/O | `3`¹ | a required container image has not been materialized (10.3) |
+| `E-IO-IMAGE-DIGEST` | external I/O | `3`¹ | a pulled image's digest does not match the pinned digest (10.3) |
+| `E-IO-COMMAND-MISSING` | external I/O | `3`¹ | a command word declared on a container image names a program the image does not provide, as `sync` probed it (Chapter 5, 11.7) |
+| `E-IO-FS` | external I/O | `3`¹ | filesystem access failure (the filesystem functions of 15.11) |
+| `E-IO-MODULE-HASH-MISMATCH` | external I/O | `3`¹ | a dependency fetched by `sync` or `deps add` differs from the content hash the lock pins (Chapter 5, 11.5, 11.7) |
+| `E-IO-MODULE-REV-MOVED` | external I/O | `3`¹ | a pinned reference now resolves to a different commit (Chapter 5) |
+| `E-IO-DATA-DECODE` | external I/O | `3`¹ | failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8) |
+| `E-IO-SECRET-PROVIDER` | external I/O | `3`¹ | a secret reference names a scheme no store provides (9.8) |
+| `E-IO-SECRET-REF` | external I/O | `3`¹ | a malformed secret reference (9.8) |
+| `E-IO-SECRET-UNREACHABLE` | external I/O | `3`¹ | the store of a secret reference cannot be reached (9.8) |
+| `E-IO-SECRET-AUTH` | external I/O | `3`¹ | the store refuses the credentials of a secret reference (9.8) |
+| `E-IO-SECRET-NOT-FOUND` | external I/O | `3`¹ | the store has no secret at the path, version or field a reference names (9.8) |
+| `E-CLI-USAGE` | CLI usage | `4` | a command line `lask` does not accept: an unknown command, option or option value, a missing argument, an argument that does not decode to its parameter's type (11.1-11.3) |
+| `E-CLI-NOT-CONFIRMED` | CLI usage | `4` | the confirmation the project file asks for before a function was refused (11.2) |
+| `W-ASYNC-UNUSED` | advisory | — | a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`. |
+| `W-ASYNC-UNAWAITED` | advisory | — | an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6); if it failed, the execution fails with its failure. Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`. |
+| `W-COMMAND-OPTION` | advisory | — | a command string uses an option or subcommand that a command schema which is not closed does not list (Chapter 5, Appendix A). Reported statically, with `stage: "static"`. |
+| `W-SECRET-COMMAND-LINE` | advisory | — | a secret reaches a use in its command string, from which it becomes the arguments of the programs the command runs, or in a run option other than a value of `env`, which is on the engine client's command line (10.11). Reported statically, with `stage: "static"`. |
+| `W-REGEX-PATTERN` | advisory | — | a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached. |
+| `W-DOC-PARAM-UNKNOWN` | advisory | — | an `@param` in a documentation comment (3.1) names a parameter the declaration does not have. |
+| `W-CLI-PARAM-SHADOWED` | advisory | — | a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6). |
+| `W-EXPORT-INCONSISTENT` | advisory | — | one module writes `export` on some of its declarations and leaves it out on others, so an omitted marker may be misread as non-public (5) |
+
+¹ The default: a runtime or external I/O error carries the `code` of its `Error` value, which a command failure takes from the process (8.10, 14.8).
 
 Advisory codes:
 
 - Codes of the form `W-<CATEGORY>-<DETAIL>` are advisory diagnostics. They report a probable mistake that is not an error: analysis continues, evaluation is not prevented, and the exit code is unaffected.
 - Advisory diagnostics follow the output requirements of 14.3 and additionally carry `severity: "warning"`. A diagnostic without a `severity` field is an error.
-- Representative codes:
-  - `W-DOC-PARAM-UNKNOWN`: an `@param` in a documentation comment (3.1) names a parameter the declaration does not have.
-  - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
-  - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
-  - `W-ASYNC-UNUSED`: a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`.
-  - `W-COMMAND-OPTION`: a command string uses an option or subcommand that a command schema which is not closed does not list (Chapter 5, Appendix A). Reported statically, with `stage: "static"`.
-  - `W-SECRET-COMMAND-LINE`: a secret reaches a use in its command string, from which it becomes the arguments of the programs the command runs, or in a run option other than a value of `env`, which is on the engine client's command line (10.11). Reported statically, with `stage: "static"`.
-  - `W-ASYNC-UNAWAITED`: an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6); if it failed, the execution fails with its failure. Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`.
-- Reporting advisory diagnostics is optional, with one exception: `W-ASYNC-UNAWAITED` is always reported, because a failure it carries is otherwise invisible. `check` and `serve` are the expected places for the static ones; `run` and `eval` report the run-time ones on stderr.
+- The advisory codes are listed in the table above with the class `advisory`. Each is reported where the section that defines it says, as an error code is.
 
 ### 14.3 Minimum Requirements for Diagnostic Information
 
@@ -4670,38 +4651,7 @@ main.lask:2:10-2:14: E-NAME-UNDEFINED [static]: undefined name: 'helo'
 
 Static errors are reported by pre-execution verification (Chapter 7).
 
-Minimum targets:
-
-- `E-NAME-UNDEFINED`
-- `E-NAME-DUPLICATE`
-- `E-TYPE-MISMATCH`
-- `E-TYPE-ARITY`
-- `E-TYPE-CALL`
-- `E-TYPE-COMMAND-ENV`
-- `E-TYPE-COMMAND-NOENV`
-- `E-TYPE-COMMAND-CONFLICT`
-- `E-TYPE-COMMAND-EFFECT`
-- `E-TYPE-COMMAND-NAME`
-- `E-TYPE-COMMAND-DUPLICATE`
-- `E-TYPE-COMMAND-SYNTAX`
-- `E-TYPE-COMMAND-SCHEMA`
-- `E-TYPE-COMMAND-OPTION`
-- `E-TYPE-ENV-CONSTRUCT`
-- `E-TYPE-WITHIN-SPEC`
-- `E-TYPE-WITHIN-EXCEEDED`
-- `E-TYPE-WITHIN-UNPROVEN`
-- `E-TYPE-ACCESS`
-- `E-TYPE-FIELD-DUPLICATE`
-- `E-TYPE-CASE-DUPLICATE`
-- `E-TYPE-KEYWORD`
-- `E-TYPE-ILLFORMED`
-- `E-TYPE-SECRET-NON-STRING`
-- `E-TYPE-BOUND`
-- `E-MODULE-CYCLE`
-- `E-MODULE-UNRESOLVED`
-- `E-MODULE-DEEP-IMPORT`
-- `E-MODULE-LOCK-STALE`
-- `E-MODULE-CONFIRM-TARGET`
+Its codes are those of the class static in the table of 14.2.
 
 Rules:
 
@@ -4712,18 +4662,7 @@ Rules:
 
 Runtime errors occur during evaluation under the dynamic semantics (Chapter 8).
 
-Representative examples:
-
-- `E-RUNTIME-DIV-BY-ZERO`: invalid arithmetic
-- `E-RUNTIME-COMMAND-NONZERO`: failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6)
-- `E-RUNTIME-ACCESS`: index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9)
-- `E-RUNTIME-CAST`: failure of the runtime type check of `cast` (15.8)
-- `E-RUNTIME-VALUE`: a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13); or `runnable` was given a run option for a `local` environment (8.8, 15.5)
-- `E-RUNTIME-REGEX`: a malformed regular expression pattern (15.3)
-- `E-RUNTIME-TIMEOUT`: the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10).
-- `E-RUNTIME-UNTIL-EXHAUSTED`: the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10).
-- `E-RUNTIME-SESSION-CLOSED`: a command was run with the session of a `with_container` whose body had returned, or was running in it when it did (15.5).
-- `E-RUNTIME-INTERRUPTED`: a `run` or `eval` was stopped by SIGINT or SIGTERM (11.12). Its `Error` has `code` `128 + n` for the signal `n`. It is an abandonment, not a failure of the program, so no `catch` block sees it.
+Its codes are those of the class runtime in the table of 14.2.
 
 Rules:
 
@@ -4734,18 +4673,7 @@ Rules:
 
 External I/O errors occur at boundaries external to the language.
 
-Representative examples:
-
-- `E-IO-STDIN-READ`: stdin read failure
-- `E-IO-ENV-RESOLVE`: execution environment resolution failure, including a container engine that cannot be reached or cannot run the container (10.4, 10.10)
-- `E-IO-IMAGE-MISSING`: a required container image has not been materialized (10.3)
-- `E-IO-COMMAND-MISSING`: a command word declared on a container image names a program the image does not provide, as `sync` probed it (Chapter 5, 11.7)
-- `E-IO-IMAGE-DIGEST`: a pulled image's digest does not match the pinned digest (10.3)
-- `E-IO-MODULE-HASH-MISMATCH`: a dependency fetched by `sync` or `deps add` differs from the content hash the lock pins (Chapter 5, 11.5, 11.7)
-- `E-IO-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
-- `E-IO-FS`: filesystem access failure (the filesystem functions of 15.11)
-- `E-IO-DATA-DECODE`: failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8)
-- `E-IO-SECRET-PROVIDER`, `E-IO-SECRET-REF`, `E-IO-SECRET-UNREACHABLE`, `E-IO-SECRET-AUTH`, `E-IO-SECRET-NOT-FOUND`: failure resolving a secret reference (9.8)
+Its codes are those of the class external I/O in the table of 14.2.
 
 Rules:
 
@@ -4783,7 +4711,7 @@ The CLI follows the exit code contract of 11.3 and maps error classifications as
 Rules:
 
 - When multiple classifications exist simultaneously, adopt the exit code of the fatal classification that occurred first.
-- With `--format json`, an error object corresponding to the exit code must be output to stderr.
+- With `--log-format json`, an error object corresponding to the exit code must be output to stderr.
 - Exit code normalization (values outside 1-255 become `1`) and the handling of exit code overlap follow 11.3.
 
 ## 15. Built-in Library
@@ -4909,7 +4837,7 @@ Regular expressions:
 - `regex_match(s, pattern)` returns, for the leftmost-longest match, an array whose element `0` is the whole matched text and whose element `i` is the text of the `i`-th capture group, with a group that did not participate yielding the empty string. When there is no match it returns the empty array, so a caller tests with `is_empty` (15.4) rather than against a null: a successful match always has at least element `0`, so the empty array cannot be confused with one, and the result type stays `Array<String>`.
 - `regex_replace(s, pattern, replacement)` replaces every non-overlapping match from left to right. In `replacement`, `$0` to `$9` stand for the whole match and the capture groups, and `$$` stands for a literal `$`. A match of the empty string advances one character before the next attempt.
 - A pattern is normally written as a raw string (3.3), which performs no escape processing: `regex_match(s, '(\\d+)')`. In an interpreted string every backslash of the pattern has to be doubled.
-- A malformed pattern is `E-RUNTIME-REGEX`. When the pattern is a string literal containing no interpolation, an implementation may additionally report it statically as the advisory `W-REGEX-PATTERN` (14.2), since the call is then certain to fail.
+- A malformed pattern is `E-RUNTIME-REGEX`. When the pattern is a string literal containing no interpolation, it is also reported statically as the advisory `W-REGEX-PATTERN` (14.2), since the call is then certain to fail.
 
 ### 15.4 Array, Map, and Record Operations
 

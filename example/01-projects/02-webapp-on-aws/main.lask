@@ -173,7 +173,7 @@ create_user(
 destroy() = $ terraform -chdir=infra destroy -input=false -no-color -auto-approve
 
 // Reads a Terraform output by name, e.g. api_url or website_url.
-//   lask eval --stdout-encode text terraform_output api_url
+//   lask eval --output text terraform_output api_url
 terraform_output(name: String): String = output_field(terraform_outputs(), name)
 
 type Healthcheck = Record<status: String>

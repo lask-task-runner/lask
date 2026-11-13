@@ -103,6 +103,9 @@ data Program = Program
 data LoadedModule = LoadedModule
   { lmPath :: FilePath,
     lmModule :: Module,
+    -- | The text the module was parsed from, for what reads its
+    -- comments (spec 3.1).
+    lmSource :: Text,
     -- | Import path -> resolved module key, in declaration order.
     lmImportKeys :: Map Text FilePath
   }
@@ -253,6 +256,7 @@ loadProgramEnv env entryPath = do
                               LoadedModule
                                 { lmPath = path,
                                   lmModule = m,
+                                  lmSource = src,
                                   lmImportKeys = Map.fromList [(p, k) | (p, k, _) <- resolved]
                                 }
                         pure (Map.insert path lm done', path : order')

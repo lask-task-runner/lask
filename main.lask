@@ -177,7 +177,7 @@ ci_cabal(): String = $[#local] git diff --exit-code -I "hpack version" -- lask.c
 //
 // Reads what `ci_test` left behind, so it runs after it.
 //
-// @example lask eval --stdout-encode text coverage-report
+// @example lask eval --output text coverage-report
 coverage_report(): String = $[#local] tools/coverage-report.sh
 
 // Run a containerized task from a directory whose path holds a colon.
