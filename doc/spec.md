@@ -2335,7 +2335,7 @@ Evaluation of `run(env, cmd)`:
 Construction rules for `CommandResult`:
 
 - `code`: set to the process's exit code as is. Termination by signal may be mapped according to shell convention (`128 + signal number`).
-- `stdout` / `stderr`: set to the contents of each stream (up to an implementation-defined size limit; on overflow, a summary preserving the head and tail may be used).
+- `stdout` / `stderr`: set to the whole contents of each stream. Neither is truncated or summarized, however long: a program that reads the output, as `from_json(r.stdout)` does, would otherwise read a value that is not the one the command wrote, and not know it.
 - `run` fails only in the case of execution infrastructure failures (environment unresolvable, connection failure, command unable to start, etc.) (external I/O error; Chapter 14).
 
 Error value conversion of failures caused by non-zero exit (carrying over the exit code and standard error output) follows 8.10.
@@ -4360,6 +4360,7 @@ For `json` / `pretty-json`, the following mapping rules must be satisfied.
 - `Environment`, `Runnable`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Environment","kind":"<environment kind>","params":{...}}`. `kind` is the environment kind name, and `params` is the normalized parameter set: the image with its image options, and the run options that are set (e.g., `{"$type":"Environment","kind":"docker","params":{"image":"alpine:3.20"}}`). A value with at least one run option set is tagged `"$type":"Runnable"` instead; a runnable with none is its environment (8.8). A session (15.5) is converted as the environment it was started on. Parameters containing secret information are masked according to the rules in Chapter 12.
 - `Array<T>`: maps to a JSON array preserving element order.
 - `Map<T>`: maps to a JSON object with string keys.
+- The keys of an object written from a `Map<T>` or a `Record<...>` are in ascending Unicode code point order, the order `keys` and `entries` traverse a map in (15.4), in JSON and in every format of 15.8. The same value is therefore always written as the same text.
 - `Record<...>`: maps to a JSON object with field names as keys. An optional field (4.2) that is absent contributes no key at all; one that is present contributes its key, including when its value is null. This is where the difference between an absent key and a null value is written down.
 
 Rules for unions:
@@ -4883,8 +4884,8 @@ The built-in library provides at least the following functions.
 Semantics:
 
 - Strings are treated as UTF-8.
-- `length` may count in units of characters, but the implementation must keep the counting rule consistent. `index_of` and `substring` count in the same unit as `length`.
-- The behavior of `split`/`join` when the delimiter string is empty may be implementation-defined.
+- `length` counts Unicode code points: `length("é👍")` is `2`. It counts neither UTF-8 bytes nor user-perceived characters (grapheme clusters). `index_of`, `substring`, `pad_start` and `pad_end` count in the same unit.
+- With an empty delimiter, `split(s, "")` splits `s` into its code points, `split("abc", "")` being `["a", "b", "c"]`, and `split("", "")` is `[]`; `join(xs, "")` concatenates the elements with nothing between them.
 - `concat` concatenates 2 strings. To concatenate 3 or more, use nested applications of `concat` or `join`.
 - String concatenation is done with `concat` (or `join`). `+` is exclusive to `Number`, and applying it to `String` is a type error (6.2).
 - `contains(s, needle)` is true when `needle` occurs anywhere in `s`. An empty `needle` is always true.
@@ -5229,7 +5230,7 @@ Format arguments:
 - `dotenv` decodes `NAME=value` lines to an object whose values are all `String`, ignoring blank lines and lines whose first non-space character is `#`, and stripping one layer of surrounding quotation from a value. Only the first `=` of a line separates the name from the value, so a value may contain further ones. Encoding emits one `NAME=value` line per entry, quoting a value that needs it, and is defined only for string-valued objects.
 - A value that the requested format cannot represent is `E-RUNTIME-VALUE`; input that is not well-formed in the requested format is `E-IO-DATA-DECODE`.
 - The format argument selects a syntax, not a schema. Every format decodes to the ordinary value kinds of 4.1, and a decoded value is moved to a concrete type with `cast`, exactly as for `json`.
-- Every format represents a decoded object the same way `from_json` does. The choice between `Record<...>` and `Map<Any>` is the implementation's (see the JSON conversion rules below), but one implementation must make it identically for every format, so that `cast` behaves the same whichever syntax the data arrived in.
+- Every format represents a decoded object the same way `from_json` does: as a record (see the JSON conversion rules below), so that `cast` behaves the same whichever syntax the data arrived in.
 
 JSON conversion rules of `from_json` / `decode`:
 
@@ -5238,7 +5239,7 @@ JSON conversion rules of `from_json` / `decode`:
 - JSON boolean -> `Bool`
 - JSON null -> `Null`
 - JSON array -> array value (elements have these rules applied recursively)
-- JSON object -> `Record<...>` or `Map<Any>` (implementation choice. However, it must be consistent within the same implementation)
+- JSON object -> a record, whose fields are the object's keys. `cast` (and a type head of `case`, 6.4) accepts it as a `Map<T>` as well as a `Record<...>`, by the rule below, so a program sees no difference between the two.
 - Tagged metadata representations (objects with a `$type` field) are also not treated specially, and are converted as ordinary objects under the above rules. Restoration of `Void`, `Environment`, and `FunctionRef` is not performed (round-trip rules of 13.1).
 
 Type migration via `cast`:
@@ -5254,7 +5255,7 @@ Runtime type check rules for `cast`:
 - `Array<T>`: the value is an array value and every element conforms at runtime to `T`.
 - `Map<T>`: every value conforms at runtime to `T`.
 - `Record<...>`: every required field of the target type is present, no key outside its field set is present, and each value conforms at runtime to the corresponding field type. An optional field (4.2) may be absent, and is checked only when present. A missing required key fails, as it always has.
-- Record values and map values are mutually acceptable. When the structural conditions are satisfied, the implementation converts to the target type's representation (record or map) as needed (to absorb the implementation choice for JSON objects in `from_json`).
+- Record values and map values are mutually acceptable. When the structural conditions are satisfied, the value is converted to the target type's representation (record or map), so a decoded object can be used as either.
 - `T1 | T2 | ...`: the value conforms when it conforms to some member. Members are tried in the canonical order of 4.2 and the first that matches decides the result, which matters only where two members can accept one value, as `Record<...>` and `Map<T>` can by the rule above.
 - Positions of `Any` within the target type pass without checking.
 - If the check fails, it is a runtime error (`E-RUNTIME-CAST`). The diagnostics should include the failing position (field path, index).
@@ -5270,7 +5271,7 @@ Contract:
 
 - Follows the Serialization Conventions of Chapter 13.
 - Invalid JSON is reported as `E-IO-DATA-DECODE`.
-- An unsupported format specification is reported consistently as either `E-CLI-USAGE` or `E-IO-DATA-DECODE`.
+- A format argument that is not one of the formats above is `E-IO-DATA-DECODE`, an external I/O error (exit code `3`), whether the call decodes or encodes: the format is a value of the running program, not a part of the command line. A format the command line takes as an option (`--arg-decode`, `--stdout-encode`, 11.2) that is not one it accepts is a usage error instead (`E-CLI-USAGE`, exit code `4`).
 
 ### 15.9 Environment Access and Secret Marking Functions
 
