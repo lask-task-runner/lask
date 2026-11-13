@@ -4,6 +4,8 @@
 module Language.Lask.Runtime.Eval
   ( RtCtx (..),
     mkRtCtx,
+    withStepLimit,
+    StepLimitExceeded (..),
     evalCore,
     applyValue,
     topValue,
@@ -15,7 +17,7 @@ module Language.Lask.Runtime.Eval
 where
 
 import Control.Concurrent.Async (waitCatch)
-import Control.Exception (catch, throwIO)
+import Control.Exception (Exception, catch, throwIO)
 import Control.Monad (foldM, when)
 import Data.Time.Clock (getCurrentTime)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
@@ -42,14 +44,68 @@ data RtCtx = RtCtx
     rtStdin :: Text,
     rtHooks :: RtHooks,
     rtTraceId :: TraceId,
-    rtEmit :: EventSink
+    rtEmit :: EventSink,
+    -- | The steps left to an evaluation that is bounded (spec 10.11),
+    -- or Nothing for a run, which is not.
+    rtSteps :: Maybe (IORef Int)
   }
+
+-- | An evaluation bounded by 'withStepLimit' took more steps than it
+-- was given.
+data StepLimitExceeded = StepLimitExceeded
+  deriving (Show)
+
+instance Exception StepLimitExceeded
+
+-- | Bound the evaluations made through the context to @n@ steps (spec
+-- 10.11): one for each core expression evaluated, and one for each
+-- element or character of a string, array or map that interpolation or
+-- a built-in function produces.
+withStepLimit :: Int -> RtCtx -> IO RtCtx
+withStepLimit n ctx = do
+  r <- newIORef n
+  pure ctx {rtSteps = Just r}
+
+-- | Take @k@ steps, failing once more are taken than are left.
+spend :: RtCtx -> Int -> IO ()
+spend ctx k = case rtSteps ctx of
+  Nothing -> pure ()
+  Just r -> do
+    left <- readIORef r
+    let left' = left - k
+    modifyIORef' r (const left')
+    when (left' < 0) (throwIO StepLimitExceeded)
+
+-- | The steps a produced value costs: its elements or characters.
+sizeOf :: Value -> Int
+sizeOf v = case v of
+  VString t -> T.length t
+  VArray xs -> V.length xs
+  VMap m -> Map.size m
+  _ -> 0
+
+-- | The size of what a built-in is about to produce, where its
+-- arguments say it and its inputs do not: these are charged before the
+-- value is made, so a bounded evaluation never makes a value larger
+-- than its bound.
+producedSize :: Text -> [Value] -> Int
+producedSize name args = case (name, args) of
+  ("range", [VNumber a, VNumber b]) -> clampInt (realToFrac b - realToFrac a :: Double)
+  ("repeat", [VString s, VNumber n]) -> clampInt (realToFrac n * fromIntegral (T.length s) :: Double)
+  ("pad_start", [VString _, VNumber w, VString _]) -> clampInt (realToFrac w :: Double)
+  ("pad_end", [VString _, VNumber w, VString _]) -> clampInt (realToFrac w :: Double)
+  _ -> 0
+  where
+    clampInt d
+      | d <= 0 || isNaN d = 0
+      | d >= fromIntegral (maxBound :: Int) = maxBound
+      | otherwise = ceiling d
 
 mkRtCtx :: CoreProgram -> Text -> RtHooks -> IO RtCtx
 mkRtCtx prog stdinText hooks = do
   cache <- newIORef Map.empty
   traceId <- newTraceId
-  pure (RtCtx prog cache stdinText hooks traceId noSink)
+  pure (RtCtx prog cache stdinText hooks traceId noSink Nothing)
 
 -- | Top-level values are evaluated once, on first reference.
 topValue :: RtCtx -> (FilePath, Text) -> IO Value
@@ -66,12 +122,22 @@ topValue ctx key = do
         internal ("missing top-level declaration: " <> T.pack (show key))
 
 evalCore :: RtCtx -> Scope -> Core -> IO Value
-evalCore ctx scope (Core _ f) = case f of
+evalCore ctx scope c = case rtSteps ctx of
+  Nothing -> evalNode ctx scope c
+  Just _ -> spend ctx 1 >> evalNode ctx scope c
+
+evalNode :: RtCtx -> Scope -> Core -> IO Value
+evalNode ctx scope (Core _ f) = case f of
   CNull -> pure VNull
   CBool b -> pure (VBool b)
   CNumber n -> pure (VNumber n)
   CStrLit t -> pure (VString t)
-  CStr parts -> VString . T.concat <$> mapM part parts
+  CStr parts -> do
+    t <- T.concat <$> mapM part parts
+    case rtSteps ctx of
+      Nothing -> pure ()
+      Just _ -> spend ctx (T.length t)
+    pure (VString t)
     where
       part (CPText t) = pure t
       part (CPExpr c) = stringify <$> evalCore ctx scope c
@@ -223,7 +289,15 @@ applyValue ctx fv pos kw = case fv of
         scope2
         (lamKeywords lam)
     evalCore ctx scope3 (lamBody lam)
-  VBuiltin name -> callBuiltin (applyValue ctx) (rtHooks ctx) name pos kw
+  VBuiltin name -> do
+    case rtSteps ctx of
+      Nothing -> callBuiltin (applyValue ctx) (rtHooks ctx) name pos kw
+      Just _ -> do
+        let before = producedSize name pos
+        spend ctx before
+        v <- callBuiltin (applyValue ctx) (rtHooks ctx) name pos kw
+        when (before == 0) (spend ctx (sizeOf v))
+        pure v
   other ->
     throwIO . runtimeFailure ERuntimeAccess $
       "cannot call a value of type " <> typeNameOf other
