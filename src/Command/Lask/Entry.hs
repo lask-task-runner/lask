@@ -317,7 +317,7 @@ unawaitedDiagnostic opts traceId (site, outcome)
           <> [("failure", A.object [("code", A.String fc), ("message", A.String fm)]) | Left (fc, fm, _) <- [ended]]
   | otherwise = code <> ": " <> message
   where
-    code = "W-ASYNC-UNAWAITED"
+    code = advisoryText WAsyncUnawaited
     ended = case outcome of
       Right _ -> Right ()
       Left ex -> Left $ case fromException ex of

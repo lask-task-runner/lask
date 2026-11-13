@@ -38,6 +38,7 @@ import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Shell (escapeCommand, rawBuiltin)
 import Language.Lask.CommandSchema (Finding (..), Schema, Static (..), StaticF (..), checkCommand, fromStatic)
 import Language.Lask.Builtins.Sig
+import qualified Language.Lask.Builtins.Regex as Re
 import Language.Lask.Core.AST
 import Language.Lask.Diagnostic
 import Language.Lask.ErrorCode
@@ -3928,6 +3929,7 @@ elabCall ctx path locals sp fn args mExpected = do
               pure (Core sp (CCast c expected), expected)
             _ -> abort (diag ETypeArity sp "cast takes exactly one argument")
       | otherwise = do
+          regexAdvisory name
           unless (null kwArgs) $
             () <$ abort (diag ETypeKeyword sp ("'" <> name <> "' takes no keyword arguments"))
           let (schemeVs, ren) = freshen (schemeVars scheme)
@@ -3946,6 +3948,16 @@ elabCall ctx path locals sp fn args mExpected = do
       where
         castNeedsType =
           abort (diag ETypeMismatch sp "cast requires an expected type from context")
+
+        -- A pattern written as a literal is known before the call is
+        -- reached: one that does not compile fails every call, which
+        -- is said now (spec 15.3, 14.2).
+        regexAdvisory n
+          | n `elem` ["regex_test", "regex_match", "regex_replace"],
+            _ : Expr psp (EString [TPChunk _ pat]) : _ <- posExprs,
+            Left err <- Re.compile pat =
+              advise WRegexPattern psp ("this pattern does not compile, so every call of " <> n <> " fails: " <> err)
+          | otherwise = pure ()
 
         -- Arguments are elaborated in source order, except that one
         -- which cannot be typed on its own is set aside and retried

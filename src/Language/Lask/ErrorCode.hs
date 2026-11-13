@@ -79,15 +79,25 @@ data ErrorCode
 -- mistake that is not an error.
 data AdvisoryCode
   = WAsyncUnused
+  | WAsyncUnawaited
   | WCommandOption
   | WSecretCommandLine
+  | WRegexPattern
+  | WDocParamUnknown
+  | WCliParamShadowed
+  | WExportInconsistent
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 advisoryText :: AdvisoryCode -> Text
 advisoryText c = case c of
   WAsyncUnused -> "W-ASYNC-UNUSED"
+  WAsyncUnawaited -> "W-ASYNC-UNAWAITED"
   WCommandOption -> "W-COMMAND-OPTION"
   WSecretCommandLine -> "W-SECRET-COMMAND-LINE"
+  WRegexPattern -> "W-REGEX-PATTERN"
+  WDocParamUnknown -> "W-DOC-PARAM-UNKNOWN"
+  WCliParamShadowed -> "W-CLI-PARAM-SHADOWED"
+  WExportInconsistent -> "W-EXPORT-INCONSISTENT"
 
 -- | Error stage (spec 14.3).
 data Stage

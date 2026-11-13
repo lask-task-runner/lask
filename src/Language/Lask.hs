@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- | Front-end facade: lexing, parsing, module loading, name
 -- resolution and elaboration in one call.
 module Language.Lask
@@ -29,6 +31,14 @@ import Language.Lask.Elaborate (CoreProgram (..), elaborateRecovering)
 import Language.Lask.Module.Loader (LoadedModule (..), LoaderEnv (..), ModuleReader, Program (..), collapseDots, defaultLoaderEnv, fileReader, loadProgramEnv, loadProgramWith)
 import Language.Lask.Module.Resolve (GlobalScope, resolveProgram)
 import Language.Lask.Syntax.AST (Module)
+import qualified Language.Lask.Syntax.AST as AST
+import qualified Data.Set as Set
+import qualified Data.Text as T
+import Language.Lask.Doc (DocComment (..), docBlockAbove, emptyDoc, parseDoc)
+import Language.Lask.ErrorCode (AdvisoryCode (..))
+import Language.Lask.Lexer (lexTokensWithComments)
+import Language.Lask.Span (Position (..), Span (..))
+import Language.Lask.Utils (kebabToSnake)
 import Language.Lask.Syntax.Parser (parseModule)
 import System.FilePath (normalise, takeDirectory, (</>))
 import System.IO.Unsafe (unsafePerformIO)
@@ -100,9 +110,73 @@ checkProgramWith constrained prog =
       -- Where secrets are given is advised on whether or not a
       -- constraint covers them (spec 10.11).
       advised
-        | null (nameDs <> typeDs <> specDs) = core {cpAdvisories = sortOn advSpan (cpAdvisories core <> secretAdvisories core)}
+        | null (nameDs <> typeDs <> specDs) = core {cpAdvisories = sortOn advSpan (cpAdvisories core <> secretAdvisories core <> declarationAdvisories prog)}
         | otherwise = core
    in (settleDiagnostics (nameDs <> typeDs <> specDs <> withinDs), scopes, advised)
+
+-- | What the declarations of the program say that no check of their
+-- types sees (spec 14.2): an @\@param@ of a documentation comment that
+-- names no parameter of its declaration (3.1), and a keyword parameter
+-- named @help@, which the command line cannot give as @--help@ (11.6),
+-- and a module that writes @export@ on some declarations and leaves it
+-- out on others (5).
+declarationAdvisories :: Program -> [Advisory]
+declarationAdvisories prog = concatMap ofModule (Map.elems (progModules prog))
+  where
+    ofModule lm =
+      let comments = either (const []) snd (lexTokensWithComments (lmPath lm) (lmSource lm))
+          internal = AST.moduleInternal (lmModule lm)
+          decls = AST.moduleDecls (lmModule lm)
+       in concatMap (ofDecl (lmSource lm) comments internal) decls
+            <> exportMix (lmSource lm) internal decls
+    -- The marker written before a declaration that can carry one:
+    -- what precedes it on its line, which the grammar leaves to be
+    -- @export@, @internal@ or nothing.
+    exportMix src internal decls =
+      let srcLines = T.lines src
+          marker d = case AST.declSpan d of
+            Span (Position _ l c) _
+              | l >= 1 && l <= length srcLines -> T.strip (T.take (c - 1) (srcLines !! (l - 1)))
+            _ -> ""
+          markable d = case AST.declF d of
+            AST.DFunction n _ _ _ _ _ -> Just n
+            AST.DValue n _ _ _ -> Just n
+            AST.DTypeAlias n _ _ -> Just n
+            _ -> Nothing
+          public = [(d, n) | d <- decls, Just n <- [markable d], n `Set.notMember` internal]
+          explicit = [() | (d, _) <- public, marker d == "export"]
+          omitted = [(d, n) | (d, n) <- public, marker d == ""]
+       in case (explicit, omitted) of
+            (_ : _, (d, n) : _) ->
+              [ Advisory WExportInconsistent (AST.declSpan d) $
+                  "'" <> n <> "' leaves out export while other declarations of this module write it, so it may be read as not public; it is public either way"
+              ]
+            _ -> []
+    ofDecl src comments internal d = case params d of
+      Just (name, ps) ->
+        let names = [paramName p | p <- ps]
+            doc = case AST.declSpan d of
+              Span (Position _ l _) _ -> maybe emptyDoc parseDoc (docBlockAbove src comments l)
+              NoSpan -> emptyDoc
+         in [ Advisory WDocParamUnknown (AST.declSpan d) $
+                "the documentation of '" <> name <> "' describes @param " <> p <> ", which '" <> name <> "' does not have"
+            | (p, _) <- docParams doc,
+              kebabToSnake p `notElem` names
+            ]
+              <> [ Advisory WCliParamShadowed sp $
+                     "'" <> name <> "' has a keyword parameter named help, which the command line can give only as --help=<value>: --help shows the help"
+                 | name `Set.notMember` internal,
+                   AST.Param sp (AST.PKeyword "help" _ _ _) <- ps
+                 ]
+      Nothing -> []
+    params d = case AST.declF d of
+      AST.DFunction n _ ps _ _ _ -> Just (n, ps)
+      AST.DValue n _ _ (AST.Expr _ (AST.ELambda _ ps _ _)) -> Just (n, ps)
+      _ -> Nothing
+    paramName (AST.Param _ f) = case f of
+      AST.PPositional n _ _ -> n
+      AST.PVariadic n _ -> n
+      AST.PKeyword n _ _ _ -> n
 
 -- | Compile an in-editor document: the entry module's text is
 -- provided directly; imported modules are read from disk.
