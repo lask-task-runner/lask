@@ -3216,7 +3216,9 @@ lask <subcommand> [options]
 Common options:
 
 - `--module <path>`: specifies the target module for execution. When unspecified, `main.lask` in the execution directory is used.
-- `--format <text|json>`: specifies the display format of CLI responses.
+- `--output <text|json|pretty-json>`: what is written to **stdout**: the evaluation result of `eval`, and the report of a command — the diagnostics of `check`, the tables of `envs`, `deps`, `secrets` and `sync`, the list of `fmt`, and help (11.6). `json` is compact JSON and `pretty-json` the same JSON indented. Its default is `json` for the evaluation result of `eval`, which is meant to be read by another program, and `text` for every report and for help. `run` and `cmd` write no result of their own (11.3), so it applies to them only for help.
+- `--log-format <text|json>`: what is written to **stderr**: logs, the command execution log, diagnostics and execution events (Chapter 12). `json` is JSON Lines, one object per line (12.2). The default is `text`.
+- The two are independent, one per stream, so that a CI job can read the logs of a run as JSON Lines while what it prints stays text, or the other way round.
 - `--trace-id <id>`: specifies the execution trace identifier.
 - `--no-color`: disables decorative colors in the output.
 - `--help` / `-h`: displays usage. For `run` / `eval`, when a function name is given, the help of that function is displayed (11.6).
@@ -3272,7 +3274,7 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 
 - The invocation syntax of `run` and `eval` is identical. The rules of this section (function-name mapping, keyword arguments, binding, decoding) apply equally to both.
 - When `--module` is unspecified, `main.lask` is the target. Therefore the minimal form is `lask run <function> [args ...]` / `lask eval <function> [args ...]`.
-- Options of `lask` itself (`--module`, `--arg-decode`, `--format`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
+- Options of `lask` itself (`--module`, `--arg-decode`, `--output`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
 - The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
 - `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
 - For `cmd`, no token after the command name is intercepted, `--help` included: those tokens are the invoked program's own arguments (11.8). The help of the subcommand is obtained with `lask cmd --help`, with no command name.
@@ -3360,10 +3362,9 @@ Standard input contract:
 
 Standard output contract:
 
-- `--stdout-encode <text|json|pretty-json>` may be specified.
-- The default when unspecified is `json`.
+- What is written to stdout is written in the format `--output` gives (11.1): `text`, `json` or `pretty-json`, `json` by default for the evaluation result of `eval` and `text` for everything else.
 - `text` is human-readable display, `json` is machine-readable display, and `pretty-json` is formatted JSON display.
-- `eval` outputs the evaluation result to stdout with the specified encoding.
+- `eval` outputs the evaluation result to stdout in that format.
 - `run` does not output the evaluation result to stdout. `run` must not output anything to stdout.
 - `cmd` produces no evaluation result. Its stdout is the invoked program's stdout, passed through unchanged and never relayed (11.8), so the rule for evaluation results does not apply to it and the output of `lask cmd` can be piped.
 - The one exception is help display (11.6). When `--help` is given, no function is evaluated, so the contract for evaluation results does not apply and `run` writes the help to stdout.
@@ -3374,7 +3375,7 @@ Standard error contract:
 
 - stderr is the output destination for logs (9.6). During execution of `run` / `eval`, the command execution log (12.3) is output to stderr in real time.
 - On execution failure, the error code, a summary, and, as necessary, position information are output to stderr.
-- When `--format json` is specified, stderr output uses JSON Lines as the canonical form (12.2).
+- When `--log-format json` is specified, stderr output uses JSON Lines as the canonical form (12.2).
 - Secrets must not be output in plaintext to stderr.
 
 Exit code contract:
@@ -3449,7 +3450,7 @@ Rules:
 
 Output and exit codes:
 
-- The table is on stdout. With `--format json` it is an array with one object per environment: `environment`, `kind`, `pinned` (in full, or `null`), `required_by` (every place, in full) and `status`.
+- The table is on stdout. With `--output json` it is an array with one object per environment: `environment`, `kind`, `pinned` (in full, or `null`), `required_by` (every place, in full) and `status`.
 - Exit codes: `0` when the environments were listed; `1` for static errors (invalid module, invalid lock file); `4` for CLI usage errors (nonexistent function name, etc.) (following the classification in 11.3).
 
 Execution example:
@@ -3507,7 +3508,7 @@ Rules (`--verbose`):
 Output and exit codes:
 
 - The table is on stdout, followed by one line counting the environments, the programs and the commands.
-- With `--format json` the output is the same whether or not `--verbose` is given: an array with one object per environment: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `programs` (an array of `program` and `used_by`, every place in full) and `commands` (an array of `command`, `programs`, `module`, `line`, `declaration` and `via`, the environment expression, `null` when it is the head of the environment).
+- With `--output json` the output is the same whether or not `--verbose` is given: an array with one object per environment: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `programs` (an array of `program` and `used_by`, every place in full) and `commands` (an array of `command`, `programs`, `module`, `line`, `declaration` and `via`, the environment expression, `null` when it is the head of the environment).
 - Exit codes: as for `envs list`.
 
 Execution example:
@@ -3583,7 +3584,7 @@ Columns (`envs access`):
 Output and exit codes:
 
 - The table is on stdout, followed by one line counting the rows by kind and by `CHECK`, where `—` is counted as `unconstrained`.
-- With `--format json` each is an array with one object per row: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `check` (`null` for `—`), `required_by` (every place, in full), and `files`, `network`, or both for `envs access`:
+- With `--output json` each is an array with one object per row: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `check` (`null` for `—`), `required_by` (every place, in full), and `files`, `network`, or both for `envs access`:
   - `files`: an array with one object per line of `envs files`, `target`, `source` and `access`, without the `!` mark.
   - `network`: `class` (`none`, `egress`, `default`, `host`, `computed`, or `dynamic`), `name` (the value of `network`, or `null`), `egress` (the entries of `egress`, or `null` when it is not given), `inbound` (the entries of `publish`) and `name_resolution` (the entries of the `NAME RESOLUTION` column).
   - `reads`, for `envs files --verbose`: an array of `function`, `path` and `declaration`, the calls of filesystem functions with a literal path.
@@ -3647,7 +3648,7 @@ Columns:
 Output and exit codes:
 
 - The table is on stdout, followed by one line counting the rows by `CHECK`, as for `envs access`.
-- With `--format json`, an array with one object per row: `secret` (`module`, `declaration`, `name` and `kind` — `value`, `parameter`, `binding` or `mark_secret` — and `location`; `null` for `(unknown)`), `channel` (`kind`: `env`, `option`, `command` or `file`, and `name`, `null` for `command`, `file`, and a variable of `env` whose name is not static), `environment`, `kind`, `network` (as for `envs network`), `check` and `required_by`.
+- With `--output json`, an array with one object per row: `secret` (`module`, `declaration`, `name` and `kind` — `value`, `parameter`, `binding` or `mark_secret` — and `location`; `null` for `(unknown)`), `channel` (`kind`: `env`, `option`, `command` or `file`, and `name`, `null` for `command`, `file`, and a variable of `env` whose name is not static), `environment`, `kind`, `network` (as for `envs network`), `check` and `required_by`.
 - It reports, and does not fail, as `envs access` does.
 
 Execution example:
@@ -3717,7 +3718,7 @@ Rules (`rm`):
 
 Output and exit codes:
 
-- `list` and `graph` write a table and a tree to stdout; with `--format json`, an array and a nested object.
+- `list` and `graph` write a table and a tree to stdout; with `--output json`, an array and a nested object.
 - `0`: the operation completed successfully.
 - `1`: the project file or the lock file is malformed or violates the schema (Chapter 5); or a policy violation was detected before fetching.
 - `3`: a fetch or verification failure in `add` (network failure, `E-IO-MODULE-HASH-MISMATCH`, `E-IO-MODULE-REV-MOVED`).
@@ -3763,7 +3764,7 @@ Rendering rules:
 - A re-exported function is listed and described under the name the module publishes, from the declaration it names: the documentation comment, parameters and location are those of the file that declares it.
 - The function list omits declarations marked `@hidden` (3.1), and shows only the name for functions that have no summary.
 
-Text output (`--format text`, the default). For the declaration:
+Text output (`--output text`, the default). For the declaration:
 
 ```lask
 // Build the project and publish the artifact.
@@ -3823,7 +3824,7 @@ Functions in main.lask:
   uninstall
 ```
 
-JSON output (`--format json`) is the structured form of the same information, intended for reuse by editor integration.
+JSON output (`--output json`) is the structured form of the same information, intended for reuse by editor integration.
 
 ```json
 {
@@ -3849,7 +3850,7 @@ JSON output (`--format json`) is the structured form of the same information, in
 
 - `kind` is `function-help` for the help of a single function, and `function-list` for the function list. The latter holds `functions`, an array of objects with `name`, `summary`, and `signature`.
 - `kind` for a parameter is one of `positional` / `variadic` / `keyword`.
-- `environments` holds one object per environment, `environment` (the head) and `kind`, as the `--format json` output of `envs list` names them (11.4).
+- `environments` holds one object per environment, `environment` (the head) and `kind`, as the `--output json` output of `envs list` names them (11.4).
 - `default` is `null` for a parameter that has no default value, and `"<secret>"` for a parameter marked `!!`.
 - `required` is `true` for a required keyword parameter (6.1), and `false` for every other parameter. A positional parameter is always required by its kind, so the field speaks only of keyword parameters.
 - A field whose information is unavailable is `null`; a section that is omitted in text output is an empty array.
@@ -3910,8 +3911,8 @@ General rules:
 Progress and the summary:
 
 - While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
-- On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--format json` each of these is a JSON Lines event.
-- When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--format json` the summary is one object, `modules` and `images`.
+- On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--log-format json` each of these is a JSON Lines event.
+- When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--output json` the summary is one object, `modules` and `images`.
 - The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the container engine.
 
 Exit codes:
@@ -3968,7 +3969,7 @@ Exit code rules:
 Rules (`--help`):
 
 - `lask cmd --help` (or `-h`), with no command name, displays the CLI option help followed by the list of command words, in the way `lask run --help` lists functions (11.6).
-- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
+- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--output json`.
 - An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
 - The list is produced with no network access and no build, on the same terms as `envs` (11.4).
 - The option help is displayed whatever state the target module is in. When the module does not compile, its diagnostics go to stderr, the list is omitted, and the exit code is `0`.
@@ -3977,7 +3978,7 @@ Execution example:
 
 ```text
 $ lask cmd --help
-Usage: lask cmd [--module PATH] [--format text|json] [--trace-id ID] [--no-color]
+Usage: lask cmd [--module PATH] [--output text|json|pretty-json] [--log-format text|json] [--trace-id ID] [--no-color]
                 [-h|--help] [COMMAND] [ARGS...]
 ...
 
@@ -4066,7 +4067,7 @@ Scope:
 - The stores checked are those enabled in `LASK_SECRETS` and those the references in scope name, so that a store can be checked before any variable refers to it.
 - A reference is not read by default, because reading can have effects: a store that issues a credential on every read issues one. `--read` also reads each reference and checks that its field exists; a credential issued by that read under a lease is revoked at once.
 - It exits `0` when every stage and every reference passed, and `3` otherwise (14.8).
-- With `--format json`, the report is one JSON document on stdout: `{"stores": [...], "malformed": [...]}`, where each store has its `scheme`, `target`, `stages` and `references`, and each stage or reference has a `status` of `ok`, `NG` or `skipped`, a `message`, and the error `code` when it failed.
+- With `--output json`, the report is one JSON document on stdout: `{"stores": [...], "malformed": [...]}`, where each store has its `scheme`, `target`, `stages` and `references`, and each stage or reference has a `status` of `ok`, `NG` or `skipped`, a `message`, and the error `code` when it failed.
 
 Example:
 
@@ -4118,7 +4119,7 @@ Rules:
 
 - A file with a syntax error is left as it is, and its diagnostics are reported as `check` reports them (14.3). The other files are still formatted.
 - Before a file is written, the result is checked to lex to the same tokens and comments, and to parse to the same module, as the source. A result that fails this check is a defect of the implementation: the file is left as it is and the failure is reported.
-- The files that were changed (with `--check`, the files that are not formatted) are listed on stdout, one per line, or as a JSON array of paths with `--format json`.
+- The files that were changed (with `--check`, the files that are not formatted) are listed on stdout, one per line, or as a JSON array of paths with `--output json`.
 - It exits `0` when nothing failed; with `--check`, only when every file is formatted already. A file that does not parse, or is not formatted under `--check`, exits `1`; a file that cannot be read or written exits `3` (14.8); a `<path>` that does not exist is a CLI usage error and exits `4`.
 
 Example:
@@ -4197,7 +4198,7 @@ Output rules:
 - `info` and below are classified as operational logs, and `warn` / `error` as diagnostic logs.
 - `error`-level logs must be cross-referenceable with the corresponding failure event (12.6).
 - The line format of the default text display is implementation-defined. However, each line contains `level` and `message`, and the command execution log (12.3) follows the text-format provisions.
-- When `--format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3)).
+- When `--log-format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3)).
 
 ### 12.3 Command Execution Log
 
@@ -4235,7 +4236,7 @@ Output example:
 2026-07-23T10:15:05.002Z [#golang:1.22:1] exit 0
 ```
 
-JSON format (with `--format json`):
+JSON format (with `--log-format json`):
 
 - Each line of the command execution log is output as one object of the JSON Lines of 12.2.
 - Required fields for all lines: `timestamp`, `level`, `traceId`, `exec` (execution number).
@@ -4308,7 +4309,7 @@ Rules:
 
 - In-flight diagnostics must not corrupt the primary result (the stdout output of `eval`).
 - Human-oriented progress display must be output to stderr or a dedicated channel.
-- When `--format json` is specified, progress diagnostics may be output as structured events.
+- When `--log-format json` is specified, progress diagnostics may be output as structured events.
 
 ### 12.8 Protection of Sensitive Information and Retention Policy
 
@@ -4781,7 +4782,7 @@ The CLI follows the exit code contract of 11.3 and maps error classifications as
 Rules:
 
 - When multiple classifications exist simultaneously, adopt the exit code of the fatal classification that occurred first.
-- With `--format json`, an error object corresponding to the exit code must be output to stderr.
+- With `--log-format json`, an error object corresponding to the exit code must be output to stderr.
 - Exit code normalization (values outside 1-255 become `1`) and the handling of exit code overlap follow 11.3.
 
 ## 15. Built-in Library

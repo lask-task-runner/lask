@@ -14,7 +14,9 @@ module Command.Lask.Secrets
   )
 where
 
+import Command.Lask.ArgCodec (OutputFormat (..))
 import qualified Data.Aeson as A
+import qualified Data.Aeson.Encode.Pretty as AP
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString.Lazy as BL
 import Data.List (nub)
@@ -86,15 +88,15 @@ isFailed _ = False
 
 -- | Every reference in scope, and whether it is well formed and its
 -- store enabled and configured. Makes no request.
-secretsList :: Bool -> Map String String -> Scope -> IO ()
-secretsList json env scope = do
+secretsList :: OutputFormat -> Map String String -> Scope -> IO ()
+secretsList fmt env scope = do
   let found = gather env scope
       schemes = nub [rawScheme r | Found _ _ (Right r) <- found]
   providers <- Map.fromList <$> mapM (\s -> (,) s <$> openProvider env s) schemes
   let rows = [(f, statusOf providers f) | f <- found]
-  if json
+  if fmt /= OutputText
     then
-      emitJson
+      emitJson fmt
         [ A.object $
             [ ("variable", A.String (fVar f)),
               ("reference", A.String (reference f))
@@ -129,8 +131,8 @@ secretsList json env scope = do
 -- | Each store in turn: configuration, reachability, login, then
 -- every reference to it. A store stops at its first failed stage; its
 -- references are then skipped. Exits 3 when anything failed.
-secretsCheck :: Bool -> Bool -> Map String String -> Scope -> IO ()
-secretsCheck json readValues env scope = do
+secretsCheck :: OutputFormat -> Bool -> Map String String -> Scope -> IO ()
+secretsCheck fmt readValues env scope = do
   let found = gather env scope
       malformed = [(f, Failed e) | f@(Found _ _ (Left e)) <- found]
       referenced = [(f, r) | f@(Found _ _ (Right r)) <- found]
@@ -140,9 +142,9 @@ secretsCheck json readValues env scope = do
       (\s -> checkStore readValues env s [f | (f, r) <- referenced, rawScheme r == s])
       schemes
   let failed = any isFailed (map snd malformed) || any storeFailed stores
-  if json
+  if fmt /= OutputText
     then
-      emitJson $
+      emitJson fmt $
         A.object
           [ ("stores", A.toJSON (map storeJson stores)),
             ("malformed", A.toJSON [refJson f st | (f, st) <- malformed])
@@ -260,5 +262,5 @@ aligned rows =
     cellAt i cells = if i < length cells then Just (cells !! i) else Nothing
     pad w t = T.justifyLeft w ' ' t
 
-emitJson :: (A.ToJSON a) => a -> IO ()
-emitJson = TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . A.encode
+emitJson :: (A.ToJSON a) => OutputFormat -> a -> IO ()
+emitJson fmt = TIO.putStrLn . TE.decodeUtf8 . BL.toStrict . (if fmt == OutputPrettyJson then AP.encodePretty else A.encode)

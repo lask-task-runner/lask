@@ -553,9 +553,13 @@ commonOpts :: [Opt]
 commonOpts =
   [ valueOpt "module" (VPath (PathSuffix ".lask")) "Path to the entry module",
     valueOpt
-      "format"
-      (VChoices [("text", Just "Human-readable"), ("json", Just "Machine-readable")])
-      "Diagnostics output format",
+      "output"
+      (VChoices [("text", Just "Human-readable"), ("json", Just "Machine-readable"), ("pretty-json", Just "Formatted JSON")])
+      "What stdout is written in: the result of eval, or the report of a command",
+    valueOpt
+      "log-format"
+      (VChoices [("text", Just "Human-readable"), ("json", Just "JSON Lines")])
+      "What stderr is written in: logs and diagnostics",
     valueOpt "trace-id" VOpaque "Trace identifier for this execution",
     switchOpt "no-color" "Disable colored output"
   ]
@@ -621,15 +625,6 @@ rootCommands =
               ]
           )
           "How to decode function arguments",
-        valueOpt
-          "stdout-encode"
-          ( VChoices
-              [ ("text", Just "Human-readable"),
-                ("json", Just "Machine-readable"),
-                ("pretty-json", Just "Formatted JSON")
-              ]
-          )
-          "How to encode the eval result",
         Opt "help" (Just 'h') Nothing "Show the help of FUNCTION, or list the module's functions" [] [],
         switchOpt "confirm" "Approve the confirmation lask.json asks for"
       ]

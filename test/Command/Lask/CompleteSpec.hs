@@ -109,10 +109,11 @@ spec = do
 
     it "offers a subcommand's options once a dash is typed" $ do
       vs <- valuesFor ["check", "--"]
-      vs `shouldOffer` ["--module", "--format", "--no-color"]
+      vs `shouldOffer` ["--module", "--output", "--log-format", "--no-color"]
 
     it "completes the values of a closed-set option" $ do
-      valuesFor ["check", "--format", ""] `shouldReturn` ["text", "json"]
+      valuesFor ["check", "--output", ""] `shouldReturn` ["text", "json", "pretty-json"]
+      valuesFor ["check", "--log-format", ""] `shouldReturn` ["text", "json"]
       valuesFor ["run", "--arg-decode", "j"] `shouldReturn` ["json"]
 
     it "does not offer an option that is already on the line" $ do
@@ -184,7 +185,7 @@ spec = do
     it "replaces lask's options with the function's parameters" $ do
       vs <- valuesFor ["run", "build", "--"]
       vs `shouldOffer` ["--out-dir", "--publish", "--env"]
-      vs `shouldNotOffer` ["--module", "--format", "--arg-decode"]
+      vs `shouldNotOffer` ["--module", "--output", "--arg-decode"]
 
     it "offers --help after the function name, but never -h" $ do
       vs <- valuesFor ["run", "build", "--"]
