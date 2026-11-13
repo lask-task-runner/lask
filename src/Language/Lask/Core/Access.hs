@@ -78,14 +78,13 @@ import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
 import Language.Lask.Module.Resolve (GlobalScope (..), TypeTarget (..), buildScopes)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
-import Language.Lask.Runtime.Eval (evalCore, mkRtCtx)
+import Language.Lask.Runtime.Eval (evalCore, mkRtCtx, withStepLimit)
 import Language.Lask.Runtime.Image (Recipe (..))
 import Language.Lask.Runtime.Value (Value (..), ioFailure)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Field (..), Type (..))
 import System.IO.Unsafe (unsafePerformIO)
-import System.Timeout (timeout)
 import Text.Read (readMaybe)
 import qualified Data.Vector as V
 
@@ -769,19 +768,18 @@ reachRaw core here seen binds c = case coreF c of
 -- it reaches no effect, no variable of the process and no @await@,
 -- and every local it reads is static. It is evaluated as a run would
 -- evaluate it, with hooks that refuse anything else; one that fails,
--- or does not finish in a second, is not static.
+-- or takes more than 'staticSteps' steps, is not static.
 staticEval :: CoreProgram -> Map Text AVal -> Core -> Maybe SVal
 staticEval core binds c
   | not (computesOnly core c) = Nothing
   | otherwise = do
       scope <- traverse (\x -> knownValue =<< Map.lookup x binds) (Map.fromSet id locals)
       unsafePerformIO $ do
-        ctx <- mkRtCtx core "" (RtHooks refuseCommand refuseFile refuseSession (const (pure ())) noAsyncTracker refuseEnv)
-        r <- timeout 1000000 (try (evaluate . forceValue =<< evalCore ctx scope c))
+        ctx <- withStepLimit staticSteps =<< mkRtCtx core "" (RtHooks refuseCommand refuseFile refuseSession (const (pure ())) noAsyncTracker refuseEnv)
+        r <- try (evaluate . forceValue =<< evalCore ctx scope c)
         pure $ case r of
-          Just (Right v) -> fromValue v
-          Just (Left e) -> const Nothing (e :: SomeException)
-          Nothing -> Nothing
+          Right v -> fromValue v
+          Left e -> const Nothing (e :: SomeException)
   where
     -- The locals the expression reads that the walk has a value for;
     -- any other is bound inside it, by a lambda.
@@ -792,6 +790,12 @@ staticEval core binds c
     refuseEnv _ = throwIO refusal
     refusal = ioFailure EIoEnvResolve "not evaluated statically"
     forceValue v = length (show (fromValue v)) `seq` v
+
+-- | The steps an expression that only computes may take (spec 10.11).
+-- A bound in steps rather than in time, so that whether an expression
+-- is static does not depend on the machine or its load.
+staticSteps :: Int
+staticSteps = 1000000
 
 -- | Whether an expression, and every top-level declaration it reaches,
 -- can only compute: no effect (Chapter 5), no variable of the process,

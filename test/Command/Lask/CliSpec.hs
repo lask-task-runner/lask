@@ -1486,6 +1486,30 @@ spec = beforeAll findLask $ do
           out `shouldNotSatisfy` isInfixOf "main.lask:3:"
           out `shouldSatisfy` isInfixOf "main.lask:4:13-4:54: E-TYPE-WITHIN-EXCEEDED [static]: \"/home/me/.cfg\" is mounted \"ro\""
           out `shouldSatisfy` isInfixOf "main.lask:5:13-5:53: E-TYPE-WITHIN-UNPROVEN"
+    it "bounds the evaluation of a run option in steps, not in time (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "within { outbound: false }\n\
+            \spin(n: Number): String = spin(n + 1)\n\
+            \none(n: Number): String = size(range(0, n)) < 0 ? \"bridge\" : \"none\"\n\
+            \small() = $[runnable(#alpine:3.20, network = none(1000))] true\n\
+            \large() = $[runnable(#alpine:3.20, network = none(2000000))] true\n\
+            \endless() = $[runnable(#alpine:3.20, network = spin(0))] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          let out = resOut r
+          -- Within the bound the option is known, and keeps to the
+          -- constraint; past it, or without end, it is not known.
+          out `shouldNotSatisfy` isInfixOf "main.lask:4:"
+          out `shouldSatisfy` isInfixOf "main.lask:5:"
+          out `shouldSatisfy` isInfixOf "main.lask:6:"
+          length (filter (isInfixOf "E-TYPE-WITHIN-UNPROVEN") (lines out)) `shouldBe` 2
+    it "does not bound the evaluation of a run (spec 10.11)" $ \lask ->
+      withProject [("main.lask", "none(n: Number): String = size(range(0, n)) < 0 ? \"bridge\" : \"none\"\n")] $ \dir -> do
+        e <- runLask lask dir ["eval", "none", "2000000"] ""
+        resOut e `shouldBe` "\"none\"\n"
     it "reports a broken constraint in what it covers, at the call that leads out of it (spec 10.11)" $ \lask ->
       withProject
         [ ( "main.lask",
