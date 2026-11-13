@@ -60,7 +60,7 @@ opens [http://localhost:3000](http://localhost:3000) (the first start takes a mi
 
 Sign-in is switched off so the page works at once, which is why the port is published on `127.0.0.1` only: the page is reachable from this machine and nothing else. Open WebUI keeps its settings and chat history in a second volume, `lask-open-webui`, and downloads a small embedding model into it on its first start.
 
-> **Stopping.** Interrupting `lask run serve` (Ctrl-C) currently leaves the container running, holding port 3000. Stop it by the port it holds, with `docker stop $(docker ps -q --filter publish=3000)`; it removes itself once stopped, and `serve` then ends with the container's exit code. Filtering by the image's tag finds nothing: Lask runs the image by the digest `lask.lock.json` pins, so the container's image is that digest.
+> **Stopping.** Interrupting `lask run serve` (Ctrl-C) stops the container and frees port 3000, and `serve` ends with exit code 130. Were `lask` itself killed instead, the containers it started are removed the next time `lask` runs.
 
 ## Check it without running anything
 
