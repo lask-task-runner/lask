@@ -61,7 +61,7 @@ jobs:
           dist/bin/lask run test-egress-proxy
 
       - name: Summarize coverage
-        run: dist/bin/lask eval --stdout-encode text coverage-report >> "$GITHUB_STEP_SUMMARY"
+        run: dist/bin/lask eval --output text coverage-report >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the coverage report
         uses: actions/upload-artifact@v4

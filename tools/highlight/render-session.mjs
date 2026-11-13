@@ -13,7 +13,7 @@ const PALETTE = {
 const TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z )(\[[^\]]*\] )?/
 const ENV_TAG = /^\[(#[^\]]*)\](\s*)$/
 
-// A line the user typed: "$ lask eval --stdout-encode text cowsay-hello Lask".
+// A line the user typed: "$ lask eval --output text cowsay-hello Lask".
 function promptLine(rest, p) {
   const out = [{ content: '$ ', color: p.green }]
   for (const word of rest.split(/(\s+)/)) {
