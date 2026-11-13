@@ -42,7 +42,10 @@ test_web() = $ cd web && npm ci --no-audit --no-fund && npm test
 
 // Runs the fast, offline tests. test_e2e is kept separate since it needs
 // a deployed stack and a signed-in user.
-test() = do {
+//
+// No secret reaches them, and none of their commands runs on the host:
+// `lask check` holds them to that before anything runs.
+test() within { secrets: false, runs: ["container"] } = do {
   test_api()
   test_web()
 }
@@ -137,7 +140,10 @@ internal output_field(os: Map<Any>, name: String): String = do {
 // Terraform variables that infra/ feeds straight to the AWS provider (see
 // infra/providers.tf); the "terraform" command's TF_VAR_* environment
 // (above) supplies them, so no -var flag puts a secret on the command line.
-deploy() = do {
+//
+// The two AWS keys are the only secrets its commands are given, and only
+// as variables; none of them runs on the host.
+deploy() within { secrets: [aws_access_key_id, aws_secret_access_key], runs: ["container"] } = do {
   build_lambda_deps()
   $ terraform -chdir=infra init -input=false -no-color
   $ terraform -chdir=infra apply -input=false -no-color -auto-approve
