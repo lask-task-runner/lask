@@ -138,6 +138,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [16.7 CLI Execution Examples](#167-cli-execution-examples)
     - [16.8 Execution Event Example](#168-execution-event-example)
     - [16.9 Error Handling and Exit Codes](#169-error-handling-and-exit-codes)
+  - [Appendix A. Command Schemas](#appendix-a-command-schemas)
 
 ## 1. Introduction
 
@@ -819,86 +820,9 @@ internal command { "mv", "rm", "ls" } on #local
 
 Command schemas:
 
-- A command declaration may give its words **command schemas** after `schema`: what options and subcommands each program takes, against which the command strings that run it are checked before execution. The expression is checked against the expected type `Map<CommandSchema>`, keyed by words of the declaration; a word with no key has no schema. A key that is not one of them is a static error (`E-TYPE-COMMAND-SCHEMA`) where the map is a literal written in the declaration, and is ignored where it comes from a top-level value the declaration refers to: a module may publish the schemas of several words as one map, `schema tools.python.schema`, of which a declaration uses those it declares.
-- The types of a schema are built-in type aliases, and must not be overridden by user-defined type aliases or value declarations:
-
-  ```lask fragment
-  type CommandOption = Record<
-    names: Array<String>,         // "-v", "--verbose", "-run"
-    value?: String,               // "none" (the default), "required" or "optional"
-    values?: Array<String>,       // the values the option takes, when they are a closed set
-    global?: Bool,                // also accepted by every subcommand below (default false)
-    stops?: Bool,                 // what follows the option and its value belongs to another program, as after `python -m mod`
-    prefix?: Bool,                // the value is written right after the name, in the same word: `-Xmx2g`, `-DNAME=value`, `-Wall`
-    description?: String
-  >
-
-  type CommandSpec = Record<
-    closed?: Bool,                // no option or subcommand exists but those listed (default false)
-    style?: String,               // "gnu" or "single-dash"; the parent's when absent, "gnu" at the root
-    options?: Array<CommandOption>,
-    intermixed?: Bool,            // options may follow positional arguments; default true for gnu, false for single-dash
-    stop_at_first_positional?: Bool,  // what follows the first positional argument belongs to another program
-    subcommand_optional?: Bool,   // a positional argument that names no subcommand is an argument: `grype alpine:3.20` beside `grype db update`
-    abbreviations?: Bool,         // a long option may be shortened to a unique prefix, as getopt_long and optparse allow; the parent's when absent, false at the root
-    description?: String
-  >
-
-  type CommandSchema = Record<
-    root: CommandSpec,
-    subcommands?: Map<CommandSpec>   // keyed by path: "test", "mod tidy"
-  >
-  ```
-
-- Subcommands are keyed by their path, the words that select them separated by single spaces, because a type alias cannot refer to itself (4.2). A path of more than one word requires its parent path among the keys.
-- A schema must be known without evaluation, as the command words are. The schema expression must be a **static value**: a `null`, number, boolean or string literal without interpolation; an array, map or record literal whose elements are static values; or a reference to a top-level value declaration, in this module or reached through an import, whose right-hand side is a static value and which is not a secret binding (6.10). Anything else — a call, an operator, a conditional — is a static error (`E-TYPE-COMMAND-SCHEMA`). A static value has no effect, so the restriction on the environment above holds of it as well.
-- A binding that holds a schema is annotated with its type (`go_schema: CommandSchema = {...}`). Without the annotation, the record literal infers every field it gives as required (4.3), and that record type does not conform to `CommandSchema` (4.4).
-- What the types cannot say is checked where the schema is written, and a violation is `E-TYPE-COMMAND-SCHEMA`: `style` is `"gnu"` or `"single-dash"`; `value` is `"none"`, `"required"` or `"optional"`; an option has at least one name, and each name begins with `-` — or, for an option with `prefix`, with `+` —, is neither `-` nor `--`, and contains no whitespace, `=` or quotation character; no name is given twice within one spec together with the global options of its ancestors; `values` lists at least one value and is not given for an option whose `value` is `"none"`; an option with `prefix` takes a value; a subcommand path is words without whitespace or quotation characters, none beginning with `-`, and its parent path is a key.
-- A schema belongs to the declaration: a word imported or re-exported keeps the schema the declaring module gave it.
-
-Checking a command string against a schema:
-
-- The check applies to a command execution expression whose environment is selected by dispatch (10.9), and to each simple command of its shell reading (6.6) whose command word is plainly written (no quotation, escape or expansion, and no `/`) and is a command word of the module whose declaration has the source dispatch selected and gives the word a schema. An expression with an environment specification is not checked: the program it runs may not be the one declared.
-- The words after the command word are read in order, assignments and redirections left out:
-  1. A word that follows an option requiring a value is its value, whatever it is, provided it expands to one field. If the option lists `values`, a literal value not among them is an error.
-  2. An option with `stops` ends the check once it and its value are read: `python -m pytest -k smoke` checks `-m` and its value, and leaves `-k` to pytest.
-  3. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
-  4. `--` ends the check.
-  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
-  6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. With `subcommand_optional`, a word that names no subcommand is a positional argument of the current spec instead of an unknown subcommand. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
-- Each of the following is reported, and the check ends at the first:
-  - an option the current spec does not have, or a subcommand it does not have, or an abbreviated option that is ambiguous;
-  - an option written with `=value` whose `value` is `"none"`;
-  - an option whose `value` is `"required"` at the end of the command, unless the shell reading stopped inside it;
-  - a literal value not among the option's `values`.
-- An unknown option or subcommand, or an ambiguous abbreviation, is a static error (`E-TYPE-COMMAND-OPTION`) when the current spec is `closed`, and otherwise the advisory `W-COMMAND-OPTION` (14.2), since a spec that is not closed does not claim to be complete. The other findings are `E-TYPE-COMMAND-OPTION` whatever the spec says.
-
-```lask
-go_schema: CommandSchema = {
-  root: { closed: true, style: "single-dash" },
-  subcommands: {
-    "test": {
-      closed: true,
-      intermixed: true,
-      options: [
-        { names: ["-v"], description: "verbose output" },
-        { names: ["-run"], value: "required" },
-        { names: ["-covermode"], value: "required", values: ["set", "count", "atomic"] }
-      ]
-    },
-    "run": { closed: true, stop_at_first_positional: true },
-    "mod": { closed: true },
-    "mod tidy": { closed: true, options: [{ names: ["-v"] }] }
-  }
-}
-
-command { "go", "gofmt" } on #golang:1.25 schema { "go": go_schema }
-
-ok() = $ go test -v -run TestParse ./...
-// $ go tset ./...         E-TYPE-COMMAND-OPTION: 'go' has no subcommand 'tset'
-// $ go test -run          E-TYPE-COMMAND-OPTION: '-run' requires a value
-// $ go test -covermode x  E-TYPE-COMMAND-OPTION: '-covermode' takes one of 'set', 'count', 'atomic'
-```
+- A command declaration may give its words **command schemas** after `schema`: what options and subcommands each program takes, against which the command strings that run it are checked before execution. The expression has the expected type `Map<CommandSchema>`, keyed by words of the declaration, and must be a static value, known without evaluation as the command words are. `CommandSchema` and the types it is made of are built-in type aliases.
+- The check applies to a command execution expression whose environment is selected by dispatch (10.9), to each simple command whose command word is plainly written and has a schema. It changes nothing about what runs: a finding is a static error (`E-TYPE-COMMAND-OPTION`) or an advisory (`W-COMMAND-OPTION`, 14.2), and an invalid schema is `E-TYPE-COMMAND-SCHEMA`.
+- The types of a schema, what makes one valid, and how a command string is read against one are defined in Appendix A.
 
 Command imports and exports:
 
@@ -2242,8 +2166,8 @@ The error kinds reported by static verification include at least the following.
 - `E-TYPE-COMMAND-NAME`: a command declaration names a program that could never be recognized in a command string (Chapter 5)
 - `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5)
 - `E-TYPE-COMMAND-SYNTAX`: a command string is not well formed as POSIX shell syntax (6.6)
-- `E-TYPE-COMMAND-SCHEMA`: the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5)
-- `E-TYPE-COMMAND-OPTION`: a command string invokes a program in a way its command schema rules out (Chapter 5)
+- `E-TYPE-COMMAND-SCHEMA`: the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5, Appendix A)
+- `E-TYPE-COMMAND-OPTION`: a command string invokes a program in a way its command schema rules out (Chapter 5, Appendix A)
 - `E-TYPE-ENV-CONSTRUCT`: invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree, an `egress` entry that is not one or `egress` given with `network` or `publish`; 6.7, 10.2, 10.3, 10.12, 15.5)
 - `E-TYPE-WITHIN-SPEC`: an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, a name in the `secrets` of an access declaration, the name of a type where an access declaration is named, or a second module constraint; Chapter 5, 10.11)
 - `E-TYPE-WITHIN-EXCEEDED`: what a declaration covered by an access constraint can reach is shown to exceed it (10.11)
@@ -4672,7 +4596,7 @@ Advisory codes:
   - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
   - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
   - `W-ASYNC-UNUSED`: a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`.
-  - `W-COMMAND-OPTION`: a command string uses an option or subcommand that a command schema which is not closed does not list (Chapter 5). Reported statically, with `stage: "static"`.
+  - `W-COMMAND-OPTION`: a command string uses an option or subcommand that a command schema which is not closed does not list (Chapter 5, Appendix A). Reported statically, with `stage: "static"`.
   - `W-SECRET-COMMAND-LINE`: a secret reaches a use in its command string, from which it becomes the arguments of the programs the command runs, or in a run option other than a value of `env`, which is on the engine client's command line (10.11). Reported statically, with `stage: "static"`.
   - `W-ASYNC-UNAWAITED`: an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6). Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`.
 - Reporting advisory diagnostics is optional, with one exception: `W-ASYNC-UNAWAITED` is always reported, because a failure it carries is otherwise invisible. `check` and `serve` are the expected places for the static ones; `run` and `eval` report the run-time ones on stderr.
@@ -5848,3 +5772,89 @@ $ lask run release
 - If `./release.sh` fails with exit code `75`, the failure is caught, `"retry-later"` is returned, and it terminates normally (process exit code `0`).
 - Other failures are re-raised by `fail(e)`. If it reaches the top level uncaught, the `lask` process exits with that command's exit code, and `e.message` (the command's standard error output) is output as diagnostics (8.10, 11.3).
 - The `finally` block is evaluated exactly once on every path: success, catch, or re-raise.
+
+## Appendix A. Command Schemas
+
+This appendix defines the command schemas a command declaration may give its words (Chapter 5): their types, their validity, and how a command string is checked against them. It is normative. A schema is a lint over command strings: it changes neither the type nor the evaluation of any expression.
+
+
+- A command declaration may give its words **command schemas** after `schema`: what options and subcommands each program takes, against which the command strings that run it are checked before execution. The expression is checked against the expected type `Map<CommandSchema>`, keyed by words of the declaration; a word with no key has no schema. A key that is not one of them is a static error (`E-TYPE-COMMAND-SCHEMA`) where the map is a literal written in the declaration, and is ignored where it comes from a top-level value the declaration refers to: a module may publish the schemas of several words as one map, `schema tools.python.schema`, of which a declaration uses those it declares.
+- The types of a schema are built-in type aliases, and must not be overridden by user-defined type aliases or value declarations:
+
+  ```lask fragment
+  type CommandOption = Record<
+    names: Array<String>,         // "-v", "--verbose", "-run"
+    value?: String,               // "none" (the default), "required" or "optional"
+    values?: Array<String>,       // the values the option takes, when they are a closed set
+    global?: Bool,                // also accepted by every subcommand below (default false)
+    stops?: Bool,                 // what follows the option and its value belongs to another program, as after `python -m mod`
+    prefix?: Bool,                // the value is written right after the name, in the same word: `-Xmx2g`, `-DNAME=value`, `-Wall`
+    description?: String
+  >
+
+  type CommandSpec = Record<
+    closed?: Bool,                // no option or subcommand exists but those listed (default false)
+    style?: String,               // "gnu" or "single-dash"; the parent's when absent, "gnu" at the root
+    options?: Array<CommandOption>,
+    intermixed?: Bool,            // options may follow positional arguments; default true for gnu, false for single-dash
+    stop_at_first_positional?: Bool,  // what follows the first positional argument belongs to another program
+    subcommand_optional?: Bool,   // a positional argument that names no subcommand is an argument: `grype alpine:3.20` beside `grype db update`
+    abbreviations?: Bool,         // a long option may be shortened to a unique prefix, as getopt_long and optparse allow; the parent's when absent, false at the root
+    description?: String
+  >
+
+  type CommandSchema = Record<
+    root: CommandSpec,
+    subcommands?: Map<CommandSpec>   // keyed by path: "test", "mod tidy"
+  >
+  ```
+
+- Subcommands are keyed by their path, the words that select them separated by single spaces, because a type alias cannot refer to itself (4.2). A path of more than one word requires its parent path among the keys.
+- A schema must be known without evaluation, as the command words are. The schema expression must be a **static value**: a `null`, number, boolean or string literal without interpolation; an array, map or record literal whose elements are static values; or a reference to a top-level value declaration, in this module or reached through an import, whose right-hand side is a static value and which is not a secret binding (6.10). Anything else — a call, an operator, a conditional — is a static error (`E-TYPE-COMMAND-SCHEMA`). A static value has no effect, so the restriction on the environment of a command declaration (Chapter 5) holds of it as well.
+- A binding that holds a schema is annotated with its type (`go_schema: CommandSchema = {...}`). Without the annotation, the record literal infers every field it gives as required (4.3), and that record type does not conform to `CommandSchema` (4.4).
+- What the types cannot say is checked where the schema is written, and a violation is `E-TYPE-COMMAND-SCHEMA`: `style` is `"gnu"` or `"single-dash"`; `value` is `"none"`, `"required"` or `"optional"`; an option has at least one name, and each name begins with `-` — or, for an option with `prefix`, with `+` —, is neither `-` nor `--`, and contains no whitespace, `=` or quotation character; no name is given twice within one spec together with the global options of its ancestors; `values` lists at least one value and is not given for an option whose `value` is `"none"`; an option with `prefix` takes a value; a subcommand path is words without whitespace or quotation characters, none beginning with `-`, and its parent path is a key.
+- A schema belongs to the declaration: a word imported or re-exported keeps the schema the declaring module gave it.
+
+Checking a command string against a schema:
+
+- The check applies to a command execution expression whose environment is selected by dispatch (10.9), and to each simple command of its shell reading (6.6) whose command word is plainly written (no quotation, escape or expansion, and no `/`) and is a command word of the module whose declaration has the source dispatch selected and gives the word a schema. An expression with an environment specification is not checked: the program it runs may not be the one declared.
+- The words after the command word are read in order, assignments and redirections left out:
+  1. A word that follows an option requiring a value is its value, whatever it is, provided it expands to one field. If the option lists `values`, a literal value not among them is an error.
+  2. An option with `stops` ends the check once it and its value are read: `python -m pytest -k smoke` checks `-m` and its value, and leaves `-k` to pytest.
+  3. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
+  4. `--` ends the check.
+  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
+  6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. With `subcommand_optional`, a word that names no subcommand is a positional argument of the current spec instead of an unknown subcommand. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
+- Each of the following is reported, and the check ends at the first:
+  - an option the current spec does not have, or a subcommand it does not have, or an abbreviated option that is ambiguous;
+  - an option written with `=value` whose `value` is `"none"`;
+  - an option whose `value` is `"required"` at the end of the command, unless the shell reading stopped inside it;
+  - a literal value not among the option's `values`.
+- An unknown option or subcommand, or an ambiguous abbreviation, is a static error (`E-TYPE-COMMAND-OPTION`) when the current spec is `closed`, and otherwise the advisory `W-COMMAND-OPTION` (14.2), since a spec that is not closed does not claim to be complete. The other findings are `E-TYPE-COMMAND-OPTION` whatever the spec says.
+
+```lask
+go_schema: CommandSchema = {
+  root: { closed: true, style: "single-dash" },
+  subcommands: {
+    "test": {
+      closed: true,
+      intermixed: true,
+      options: [
+        { names: ["-v"], description: "verbose output" },
+        { names: ["-run"], value: "required" },
+        { names: ["-covermode"], value: "required", values: ["set", "count", "atomic"] }
+      ]
+    },
+    "run": { closed: true, stop_at_first_positional: true },
+    "mod": { closed: true },
+    "mod tidy": { closed: true, options: [{ names: ["-v"] }] }
+  }
+}
+
+command { "go", "gofmt" } on #golang:1.25 schema { "go": go_schema }
+
+ok() = $ go test -v -run TestParse ./...
+// $ go tset ./...         E-TYPE-COMMAND-OPTION: 'go' has no subcommand 'tset'
+// $ go test -run          E-TYPE-COMMAND-OPTION: '-run' requires a value
+// $ go test -covermode x  E-TYPE-COMMAND-OPTION: '-covermode' takes one of 'set', 'count', 'atomic'
+```

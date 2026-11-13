@@ -686,7 +686,7 @@ withConfirmNote compiled key docs = case key >>= ruleFor (compiledProgram compil
      in Just (maybe note (<> "\n\n" <> note) docs)
 
 -- | Hover on a word of a command string checked against a command
--- schema (spec ch. 5): the command, option, value or subcommand it is,
+-- schema (spec appendix A): the command, option, value or subcommand it is,
 -- with what the schema says of it.
 schemaHoverAt :: CoreProgram -> FilePath -> Int -> Int -> Maybe Hover
 schemaHoverAt core path line col =
@@ -825,7 +825,7 @@ completionAt path src pos = do
     Nothing -> languageCompletion path src pos
 
 -- | Completion inside a dispatched command string whose command word
--- has a command schema (spec ch. 5): the options and subcommands that
+-- has a command schema (spec appendix A): the options and subcommands that
 -- may come next, or the values of the option awaiting one. 'Nothing'
 -- anywhere else, which leaves the position to the language's own
 -- completion.
