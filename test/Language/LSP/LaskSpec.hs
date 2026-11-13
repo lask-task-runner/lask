@@ -147,6 +147,22 @@ spec = do
     it "highlights the environment expression in commands" $
       -- f() = $[#alpine:3.20] ls   (env head starts at col 8, length 12)
       hasAtom "f() = $[#alpine:3.20] ls" (0, 8, 12, SemanticTokenTypes_Macro)
+    it "leaves the env brackets out of the command string" $ do
+      -- f() = $[#local] ls   (`[` at col 7, `]` at col 14)
+      let ts = toks "f() = $[#local] ls"
+      ts `shouldSatisfy` notElem (0, 7, 1, SemanticTokenTypes_String)
+      ts `shouldSatisfy` all (\(_, c, len, _) -> c > 14 || c + len <= 14)
+      hasAtom "f() = $[#local] ls" (0, 15, 3, SemanticTokenTypes_String)
+    it "leaves the braces of a braced command out of the command string" $ do
+      -- f() = $[#local] { ls }   (`{` at col 16, `}` at col 21)
+      let ts = toks "f() = $[#local] { ls }"
+      ts `shouldSatisfy` all (\(_, c, len, _) -> c + len <= 16 || c > 16)
+      ts `shouldSatisfy` all (\(_, c, len, _) -> c + len <= 21)
+      hasAtom "f() = $[#local] { ls }" (0, 17, 4, SemanticTokenTypes_String)
+    it "leaves the braces of a multi-line braced command out of the command string" $ do
+      let ts = toks "f() = ${\n  ls\n}"
+      ts `shouldSatisfy` all (\(l, c, len, _) -> not (l == 0 && c <= 7 && 7 < c + len))
+      ts `shouldSatisfy` all (\(l, c, _, _) -> not (l == 2 && c == 0))
 
   describe "command words (spec 10.9)" $ do
     let src = "command { \"go\" } on #golang:1.25\nf() = $ go test ./...\n"
