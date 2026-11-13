@@ -28,12 +28,12 @@ The recording above and the excerpt below come from [example/01-projects/02-weba
 
 ## Why Lask
 
-- **Approachable**: one `.lask` file is a project, in a syntax borrowed from languages you already write.
-- **Verifiable**: `lask check` resolves every name, argument and type before a single command runs, and your editor shows the same errors as you type.
-- **Portable**: every command runs in an environment you pin, such as `command { "go" } on #golang:1.22`, the same on your laptop and in CI.
-- **Programmable**: a task is a typed function, with error handling and concurrency in the language and tasks imported across projects.
-- **Runnable**: a task's signature is its command line, and its doc comment is its `--help`.
-- **Secure**: secrets are masked in the log and can come from Vault, and imports are pinned by content hash.
+- **One small file**: a project is a `main.lask` in a small language with familiar syntax, and Lask and a container engine are all it needs.
+- **Checked before it runs**: `lask check` verifies the whole file, from names and types to where each command runs, before anything runs, and your editor shows the same errors as you type.
+- **The same everywhere**: every command runs in the environment the file names, a container image pinned by digest unless it says otherwise, on a laptop and in CI alike.
+- **Tasks are functions**: tasks take typed arguments, call each other, and handle errors and concurrency in the language, and each one is a command with its own `--help`.
+- **Reusable**: tasks, and the environments they run in, are imported from other projects and pinned in a lock file.
+- **Safe by default**: nothing runs on the host unless the file says so, secrets stay out of the log, and what a task may reach can be declared and checked.
 
 Lask is a task runner, not a build system or a CI platform: it replaces what your CI jobs run, not the CI itself. [Why Lask](https://lask-task-runner.github.io/guide/why-lask) covers all of this, with a [comparison to make, Taskfile and Dagger](https://lask-task-runner.github.io/guide/why-lask#how-lask-compares).
 
