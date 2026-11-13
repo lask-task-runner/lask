@@ -246,11 +246,16 @@ cmdRunEval printResult runOpts = do
             | null posVals && null kwVals -> pure v
             | otherwise -> applyValue ctx fv posVals kwVals
       -- A computation nothing awaited is waited for rather than cut
-      -- short by the end of the process, and reported (spec 6.3).
-      -- Whatever it did, the run keeps its own outcome and exit code.
+      -- short by the end of the process, and reported (spec 6.3). One
+      -- that failed fails the run, with the first such failure in the
+      -- order the computations were started, unless the run failed
+      -- already: a failure nobody awaited is not lost.
       unawaited <- drainUnawaited tracker
       mapM_ (fmap (unawaitedDiagnostic opts traceId) . maskOutcome >=> writeErr) unawaited
-      pure result
+      let failures = [unawaitedFailure ex | (_, Left ex) <- unawaited]
+      pure $ case (result, failures) of
+        (Right _, lf : _) -> Left lf
+        _ -> result
     case outcome of
       Right result -> pure (Right result)
       Left (Interrupted sig) -> do
@@ -292,6 +297,13 @@ maskOutcome :: (AsyncSite, Either SomeException Value) -> IO (AsyncSite, Either 
 maskOutcome (site, Left ex)
   | Just lf <- fromException ex = (\m -> (site, Left (toException m))) <$> maskFailure lf
 maskOutcome outcome = pure outcome
+
+-- | The failure of a computation nothing awaited, as the run's own
+-- (spec 6.3).
+unawaitedFailure :: SomeException -> LaskFailure
+unawaitedFailure ex = case fromException ex of
+  Just lf -> lf
+  Nothing -> LaskFailure Nothing (errorValue 1 (T.pack (show ex))) []
 
 -- | The advisory @W-ASYNC-UNAWAITED@ (spec 6.3, 14.2) for one
 -- computation that was never awaited, with how it ended.

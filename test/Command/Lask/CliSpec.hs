@@ -1123,11 +1123,22 @@ spec = beforeAll findLask $ do
         resErr r `shouldContain` "W-ASYNC-UNAWAITED: the async at main.lask:2:7 was never awaited"
         resErr r `shouldContain` "and completed"
         readFile (dir </> "side.txt") `shouldReturn` "done\n"
-    it "reports its failure without taking over the exit code" $ \lask ->
+    it "fails the run with its failure, and prints no result (spec 6.3, 8.6)" $ \lask ->
       withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 3\n  \"ok\"\n}\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "f"] ""
-        resExit r `shouldBe` 0
+        resExit r `shouldBe` 3
+        resOut r `shouldBe` ""
         resErr r `shouldContain` "failed with E-RUNTIME-COMMAND-NONZERO (exit code 3)"
+        resErr r `shouldContain` "\nE-RUNTIME-COMMAND-NONZERO: "
+    it "fails the run with the first failure in the order the computations started" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  a = async $[#local] sh -c 'sleep 1; exit 4'\n  b = async $[#local] exit 6\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 4
+    it "leaves the run as it is when the failure is caught where it starts" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async try { $[#local] { exit 3 } } catch (e) { null }\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"ok\"\n"
     it "reports it when the function itself fails, which keeps its own exit code" $ \lask ->
       withProject [("main.lask", "f(): String = do {\n  h = async $[#local] echo side\n  $[#local] exit 5\n}\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""
@@ -1162,7 +1173,7 @@ spec = beforeAll findLask $ do
     it "reports it as a JSON Lines warning under --format json" $ \lask ->
       withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 3\n  \"ok\"\n}\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "--format", "json", "f"] ""
-        resExit r `shouldBe` 0
+        resExit r `shouldBe` 3
         let warnings = [l | l <- lines (resErr r), "W-ASYNC-UNAWAITED" `isInfixOf` l]
         length warnings `shouldBe` 1
         mapM_
