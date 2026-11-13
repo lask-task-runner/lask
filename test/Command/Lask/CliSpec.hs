@@ -651,6 +651,18 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 4
         resErr r `shouldSatisfy` isInfixOf "lask cmd --help"
 
+    it "reports an option value the command line does not accept as a usage error (exit 4)" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "--stdout-encode", "xml", "f"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldSatisfy` isInfixOf "E-CLI-USAGE"
+        resErr r `shouldSatisfy` isInfixOf "--stdout-encode"
+
+    it "captures the whole output of a command, however long (spec 8.7)" $ \lask ->
+      withProject [("main.lask", "f(): Number = length($[#local] { head -c 3000000 /dev/zero | tr -c x x })\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resOut r `shouldBe` "3000000\n"
+
     it "reports a missing command name as a usage error" $ \lask ->
       withProject proj $ \dir -> do
         r <- runLask lask dir ["cmd"] ""
@@ -2439,7 +2451,10 @@ spec = beforeAll findLask $ do
     it "rejects a shell it has no script for" $ \lask ->
       withProject [] $ \dir -> do
         r <- runLask lask dir ["completion", "tcsh"] ""
-        resExit r `shouldBe` 1
+        -- An argument the command line does not accept is a usage error
+        -- (spec 11.3).
+        resExit r `shouldBe` 4
+        resErr r `shouldSatisfy` isInfixOf "E-CLI-USAGE"
 
     -- The completion grammar is written by hand beside the parser, so
     -- it can drift from it. optparse-applicative's built-in completer

@@ -528,6 +528,25 @@ spec = do
       failsWith "f() = sqrt(0 - 1)" "f" ERuntimeValue
       failsWith "f() = clamp(1, 3, 0)" "f" ERuntimeValue
 
+  describe "choices the specification makes, not the implementation (spec 13, 15.3, 15.8)" $ do
+    it "counts a string in code points" $ do
+      evalsTo "f() = length(\"\233\128077\")" "f" "2"
+      evalsTo "f() = substring(\"a\128077b\", 1, 2)" "f" "\"\128077\""
+    it "splits on an empty delimiter into code points, and joins with nothing" $ do
+      evalsTo "f() = split(\"a\128077c\", \"\")" "f" "[\"a\",\"\128077\",\"c\"]"
+      evalsTo "f() = split(\"\", \"\")" "f" "[]"
+      evalsTo "f() = join([\"a\", \"b\"], \"\")" "f" "\"ab\""
+    it "writes the keys of an object in code point order" $ do
+      evalsTo "f() = to_json({b: 1, a: 2, \"Z\": 3})" "f" "\"{\\\"Z\\\":3,\\\"a\\\":2,\\\"b\\\":1}\""
+      evalsTo "m: Map<Number> = {\"b\": 1, \"a\": 2}\nf() = to_json(m)" "f" "\"{\\\"a\\\":2,\\\"b\\\":1}\""
+      evalsTo "f() = encode({b: 1, a: 2}, \"yaml\")" "f" "\"a: 2\\nb: 1\\n\""
+    it "lets a decoded object be used as a record or as a map" $ do
+      evalsTo "f(): String = case (from_json(\"{\\\"a\\\": 1}\")) {\n  Map<Number> -> \"map\"\n  else -> \"other\"\n}" "f" "\"map\""
+      evalsTo "f(): String = case (from_json(\"{\\\"a\\\": 1}\")) {\n  Record<a: Number> -> \"record\"\n  else -> \"other\"\n}" "f" "\"record\""
+    it "reports a format it does not know as E-IO-DATA-DECODE, decoding or encoding" $ do
+      failsWith "f() = decode(\"x\", \"xml\")" "f" EIoDataDecode
+      failsWith "f() = encode(1, \"xml\")" "f" EIoDataDecode
+
   describe "string additions (spec 15.3)" $ do
     it "searches without a substring hack" $ do
       evalsTo "f() = contains(\"abc\", \"b\")" "f" "true"
