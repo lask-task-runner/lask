@@ -169,7 +169,7 @@ commandResultType =
         ]
     )
 
--- | Builtin alias @CommandOption@ (spec ch. 5, command schemas).
+-- | Builtin alias @CommandOption@ (spec appendix A).
 commandOptionType :: Type
 commandOptionType =
   TyRecord
@@ -184,7 +184,7 @@ commandOptionType =
         ]
     )
 
--- | Builtin alias @CommandSpec@ (spec ch. 5, command schemas).
+-- | Builtin alias @CommandSpec@ (spec appendix A).
 commandSpecType :: Type
 commandSpecType =
   TyRecord
@@ -200,7 +200,7 @@ commandSpecType =
         ]
     )
 
--- | Builtin alias @CommandSchema@ (spec ch. 5, command schemas).
+-- | Builtin alias @CommandSchema@ (spec appendix A).
 commandSchemaType :: Type
 commandSchemaType =
   TyRecord

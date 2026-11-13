@@ -3067,7 +3067,7 @@ envKey c = case coreF c of
   CMapLit kvs -> "{" <> T.intercalate "," [k <> ":" <> envKey v | (k, v) <- sortOn fst kvs] <> "}"
   other -> T.pack (show other)
 
--- | The command schemas of a declaration (spec ch. 5): a
+-- | The command schemas of a declaration (spec appendix A): a
 -- @Map\<CommandSchema\>@ keyed by words of the declaration, known
 -- without evaluation.
 declaredSchemas :: Ctx -> FilePath -> [Spanned Text] -> Expr -> TC (Map Text Schema)
