@@ -131,7 +131,7 @@ lask run healthcheck_api
 lask run healthcheck_web
 
 # open this URL in a browser and sign in with the user you just created
-lask eval --stdout-encode text terraform_output website_url
+lask eval --output text terraform_output website_url
 
 lask run test_e2e     # optional: a real browser clicking through the app for you
 

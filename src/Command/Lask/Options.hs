@@ -26,7 +26,12 @@ import Options.Applicative
 
 data CommonOpts = CommonOpts
   { optModule :: FilePath,
-    optJsonFormat :: Bool,
+    -- | @--output@: what is written to stdout (spec 11.1, 11.3). Nothing
+    -- leaves it to the command, whose default 11.3 gives.
+    optOutput :: Maybe OutputFormat,
+    -- | @--log-format json@: what is written to stderr — logs, command
+    -- execution logs, diagnostics and events — is JSON Lines (12.2).
+    optLogJson :: Bool,
     optTraceId :: Maybe Text,
     optNoColor :: Bool
   }
@@ -34,7 +39,6 @@ data CommonOpts = CommonOpts
 data RunOpts = RunOpts
   { runCommon :: CommonOpts,
     runArgDecode :: ArgDecodeMode,
-    runStdoutEncode :: StdoutEncode,
     -- | @--help@ / @-h@ before the function name. After the function
     -- name it reaches 'runArgs' instead and is handled there
     -- (spec 11.2).
@@ -138,16 +142,29 @@ pCommon =
           <> showDefault
           <> help "Path to the entry module"
       )
-    <*> strOption
-      ( long "format"
+    <*> optional
+      ( option
+          (maybeReader parseOutputFormat)
+          ( long "output"
+              <> metavar "text|json|pretty-json"
+              <> help "What stdout is written in: the result of eval, or the report of a command"
+          )
+      )
+    <*> option
+      (maybeReader parseLogFormat)
+      ( long "log-format"
           <> metavar "text|json"
-          <> value "text"
-          <> help "Diagnostics output format"
+          <> value False
+          <> help "What stderr is written in: logs and diagnostics, as text or JSON Lines"
       )
     <*> optional (T.pack <$> strOption (long "trace-id" <> metavar "ID" <> help "Trace identifier for this execution"))
     <*> switch (long "no-color" <> help "Disable colored output")
   where
-    build m fmt tid nc = CommonOpts m (fmt == ("json" :: String)) tid nc
+    build m out logJson tid nc = CommonOpts m out logJson tid nc
+    parseLogFormat s = case s of
+      "text" -> Just False
+      "json" -> Just True
+      _ -> Nothing
 
 -- | Everything after the command name belongs to the program, with no
 -- interception at all (spec 11.8) — not even @--help@, which a program
@@ -171,13 +188,6 @@ pRunOpts =
           <> metavar "text|json|auto"
           <> value DecodeAuto
           <> help "How to decode function arguments (default: auto)"
-      )
-    <*> option
-      (maybeReader parseStdoutEncode)
-      ( long "stdout-encode"
-          <> metavar "text|json|pretty-json"
-          <> value EncodeJson
-          <> help "How to encode the eval result (default: json)"
       )
     <*> switch
       ( long "help"

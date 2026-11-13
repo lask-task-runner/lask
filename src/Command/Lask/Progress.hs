@@ -8,7 +8,7 @@
 -- with a spinner, its latest detail and the time so far, and replaced
 -- by its outcome when it ends. Elsewhere — CI, a pipe — each item is a
 -- timestamped line when it starts and when it ends, with a line every
--- 30 seconds in between. With @--format json@ every one of these is a
+-- 30 seconds in between. With @--log-format json@ every one of these is a
 -- JSON Lines event instead.
 module Command.Lask.Progress
   ( Progress,
@@ -59,7 +59,7 @@ data Item = Item
     itTicker :: IORef (Maybe (IO ()))
   }
 
--- | Run with a progress reporter on stderr. @json@ is @--format json@;
+-- | Run with a progress reporter on stderr. @json@ is @--log-format json@;
 -- @color@ whether the outcome marks may be coloured.
 withProgress :: Bool -> Bool -> (Progress -> IO a) -> IO a
 withProgress json color act = do

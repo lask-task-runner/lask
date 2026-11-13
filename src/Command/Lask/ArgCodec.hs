@@ -5,10 +5,10 @@
 -- declaration parameter info.
 module Command.Lask.ArgCodec
   ( ArgDecodeMode (..),
-    StdoutEncode (..),
+    OutputFormat (..),
     CliArg (..),
     parseArgDecodeMode,
-    parseStdoutEncode,
+    parseOutputFormat,
     parseCliArgs,
     isFlagType,
     flagNames,
@@ -51,7 +51,9 @@ import Language.Lask.Utils (kebabToSnake, snakeToKebab)
 data ArgDecodeMode = DecodeText | DecodeJson | DecodeAuto
   deriving (Show, Eq)
 
-data StdoutEncode = EncodeText | EncodeJson | EncodePrettyJson
+-- | What lask writes to stdout is written in (spec 11.3): text for
+-- people, or JSON, compact or formatted.
+data OutputFormat = OutputText | OutputJson | OutputPrettyJson
   deriving (Show, Eq)
 
 parseArgDecodeMode :: String -> Maybe ArgDecodeMode
@@ -61,11 +63,11 @@ parseArgDecodeMode s = case s of
   "auto" -> Just DecodeAuto
   _ -> Nothing
 
-parseStdoutEncode :: String -> Maybe StdoutEncode
-parseStdoutEncode s = case s of
-  "text" -> Just EncodeText
-  "json" -> Just EncodeJson
-  "pretty-json" -> Just EncodePrettyJson
+parseOutputFormat :: String -> Maybe OutputFormat
+parseOutputFormat s = case s of
+  "text" -> Just OutputText
+  "json" -> Just OutputJson
+  "pretty-json" -> Just OutputPrettyJson
   _ -> Nothing
 
 -- | An argument as the command line gives it: a positional one, a
