@@ -64,10 +64,10 @@ const fmt = sec => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padSt
 const RUN = 552; // the failing CI run: 9m 12s
 
 // ---------- timeline ----------
-window.DURATION = 62.0;
+window.DURATION = 60.0;
 const I0 = 0;
 const S2 = 4.6, S4 = 9.0, S5 = 15.5, S6 = 19.5, S7 = 29.0, S8 = 36.5, S9 = 47.0;
-const T = { introEnd: 4.6, endA: 57.0 };
+const T = { introEnd: 4.6, endA: 55.5 };
 const COL = { python: "#ffab70", node: "#85e89d" };
 const ICON = (c = "#79b8ff", w = 26) => `<svg width="${w}" height="${w * .7}" viewBox="0 0 26 18" style="vertical-align:-3px"><rect x="1" y="1" width="24" height="16" rx="2" fill="none" stroke="${c}" stroke-width="2"/><path d="M6 4v10M10 4v10M14 4v10M18 4v10" stroke="${c}" stroke-width="1.6"/></svg>`;
 const typedAt = (t, txt, a, cps = 22) => txt.slice(0, Math.max(0, Math.min(txt.length, Math.floor((t - a) * cps))));
@@ -84,7 +84,7 @@ STEP(1, "Try a command in the REPL.", S2, S5);
 STEP(2, "Keep it as a task.", S5, S7);
 STEP(3, "Run it.", S7, S8);
 STEP(4, "Same run, anywhere.", S8, S9);
-STEP(5, "Secrets stay in Vault.", S9, T.endA);
+STEP(5, "Limit what a task can reach.", S9, T.endA);
 NOTE(`Start with one command. No project, no config.`, S2 + .6, S4);
 NOTE(`Lask starts a <span class="b">Docker</span> container from that image and runs the command in it.`, S4 + .3, S5);
 NOTE(`The same line, saved in <span class="mono b">main.lask</span>, is a task.`, S5 + 1.2, S6);
@@ -92,9 +92,9 @@ NOTE(`Add more. A mistake shows up <span class="g">in your editor</span>, before
 NOTE(`Then the whole job: <span class="p">deploy()</span> and <span class="p">release()</span>, each command in its own image.`, 26.1, S7);
 NOTE(`Tests run side by side, then each deploy step runs in its own container.`, S7 + .6, S8);
 NOTE(`Both run the same pinned images on <span class="b">Docker</span>, <span class="g">so they behave the same</span>.`, S8 + .8, S9);
-NOTE(`Point an environment variable at <span style="color:#ffdf5d">Vault</span>. The program stays the same.`, S9 + .6, S9 + 3.6);
-NOTE(`On your laptop and in CI, Lask reads the value only when a task needs it, and logs it as <span class="mono g">***</span>.`, S9 + 3.8, S9 + 6.2);
-NOTE(`An AI agent driving Lask sees the reference and <span class="mono g">***</span>, <span class="g">not the key</span>.`, S9 + 6.4, T.endA);
+NOTE(`Write down what a task may touch: its files, its network, its secrets.`, S9 + .6, S9 + 3.3);
+NOTE(`A command that would reach further fails <span class="mono b">lask check</span>, <span class="g">before anything runs</span>.`, S9 + 3.5, S9 + 6.1);
+NOTE(`A review reads the bounds, not every command.`, S9 + 6.3, T.endA);
 
 // ===== 2-4: the REPL, and what happens underneath =====
 {
@@ -444,44 +444,71 @@ function driveRun(prefix, u, rows, panel) {
   });
 }
 
-// ===== 9: secrets stay in Vault =====
+// ===== 9: limit what a task can reach =====
+// The code is a real module: `lask check` passes on the first five lines, and the
+// added `npm publish` line is reported exactly as the terminal shows.
 {
-  const s = S9, e = T.endA;
-  const card = (x, w, title, body, at) => add(`<div style="font:800 22px var(--sans);margin-bottom:10px">${title}</div>${body}`,
-    `left:${x}px;width:${w}px;top:140px;height:230px;padding:18px 20px`, at, e, "up", { cls: "card" });
-  const envLine = `<div style="font:600 15px/1.5 var(--mono)"><span class="d">$ env</span><br>AWS_SECRET_ACCESS_KEY=<br><span class="s">"{vault://secret/aws#secret_key}"</span></div>`;
-  const logLine = `<div style="margin-top:12px;font:600 15px/1.5 var(--mono)"><span class="d">log</span> $ aws configure set … <span class="g">***</span></div>`;
-  card(40, 380, "💻 Your laptop", envLine + logLine, s + .4);
-  card(860, 380, "⚙️ CI runner", envLine + logLine, s + .7);
-  const ai = card(450, 380, "🤖 AI agent running Lask", `<div style="font:600 15px/1.5 var(--mono)"><span class="d">$ echo $AWS_SECRET_ACCESS_KEY</span><br><span class="s">{vault://secret/aws#secret_key}</span>
-      <div style="margin-top:8px"><span class="d">$ lask run deploy</span><br><span class="d">log</span> … <span class="g">***</span></div></div>
-      <div style="margin-top:8px;font:700 15px var(--sans)">No key in the env, the logs, or a <span class="mono">.env</span> file.</div>`, s + 6.4);
-  // Vault, below, feeding both at run time
-  add(`<div style="font:800 30px var(--sans)">🔐 Vault</div><div style="font:600 16px var(--mono);color:var(--dim);margin-top:4px">secret/aws · secret_key</div>`,
-    "left:490px;width:300px;top:470px;height:110px;border-color:#ffdf5d;background:#1d1a0e", s + 1.6, e, "pop", { cls: "card box" });
-  add(`<svg width="1280" height="720"><g fill="none" stroke-width="5" stroke-dasharray="12 9">
-        <path id="vl" d="M490 520 C330 520 230 470 230 372" stroke="#ffdf5d"/><path id="vr" d="M790 520 C950 520 1050 470 1050 372" stroke="#ffdf5d"/></g></svg>`,
-    "left:0;top:0", s + 2.4, e, "fade");
-  add(`read only when a task needs it`, "top:592px;font:700 18px var(--sans);color:#ffdf5d", s + 2.8, e, "fade", { cls: "c" });
-  // a key that travels from Vault into each container, and comes out masked
-  const keyL = add(`🔑`, "font-size:30px", s, e, "none", { manual: true });
-  const keyR = add(`🔑`, "font-size:30px", s, e, "none", { manual: true });
+  const s = S9, e = T.endA, ADD = s + 3.4, ERR = ADD + 1.0;
+  const W = [ // the code, with its colours
+    `<span class="p">node</span> = <span class="b">#node:20</span>{base_access: <span class="s">"ro"</span>, network: <span class="s">"none"</span>}`,
+    ``,
+    `<span class="p">test</span>() <span class="r">within</span> { files: <span class="s">"ro"</span>, outbound: <span class="o">false</span> } = <span class="r">do</span> {`,
+    `  <span class="r">$[</span><span class="p">node</span><span class="r">]</span> npm ci --offline`,
+    `  <span class="r">$[</span><span class="p">node</span><span class="r">]</span> npm test`,
+  ];
+  const ADDED = `  <span class="r">$[</span><span class="b">#node:20</span><span class="r">]</span> npm publish`, ADDED_TXT = "  $[#node:20] npm publish";
+  const ed = add(`<div style="height:34px;background:#161b22;border-bottom:2px solid var(--line);border-radius:16px 16px 0 0;font:600 16px var(--mono);color:var(--dim);display:flex;align-items:center;justify-content:center">main.lask</div>
+     <div id="wCode" style="padding:12px 0"></div>
+     <div id="wStatus" style="position:absolute;left:0;right:0;bottom:0;height:34px;border-top:2px solid var(--line);background:var(--panel);padding:0 18px;display:flex;align-items:center;font:600 17px var(--sans)"></div>`,
+    "left:40px;width:760px;top:140px;height:330px;overflow:hidden", s + .2, e, "up", { cls: "card" });
+  // what the task may reach, read from the constraint
+  const ROWS = [["📁", "files", "read-only", "would write"], ["🌐", "network", "none", "would go online"], ["🔑", "secrets", "none given", null]];
+  const bounds = add(`<div style="font:800 22px var(--sans);margin-bottom:12px">What <span class="p">test()</span> may reach</div>` +
+      ROWS.map(([ic, n, ok], i) => `<div id="wb${i}" style="display:flex;align-items:center;gap:12px;height:52px;margin-top:8px;padding:0 14px;border:2px solid var(--line);border-radius:12px;background:#0f151d;font:700 19px var(--sans)">
+         <span style="font-size:22px">${ic}</span><span style="width:90px">${n}</span><span class="wv mono g" style="font-size:17px;white-space:nowrap">${ok}</span><span class="wx" style="margin-left:auto;font:700 15px var(--sans);white-space:nowrap"></span></div>`).join(""),
+    "left:830px;width:410px;top:140px;height:330px;padding:18px 20px", s + .5, e, "right", { cls: "card" });
+  // lask check, below
+  const term = add(`<div id="wTerm" style="padding:14px 20px;font:500 17px/1.6 var(--mono);white-space:pre;overflow:hidden"></div>`,
+    "left:40px;width:1200px;top:490px;height:140px", s + 1.0, e, "up", { cls: "card" });
   UPD.push(t => {
-    if (t < s || t >= e) { keyL.style.visibility = keyR.style.visibility = "hidden"; return; }
-    const loop = (t - (s + 3.0)) % 2.2, on = t >= s + 3.0 && loop < 1.2;
-    [[keyL, "vl"], [keyR, "vr"]].forEach(([k, id]) => {
-      const path = document.getElementById(id);
-      k.style.visibility = on && path ? "visible" : "hidden";
-      if (!on || !path) return;
-      const p = path.getPointAtLength(path.getTotalLength() * ease(loop / 1.2));
-      k.style.left = (p.x - 16) + "px"; k.style.top = (p.y - 20) + "px";
+    if (t < s || t >= e) return;
+    const lines = W.slice();
+    if (t >= ADD) {
+      const k = Math.floor((t - ADD) * 30), shown = ADDED_TXT.slice(0, k);
+      lines.push(k >= ADDED_TXT.length ? ADDED : esc(shown));
+    }
+    lines.push(`}`);
+    const bad = t >= ERR;
+    document.getElementById("wCode").innerHTML = lines.map((l, i) => {
+      const flag = bad && i === 5;
+      return `<div style="position:relative;height:34px;line-height:34px;font:500 20px var(--mono);white-space:pre;padding-left:58px${flag ? ";background:#f9758318" : ""}"><span style="position:absolute;left:0;width:40px;text-align:right;color:#484f58">${i + 1}</span>${l}${flag
+        ? `<span style="position:absolute;left:${58 + 2 * 12}px;bottom:3px;width:${22 * 12}px;height:5px;background:url(&quot;data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='4'><path d='M0 3 L1.5 1 L3 3 L4.5 1 L6 3' fill='none' stroke='%23f97583' stroke-width='1.2'/></svg>&quot;) repeat-x"></span>` : ""}</div>`;
+    }).join("");
+    document.getElementById("wStatus").innerHTML = bad
+      ? `<span class="r">✕ 2 problems</span>&nbsp;&nbsp;<span class="d">main.lask:6:3 E-TYPE-WITHIN-EXCEEDED</span>`
+      : `<span class="g">✓ No problems</span>&nbsp;&nbsp;<span class="d">checked as you type</span>`;
+    ed.style.borderColor = bad ? "#f97583" : "";
+    ROWS.forEach(([, , ok, why], i) => {
+      const d = document.getElementById("wb" + i), hit = bad && why;
+      const pulse = hit ? Math.max(0, 1 - (t - ERR) / .6) : 0;
+      d.style.borderColor = hit ? "#f97583" : t >= s + 1.2 ? "#85e89d66" : "";
+      d.style.background = hit ? "#f975831a" : "#0f151d";
+      d.style.boxShadow = pulse > 0 ? `0 0 ${30 * pulse}px #f97583aa` : "";
+      d.querySelector(".wx").innerHTML = hit ? `<span class="r">✕ ${why}</span>` : t >= s + 1.2 ? `<span class="g">✓</span>` : "";
     });
-    ai.style.borderColor = t >= s + 6.4 ? "#79b8ff" : "";
+    const typed = "lask check".slice(0, Math.max(0, Math.floor((t - (s + 1.3)) * 18)));
+    let out = `<span class="g">❯</span> ${typed}`;
+    if (t >= s + 2.1 && t < ERR) out += `\n<span class="d">the module is valid</span>`;
+    if (t >= ERR + .2) out = `<span class="g">❯</span> lask check\n` +
+      `<span class="d">main.lask:6:3-6:26:</span> <span class="r">E-TYPE-WITHIN-EXCEEDED</span> the network is "default",\n` +
+      `  which within { files: "ro", outbound: false } of 'test' does not allow (outbound)  <span class="r">· nothing ran</span>`;
+    document.getElementById("wTerm").innerHTML = out;
+    term.style.borderColor = t >= ERR + .2 ? "#f97583" : "";
   });
 }
 
 // ===== progress: a thin, segmented bar that only shows where the video is =====
-const CHAPTERS = [[0, S2], [S2, S5], [S5, S7], [S7, S8], [S8, S9], [S9, T.endA], [T.endA, 62.0]];
+const CHAPTERS = [[0, S2], [S2, S5], [S5, S7], [S7, S8], [S8, S9], [S9, T.endA], [T.endA, window.DURATION]];
 const progEl = document.createElement("div");
 progEl.style.cssText = "position:absolute;left:40px;right:40px;bottom:12px;height:4px;display:flex;gap:6px;pointer-events:none";
 progEl.innerHTML = CHAPTERS.map(([a, b]) => `<div style="flex:${b - a};position:relative;border-radius:2px;background:#ffffff1a;overflow:hidden"><div class="pf" style="position:absolute;inset:0;background:#9aa5b1;transform-origin:0 50%;transform:scaleX(0)"></div></div>`).join("");
@@ -568,7 +595,7 @@ window.VIEW = [1280, 720];
 
 // ---------- the README cut (tour.html?short): about 30 seconds, one highlight per step ----------
 if (new URLSearchParams(location.search).has("short")) {
-  // About 20 seconds: write and fix the code, run it on Docker, run it on every CI. The REPL and Vault are left to the full MP4.
+  // About 20 seconds: write and fix the code, run it on Docker, run it on every CI. The REPL and the access constraint are left to the full MP4.
   const PIECES = [ // [full start, full end, playback speed]
     [0, 2.4, 1],                   // lambda + task -> Lask
     [22.4, 25.6, 1.15],            // more code; a typo flagged in the editor, then fixed
