@@ -9,8 +9,8 @@
 
 // Arithmetic, and what `+` refuses to do.
 //
-// `+` is `Number`-only: it never concatenates strings. There is no
-// unary minus either, so a negative literal is written `0 - 1`.
+// `+` is `Number`-only: it never concatenates strings. A negative
+// number is written with unary minus, `-1`.
 numbers(): Record<total: Number, mean: Number, span: Number> = do {
   xs = [3, 1, 4, 1, 5, 9, 2, 6]
   total = sum(xs)
