@@ -15,6 +15,7 @@
 module Language.Lask.Runtime.ProcessStop
   ( withStoppableProcess,
     stopProcessTree,
+    killRunningProcesses,
     newContainerName,
     stopGraceSeconds,
     liveOf,
@@ -22,8 +23,9 @@ module Language.Lask.Runtime.ProcessStop
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, mask, onException, try)
-import Control.Monad (unless, void)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
+import Control.Exception (IOException, finally, mask, onException, try)
+import Control.Monad (forever, unless, void)
 import qualified Data.ByteString.Base16 as B16
 import Data.List (nub)
 import qualified Data.Map.Strict as Map
@@ -34,7 +36,7 @@ import qualified Data.Text.Encoding as TE
 import System.Entropy (getEntropy)
 import System.Exit (ExitCode)
 import System.IO (Handle, hClose)
-import System.Info (os)
+import System.IO.Unsafe (unsafePerformIO)
 import System.Process
   ( CreateProcess,
     ProcessHandle,
@@ -65,12 +67,42 @@ withStoppableProcess cp stop body = mask $ \restore -> do
   -- Masked from creation until the handler is in place, so a
   -- cancellation cannot land between the two and leave the process
   -- running.
-  p@(mIn, mOut, mErr, ph) <- createProcess cp
-  restore (body p) `onException` do
-    stop ph
-    mapM_ closeQuietly (mIn : [mOut, mErr])
+  -- Started and registered under one lock, so that a process cannot
+  -- start unseen while 'killRunningProcesses' is at work.
+  (p@(mIn, mOut, mErr, ph), pid) <- modifyMVar running $ \r ->
+    if stopping r
+      then -- lask is about to exit at once: start nothing more.
+        forever (threadDelay maxBound)
+      else do
+        p@(_, _, _, h) <- createProcess cp
+        mpid <- getPid h
+        let pid = maybe [] (pure . fromIntegral) mpid
+        pure (r {liveRoots = foldr Set.insert (liveRoots r) pid}, (p, pid))
+  ( restore (body p) `onException` do
+      stop ph
+      mapM_ closeQuietly (mIn : [mOut, mErr])
+    )
+    `finally` modifyMVar_ running (\r -> pure r {liveRoots = foldr Set.delete (liveRoots r) pid})
   where
     closeQuietly = mapM_ (\h -> void (try (hClose h) :: IO (Either IOException ())))
+
+-- | The processes 'withStoppableProcess' started that are running, and
+-- whether lask is stopping at once, after which none is started.
+data Running = Running {stopping :: Bool, liveRoots :: Set.Set Int}
+
+running :: MVar Running
+running = unsafePerformIO (newMVar (Running False Set.empty))
+{-# NOINLINE running #-}
+
+-- | Kill every running process 'withStoppableProcess' started, and
+-- every process they started, at once, and start no other: what lask
+-- does when it stops without its clean-up (spec 11.12). A container
+-- is not stopped by killing its client; the reaper removes it.
+killRunningProcesses :: IO ()
+killRunningProcesses = modifyMVar_ running $ \r -> do
+  trees <- mapM descendantsOf (Set.toList (liveRoots r))
+  signal "KILL" (concat trees)
+  pure r {stopping = True}
 
 -- | Stop a process and every process it started: a termination
 -- request first, then, for whatever is still there after the grace
@@ -81,22 +113,16 @@ stopProcessTree graceSeconds ph = do
   case mpid of
     -- Already exited and reaped.
     Nothing -> pure ()
-    Just pid
-      -- Windows has no termination request a console program answers,
-      -- so the tree is killed at once.
-      | os == "mingw32" -> do
-          quietly "taskkill" ["/PID", show pid, "/T", "/F"]
-          void (waitForProcess ph)
-      | otherwise -> do
-          -- The tree is read before anything is signalled: once a
-          -- parent is gone, its children are re-parented and can no
-          -- longer be found under it.
-          tree <- descendantsOf (fromIntegral pid)
-          signal "TERM" tree
-          waitGone (graceSeconds * 20) tree
-          live <- liveOf tree
-          unless (null live) (signal "KILL" live)
-          void (waitForProcess ph)
+    Just pid -> do
+      -- The tree is read before anything is signalled: once a
+      -- parent is gone, its children are re-parented and can no
+      -- longer be found under it.
+      tree <- descendantsOf (fromIntegral pid)
+      signal "TERM" tree
+      waitGone (graceSeconds * 20) tree
+      live <- liveOf tree
+      unless (null live) (signal "KILL" live)
+      void (waitForProcess ph)
   where
     -- Polls every 50ms. The direct child stays a zombie until it is
     -- reaped, so it is reaped here to be seen as gone.

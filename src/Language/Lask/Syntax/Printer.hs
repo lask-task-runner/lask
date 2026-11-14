@@ -453,6 +453,7 @@ decl sp f = case f of
     dw <- traverse accessSpec w
     joinAfter (text n <> dtp <> dps <> annot drt <> maybe mempty (" within " <>) dw) "=" (startOf (exprSpan e)) (exprOn e)
   DWithin w -> ("within " <>) <$> accessSpec w
+  DAccess n w -> (("access " <> text n <> " = ") <>) <$> accessSpec w
   DCommand ns e sch -> do
     -- @export command { ... } on e@ is the only declaration whose span
     -- starts at its @export@.
@@ -489,11 +490,13 @@ secrecy Public = mempty
 secrecy Secret = "!!"
 
 -- | The braces of an access constraint (spec 5), spaced as an object
--- literal is.
+-- literal is, or the name of one.
 accessSpec :: AccessSpec -> P Doc
-accessSpec (AccessSpec sp fs) = do
-  open <- tokFrom TLBrace (startOf sp)
-  list "{" "}" True open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) ((\dv -> text k <> ": " <> dv) <$> expr v) | (Spanned ksp k, v) <- fs]
+accessSpec w = case w of
+  AccessSpec sp fs -> do
+    open <- tokFrom TLBrace (startOf sp)
+    list "{" "}" True open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) ((\dv -> text k <> ": " <> dv) <$> expr v) | (Spanned ksp k, v) <- fs]
+  AccessRef _ q n -> pure (text (maybe "" (<> ".") q <> n))
 
 annot :: Maybe Doc -> Doc
 annot = maybe mempty (": " <>)
@@ -627,11 +630,12 @@ exprBody flat a b f = case f of
   EObject kvs -> do
     open <- tokFrom TLBrace a
     list "{" "}" True open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) (entry ksp v) | (Spanned ksp _, v) <- kvs]
-  ELambda ps rt body -> do
+  ELambda tps ps rt body -> do
+    dtp <- typeParams tps
     open <- tokFrom TLParen a
     dps <- params open ps
     drt <- traverse ty rt
-    joinAfter ("\\" <> dps <> annot drt) "->" (startOf (exprSpan body)) (\broken -> exprOn body (broken || flat))
+    joinAfter ("\\" <> dtp <> dps <> annot drt) "->" (startOf (exprSpan body)) (\broken -> exprOn body (broken || flat))
   ECall g as -> do
     dg <- expr g
     open <- tokFrom TLParen (endOf (exprSpan g))
@@ -650,6 +654,11 @@ exprBody flat a b f = case f of
     -- @!!@ would lex as the secret marker.
     c <- srcText (startOf (exprSpan x)) (second (+ 1) (startOf (exprSpan x)))
     pure ("!" <> (if c == "!" then " " else mempty) <> dx)
+  ENeg x -> do
+    dx <- expr x
+    -- @--@ would lex as the keyword-parameter mark.
+    c <- srcText (startOf (exprSpan x)) (second (+ 1) (startOf (exprSpan x)))
+    pure ("-" <> (if c == "-" then " " else mempty) <> dx)
   EDo body -> ("do " <>) <$> block body
   EIf c t me -> do
     dc <- expr c

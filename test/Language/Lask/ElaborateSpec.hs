@@ -119,8 +119,8 @@ spec = do
   describe "declarations and calls (spec 4.3, 7.5)" $ do
     it "types annotated functions" $
       hasType "add2(x: Number, y: Number): Number = x + y" "add2" "Function<Number, Number, Number>"
-    it "defaults unannotated parameters to Any" $
-      hasType "identity(x) = x" "identity" "Function<Any, Any>"
+    it "makes an unconstrained unannotated parameter a type parameter" $
+      hasType "identity(x) = x" "identity" "Function<T, T>"
     it "infers keyword parameter types from defaults" $
       hasType "inc(--x = 0) = x + 1" "inc" "Function<Number>"
     it "accepts keyword calls and defaults" $
@@ -170,6 +170,81 @@ spec = do
     it "rejects recursion without a return annotation" $
       rejects "f(n: Number) = f(n)" ETypeMismatch
 
+  describe "inference of parameter types (spec 4.3)" $ do
+    it "takes the type a parameter is used at" $ do
+      hasType "inc(x) = x + 1" "inc" "Function<Number, Number>"
+      hasType "shout(s) = to_upper(s)" "shout" "Function<String, String>"
+      hasType "f(c, n) = c ? n : 0" "f" "Function<Bool, Number, Number>"
+      hasType "f(xs) = do {\n  for (x : xs) { x + 1 }\n}" "f" "Function<Array<Number>, Array<Number>>"
+    it "takes the greatest type every use conforms to" $ do
+      hasType "g(s: String | Null): Number = 1\nf(x) = g(x) + length(x)" "f" "Function<String, Number>"
+      hasType "f(x) = do {\n  j = to_json(x)\n  x + 1\n}" "f" "Function<Number, Number>"
+    it "rejects uses no one type conforms to, asking for an annotation" $
+      rejects "f(x) = length(x) + x" ETypeMismatch
+    it "gives a parameter the shape a generic use needs" $ do
+      hasType "count(xs) = size(xs)" "count" "Function<Array<T>, Number>"
+      hasType "f(xs) = size(xs) + xs[0]" "f" "Function<Array<Number>, Number>"
+      hasType "f(xs, x) = contains_array(xs, x)" "f" "Function<Array<T>, T, Bool>"
+    it "makes a parameter used at no type a type parameter" $ do
+      hasType "pair(a, b) = [a, b]" "pair" "Function<T, U, Array<Any>>"
+      hasType "wrap(x) = [to_json(x), x]" "wrap" "Function<T, Array<Any>>"
+      hasType "first(a, b) = a" "first" "Function<T, U, T>"
+      hasType "f(x) = do {\n  _ = to_json(x)\n  x\n}" "f" "Function<T, T>"
+    it "instantiates an inferred type parameter at each call" $ do
+      hasType "identity(x) = x\nf() = identity(1)" "f" "Function<Number>"
+      hasType "identity(x) = x\nf() = identity(\"a\")" "f" "Function<String>"
+    it "bounds an inferred type parameter by what its uses need" $ do
+      accepts "greet(name) = \"hi #{name}\"\nf() = greet(1)"
+      rejects "greet(name) = \"hi #{name}\"\nf() = greet([1])" ETypeBound
+      accepts "same(a, b) = a == b\nf() = same(1, 2)"
+      rejects "same(a, b) = a == b\nf() = same(1, \"a\")" ETypeMismatch
+      hasType "sorted(xs) = sort(xs)" "sorted" "Function<Array<T>, Array<T>>"
+      rejects "sorted(xs) = sort(xs)\nf() = sorted([true])" ETypeBound
+    it "keeps the stronger of two bounds one entails" $
+      accepts "f(xs, x) = contains_array(sort(xs), x)\ng() = f([1], 2)"
+    it "rejects a parameter that needs two bounds neither entails" $
+      rejects "f(a, b) = a == b ? \"#{a}\" : \"\"" ETypeBound
+    it "takes the type of the values a parameter is joined with, when used at none" $ do
+      hasType "f(c: Bool, n) = c ? 0 : n" "f" "Function<Bool, Number, Number>"
+      hasType "f(xs, x) = contains_array(xs, \"a\") ? x : 1" "f" "Function<Array<String>, Number, Number>"
+      hasType "f(c: Bool, x) = c ? x : null" "f" "Function<Bool, T, T | Null>"
+    it "takes a comparison with a value as a use at its type" $
+      hasType "f(x) = x == \"a\"" "f" "Function<String, Bool>"
+    it "uses the scrutinee of a case at the type of its value heads" $
+      hasType "f(t) = case (t) {\n  \"amd64\" -> 1\n  \"arm64\" -> 2\n  else -> 0\n}" "f" "Function<String, Number>"
+    it "takes the scrutinee of a case with type heads as Any" $
+      hasType "f(x) = case (x) {\n  String -> 1\n  else -> 0\n}" "f" "Function<Any, Number>"
+    it "asks for an annotation where the body cannot tell the whole type" $ do
+      rejects "f(u) = u.name" ETypeAccess
+      rejects "f(u) = u[\"name\"]" ETypeAccess
+      rejects "f(g) = g(1)" ETypeCall
+    it "types a !! parameter as String or String | Null" $ do
+      hasType "f(x!!) = x" "f" "Function<String | Null, String | Null>"
+      hasType "f(x!!) = length(x)" "f" "Function<String, Number>"
+    it "infers variadic and required keyword parameters" $ do
+      hasType "f(...xs) = sum(xs)" "f" "Function<Array<Number>, Number>"
+      accepts "f(--n) = n + 1\ng() = f(n = 1)"
+      rejects "f(--n) = n + 1\ng() = f(n = \"a\")" ETypeMismatch
+    it "does not let a call decide the type" $
+      rejects "inc(x) = x + 1\nf() = inc(\"a\")" ETypeMismatch
+    it "lets an annotation win over inference" $
+      hasType "f(x: Number | String) = x" "f" "Function<Number | String, Number | String>"
+    it "checks a recursive call against the inferred types, without making it a use" $ do
+      hasType "count(n): Number = n < 1 ? 0 : 1 + count(n - 1)" "count" "Function<Number, Number>"
+      rejects "count(n): Number = n < 1 ? 0 : 1 + count(\"a\")" ETypeMismatch
+      hasType "f(x, n): Number = n < 1 ? 0 : f(x, n - 1)" "f" "Function<T, Number, Number>"
+    it "rejects a cycle of calls through another unannotated declaration" $ do
+      rejects "a(n): Number = n < 1 ? 0 : b(n - 1)\nb(n: Number): Number = a(n)" ETypeMismatch
+      accepts "a(n: Number): Number = n < 1 ? 0 : b(n - 1)\nb(n: Number): Number = a(n)"
+    it "infers the parameters of a lambda bound to a name, generically" $ do
+      hasType "inc = \\(x) -> x + 1" "inc" "Function<Number, Number>"
+      accepts "f(): String = do {\n  id = \\(x) -> x\n  n: Number = id(1)\n  id(\"s\")\n}"
+    it "makes an unconstrained parameter of an unbound lambda Any" $
+      accepts "f() = (\\(x) -> to_json(x))(1)"
+    it "names inferred type parameters apart from written ones and aliases" $ do
+      hasType "f<T>(a: T, b) = b" "f" "Function<T, U, U>"
+      hasType "type T = Number\nf(a) = a" "f" "Function<U, U>"
+
   describe "builtin polymorphism (spec 4.4)" $ do
     it "instantiates map per call" $
       hasType "xs = map([1, 2], \\(x: Number) -> x + 1)" "xs" "Array<Number>"
@@ -218,6 +293,41 @@ spec = do
       rejects
         "f(): Number = size(concat_array(cast(from_json(\"[1]\")), cast(from_json(\"[2]\"))))"
         ETypeMismatch
+
+  describe "lambdas with type parameters (spec 6.1)" $ do
+    it "makes a top-level binding generic, as a function declaration" $ do
+      hasType "ident = \\<T>(x: T): T -> x\nf() = ident(1)" "f" "Function<Number>"
+      hasType "ident = \\<T>(x: T): T -> x\nf() = ident(\"a\")" "f" "Function<String>"
+      accepts "ident = \\<T>(x: T): T -> x\nf(): Array<Number> = map([1], ident)"
+    it "keeps the keyword parameters of a top-level binding" $
+      accepts "pick = \\<T>(c: Bool, --a: T, --b: T): T -> c ? a : b\nf(): String = pick(true, a = \"x\", b = \"y\")"
+    it "makes a binding in a block generic, instantiated at each reference" $ do
+      accepts "f(): String = do {\n  id = \\<T>(x: T): T -> x\n  n: Number = id(1)\n  id(\"s\")\n}"
+      accepts "f(): Array<Number> = do {\n  id = \\<T>(x: T): T -> x\n  map([1, 2], id)\n}"
+    it "adds to the type parameters of the declaration it is in" $
+      accepts "outer<U>(u: U): U = do {\n  wrap = \\<T>(x: T): Array<T> -> [x]\n  wrap(u)[0]\n}"
+    it "holds a generic local to its bounds" $
+      rejects "f(): Number = do {\n  sq = \\<T: orderable>(x: T): T -> x\n  sq([1])[0]\n}" ETypeBound
+    it "keeps its type parameters opaque in its body" $
+      rejects "f(): Number = do {\n  id = \\<T>(x: T): T -> x + 1\n  id(1)\n}" ETypeMismatch
+    it "needs an expected type to reference a generic local as a value" $
+      rejects "f() = do {\n  id = \\<T>(x: T): T -> x\n  g = id\n  1\n}" ETypeMismatch
+    it "rejects one that is not bound to a name" $ do
+      rejects "f(): Array<Number> = map([1], \\<T>(x: T): T -> x)" ETypeIllformed
+      rejects "f() = (\\<T>(x: T): T -> x)(1)" ETypeIllformed
+    it "rejects an annotation on a binding of one" $
+      rejects "g: Function<Number, Number> = \\<T>(x: T): T -> x" ETypeIllformed
+    it "rejects a type parameter the enclosing declaration has" $
+      rejects "outer<T>(u: T): T = do {\n  w = \\<T>(x: T): T -> x\n  w(u)\n}" ENameDuplicate
+    it "takes positional arguments only for a generic local" $
+      rejects "f(): Number = do {\n  id = \\<T>(x: T): T -> x\n  id(1, k = 2)\n}" ETypeKeyword
+
+  describe "recursion through a lambda binding (spec 6.1)" $ do
+    it "takes the lambda's return type as the binding's" $ do
+      accepts "count = \\(n: Number): Number -> n < 1 ? 0 : 1 + count(n - 1)"
+      accepts "walk = \\<T>(xs: Array<T>): Number -> is_empty(xs) ? 0 : 1 + walk(drop(xs, 1))"
+    it "still needs a type from somewhere" $
+      rejects "loop = \\(n: Number) -> n < 1 ? 0 : loop(n - 1)" ETypeMismatch
 
   describe "user type parameters (spec 4.2, 4.4)" $ do
     it "instantiates a declaration per call" $ do
@@ -295,6 +405,10 @@ spec = do
       accepts "ident<T>(x: T): T = x\nf(xs: Array<Number>): Array<Number> = map(xs, ident)"
     it "rejects a type parameter that collides with an alias" $
       rejects "type T = Number\nf<T>(x: T): T = x" ENameDuplicate
+    -- `String` would still be read as the type of strings (spec 4.2).
+    it "rejects a type parameter named like a type of the grammar" $ do
+      rejects "f<String>(x: String): String = x" ENameDuplicate
+      rejects "f<Map>(x: Number): Number = x" ENameDuplicate
     it "allows a type parameter that appears nowhere" $
       accepts "f<T>(x: Number): Number = x"
     it "checks a default against the rigid parameter (spec 6.1)" $ do
@@ -381,6 +495,26 @@ spec = do
     it "types arithmetic as Number" $ hasType "x = 1 + 2 * 3" "x" "Number"
     it "rejects string operands of +" $ rejects "x = \"a\" + \"b\"" ETypeMismatch
     it "types comparisons as Bool" $ hasType "x = 1 < 2" "x" "Bool"
+    it "orders strings as well as numbers" $ do
+      hasType "x = \"a\" < \"b\"" "x" "Bool"
+      accepts "f<T: orderable>(a: T, b: T): Bool = a <= b"
+    it "orders only one orderable type" $ do
+      rejects "x = 1 < \"a\"" ETypeMismatch
+      rejects "x = true < false" ETypeBound
+      rejects "x = [1] < [2]" ETypeBound
+      rejects "f<T>(a: T, b: T): Bool = a < b" ETypeBound
+    it "gives an operand that needs an expected type the other's" $
+      accepts "f(s: String): Bool = cast(from_json(s)) < 3"
+    it "infers an ordered parameter from the other operand" $ do
+      hasType "f(x) = x < 1" "f" "Function<Number, Bool>"
+      hasType "f(s) = s >= \"m\"" "f" "Function<String, Bool>"
+      hasType "f(a, b) = a < b" "f" "Function<T, T, Bool>"
+      rejects "f(a, b) = a < b\ng() = f(true, false)" ETypeBound
+    it "types unary minus as Number" $ do
+      hasType "x = -1" "x" "Number"
+      hasType "f(n: Number) = -n * 2" "f" "Function<Number, Number>"
+      hasType "f(n) = -n" "f" "Function<Number, Number>"
+      rejects "x = -\"a\"" ETypeMismatch
     it "requires equal comparable types for ==" $ rejects "x = 1 == \"a\"" ETypeMismatch
     it "rejects == on functions" $
       rejects "f(x: Number) = x\ng(x: Number) = x\nb = f == g" ETypeBound
@@ -424,8 +558,33 @@ spec = do
       accepts "f(): String | Null = \"a\"\ng(): String | Null = null"
     it "rejects the union where a member is required" $
       rejects "f(x: String | Null): String = x" ETypeMismatch
-    it "does not lift the union through a constructor (spec 4.4)" $
-      rejects "f(xs: Array<String>): Array<String | Null> = xs" ETypeMismatch
+    it "lets a container of narrower elements stand where wider ones are wanted (spec 4.4)" $ do
+      accepts "show(xs: Array<Any>): String = to_json(xs)\nh(): String = do {\n  ns: Array<Number> = [1, 2]\n  show(ns)\n}"
+      accepts "es(): Array<Environment> = [#local]\nn(rs: Array<Runnable>): Number = size(rs)\ng(): Number = n(es())"
+      accepts "m(): Map<String> = {\"a\": \"x\"}\nf(x: Map<String | Null>): Number = 1\ng(): Number = f(m())"
+      accepts "h(): AsyncHandle<String> = async \"x\"\nf(x: AsyncHandle<String | Null>): Number = 1\ng(): Number = f(h())"
+    it "widens the field types of a record, and keeps its fields (spec 4.4)" $ do
+      accepts "r(): Record<a: String> = {a: \"x\"}\nf(x: Record<a: String | Null>): Number = 1\ng(): Number = f(r())"
+      rejects "r(): Record<a: String, b: Number> = {a: \"x\", b: 1}\nf(x: Record<a: String>): Number = 1\ng(): Number = f(r())" ETypeMismatch
+      rejects "r(): Record<a: String> = {a: \"x\"}\nf(x: Record<a?: String>): Number = 1\ng(): Number = f(r())" ETypeMismatch
+    it "lets a function that takes more or returns less stand in (spec 4.4)" $ do
+      accepts "p(n: Number): String = \"x\"\napply(g: Function<Number, String | Null>): Number = 1\nf(): Number = apply(p)"
+      accepts "p(x: Any): String = \"x\"\napply(g: Function<String, String>): Number = 1\nf(): Number = apply(p)"
+      rejects "p(x: String): String = x\napply(g: Function<Any, String>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
+      rejects "p(n: Number): String | Null = null\napply(g: Function<Number, String>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
+    it "does not let a Void result stand for a value (spec 4.4)" $
+      rejects "p(n: Number): Void = log(\"x\")\napply(g: Function<Number, Any>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
+    it "still instantiates a type variable inside a function type exactly (spec 4.4)" $
+      rejects "show(x: Any): Void = log(to_json(x))\nf(): Void = for_each([\"a\"], show)" ETypeMismatch
+    it "types branches of conforming types at the wider, in either order (spec 4.3)" $ do
+      hasType "n(): Array<String> = [\"a\"]\nw(): Array<String | Null> = [null]\nf(c: Bool) = c ? n() : w()" "f" "Function<Bool, Array<String | Null>>"
+      hasType "n(): Array<String> = [\"a\"]\nw(): Array<String | Null> = [null]\nf(c: Bool) = c ? w() : n()" "f" "Function<Bool, Array<String | Null>>"
+      hasType "f(c: Bool) = if (c) { #alpine:3.20 } else { #alpine:3.20{memory: \"1g\"} }" "f" "Function<Bool, Runnable>"
+    -- Containers are covariant (spec 4.4): the union is lifted through
+    -- them, in the one direction.
+    it "lifts the union through a constructor, and not the other way (spec 4.4)" $ do
+      accepts "f(xs: Array<String>): Array<String | Null> = xs"
+      rejects "f(xs: Array<String | Null>): Array<String> = xs" ETypeMismatch
     it "checks a literal element-wise against a union element type" $
       accepts "xs: Array<String | Null> = [\"a\", null]"
     it "checks an object literal against the one record or map member of a union (spec 4.3)" $ do
@@ -439,8 +598,9 @@ spec = do
       rejects "f(): String | Null = {a: 1}" ETypeMismatch
     it "propagates an expected union into both branches of an if (spec 4.3)" $
       accepts "f(c: Bool): String | Null = if (c) { \"a\" } else { null }"
+    -- Only a join with Null is inferred (spec 4.3).
     it "still refuses to infer a union from differing branches" $
-      rejects "f(c: Bool) = if (c) { \"a\" } else { null }" ETypeMismatch
+      rejects "f(c: Bool) = if (c) { \"a\" } else { 1 }" ETypeMismatch
     it "compares a union with one of its members (spec 6.2)" $ do
       accepts "f(x: String | Null): Bool = x == null"
       rejects "f(x: String | Null): Bool = x == 1" ETypeMismatch
@@ -597,6 +757,54 @@ spec = do
       rejects "f(n: Number) = if (n) { 1 }" ETypeMismatch
     it "leaves no return to write (spec 6.5)" $
       rejects "f(c: Bool): String = do {\n  if (c) { return \"a\" }\n  \"b\"\n}" ESyntaxUnexpectedToken
+    it "is typed as the if with else { null } it is sugar for (spec 4.3)" $ do
+      hasType "f(c: Bool) = if (c) { \"a\" }" "f" "Function<Bool, String | Null>"
+      hasType "f(c: Bool) = if (c) { \"a\" } else { null }" "f" "Function<Bool, String | Null>"
+
+  describe "join with Null (spec 4.3)" $ do
+    it "joins an if whose else is null" $
+      hasType "f(c: Bool) = if (c) { 1 } else { null }" "f" "Function<Bool, Number | Null>"
+    it "joins an if whose then is null" $
+      hasType "f(c: Bool) = if (c) { null } else { \"a\" }" "f" "Function<Bool, String | Null>"
+    it "joins a conditional expression (spec 6.2)" $
+      hasType "f(c: Bool) = c ? \"a\" : null" "f" "Function<Bool, String | Null>"
+    it "joins the arms of a case, wherever the null arm is (spec 6.4)" $ do
+      hasType "f(s: String) = case (s) {\n  \"a\" -> 1\n  \"b\" -> null\n  else -> 2\n}" "f" "Function<String, Number | Null>"
+      hasType "f(n: Number) = case {\n  n > 0 -> null\n  else -> \"x\"\n}" "f" "Function<Number, String | Null>"
+    it "joins the body and the catch block of a try (spec 6.9)" $
+      hasType "f() = try { $[#local]{echo hi} } catch (e) { null }" "f" "Function<String | Null>"
+    it "keeps a type that already admits Null" $
+      hasType "f(c: Bool) = if (c) { find_env(\"A\") } else { null }" "f" "Function<Bool, String | Null>"
+    it "is absorbed by Any" $
+      hasType "f(c: Bool, x: Any) = if (c) { x } else { null }" "f" "Function<Bool, Any, Any>"
+    it "types branches that are all null as Null" $
+      hasType "f(c: Bool) = c ? null : null" "f" "Function<Bool, Null>"
+    it "still lets a context-typed branch take the type of the others" $ do
+      hasType "f(c: Bool) = if (c) { null } else { fail(error(2, \"x\")) }" "f" "Function<Bool, Null>"
+      hasType "f(c: Bool) = if (c) { fail(error(2, \"x\")) } else { null }" "f" "Function<Bool, Null>"
+      hasType "f(c: Bool, s: String) = case (s) {\n  \"a\" -> null\n  \"b\" -> 1\n  else -> fail(error(2, \"x\"))\n}" "f" "Function<Bool, String, Number | Null>"
+    it "rejects branches whose types differ otherwise" $ do
+      rejects "f(c: Bool) = if (c) { 1 } else { \"a\" }" ETypeMismatch
+      rejects "f(c: Bool) = c ? 1 : \"a\"" ETypeMismatch
+      rejects "f(s: String) = case (s) {\n  \"a\" -> 1\n  \"b\" -> null\n  else -> \"x\"\n}" ETypeMismatch
+    it "rejects a join whose other branch is not a data type" $ do
+      rejects "f(c: Bool) = c ? \\(x: Number) -> x : null" ETypeIllformed
+      rejects "f(c: Bool) = if (c) { log(\"x\") } else { null }" ETypeIllformed
+      rejects "f(c: Bool) = do {\n  g = c ? \\(x: Number) -> x : null\n  2\n}" ETypeIllformed
+      rejects "f(c: Bool) = do {\n  1\n  if (c) { \\(x: Number) -> x } else { null }\n}" ETypeIllformed
+    -- As an if without else is (spec 6.4).
+    it "accepts any branch type when the value is discarded" $ do
+      accepts "f(c: Bool): Number = do {\n  if (c) { \\(x: Number) -> x } else { null }\n  1\n}"
+      accepts "f(c: Bool): Number = do {\n  c ? \\(x: Number) -> x : null\n  1\n}"
+      accepts "f(c: Bool): Number = do {\n  case {\n    c -> \\(x: Number) -> x\n    else -> null\n  }\n  1\n}"
+      accepts "f(): Number = do {\n  try { log(\"x\") } catch (e) { null }\n  1\n}"
+    it "still requires discarded branches to agree otherwise" $
+      rejects "f(c: Bool): Number = do {\n  if (c) { 1 } else { \"a\" }\n  2\n}" ETypeMismatch
+    it "plays no part under an expected type" $ do
+      accepts "f(c: Bool): String | Null = c ? \"a\" : null"
+      rejects "f(c: Bool): Number = c ? 1 : null" ETypeMismatch
+    it "gives a union that has to be narrowed before use" $
+      rejects "f(c: Bool): String = to_string(c ? \"a\" : null)" ETypeBound
 
   describe "accessors (spec 6.8)" $ do
     it "types record field access" $
@@ -710,8 +918,8 @@ spec = do
     it "accepts null for a container option, and in the elements of a list or table" $
       accepts
         "f(--u: String | Null = null): Runnable = #a:1{user: u, env: {\"A\": u, \"B\": \"\"}, tmpfs: [u], init: null, cpus: null}"
-    -- Containers are invariant (4.4): a list or table already typed
-    -- without null has to be accepted as it is.
+    -- Containers are covariant (4.4): a list or table already typed
+    -- without null conforms to one whose elements may be null.
     it "accepts a list or table of strings that is not a literal" $
       accepts
         "xs: Array<String> = [\"/tmp\"]\nm: Map<String> = {\"A\": \"1\"}\nmk(): Map<String> = m\ne = #a:1{tmpfs: xs, env: mk(), volumes: xs, add_hosts: m}"

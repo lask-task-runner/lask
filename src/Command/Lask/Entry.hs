@@ -12,7 +12,7 @@ import Command.Lask.Common
 import Command.Lask.Project (cmdDepsAdd, cmdDepsGraph, cmdDepsList, cmdDepsRm, cmdEnvsAccess, cmdEnvsCommands, cmdEnvsFiles, cmdEnvsList, cmdEnvsNetwork, cmdEnvsSecrets, cmdSync)
 import Command.Lask.Complete (completionScript)
 import Command.Lask.Fmt (cmdFmt)
-import Command.Lask.Envs (collectEnvReadsFrom, collectEnvRefsFrom, reachableDecls, readsStdin)
+import Command.Lask.Envs (EnvRef (..), collectEnvReadsFrom, collectEnvRefsFrom, reachableDecls, readsStdin)
 import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
@@ -24,7 +24,7 @@ import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
-import Data.List (nub, sort)
+import Data.List (nub, sortOn)
 import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
@@ -57,8 +57,10 @@ import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.SecretStore.Resolve (newSecretResolver, readEnvVar, readEnvVarUnresolved)
 import Language.Lask.Obs.ExecLog (jsonLogSink, textLogSink)
 import Language.Lask.Runtime.AsyncTrack (AsyncSite (..), AsyncTracker (..), newAsyncTracker, renderSite)
+import Language.Lask.Runtime.CancelScope (cancelScope, withScope)
 import Language.Lask.Runtime.Eval (RtCtx (..), applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Secrets (maskFailure)
+import Language.Lask.Runtime.Shutdown (Interrupted (..), signalName, withGracefulShutdown)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
@@ -108,14 +110,14 @@ cmdCheck opts = do
   r <- compileFile (optModule opts)
   case r of
     Left ds -> do
-      TIO.putStrLn (renderDiags (optJsonFormat opts) ds)
+      TIO.putStrLn (jsonOut opts (renderDiags (outputJson opts) ds))
       exitWith (ExitFailure 1)
     -- Advisories are reported alongside a valid module and leave the
     -- exit code at 0 (spec 14.2).
     Right compiled -> do
       let advisories = cpAdvisories (compiledCore compiled)
-      if optJsonFormat opts
-        then TIO.putStrLn (TE.decodeUtf8 (BL.toStrict (A.encode (map advisoryJson advisories))))
+      if outputJson opts
+        then TIO.putStrLn (jsonOut opts (TE.decodeUtf8 (BL.toStrict (A.encode (map advisoryJson advisories)))))
         else do
           mapM_ (putStrLn . pretty) advisories
           putStrLn "the module is valid"
@@ -139,12 +141,10 @@ cmdRunEval printResult runOpts = do
     Just n -> pure n
     Nothing -> usageError opts "no function specified (use --help to list the module's functions)"
   let fnName = kebabToSnake rawName
-  -- The public symbols of the module, re-exported ones included; a
+  -- The public functions of the module, re-exported ones included: a
   -- declaration marked `internal` is not part of any surface (spec 5),
-  -- so it is not callable from the CLI either.
-  (key, cd) <- case publicDecl compiled fnName of
-    Just found -> pure found
-    Nothing -> noSuchFunction opts rawName (publicNames compiled)
+  -- and a plain value binding is not a function (11.2).
+  (key, cd) <- cliFunction opts compiled rawName
 
   -- Which keyword arguments are flags depends on their types, so the
   -- tokens are split against the parameters (spec 11.2).
@@ -193,7 +193,7 @@ cmdRunEval printResult runOpts = do
   case checkInvocation cons core key given of
     [] -> pure ()
     ds -> do
-      TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+      TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) ds)
       exitWith (ExitFailure 1)
   -- Before anything is evaluated, and before stdin is read: a refused
   -- confirmation leaves nothing half done (spec 11.2).
@@ -208,9 +208,9 @@ cmdRunEval printResult runOpts = do
   -- execution events, so concurrent emitters never interleave.
   writeErr <- newLineWriter stderr
   let -- Command execution logs relay to stderr in real time
-      -- (spec 12.3); JSON Lines under --format json (12.2).
+      -- (spec 12.3); JSON Lines under --log-format json (12.2).
       cmdLogSink
-        | optJsonFormat opts = jsonCommandLog traceId writeErr
+        | optLogJson opts = jsonCommandLog traceId writeErr
         | otherwise = textCommandLog writeErr
   -- Images resolve through the lock, and are never pulled or built
   -- here (spec 10.3, 10.4).
@@ -222,34 +222,60 @@ cmdRunEval printResult runOpts = do
   let -- `log` (spec 15.12) writes execution log lines to stderr,
       -- through the same serialized writer as the command logs.
       logSink
-        | optJsonFormat opts = jsonLogSink traceId writeErr
+        | optLogJson opts = jsonLogSink traceId writeErr
         | otherwise = textLogSink writeErr
   tracker <- newAsyncTracker
   secrets <- newSecretResolver
   ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner sessions logSink tracker (readEnvVar secrets))
   let sink
-        | optJsonFormat opts = writeErr . encodeEvent
+        | optLogJson opts = writeErr . encodeEvent
         | otherwise = noSink
       ctx = ctx0 {rtTraceId = traceId, rtEmit = sink}
-  result <- try $ do
-    fv <- topValue ctx key
-    case fv of
-      VClosure _ -> applyValue ctx fv posVals kwVals
-      VBuiltin _ -> applyValue ctx fv posVals kwVals
-      v
-        | null posVals && null kwVals -> pure v
-        | otherwise -> applyValue ctx fv posVals kwVals
-  -- A computation nothing awaited is waited for rather than cut short
-  -- by the end of the process, and reported (spec 6.3). Whatever it
-  -- did, the run keeps its own outcome and exit code.
-  unawaited <- drainUnawaited tracker
-  mapM_ (fmap (unawaitedDiagnostic opts traceId) . maskOutcome >=> writeErr) unawaited
+  -- A signal abandons the evaluation as a timeout abandons its body:
+  -- its commands are stopped and its finally blocks run, and the
+  -- computations it started are cancelled with it (spec 11.12). They
+  -- all belong to one scope opened here, which is what is cancelled.
+  stopped <- withGracefulShutdown . withScope $ \root -> do
+    outcome <- try $ do
+      result <- try $ do
+        fv <- topValue ctx key
+        case fv of
+          VClosure _ -> applyValue ctx fv posVals kwVals
+          VBuiltin _ -> applyValue ctx fv posVals kwVals
+          v
+            | null posVals && null kwVals -> pure v
+            | otherwise -> applyValue ctx fv posVals kwVals
+      -- A computation nothing awaited is waited for rather than cut
+      -- short by the end of the process, and reported (spec 6.3). One
+      -- that failed fails the run, with the first such failure in the
+      -- order the computations were started, unless the run failed
+      -- already: a failure nobody awaited is not lost.
+      unawaited <- drainUnawaited tracker
+      mapM_ (fmap (unawaitedDiagnostic opts traceId) . maskOutcome >=> writeErr) unawaited
+      let failures = [unawaitedFailure ex | (_, Left ex) <- unawaited]
+      pure $ case (result, failures) of
+        (Right _, lf : _) -> Left lf
+        _ -> result
+    case outcome of
+      Right result -> pure (Right result)
+      Left (Interrupted sig) -> do
+        -- Cancelled, and so not reported as never awaited (6.3).
+        cancelScope root >>= mapM_ (trackAwaited tracker)
+        pure (Left sig)
+  result <- case stopped of
+    Right r -> pure r
+    Left sig ->
+      failureExit opts traceId $
+        LaskFailure
+          (Just ERuntimeInterrupted)
+          (errorValue (fromIntegral (128 + fromIntegral sig :: Int)) ("the run was stopped by " <> signalName sig))
+          []
   case result of
     Left lf -> failureExit opts traceId lf
     Right v -> do
       when printResult $ case v of
         VVoid -> pure ()
-        _ -> TIO.putStrLn (encodeResult (runStdoutEncode runOpts) v)
+        _ -> TIO.putStrLn (encodeResult (outputFormat OutputJson (runCommon runOpts)) v)
       exitSuccess
 
 -- | A value the command line gave, as the static reading of 10.11
@@ -272,11 +298,18 @@ maskOutcome (site, Left ex)
   | Just lf <- fromException ex = (\m -> (site, Left (toException m))) <$> maskFailure lf
 maskOutcome outcome = pure outcome
 
+-- | The failure of a computation nothing awaited, as the run's own
+-- (spec 6.3).
+unawaitedFailure :: SomeException -> LaskFailure
+unawaitedFailure ex = case fromException ex of
+  Just lf -> lf
+  Nothing -> LaskFailure Nothing (errorValue 1 (T.pack (show ex))) []
+
 -- | The advisory @W-ASYNC-UNAWAITED@ (spec 6.3, 14.2) for one
 -- computation that was never awaited, with how it ended.
 unawaitedDiagnostic :: CommonOpts -> TraceId -> (AsyncSite, Either SomeException Value) -> Text
 unawaitedDiagnostic opts traceId (site, outcome)
-  | optJsonFormat opts =
+  | optLogJson opts =
       TE.decodeUtf8 . BL.toStrict . A.encode . A.object $
         [ ("code", A.String code),
           ("severity", "warning"),
@@ -296,7 +329,7 @@ unawaitedDiagnostic opts traceId (site, outcome)
           <> [("failure", A.object [("code", A.String fc), ("message", A.String fm)]) | Left (fc, fm, _) <- [ended]]
   | otherwise = code <> ": " <> message
   where
-    code = "W-ASYNC-UNAWAITED"
+    code = advisoryText WAsyncUnawaited
     ended = case outcome of
       Right _ -> Right ()
       Left ex -> Left $ case fromException ex of
@@ -337,7 +370,7 @@ cmdHelp subcommand runOpts = do
   -- Static errors do not hide the help; a module that does not
   -- compile is exactly when its usage is wanted (spec 11.6).
   unless (null diags) $
-    TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) diags)
+    TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) diags)
   src <- either (const "") id <$> try' (TIO.readFile (optModule opts))
   let core = partialCore partial
       path = optModule opts
@@ -384,8 +417,8 @@ cmdHelp subcommand runOpts = do
     Nothing -> do
       putStrLn (runOptionsHelp (T.unpack subcommand))
       let listing = map (helpOf []) declsByName
-      case (optJsonFormat opts, listing) of
-        (True, _) -> TIO.putStrLn (encodeJsonText (renderListJson path listing))
+      case (outputJson opts, listing) of
+        (True, _) -> TIO.putStrLn (jsonOut opts (encodeJsonText (renderListJson path listing)))
         (False, []) -> pure ()
         (False, _) -> do
           let rendered = renderListText path listing
@@ -395,15 +428,22 @@ cmdHelp subcommand runOpts = do
       -- Without a parse there are no declarations to describe.
       when (isNothing (partialModule partial)) $ exitWith (ExitFailure 1)
       let fnName = kebabToSnake rawName
+      -- Help is for what the command line can call: a plain value
+      -- binding has none (spec 11.2, 11.6).
+      let isFunction (n, h) = fhFunction (helpOf [] (n, h))
       found <- case lookup fnName declsByName of
-        Just h -> pure h
-        Nothing -> noSuchFunction opts rawName (map fst declsByName)
+        Just h
+          | isFunction (fnName, h) -> pure h
+          | otherwise -> notAFunction opts rawName
+        Nothing -> noSuchFunction opts rawName [n | d@(n, _) <- declsByName, isFunction d]
       let envs = case core of
-            Just c -> nub (sort (collectEnvRefsFrom c (hsKey found)))
+            -- Ordered as envs list orders them (spec 11.4): the host
+            -- first, then by notation.
+            Just c -> nub (sortOn (\r -> (refKind r /= "local", refHead r)) (collectEnvRefsFrom c (hsKey found)))
             Nothing -> []
           fh = helpOf envs (fnName, found)
-      if optJsonFormat opts
-        then TIO.putStrLn (encodeJsonText (renderHelpJson fh))
+      if outputJson opts
+        then TIO.putStrLn (jsonOut opts (encodeJsonText (renderHelpJson fh)))
         else TIO.putStr (renderHelpText subcommand fh)
       exitSuccess
   where
@@ -424,19 +464,6 @@ data HelpSource = HelpSource
     hsKey :: (FilePath, Text)
   }
 
--- | The declaration a CLI name of the entry module invokes (spec 11.2),
--- with its key: a public symbol the module declares or re-exports,
--- followed to where it is declared.
-publicDecl :: Compiled -> Text -> Maybe ((FilePath, Text), CoreDecl)
-publicDecl compiled n = do
-  key <- lookup n (entryPublicValues (compiledProgram compiled) (compiledScopes compiled))
-  cd <- Map.lookup key (cpDecls (compiledCore compiled))
-  pure (key, cd)
-
--- | The names the CLI can invoke in the entry module (spec 11.2).
-publicNames :: Compiled -> [Text]
-publicNames compiled = map fst (entryPublicValues (compiledProgram compiled) (compiledScopes compiled))
-
 declaredName :: AST.Decl -> Maybe Text
 declaredName d = case AST.declF d of
   AST.DValue n _ _ _ -> Just n
@@ -449,11 +476,11 @@ docFor src comments decl = case AST.declSpan decl of
   Span (Position _ l _) _ -> maybe emptyDoc parseDoc (docBlockAbove src comments l)
   NoSpan -> emptyDoc
 
-encodeResult :: StdoutEncode -> Value -> Text
+encodeResult :: OutputFormat -> Value -> Text
 encodeResult enc v = case enc of
-  EncodeJson -> encodeValue v
-  EncodePrettyJson -> encodeValuePretty v
-  EncodeText -> renderValueText v
+  OutputJson -> encodeValue v
+  OutputPrettyJson -> encodeValuePretty v
+  OutputText -> renderValueText v
 
 -- | Uncaught failure: report to stderr (with the collected stack
 -- trace, spec 12.3) and exit with the error value's code, normalized
@@ -472,7 +499,7 @@ failureExit opts traceId uncaught = do
               StageIo
         _ -> StageRuntime
       msg = failureMessage lf
-  if optJsonFormat opts
+  if optLogJson opts
     then
       hPutStrLn stderr . T.unpack . TE.decodeUtf8 . BL.toStrict . A.encode $
         A.object
@@ -519,13 +546,11 @@ cmdSecrets isCheck o = do
     Nothing -> pure AllVariables
     Just fn -> do
       compiled <- compileOrExit opts
-      case publicDecl compiled (kebabToSnake fn) of
-        Nothing -> noSuchFunction opts fn (publicNames compiled)
-        Just (key, _) ->
-          pure (maybe AllVariables (OnlyVariables fn) (collectEnvReadsFrom (compiledCore compiled) key))
+      (key, _) <- cliFunction opts compiled fn
+      pure (maybe AllVariables (OnlyVariables fn) (collectEnvReadsFrom (compiledCore compiled) key))
   if isCheck
-    then secretsCheck (optJsonFormat opts) (secretsRead o) env scope
-    else secretsList (optJsonFormat opts) env scope
+    then secretsCheck (outputFormat OutputText opts) (secretsRead o) env scope
+    else secretsList (outputFormat OutputText opts) env scope
 
 -- Shared helpers -----------------------------------------------------------------
 
@@ -570,7 +595,7 @@ confirmOrExit opts approved compiled fnName key cd posVals kwVals = do
   where
     notConfirmed p why = do
       let msg = "'" <> promptFunction p <> "' was not confirmed (expected '" <> promptPhrase p <> "'): " <> why
-      if optJsonFormat opts
+      if optLogJson opts
         then
           TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
             A.object [("code", A.String (codeText ECliNotConfirmed)), ("message", A.String msg)]
@@ -587,7 +612,7 @@ readStdinOrExit opts = do
       case TE.decodeUtf8' bytes of
         Right t -> pure t
         Left e -> do
-          if optJsonFormat opts
+          if optLogJson opts
             then
               TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
                 A.object
@@ -646,7 +671,7 @@ cmdCmd cmdOpts
             case checkCommandEnv cons core declaring name envCore of
               [] -> pure ()
               ds -> do
-                TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+                TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) ds)
                 exitWith (ExitFailure 1)
             traceId <- maybe newTraceId pure (optTraceId opts)
             images <- lockedImages core
@@ -660,11 +685,11 @@ cmdCmd cmdOpts
             envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
             writeErr <- newLineWriter stderr
             let sink
-                  | optJsonFormat opts = jsonCommandLog traceId writeErr
+                  | optLogJson opts = jsonCommandLog traceId writeErr
                   | otherwise = textCommandLog writeErr
             pins <- loadPins core
             backend <- resolveBackend
-            r <- runDeclaredCommand backend pins (cpBaseDir core) sink (optJsonFormat opts) envValue name (cmdArgs cmdOpts)
+            r <- runDeclaredCommand backend pins (cpBaseDir core) sink (optLogJson opts) envValue name (cmdArgs cmdOpts)
             case r of
               -- Failures before the program starts keep the existing
               -- classification (spec 11.8); the program's own exit code
@@ -688,13 +713,13 @@ cmdCmdHelp opts = do
   putStrLn cmdOptionsHelp
   r <- compileFile (optModule opts)
   case r of
-    Left ds -> TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+    Left ds -> TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) ds)
     Right compiled -> do
       let core = compiledCore compiled
           table = Map.findWithDefault Map.empty (cpEntry core) (cpCommands core)
       rows <- commandRows core table
-      case (optJsonFormat opts, rows) of
-        (True, _) -> TIO.putStrLn (commandRowsJson rows)
+      case (outputJson opts, rows) of
+        (True, _) -> TIO.putStrLn (jsonOut opts (commandRowsJson rows))
         (False, []) -> pure ()
         (False, _) ->
           TIO.putStrLn . T.intercalate "\n" $

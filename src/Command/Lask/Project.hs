@@ -21,7 +21,7 @@ where
 
 import Command.Lask.Common
 import Command.Lask.DepUse (ImportSite (..), projectImports)
-import Language.Lask.Core.Access (Carried (..), Covering (..), Flow (..), OptVal (..), SVal (..), Secret (..), SecretKind (..), Target (..), UseKind (..), UseSite (..), Via (..), channelFlows, collectUseSites, coveringsOf, programMarksSecrets, secretFindings, targetAccess, targetParametric, withinConstraints)
+import Language.Lask.Core.Access (Carried (..), Covering (..), renderCovering, Flow (..), OptVal (..), SVal (..), Secret (..), SecretKind (..), Target (..), UseKind (..), UseSite (..), Via (..), channelFlows, collectUseSites, coveringsOf, programMarksSecrets, secretFindings, targetAccess, targetParametric, withinConstraints)
 import Command.Lask.Envs (CommandSite (..), HeadImage (..), HeadUse (..), Requirer (..), collectCommandSites, collectHeadUses)
 import Command.Lask.Images
 import Language.Lask.Runtime.Container (ContainerBackend (..), resolveBackend)
@@ -51,7 +51,7 @@ import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Access (AccessTable, Channel (..), Constraint (..), Finding (..), channelText, exposedChannel, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, hostEquivalent, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume, renderConstraint)
+import Language.Lask.Access (AccessTable, Channel (..), Constraint (..), Finding (..), channelText, exposedChannel, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, hostEquivalent, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume)
 import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Core.AST (Core (..))
 import Language.Lask.Elaborate (CommandUse (..), CoreProgram (..))
@@ -61,7 +61,6 @@ import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Syntax.AST (TextPart (..), exprSpan)
 import Language.Lask.Syntax.CommandWords (Analysis (..), CommandWord (..), programWords)
 import Language.Lask.ErrorCode
-import Language.Lask.Utils (kebabToSnake)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
@@ -100,7 +99,7 @@ loadLockMaybe paths = either (const Nothing) id <$> loadLockFile (pLock paths)
 
 diagExit :: CommonOpts -> Diagnostic -> Int -> IO a
 diagExit opts d code = do
-  TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) [d])
+  TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) [d])
   exitWith (ExitFailure code)
 
 -- The lock ---------------------------------------------------------------------
@@ -203,8 +202,8 @@ printTable opts header rows = do
   color <- colorFor (optNoColor opts) stdout
   mapM_ TIO.putStrLn (renderTable color header rows)
 
-printJson :: A.Value -> IO ()
-printJson = TIO.putStrLn . encodeJsonText
+printJson :: CommonOpts -> A.Value -> IO ()
+printJson opts = TIO.putStrLn . jsonOut opts . encodeJsonText
 
 plural :: Int -> Text -> Text
 plural n w = T.pack (show n) <> " " <> w <> (if n == 1 then "" else "s")
@@ -253,7 +252,7 @@ cmdSync opts frozen prune = do
       codeText EModuleLockStale <> ": unused dependencies would be removed: " <> T.intercalate ", " removing <> " (--frozen)"
     exitWith (ExitFailure 1)
   pcolor <- colorFor (optNoColor opts) stderr
-  withProgress (optJsonFormat opts) pcolor $ \pg -> do
+  withProgress (optLogJson opts) pcolor $ \pg -> do
     -- Modules.
     section pg "Modules"
     let kept = Map.filterWithKey (\k _ -> k `notElem` removing) declared
@@ -295,7 +294,7 @@ cmdSync opts frozen prune = do
         changedModules = Just newModules /= fmap lockModules prior
     unless modulesOk $ do
       summary opts began moduleRows [] "lask.lock.json unchanged"
-      mapM_ (\(p, d) -> TIO.hPutStrLn stderr (p <> ": " <> renderDiagsLines (optJsonFormat opts) [d])) [(p, d) | (p, _, Left d) <- results]
+      mapM_ (\(p, d) -> TIO.hPutStrLn stderr (p <> ": " <> renderDiagsLines (optLogJson opts) [d])) [(p, d) | (p, _, Left d) <- results]
       exitWith (ExitFailure 3)
     when (frozen && changedModules) $ do
       summary opts began moduleRows [] "lask.lock.json unchanged"
@@ -315,7 +314,7 @@ cmdSync opts frozen prune = do
         -- A program that does not compile keeps its modules synced; its
         -- images cannot be enumerated.
         summary opts began moduleRows [] "lask.lock.json updated (modules only)"
-        TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+        TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) ds)
         exitWith (ExitFailure 1)
     let core = compiledCore compiled
     backend <- resolveBackend
@@ -403,9 +402,9 @@ summary :: CommonOpts -> UTCTime -> [ModuleRow] -> [ImageLine] -> Text -> IO ()
 summary opts began modules images written = do
   now <- getCurrentTime
   let total = realToFrac (diffUTCTime now began) :: Double
-  if optJsonFormat opts
+  if outputJson opts
     then
-      printJson $
+      printJson opts $
         A.object
           [ ("modules", A.toJSON (map moduleJson modules)),
             ("images", A.toJSON (map imageJson images)),
@@ -512,7 +511,7 @@ cmdDepsAdd opts name source = do
   results <- syncAll (pCache paths) locked (\_ _ act -> act) updated
   let failures = [(p, d) | (p, _, Left d) <- results]
   unless (null failures) $ do
-    mapM_ (\(p, d) -> TIO.hPutStrLn stderr (p <> ": " <> renderDiagsLines (optJsonFormat opts) [d])) failures
+    mapM_ (\(p, d) -> TIO.hPutStrLn stderr (p <> ": " <> renderDiagsLines (optLogJson opts) [d])) failures
     exitWith (ExitFailure 3)
   BL.writeFile (pDeps paths) (renderDepsFile updated)
   BL.writeFile (pLock paths) . renderLockFile $
@@ -595,9 +594,9 @@ cmdDepsList opts = do
           _ -> ("unknown", ToneWarn)
         source = maybe (maybe "—" lockSourceText l) sourceText entry
     pure (DepRow path source (requestedOf <$> entry) l status tone)
-  if optJsonFormat opts
+  if outputJson opts
     then
-      printJson . A.toJSON $
+      printJson opts . A.toJSON $
         [ A.object
             [ ("name", A.String (drPath r)),
               ("source", A.String (drSource r)),
@@ -683,7 +682,7 @@ cmdDepsGraph opts target depth = do
       roots = tree 0 Nothing
       root = T.pack (takeFileName (optModule opts))
   _ <- pure paths
-  if optJsonFormat opts
+  if outputJson opts
     then
       let node (Node p kids) =
             A.object
@@ -694,7 +693,7 @@ cmdDepsGraph opts target depth = do
                 ("rev", maybe A.Null A.String (Map.lookup p locked >>= lkRev)),
                 ("dependencies", A.toJSON (map node kids))
               ]
-       in printJson (A.object [("module", A.String root), ("dependencies", A.toJSON (map node roots))])
+       in printJson opts (A.object [("module", A.String root), ("dependencies", A.toJSON (map node roots))])
     else do
       TIO.putStrLn root
       let render prefix nodes =
@@ -778,9 +777,8 @@ cmdEnvsList opts function = do
   scope <- case function of
     Nothing -> pure Nothing
     Just fn ->
-      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
-        k : _ -> pure (Just k)
-        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+      -- A public function of the entry module, as run takes it (spec 11.2).
+      Just . fst <$> cliFunction opts compiled fn
   lock <- loadLockMaybe paths
   backend <- resolveBackend
   daemon <- daemonReachable backend
@@ -803,9 +801,9 @@ cmdEnvsList opts function = do
     pure (ImageLine (environmentLabel row) (irKind row) pinned (map (requirerLabel paths lock) (irRequiredBy row)) status tone Nothing)
   let localLine = [ImageLine "#local" "local" Nothing (map (requirerLabel paths lock) locals) "ok" ToneOk Nothing | not (null locals)]
       lines' = localLine <> imageLines
-  if optJsonFormat opts
+  if outputJson opts
     then
-      printJson . A.toJSON $
+      printJson opts . A.toJSON $
         [ A.object
             [ ("environment", A.String (ilEnvironment l)),
               ("kind", A.String (ilKind l)),
@@ -866,9 +864,8 @@ cmdEnvsCommands opts function verbose = do
   scope <- case function of
     Nothing -> pure Nothing
     Just fn ->
-      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
-        k : _ -> pure (Just k)
-        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+      -- A public function of the entry module, as run takes it (spec 11.2).
+      Just . fst <$> cliFunction opts compiled fn
   lock <- loadLockMaybe paths
   let sites = Map.elems (Map.fromList [(csSpan c, c) | c <- collectCommandSites core scope])
       uses = Map.fromList [(cuSpan u, u) | u <- cpCommandUses core]
@@ -925,9 +922,9 @@ cmdEnvsCommands opts function verbose = do
         | otherwise = clModule c <> ": " <> clDecl c
       programRows e = Map.toList (Map.fromListWith (flip (<>)) [(p, [usedBy c]) | c <- inEnv e, p <- clPrograms c])
       shownVia (label, _) c = if clVia c == label then Nothing else Just (clVia c)
-  if optJsonFormat opts
+  if outputJson opts
     then
-      printJson . A.toJSON $
+      printJson opts . A.toJSON $
         [ A.object
             [ ("environment", A.String label),
               ("kind", A.String kind),
@@ -1050,9 +1047,8 @@ cmdEnvsAccessListing listing opts function verbose = do
   scope <- case function of
     Nothing -> pure Nothing
     Just fn ->
-      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
-        k : _ -> pure (Just k)
-        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+      -- A public function of the entry module, as run takes it (spec 11.2).
+      Just . fst <$> cliFunction opts compiled fn
   lock <- loadLockMaybe paths
   let cons = snd (withinConstraints (compiledProgram compiled))
       sites = collectUseSites cons core scope
@@ -1081,8 +1077,8 @@ cmdEnvsAccessListing listing opts function verbose = do
         "local" -> 0 :: Int
         "dynamic" -> 2
         _ -> 1
-  if optJsonFormat opts
-    then printJson (A.toJSON (map (rowJson listing verbose) rows))
+  if outputJson opts
+    then printJson opts (A.toJSON (map (rowJson listing verbose) rows))
     else
       if null rows
         then TIO.putStrLn "no environments"
@@ -1091,7 +1087,7 @@ cmdEnvsAccessListing listing opts function verbose = do
           case (listing, scope) of
             (ListAccess, Just key) -> TIO.putStrLn $ case coveringsOf cons key of
               [] -> "within: none"
-              cvs -> T.intercalate " and " (map (renderConstraint . cvConstraint) cvs)
+              cvs -> T.intercalate " and " (map (renderCovering) cvs)
             _ -> pure ()
           let (header, cellsOf) = case listing of
                 ListFiles ->
@@ -1158,6 +1154,9 @@ targetCheck s t
 -- | The same for an environment the program does not show.
 dynamicCheck :: UseSite -> Text
 dynamicCheck s
+  -- A constraint that admits no use is exceeded whatever the
+  -- environment is (spec 10.11).
+  | (usDynamic s || usParam s) && any (\cv -> conRuns (cvConstraint cv) == Just []) (usUnder s) = "exceeded"
   | null (usUnder s) || not (usDynamic s) = "—"
   | otherwise = "unproven"
 
@@ -1417,9 +1416,8 @@ cmdEnvsSecrets opts function = do
   scope <- case function of
     Nothing -> pure Nothing
     Just fn ->
-      case [k | k@(p, n) <- Map.keys (cpDecls core), p == cpEntry core, n == kebabToSnake fn] of
-        k : _ -> pure (Just k)
-        [] -> noSuchFunction opts fn [n | (p, n) <- Map.keys (cpDecls core), p == cpEntry core, n `Set.notMember` cpInternal core]
+      -- A public function of the entry module, as run takes it (spec 11.2).
+      Just . fst <$> cliFunction opts compiled fn
   lock <- loadLockMaybe paths
   let cons = snd (withinConstraints (compiledProgram compiled))
       sites = collectUseSites cons core scope
@@ -1490,8 +1488,8 @@ cmdEnvsSecrets opts function = do
             Just (ChOption k) -> "{" <> k <> "}"
             _ -> ""
       networkOf r = let c = accessNetworkCell (srEnv r) in if c == "(computed)" then "(computed) !" else c
-  if optJsonFormat opts
-    then printJson (A.toJSON (map (secretRowJson paths lock environmentCell) rows))
+  if outputJson opts
+    then printJson opts (A.toJSON (map (secretRowJson paths lock environmentCell) rows))
     else
       if null rows
         then TIO.putStrLn "no secrets are given to an environment"
@@ -1500,7 +1498,7 @@ cmdEnvsSecrets opts function = do
           case scope of
             Just key -> TIO.putStrLn $ case coveringsOf cons key of
               [] -> "within: none"
-              cvs -> T.intercalate " and " (map (renderConstraint . cvConstraint) cvs)
+              cvs -> T.intercalate " and " (map (renderCovering) cvs)
             Nothing -> pure ()
           let header = ["SECRET", "CHANNEL", "ENVIRONMENT", "NETWORK", "CHECK", "REQUIRED BY"]
               cells r = [plain (secretCell r), plain (channelCell r), plain (environmentCell r), plain (networkOf r), checkCell (arCheck (srEnv r)), plain (requiredCell (arBy (srEnv r)))]

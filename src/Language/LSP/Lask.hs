@@ -49,9 +49,9 @@ import Language.LSP.VFS (virtualFileText, virtualFileVersion)
 import Control.Exception (IOException)
 import qualified Control.Exception as E
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
-import Data.List (minimumBy, partition, sortOn)
+import Data.List (minimumBy, partition, sortOn, tails)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust, listToMaybe, mapMaybe, maybeToList)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe, maybeToList)
 import Data.Ord (comparing)
 import qualified Data.Set as Set
 import qualified Data.Text.IO as TIO
@@ -439,12 +439,19 @@ lexSemanticTokensWith commandWordSpans fileName src =
         schema [] = []
 
     -- @within@ is a keyword only directly before the brace of an
-    -- access constraint (spec 3.3, 5), where no identifier can stand:
-    -- a name is never followed by @{@.
+    -- access constraint, or the name of one (spec 3.3, 5), and
+    -- @access@ only before the name it declares: no identifier stands
+    -- there, since a name is never followed by @{@ or by another name.
     withinSpans toks =
       [ sp
-      | (prev, Tok.Spanned sp (Tok.TLowerId "within"), Tok.Spanned _ Tok.TLBrace) <- zip3 (Nothing : map Just toks) toks (drop 1 toks),
-        fmap Tok.spannedValue prev /= Just Tok.TDot
+      | (prev, Tok.Spanned sp (Tok.TLowerId w), next : after) <- zip3 (Nothing : map Just toks) toks (drop 1 (tails toks)),
+        fmap Tok.spannedValue prev /= Just Tok.TDot,
+        case (w, Tok.spannedValue next, map Tok.spannedValue (take 1 after)) of
+          ("within", Tok.TLBrace, _) -> True
+          ("within", Tok.TUpperId _, _) -> True
+          ("within", Tok.TLowerId _, [Tok.TDot]) -> True
+          ("access", Tok.TUpperId _, _) -> True
+          _ -> False
       ]
 
     spanStart (S.Span s _) = Just s
@@ -487,26 +494,54 @@ lexSemanticTokensWith commandWordSpans fileName src =
     flattenToken (Tok.Spanned sp t) = case t of
       Tok.TString strParts ->
         carve sp SemanticTokenTypes_String (partAtoms strParts)
-      Tok.TCommand _ env cmdParts -> command env cmdParts
-      Tok.TBracedCommand _ env cmdParts -> command env cmdParts
+      Tok.TCommand _ env cmdParts -> command False env cmdParts
+      Tok.TBracedCommand _ env cmdParts -> command True env cmdParts
       _ -> case toSemanticTokenTypes t of
         Just typ -> [(sp, typ)]
         Nothing -> []
       where
-        command env cmdParts =
+        -- Only the shell text is string text: the @[env]@ brackets and
+        -- the braces of @${ ... }@ are left as plain punctuation.
+        command braced env cmdParts =
           let headLen = case sp of
                 S.Span (S.Position _ l c) _
                   | maybe False (`elem` ("12*" :: String)) (charAt l (c + 1)) -> 2
                 _ -> 1
               (headSpan, restSpan) = splitSpanAt sp headLen
+              envToks = fromMaybe [] env
+              afterEnv = case (restSpan, env) of
+                (S.Span (S.Position f l c) _, Just _) ->
+                  let envEnd = case [e | Tok.Spanned (S.Span _ e) _ <- envToks] of
+                        [] -> S.Position f l (c + 1)
+                        es -> maximum es
+                   in nextAfter (== ']') envEnd
+                (S.Span s _, Nothing) -> Just s
+                _ -> Nothing
+              bodySpan = case (restSpan, afterEnv) of
+                (S.Span _ e@(S.Position f l c), Just s)
+                  | braced -> case nextAfter (== '{') s of
+                      Just open | open < S.Position f l (c - 1) -> S.Span open (S.Position f l (c - 1))
+                      _ -> restSpan
+                  | otherwise -> S.Span s e
+                _ -> restSpan
               nested =
-                maybe [] (concatMap flattenToken) env
-                  <> partAtoms cmdParts
+                partAtoms cmdParts
                   <> [ (ws, SemanticTokenTypes_Function)
                      | ws <- commandWordSpans,
                        spanWithin ws sp
                      ]
-           in (headSpan, SemanticTokenTypes_Function) : carve restSpan SemanticTokenTypes_String nested
+           in (headSpan, SemanticTokenTypes_Function)
+                : concatMap flattenToken envToks
+                  <> carve bodySpan SemanticTokenTypes_String nested
+
+    -- The position just past the first character on the same line, at
+    -- or after @p@, that satisfies the predicate.
+    nextAfter :: (Char -> Bool) -> S.Position -> Maybe S.Position
+    nextAfter p (S.Position f l c) = case charAt l c of
+      Just ch
+        | p ch -> Just (S.Position f l (c + 1))
+        | otherwise -> nextAfter p (S.Position f l (c + 1))
+      Nothing -> Nothing
 
     partAtoms = concatMap partAtom
     partAtom (Tok.Chunk _ _) = []
@@ -679,7 +714,7 @@ withConfirmNote compiled key docs = case key >>= ruleFor (compiledProgram compil
      in Just (maybe note (<> "\n\n" <> note) docs)
 
 -- | Hover on a word of a command string checked against a command
--- schema (spec ch. 5): the command, option, value or subcommand it is,
+-- schema (spec appendix A): the command, option, value or subcommand it is,
 -- with what the schema says of it.
 schemaHoverAt :: CoreProgram -> FilePath -> Int -> Int -> Maybe Hover
 schemaHoverAt core path line col =
@@ -818,7 +853,7 @@ completionAt path src pos = do
     Nothing -> languageCompletion path src pos
 
 -- | Completion inside a dispatched command string whose command word
--- has a command schema (spec ch. 5): the options and subcommands that
+-- has a command schema (spec appendix A): the options and subcommands that
 -- may come next, or the values of the option awaiting one. 'Nothing'
 -- anywhere else, which leaves the position to the language's own
 -- completion.
@@ -1170,7 +1205,7 @@ languageCompletion path src (Position pl pc)
       listToMaybe $
         [ps | AST.Decl _ (AST.DFunction n _ ps _ _ _) <- AST.moduleDecls m, n == declName]
           <> [ ps
-             | AST.Decl _ (AST.DValue n _ _ (AST.Expr _ (AST.ELambda ps _ _))) <- AST.moduleDecls m,
+             | AST.Decl _ (AST.DValue n _ _ (AST.Expr _ (AST.ELambda _ ps _ _))) <- AST.moduleDecls m,
                n == declName
              ]
 

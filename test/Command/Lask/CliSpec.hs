@@ -172,11 +172,13 @@ spec = beforeAll findLask $ do
             runs <- filter ("run " `isPrefixOf`) <$> calls state
             runs `shouldSatisfy` all (not . isInfixOf "s3cr3t")
             runs `shouldSatisfy` all (isInfixOf "--env TOKEN ")
-            -- docker reads DOCKER_HOST itself, so it stays an argument.
-            runs `shouldSatisfy` all (isInfixOf "--env DOCKER_HOST=tcp://x")
+            -- docker reads DOCKER_HOST itself, so it is given in a file.
+            runs `shouldSatisfy` all (not . isInfixOf "tcp://x")
+            runs `shouldSatisfy` all (isInfixOf "--env-file ")
             seen <- lines <$> readFile (state </> "env")
             seen `shouldSatisfy` elem "TOKEN=s3cr3t"
             seen `shouldSatisfy` elem "EMPTY="
+            seen `shouldSatisfy` elem "DOCKER_HOST=tcp://x"
 
     it "keeps the pinned image when the tag moves upstream" $ \lask ->
       withFakeDocker $ \state extra -> withProject proj $ \dir -> do
@@ -481,6 +483,42 @@ spec = beforeAll findLask $ do
         resOut r `shouldContain` "largest<T: orderable>"
         resOut r `shouldContain` "label<T: Number | String>"
 
+  describe "functions with inferred parameter types from the CLI (spec 4.3, 11.2)" $ do
+    let proj =
+          [ ( "main.lask",
+              "tag(version) = \"v#{version}\"\n\
+              \inc(n) = n + 1\n\
+              \ident(x) = x\n"
+            )
+          ]
+
+    it "takes the text as written for an inferred bounded type parameter" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "tag", "1.0"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"v1.0\"\n"
+
+    it "decodes a parameter at the type inferred for it" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "inc", "41"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "42\n"
+        bad <- runLask lask dir ["eval", "inc", "x"] ""
+        resExit bad `shouldBe` 4
+
+    it "instantiates an inferred unbounded type parameter at Any" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "ident", "[1,2]"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "[1,2]\n"
+
+    it "shows the inferred type parameters where it describes the declaration" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["run", "--help"] ""
+        resOut r `shouldContain` "tag<T: stringifiable>"
+        resOut r `shouldContain` "ident<T>"
+        resOut r `shouldNotContain` "%"
+
   -- A re-exported name is a public symbol of the module (spec 5), so
   -- the CLI reaches it as it reaches one the module declares.
   describe "re-exported functions from the CLI (spec 5, 11.2, 11.6)" $ do
@@ -613,6 +651,18 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 4
         resErr r `shouldSatisfy` isInfixOf "lask cmd --help"
 
+    it "reports an option value the command line does not accept as a usage error (exit 4)" $ \lask ->
+      withProject proj $ \dir -> do
+        r <- runLask lask dir ["eval", "--stdout-encode", "xml", "f"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldSatisfy` isInfixOf "E-CLI-USAGE"
+        resErr r `shouldSatisfy` isInfixOf "--stdout-encode"
+
+    it "captures the whole output of a command, however long (spec 8.7)" $ \lask ->
+      withProject [("main.lask", "f(): Number = length($[#local] { head -c 3000000 /dev/zero | tr -c x x })\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resOut r `shouldBe` "3000000\n"
+
     it "reports a missing command name as a usage error" $ \lask ->
       withProject proj $ \dir -> do
         r <- runLask lask dir ["cmd"] ""
@@ -626,9 +676,9 @@ spec = beforeAll findLask $ do
         resOut r `shouldSatisfy` isInfixOf "Commands in main.lask:"
         resOut r `shouldSatisfy` isInfixOf "  echo      local   local"
 
-    it "lists commands as JSON under --format json --help" $ \lask ->
+    it "lists commands as JSON under --output json --help" $ \lask ->
       withProject proj $ \dir -> do
-        r <- runLask lask dir ["cmd", "--format", "json", "--help"] ""
+        r <- runLask lask dir ["cmd", "--output", "json", "--help"] ""
         resExit r `shouldBe` 0
         resOut r `shouldSatisfy` isInfixOf "\"name\":\"echo\""
 
@@ -710,7 +760,7 @@ spec = beforeAll findLask $ do
         r <- runLaskEnv lask dir (refs <> vaultWith fv "limited") ["secrets", "check"] ""
         resExit r `shouldBe` 3
         resOut r `shouldContain` "E-IO-SECRET-AUTH"
-        j <- runLaskEnv lask dir (refs <> vaultWith fv "limited") ["secrets", "check", "--format", "json"] ""
+        j <- runLaskEnv lask dir (refs <> vaultWith fv "limited") ["secrets", "check", "--output", "json"] ""
         resExit j `shouldBe` 3
         resOut j `shouldContain` "\"code\":\"E-IO-SECRET-AUTH\""
         bad <- runLaskEnv lask dir (refs <> vaultWith fv "nope") ["secrets", "check"] ""
@@ -909,7 +959,7 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["eval", "deploy", "--help"] ""
         resOut r `shouldContain` "lask eval deploy <name> --target <String> [--dry-run] [--force] [--n <Number>]"
         resOut r `shouldContain` "--target : String  (required)"
-        j <- runLask lask dir ["eval", "--format", "json", "deploy", "--help"] ""
+        j <- runLask lask dir ["eval", "--output", "json", "deploy", "--help"] ""
         resOut j `shouldContain` "\"name\":\"target\",\"required\":true"
 
   describe "spec 16.3: function values" $ do
@@ -1073,11 +1123,22 @@ spec = beforeAll findLask $ do
         resErr r `shouldContain` "W-ASYNC-UNAWAITED: the async at main.lask:2:7 was never awaited"
         resErr r `shouldContain` "and completed"
         readFile (dir </> "side.txt") `shouldReturn` "done\n"
-    it "reports its failure without taking over the exit code" $ \lask ->
+    it "fails the run with its failure, and prints no result (spec 6.3, 8.6)" $ \lask ->
       withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 3\n  \"ok\"\n}\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "f"] ""
-        resExit r `shouldBe` 0
+        resExit r `shouldBe` 3
+        resOut r `shouldBe` ""
         resErr r `shouldContain` "failed with E-RUNTIME-COMMAND-NONZERO (exit code 3)"
+        resErr r `shouldContain` "\nE-RUNTIME-COMMAND-NONZERO: "
+    it "fails the run with the first failure in the order the computations started" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  a = async $[#local] sh -c 'sleep 1; exit 4'\n  b = async $[#local] exit 6\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 4
+    it "leaves the run as it is when the failure is caught where it starts" $ \lask ->
+      withProject [("main.lask", "f(): String = do {\n  h = async try { $[#local] { exit 3 } } catch (e) { null }\n  \"ok\"\n}\n")] $ \dir -> do
+        r <- runLask lask dir ["eval", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"ok\"\n"
     it "reports it when the function itself fails, which keeps its own exit code" $ \lask ->
       withProject [("main.lask", "f(): String = do {\n  h = async $[#local] echo side\n  $[#local] exit 5\n}\n")] $ \dir -> do
         r <- runLask lask dir ["run", "f"] ""
@@ -1109,10 +1170,10 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["eval", "f"] ""
         resExit r `shouldBe` 4
         resErr r `shouldNotContain` "W-ASYNC-UNAWAITED"
-    it "reports it as a JSON Lines warning under --format json" $ \lask ->
+    it "reports it as a JSON Lines warning under --log-format json" $ \lask ->
       withProject [("main.lask", "f(): String = do {\n  h = async $[#local] exit 3\n  \"ok\"\n}\n")] $ \dir -> do
-        r <- runLask lask dir ["eval", "--format", "json", "f"] ""
-        resExit r `shouldBe` 0
+        r <- runLask lask dir ["eval", "--log-format", "json", "f"] ""
+        resExit r `shouldBe` 3
         let warnings = [l | l <- lines (resErr r), "W-ASYNC-UNAWAITED" `isInfixOf` l]
         length warnings `shouldBe` 1
         mapM_
@@ -1128,9 +1189,24 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", "u() = {name: \"a\", age: 20}\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "u"] ""
         r `shouldBe` Result 0 "{\"age\":20,\"name\":\"a\"}\n" ""
-    it "prints raw text with --stdout-encode text" $ \lask ->
+    it "keeps stdout and stderr formats apart (spec 11.1)" $ \lask ->
+      withProject [("main.lask", "f(): Record<a: Number> = do {\n  log(\"hi\")\n  {a: 1}\n}\n")] $ \dir -> do
+        -- JSON Lines on stderr, and the result as formatted JSON on stdout.
+        r <- runLask lask dir ["eval", "--log-format", "json", "--output", "pretty-json", "f"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "{\n    \"a\": 1\n}\n"
+        resErr r `shouldSatisfy` isInfixOf "\"message\":\"hi\""
+        -- The report of a command takes --output too, and its logs stay text.
+        c <- runLask lask dir ["check", "--output", "pretty-json"] ""
+        resOut c `shouldBe` "[]\n"
+        -- The options they replace are gone.
+        old <- runLask lask dir ["eval", "--format", "json", "f"] ""
+        resExit old `shouldNotBe` 0
+        enc <- runLask lask dir ["eval", "--stdout-encode", "text", "f"] ""
+        resExit enc `shouldNotBe` 0
+    it "prints raw text with --output text" $ \lask ->
       withProject [("main.lask", "s() = \"plain\"\n")] $ \dir -> do
-        r <- runLask lask dir ["eval", "--stdout-encode", "text", "s"] ""
+        r <- runLask lask dir ["eval", "--output", "text", "s"] ""
         r `shouldBe` Result 0 "plain\n" ""
     it "prints Void as nothing" $ \lask ->
       withProject [("main.lask", "f() = for (x : []) {}\n")] $ \dir -> do
@@ -1150,12 +1226,12 @@ spec = beforeAll findLask $ do
             0
             "main.lask:2:3-2:12: W-ASYNC-UNUSED [static]: this statement discards an async handle, so it is never awaited\nthe module is valid\n"
             ""
-        j <- runLask lask dir ["check", "--format", "json"] ""
+        j <- runLask lask dir ["check", "--output", "json"] ""
         resExit j `shouldBe` 0
         mapM_ (resOut j `shouldContain`) ["\"code\":\"W-ASYNC-UNUSED\"", "\"severity\":\"warning\"", "\"stage\":\"static\""]
-    it "check reports diagnostics as JSON with --format json" $ \lask ->
+    it "check reports diagnostics as JSON with --output json" $ \lask ->
       withProject [("main.lask", "x: Number = \"s\"\n")] $ \dir -> do
-        r <- runLask lask dir ["check", "--format", "json"] ""
+        r <- runLask lask dir ["check", "--output", "json"] ""
         resExit r `shouldBe` 1
         resOut r `shouldSatisfy` isInfixOf "E-TYPE-MISMATCH"
     it "check shows at most 50 errors, then how many more there are (spec 14.3)" $ \lask -> do
@@ -1165,18 +1241,18 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 1
         length (filter (isInfixOf "E-TYPE-MISMATCH") (lines (resOut r))) `shouldBe` 50
         last (lines (resOut r)) `shouldBe` "... and 3 more errors"
-        j <- runLask lask dir ["check", "--format", "json"] ""
+        j <- runLask lask dir ["check", "--output", "json"] ""
         T.count "\"code\":\"E-TYPE-MISMATCH\"" (T.pack (resOut j)) `shouldBe` 53
     it "check suggests a correction for a misspelt name (spec 14.3)" $ \lask ->
       withProject [("main.lask", "hello = \"hi\"\nmain() = helo\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""
         resExit r `shouldBe` 1
         resOut r `shouldContain` "undefined name: 'helo'\n  note: did you mean 'hello'?"
-        j <- runLask lask dir ["check", "--format", "json"] ""
+        j <- runLask lask dir ["check", "--output", "json"] ""
         resOut j `shouldContain` "\"suggestions\":[\"hello\"]"
     it "check keeps notes in JSON (spec 14.3)" $ \lask ->
       withProject [("main.lask", "import { a } from \"./missing.lask\"\nb = a\n")] $ \dir -> do
-        j <- runLask lask dir ["check", "--format", "json"] ""
+        j <- runLask lask dir ["check", "--output", "json"] ""
         resExit j `shouldBe` 1
         resOut j `shouldContain` "\"notes\":["
 
@@ -1203,7 +1279,7 @@ spec = beforeAll findLask $ do
         again `shouldBe` Result 0 "" ""
     it "--check lists the files that are not formatted, changes none, and exits 1" $ \lask ->
       withProject project $ \dir -> do
-        r <- runLask lask dir ["fmt", "--check", "--format", "json"] ""
+        r <- runLask lask dir ["fmt", "--check", "--output", "json"] ""
         r `shouldBe` Result 1 "[\"lib/util.lask\",\"main.lask\"]\n" ""
         readFile (dir </> "main.lask") `shouldReturn` messy
         clean <- runLask lask dir ["fmt", "--check", "ok.lask"] ""
@@ -1237,7 +1313,7 @@ spec = beforeAll findLask $ do
         r <- runLask lask dir ["run", "cowsay-helo"] ""
         resExit r `shouldBe` 4
         resErr r `shouldBe` "E-CLI-USAGE: no such function: 'cowsay-helo'\n  note: did you mean 'cowsay-hello'?\n"
-        j <- runLask lask dir ["run", "--format", "json", "cowsay-helo"] ""
+        j <- runLask lask dir ["run", "--log-format", "json", "cowsay-helo"] ""
         resErr j `shouldContain` "\"suggestions\":[\"cowsay-hello\"]"
     it "suggests a keyword option in its CLI form" $ \lask ->
       withProject [("main.lask", src)] $ \dir -> do
@@ -1299,7 +1375,7 @@ spec = beforeAll findLask $ do
           )
         ]
         $ \dir -> do
-          r <- runLask lask dir ["envs", "commands", "--format", "json"] ""
+          r <- runLask lask dir ["envs", "commands", "--output", "json"] ""
           resExit r `shouldBe` 0
           let envs = maybe [] id (A.decode (BL8.pack (resOut r)) :: Maybe [A.Value])
               programsOf e =
@@ -1364,7 +1440,7 @@ spec = beforeAll findLask $ do
           resOut network `shouldSatisfy` isInfixOf "main.lask: bad → release_of"
           resOut network `shouldSatisfy` isInfixOf "(computed)"
           resOut network `shouldSatisfy` isInfixOf "8080:80 !"
-          json <- runLask lask dir ["envs", "access", "--format", "json"] ""
+          json <- runLask lask dir ["envs", "access", "--output", "json"] ""
           resExit json `shouldBe` 0
           -- REQUIRED BY holds an arrow, so the output is read as UTF-8.
           let rows = maybe [] id (A.decode (TLE.encodeUtf8 (TL.pack (resOut json))) :: Maybe [A.Value])
@@ -1385,13 +1461,13 @@ spec = beforeAll findLask $ do
             "within { volumes: false }\n\
             \alpine = #alpine:3.20\n\
             \sealed = #alpine:3.20{network: \"none\"}\n\
-            \release_of(e: Runnable): String within { network: \"none\" } = $[e] cat /etc/alpine-release\n\
+            \release_of(e: Runnable): String within { outbound: false } = $[e] cat /etc/alpine-release\n\
             \ok(): String = release_of(sealed)\n\
             \bad(): String = release_of(alpine)\n\
-            \probe() within { network: \"none\" } = $[runnable(alpine, network = get_env(\"NET\"))] true\n\
+            \probe() within { outbound: false } = $[runnable(alpine, network = get_env(\"NET\"))] true\n\
             \host() within { files: \"ro\" } = $[#local] ls\n\
             \ship() = $[#docker:27{volumes: [\"/var/run/docker.sock:/var/run/docker.sock\"]}] docker ps\n\
-            \twice(f: Function<String>): String within { network: \"none\" } = f()\n\
+            \twice(f: Function<String>): String within { outbound: false } = f()\n\
             \pick = release_of\n"
           )
         ]
@@ -1415,7 +1491,7 @@ spec = beforeAll findLask $ do
           resOut network `shouldSatisfy` isInfixOf "ok        main.lask: ok → release_of"
           resOut network `shouldSatisfy` isInfixOf "unproven  main.lask: probe"
           access <- runLask lask dir ["envs", "access", "release-of"] ""
-          resOut access `shouldSatisfy` isInfixOf "within { volumes: false } and within { network: \"none\" }"
+          resOut access `shouldSatisfy` isInfixOf "within { volumes: false } and within { outbound: false }"
     it "evaluates run options that can only compute, as a library builds them (spec 10.11)" $ \lask ->
       withProject
         [ ( "lib.lask",
@@ -1448,6 +1524,30 @@ spec = beforeAll findLask $ do
           out `shouldNotSatisfy` isInfixOf "main.lask:3:"
           out `shouldSatisfy` isInfixOf "main.lask:4:13-4:54: E-TYPE-WITHIN-EXCEEDED [static]: \"/home/me/.cfg\" is mounted \"ro\""
           out `shouldSatisfy` isInfixOf "main.lask:5:13-5:53: E-TYPE-WITHIN-UNPROVEN"
+    it "bounds the evaluation of a run option in steps, not in time (spec 10.11)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "within { outbound: false }\n\
+            \spin(n: Number): String = spin(n + 1)\n\
+            \none(n: Number): String = size(range(0, n)) < 0 ? \"bridge\" : \"none\"\n\
+            \small() = $[runnable(#alpine:3.20, network = none(1000))] true\n\
+            \large() = $[runnable(#alpine:3.20, network = none(2000000))] true\n\
+            \endless() = $[runnable(#alpine:3.20, network = spin(0))] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          let out = resOut r
+          -- Within the bound the option is known, and keeps to the
+          -- constraint; past it, or without end, it is not known.
+          out `shouldNotSatisfy` isInfixOf "main.lask:4:"
+          out `shouldSatisfy` isInfixOf "main.lask:5:"
+          out `shouldSatisfy` isInfixOf "main.lask:6:"
+          length (filter (isInfixOf "E-TYPE-WITHIN-UNPROVEN") (lines out)) `shouldBe` 2
+    it "does not bound the evaluation of a run (spec 10.11)" $ \lask ->
+      withProject [("main.lask", "none(n: Number): String = size(range(0, n)) < 0 ? \"bridge\" : \"none\"\n")] $ \dir -> do
+        e <- runLask lask dir ["eval", "none", "2000000"] ""
+        resOut e `shouldBe` "\"none\"\n"
     it "reports a broken constraint in what it covers, at the call that leads out of it (spec 10.11)" $ \lask ->
       withProject
         [ ( "main.lask",
@@ -1470,7 +1570,7 @@ spec = beforeAll findLask $ do
     it "checks what an invocation gives a parameter before anything runs (spec 10.11)" $ \lask ->
       withProject
         [ ( "main.lask",
-            "f(--net: String = \"none\"): String within { network: \"none\" } = $[runnable(#alpine:3.20, network = net)] echo hi\n"
+            "f(--net: String = \"none\"): String within { outbound: false } = $[runnable(#alpine:3.20, network = net)] echo hi\n"
           )
         ]
         $ \dir -> do
@@ -1483,7 +1583,7 @@ spec = beforeAll findLask $ do
           kept <- runLask lask dir ["eval", "f"] ""
           resErr kept `shouldNotSatisfy` isInfixOf "E-TYPE-WITHIN"
     it "checks the command words cmd runs against the module constraint (spec 5)" $ \lask ->
-      withProject [("main.lask", "within { network: \"none\" }\ncommand { \"uname\" } on #local\n")] $ \dir -> do
+      withProject [("main.lask", "within { outbound: false }\ncommand { \"uname\" } on #local\n")] $ \dir -> do
         -- Declaring a word on the host is not a use; running it is.
         static <- runLask lask dir ["check"] ""
         resExit static `shouldBe` 0
@@ -1533,7 +1633,7 @@ spec = beforeAll findLask $ do
           filter (isInfixOf "absent") rows `shouldBe` []
           -- A parameter the command line may give is a secret there.
           length (filter (isInfixOf "main.lask: absent_of --key") rows) `shouldBe` 0
-          json <- runLask lask dir ["envs", "secrets", "--format", "json"] ""
+          json <- runLask lask dir ["envs", "secrets", "--output", "json"] ""
           resOut json `shouldSatisfy` isInfixOf "\"channel\":{\"kind\":\"env\",\"name\":\"AWS_SECRET_ACCESS_KEY\"}"
           scoped <- runLask lask dir ["envs", "secrets", "whoami"] ""
           resOut scoped `shouldSatisfy` isInfixOf "within { secrets: [key] }"
@@ -1591,6 +1691,55 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", "takes(--hosts: Array<String> | Null = null): String = \"x\"\ne(): String = takes(hosts = [])\nr = #alpine:3.20{egress: []}\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""
         resExit r `shouldBe` 0
+    it "names constraints with access, and bounds runs and inbound (spec 5, 10.11)" $ \lask -> do
+      withProject
+        [ ("policy.lask", "export access Offline = { runs: [\"container\"], outbound: false, inbound: false, volumes: false }\n"),
+          ( "main.lask",
+            "import { Offline } from \"./policy.lask\"\n\
+            \import * as p from \"./policy.lask\"\n\
+            \access Pure = { runs: false }\n\
+            \access Loop = { inbound: [\"127.0.0.1:8080\", \"::1\"] }\n\
+            \a() within Offline = $[#alpine:3.22{network: \"none\"}] true\n\
+            \b() within p.Offline = $[#alpine:3.22] true\n\
+            \c() within Pure = $[#alpine:3.22] true\n\
+            \d(e: Runnable) within Pure = $[e] true\n\
+            \f() within Pure = \"pure\"\n\
+            \g() within Loop = $[#nginx:1.27{publish: [\"127.0.0.1:8080:80\", \"[::1]:9000:80\"]}] true\n\
+            \h() within Loop = $[#nginx:1.27{publish: [\"8080:80\"]}] true\n\
+            \i() within { runs: [\"container\"] } = $[#local] true\n\
+            \j() within { runs: [\"local\"] } = $[#local] true\n\
+            \k() within { outbound: true, volumes: true } = $[#alpine:3.22{volumes: [\"/data:/d\"]}] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let withinLines = filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))
+          length withinLines `shouldBe` 5
+          resOut r `shouldSatisfy` isInfixOf "main.lask:6:24-6:44: E-TYPE-WITHIN-EXCEEDED [static]: the network is \"default\", which within p.Offline of 'b' does not allow (outbound)"
+          resOut r `shouldSatisfy` isInfixOf "it runs in a container, which within Pure of 'c' does not allow (runs)"
+          resOut r `shouldSatisfy` isInfixOf "a command runs here, which within Pure of 'd' does not allow (runs)"
+          resOut r `shouldSatisfy` isInfixOf "a port is published on 0.0.0.0:8080, which within Loop of 'h' does not allow (inbound)"
+          resOut r `shouldSatisfy` isInfixOf "#local reaches the whole host, which within { runs: [\"container\"] } of 'i' does not allow (runs)"
+      withProject
+        [ ( "main.lask",
+            "type T = String\n\
+            \access Pure = { runs: false }\n\
+            \access Named = { secrets: [x] }\n\
+            \k() within T = \"x\"\n\
+            \l(x: Pure) = x\n\
+            \m() within Pur = 1\n\
+            \n() within { network: \"none\" } = 1\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          resOut r `shouldSatisfy` isInfixOf "main.lask:3:28-3:29: E-TYPE-WITHIN-SPEC [static]: an access declaration gives 'secrets' only as false"
+          resOut r `shouldSatisfy` isInfixOf "main.lask:4:12-4:13: E-TYPE-WITHIN-SPEC [static]: 'T' is a type, not an access constraint"
+          resOut r `shouldSatisfy` isInfixOf "main.lask:5:6-5:10: E-NAME-UNDEFINED [static]: 'Pure' is an access constraint, not a type"
+          resOut r `shouldSatisfy` isInfixOf "main.lask:6:12-6:15: E-NAME-UNDEFINED [static]: undefined access constraint: 'Pur'"
+          resOut r `shouldSatisfy` isInfixOf "unknown field 'network': a constraint takes files, volumes, outbound, inbound, secrets and runs"
     it "checks egress entries, and what within admits of them (spec 10.11, 10.12)" $ \lask -> do
       withProject [("main.lask", "a = #alpine:3.20{egress: [\"x.com\"]}\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""
@@ -1601,10 +1750,10 @@ spec = beforeAll findLask $ do
       withProject
         [ ( "main.lask",
             "npm = #alpine:3.20{egress: [\"registry.npmjs.org:443\"]}\n\
-            \a(): String within { network: [\"registry.npmjs.org:443\"] } = $[npm] true\n\
-            \b(): String within { network: [\"*.github.com:443\"] } = $[#alpine:3.20{egress: [\"api.github.com:443\", \"github.com:443\"]}] true\n\
-            \c(): String within { network: \"none\" } = $[#alpine:3.20{egress: []}] true\n\
-            \d(): String within { network: [\"a.com:443\"] } = $[#alpine:3.20] true\n"
+            \a(): String within { outbound: [\"registry.npmjs.org:443\"] } = $[npm] true\n\
+            \b(): String within { outbound: [\"*.github.com:443\"] } = $[#alpine:3.20{egress: [\"api.github.com:443\", \"github.com:443\"]}] true\n\
+            \c(): String within { outbound: false } = $[#alpine:3.20{egress: []}] true\n\
+            \d(): String within { outbound: [\"a.com:443\"] } = $[#alpine:3.20] true\n"
           )
         ]
         $ \dir -> do
@@ -1615,12 +1764,12 @@ spec = beforeAll findLask $ do
           -- lists nothing is within none, and a container that may
           -- reach anything is within no list.
           length withinLines `shouldBe` 2
-          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: egress lists \"github.com:443\", which within { network: [\"*.github.com:443\"] } of 'b'"
-          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: the network is \"default\", which within { network: [\"a.com:443\"] } of 'd'"
+          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: egress lists \"github.com:443\", which within { outbound: [\"*.github.com:443\"] } of 'b'"
+          resOut r `shouldSatisfy` isInfixOf "E-TYPE-WITHIN-EXCEEDED [static]: the network is \"default\", which within { outbound: [\"a.com:443\"] } of 'd'"
           network <- runLask lask dir ["envs", "network"] ""
           resOut network `shouldSatisfy` isInfixOf "registry.npmjs.org:443"
           resOut network `shouldSatisfy` isInfixOf "(none)"
-          json <- runLask lask dir ["envs", "network", "--format", "json"] ""
+          json <- runLask lask dir ["envs", "network", "--output", "json"] ""
           resOut json `shouldSatisfy` isInfixOf "\"class\":\"egress\",\"egress\":[\"registry.npmjs.org:443\"]"
     it "places a container given egress beside its proxy, logs what it refuses, and removes both (spec 10.12)" $ \lask ->
       withFakeDocker $ \state extra ->
@@ -1641,10 +1790,14 @@ spec = beforeAll findLask $ do
           has "lask-egress-proxy:dev -listen :3128 example.com:443" `shouldSatisfy` ((== 1) . length)
           -- The container is on the inside network only, and told
           -- where the proxy is.
-          let workload = [c | c <- cs, "run --rm" `isPrefixOf` c]
+          let workload = [c | c <- cs, "run " `isPrefixOf` c, " --rm " `isInfixOf` c]
           workload `shouldSatisfy` ((== 1) . length)
-          workload `shouldSatisfy` all (isInfixOf "--env HTTPS_PROXY=http://lask-egress-proxy:3128")
-          workload `shouldSatisfy` all (isInfixOf "--env NODE_USE_ENV_PROXY")
+          -- The proxy's variables are ones the client reads itself, so
+          -- they are given in a file (spec 10.2).
+          workload `shouldSatisfy` all (isInfixOf "--env-file ")
+          given <- lines <$> readFile (state </> "env")
+          given `shouldSatisfy` elem "HTTPS_PROXY=http://lask-egress-proxy:3128"
+          given `shouldSatisfy` elem "NODE_USE_ENV_PROXY=1"
           workload `shouldSatisfy` all (isInfixOf "-in ")
           workload `shouldSatisfy` all (isInfixOf "--network lask-egress-")
           -- Both are removed when the invocation ends.
@@ -1663,6 +1816,33 @@ spec = beforeAll findLask $ do
           resExit named `shouldBe` 0
           lock <- readFile (dir </> "lask.lock.json")
           lock `shouldSatisfy` isInfixOf "#ghcr.io/lask-task-runner/lask-egress-proxy@sha256:"
+    it "gives a variable of env the client reads itself in a file, on no command line (spec 10.2)" $ \lask ->
+      withFakeDocker $ \state extra ->
+        withProject [("main.lask", "token!!: String = get_env_or(\"T\", \"s3cr3t-value\")\nf(): String within { secrets: [token] } = $[runnable(#alpine:3.22.2, env = {\"DOCKER_TOKEN\": token, \"HTTPS_PROXY\": \"http://p:3128\"})] true\nbad(): String = $[runnable(#alpine:3.22.2, env = {\"DOCKER_X\": \"a\\nb\"})] true\n")] $ \dir -> do
+          _ <- runLaskEnv lask dir extra ["sync"] ""
+          writeFile (state </> "calls") ""
+          r <- runLaskEnv lask dir extra ["eval", "f"] ""
+          resExit r `shouldBe` 0
+          cs <- calls state
+          let runs = [c | c <- cs, "run " `isPrefixOf` c, " --rm " `isInfixOf` c]
+          runs `shouldSatisfy` ((== 1) . length)
+          runs `shouldSatisfy` all (isInfixOf "--env-file ")
+          runs `shouldSatisfy` all (not . isInfixOf "s3cr3t-value")
+          runs `shouldSatisfy` all (not . isInfixOf "http://p:3128")
+          given <- lines <$> readFile (state </> "env")
+          given `shouldSatisfy` elem "DOCKER_TOKEN=s3cr3t-value"
+          given `shouldSatisfy` elem "HTTPS_PROXY=http://p:3128"
+          -- The file is removed once the client has exited.
+          let file = takeWhile (/= ' ') (snd (breakAfter "--env-file " (concat (take 1 runs))))
+              breakAfter needle hay = case [i | i <- [0 .. length hay - length needle], take (length needle) (drop i hay) == needle] of
+                i : _ -> (take i hay, drop (i + length needle) hay)
+                [] -> (hay, "")
+          doesFileExist file `shouldReturn` False
+          -- A value a line of the file cannot hold is refused, not put
+          -- on the command line.
+          b <- runLaskEnv lask dir extra ["eval", "bad"] ""
+          resExit b `shouldBe` 3
+          resErr b `shouldSatisfy` isInfixOf "cannot hold"
     it "gives a container's command to its shell on stdin, on no command line (spec 10.2)" $ \lask ->
       withFakeDocker $ \state extra ->
         withProject [("main.lask", "token!!: String = get_env_or(\"T\", \"s3cr3t-value\")\nf(): String = $[#alpine:3.22.2] echo marker-#{token}\n")] $ \dir -> do
@@ -1671,7 +1851,7 @@ spec = beforeAll findLask $ do
           r <- runLaskEnv lask dir extra ["eval", "f"] ""
           resExit r `shouldBe` 0
           cs <- calls state
-          let runs = [c | c <- cs, "run --rm" `isPrefixOf` c]
+          let runs = [c | c <- cs, "run " `isPrefixOf` c, " --rm " `isInfixOf` c]
           runs `shouldSatisfy` ((== 1) . length)
           -- The client is given a shell that reads its command, not the
           -- command: the secret is on no command line.
@@ -1753,9 +1933,9 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 0
         resOut r `shouldBe` "\"value\"\n"
         resErr r `shouldSatisfy` isInfixOf "1| value"
-    it "emits JSON Lines with stream/event fields under --format json" $ \lask ->
+    it "emits JSON Lines with stream/event fields under --log-format json" $ \lask ->
       withProject [("main.lask", src)] $ \dir -> do
-        r <- runLask lask dir ["run", "--format", "json", "--trace-id", "t-9", "f"] ""
+        r <- runLask lask dir ["run", "--log-format", "json", "--trace-id", "t-9", "f"] ""
         resExit r `shouldBe` 0
         resErr r `shouldSatisfy` isInfixOf "\"event\":\"start\""
         resErr r `shouldSatisfy` isInfixOf "\"stream\":\"1\""
@@ -1774,13 +1954,13 @@ spec = beforeAll findLask $ do
         all (\l -> take 1 l == "{") (lines (resErr r)) `shouldBe` True
     it "logs exit with level warn on non-zero codes" $ \lask ->
       withProject [("main.lask", "f() = $*[#local] sh -lc \"exit 3\"\n")] $ \dir -> do
-        r <- runLask lask dir ["run", "--format", "json", "f"] ""
+        r <- runLask lask dir ["run", "--log-format", "json", "f"] ""
         resExit r `shouldBe` 0
         resErr r `shouldSatisfy` isInfixOf "\"code\":3"
         resErr r `shouldSatisfy` isInfixOf "\"level\":\"warn\""
     it "reports static errors as JSON Lines on stderr" $ \lask ->
       withProject [("main.lask", "x: Number = \"s\"\ny: Number = true\nf() = 1\n")] $ \dir -> do
-        r <- runLask lask dir ["run", "--format", "json", "f"] ""
+        r <- runLask lask dir ["run", "--log-format", "json", "f"] ""
         resExit r `shouldBe` 1
         let errLines = lines (resErr r)
         all (\l -> take 1 l == "{") errLines `shouldBe` True
@@ -1793,9 +1973,9 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 0
         resOut r `shouldBe` "\"done\"\n"
         resErr r `shouldSatisfy` isInfixOf "building"
-    it "carries a level and a message as JSON under --format json (12.2)" $ \lask ->
+    it "carries a level and a message as JSON under --log-format json (12.2)" $ \lask ->
       withProject [("main.lask", "f() = do {\n  log(\"building\")\n  \"done\"\n}\n")] $ \dir -> do
-        r <- runLask lask dir ["eval", "--format", "json", "f"] ""
+        r <- runLask lask dir ["eval", "--log-format", "json", "f"] ""
         resExit r `shouldBe` 0
         resErr r `shouldSatisfy` isInfixOf "\"level\":\"info\""
         resErr r `shouldSatisfy` isInfixOf "\"message\":\"building\""
@@ -1828,7 +2008,7 @@ spec = beforeAll findLask $ do
         resErr r `shouldSatisfy` (not . isInfixOf "s3cr3t")
     it "masks secrets in execution events and JSON diagnostics (12.6, 12.8)" $ \lask ->
       withProject [("main.lask", leaky)] $ \dir -> do
-        r <- runLask lask dir ["run", "--format", "json", "leak"] ""
+        r <- runLask lask dir ["run", "--log-format", "json", "leak"] ""
         resExit r `shouldBe` 1
         resErr r `shouldSatisfy` isInfixOf "\"kind\":\"call\""
         resErr r `shouldSatisfy` isInfixOf "\"code\":\"E-RUNTIME-COMMAND-NONZERO\""
@@ -1851,7 +2031,7 @@ spec = beforeAll findLask $ do
         resErr r `shouldSatisfy` isInfixOf "at outer (main.lask)"
     it "emits call/return events with the given trace id" $ \lask ->
       withProject [("main.lask", "f(x: Number): Number = x + 1\n")] $ \dir -> do
-        r <- runLask lask dir ["eval", "--format", "json", "--trace-id", "t-1", "f", "41"] ""
+        r <- runLask lask dir ["eval", "--log-format", "json", "--trace-id", "t-1", "f", "41"] ""
         resExit r `shouldBe` 0
         resErr r `shouldSatisfy` isInfixOf "\"kind\":\"call\""
         resErr r `shouldSatisfy` isInfixOf "\"kind\":\"return\""
@@ -1869,7 +2049,7 @@ spec = beforeAll findLask $ do
           )
         ]
         $ \dir -> do
-          r <- runLask lask dir ["eval", "--format", "json", "f"] ""
+          r <- runLask lask dir ["eval", "--log-format", "json", "f"] ""
           resExit r `shouldBe` 0
           resErr r `shouldSatisfy` isInfixOf "\"kind\":\"fail\""
 
@@ -1928,7 +2108,7 @@ spec = beforeAll findLask $ do
         writeFile (srcDir </> "notify.lask") "send(x: String): String = concat(\"evil:\", x)\n"
         r6 <- runLaskEnv lask proj extraEnv ["sync"] ""
         resExit r6 `shouldBe` 3
-        resErr r6 `shouldSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
+        resErr r6 `shouldSatisfy` isInfixOf "E-IO-MODULE-HASH-MISMATCH"
         r7 <- runLaskEnv lask proj extraEnv ["check"] ""
         resExit r7 `shouldBe` 1
 
@@ -2126,14 +2306,59 @@ spec = beforeAll findLask $ do
         resOut r `shouldContain` "test    Run the tests."
         resOut r `shouldNotContain` "scratch"
 
-    it "lists functions only, but still helps on a plain value binding" $ \lask ->
+    -- A leading `_` stays: `-build-all` would be read as an option
+    -- (spec 11.6).
+    it "keeps the underscore that leads a name, so that what it shows can be typed" $ \lask ->
+      withProject [("main.lask", "// Build.\n_build_all(--_dry_run = false, --out_dir = \"dist\"): String = \"b #{out_dir}\"\n")] $ \dir -> do
+        l <- runLask lask dir ["run", "--help"] ""
+        resOut l `shouldContain` "_build-all  Build."
+        h <- runLask lask dir ["run", "_build-all", "--help"] ""
+        resOut h `shouldContain` "lask run _build-all [--_dry-run] [--out-dir <String>]"
+        r <- runLask lask dir ["eval", "_build-all", "--_dry-run", "--out-dir", "x"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"b x\"\n"
+
+    -- The environments a function reaches are named as envs list names
+    -- them: the head and its kind, the host first (spec 11.4, 11.6).
+    it "shows the environments a function uses as envs list does" $ \lask ->
+      withProject
+        [ ("main.lask", "both(): String = do {\n  $[#golang:1.22] go version\n  $[#./infra/builder.Dockerfile] make\n  $[#local] uname\n}\n"),
+          ("infra/builder.Dockerfile", "FROM alpine:3.22.2\n")
+        ]
+        $ \dir -> do
+          t <- runLask lask dir ["run", "both", "--help"] ""
+          resOut t
+            `shouldContain` "Environments:\n  #local                       local\n  #./infra/builder.Dockerfile  recipe\n  #golang:1.22                 registry\n"
+          j <- runLask lask dir ["run", "--output", "json", "both", "--help"] ""
+          resOut j `shouldContain` "\"environments\":[{\"environment\":\"#local\",\"kind\":\"local\"},{\"environment\":\"#./infra/builder.Dockerfile\",\"kind\":\"recipe\"},{\"environment\":\"#golang:1.22\",\"kind\":\"registry\"}]"
+
+    -- A plain value binding is not a function the command line calls
+    -- (spec 11.2), so it has no help either.
+    it "lists functions only, and gives no help on a plain value binding" $ \lask ->
       withProject [("main.lask", "out_dir = \"dist\"\n" <> src)] $ \dir -> do
         l <- runLask lask dir ["run", "--help"] ""
         l `shouldSatisfy` (not . isInfixOf "out_dir " . resOut)
         v <- runLask lask dir ["run", "out_dir", "--help"] ""
-        resExit v `shouldBe` 0
-        resOut v `shouldContain` "lask run out-dir"
-        resOut v `shouldContain` "Returns:"
+        resExit v `shouldBe` 4
+        resErr v `shouldContain` "'out_dir' is a value, not a function"
+
+    it "calls functions only, wherever a subcommand takes a function name (spec 11.2)" $ \lask ->
+      withProject
+        [("main.lask", "version = \"1.0\"\ninc = \\(x: Number) -> x + 1\nshow(): String = version\ninternal hidden(): String = \"h\"\n")]
+        $ \dir -> do
+          let usage args = do
+                r <- runLask lask dir args ""
+                resExit r `shouldBe` 4
+                pure (resErr r)
+          usage ["eval", "version"] >>= (`shouldContain` "'version' is a value, not a function")
+          usage ["envs", "list", "version"] >>= (`shouldContain` "'version' is a value, not a function")
+          usage ["secrets", "list", "version"] >>= (`shouldContain` "'version' is a value, not a function")
+          -- An internal declaration is not one, for envs as for run.
+          usage ["envs", "list", "hidden"] >>= (`shouldContain` "no such function: 'hidden'")
+          inc <- runLask lask dir ["eval", "inc", "2"] ""
+          resOut inc `shouldBe` "3\n"
+          shown <- runLask lask dir ["eval", "show"] ""
+          resOut shown `shouldBe` "\"1.0\"\n"
 
     it "wins over argument binding errors (spec 11.6)" $ \lask ->
       withProject [("main.lask", src)] $ \dir -> do
@@ -2185,15 +2410,15 @@ spec = beforeAll findLask $ do
         resOut r `shouldContain` "Usage: lask run"
         resOut r `shouldNotContain` "Functions in"
 
-    it "reports the same information as JSON under --format json" $ \lask ->
+    it "reports the same information as JSON under --output json" $ \lask ->
       withProject [("main.lask", src)] $ \dir -> do
-        r <- runLask lask dir ["run", "--format", "json", "build", "--help"] ""
+        r <- runLask lask dir ["run", "--output", "json", "build", "--help"] ""
         resExit r `shouldBe` 0
         resOut r `shouldContain` "\"kind\":\"function-help\""
         resOut r `shouldContain` "\"name\":\"out_dir\""
         resOut r `shouldContain` "\"kind\":\"keyword\""
         resOut r `shouldContain` "\"returns\":{\"doc\":\"The artifact path.\",\"type\":\"String\"}"
-        l <- runLask lask dir ["run", "--format", "json", "--help"] ""
+        l <- runLask lask dir ["run", "--output", "json", "--help"] ""
         resOut l `shouldContain` "\"kind\":\"function-list\""
         resOut l `shouldContain` "\"signature\":\"test(): String\""
 
@@ -2252,7 +2477,10 @@ spec = beforeAll findLask $ do
     it "rejects a shell it has no script for" $ \lask ->
       withProject [] $ \dir -> do
         r <- runLask lask dir ["completion", "tcsh"] ""
-        resExit r `shouldBe` 1
+        -- An argument the command line does not accept is a usage error
+        -- (spec 11.3).
+        resExit r `shouldBe` 4
+        resErr r `shouldSatisfy` isInfixOf "E-CLI-USAGE"
 
     -- The completion grammar is written by hand beside the parser, so
     -- it can drift from it. optparse-applicative's built-in completer

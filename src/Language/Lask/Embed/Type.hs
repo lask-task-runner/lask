@@ -582,7 +582,36 @@ type family Conf (a :: Ty) (b :: Ty) :: Bool where
   Conf a ('TUnion bs) = Or (AnyConf a bs) (ConfBound a ('TUnion bs))
   Conf ('TVar _ ('BType u)) b = Conf u b
   Conf 'TEnv 'TRunnable = 'True
+  -- As conformsUnder: covariant in the contents of a container and the
+  -- field types of a record, contravariant in a function's parameters
+  -- and covariant in its result, Void standing only for Void.
+  Conf ('TArray a) ('TArray b) = Conf a b
+  Conf ('TMap a) ('TMap b) = Conf a b
+  Conf ('TAsync a) ('TAsync b) = Conf a b
+  Conf ('TRecord fs) ('TRecord gs) = FieldsConf fs gs
+  Conf ('TFun ps r) ('TFun qs s) = And (ParamsConf qs ps) (ResultConf r s)
   Conf _ _ = 'False
+
+-- | The fields of two records: the same names, the same optionality,
+-- and conforming types. 'Rec' sorts the fields, so they line up.
+type family FieldsConf (fs :: [Field]) (gs :: [Field]) :: Bool where
+  FieldsConf '[] '[] = 'True
+  FieldsConf ((n ':= a) ': fs) ((n ':= b) ': gs) = And (Conf a b) (FieldsConf fs gs)
+  FieldsConf ((n ':? a) ': fs) ((n ':? b) ': gs) = And (Conf a b) (FieldsConf fs gs)
+  FieldsConf _ _ = 'False
+
+-- | Each parameter type expected conforms to the one the function takes.
+type family ParamsConf (qs :: [Ty]) (ps :: [Ty]) :: Bool where
+  ParamsConf '[] '[] = 'True
+  ParamsConf (q ': qs) (p ': ps) = And (Conf q p) (ParamsConf qs ps)
+  ParamsConf _ _ = 'False
+
+-- | A result conforms, except that Void stands only for Void.
+type family ResultConf (r :: Ty) (s :: Ty) :: Bool where
+  ResultConf r r = 'True
+  ResultConf 'TVoid _ = 'False
+  ResultConf _ 'TVoid = 'False
+  ResultConf r s = Conf r s
 
 type family ConfBound (a :: Ty) (b :: Ty) :: Bool where
   ConfBound ('TVar _ ('BType u)) b = Conf u b

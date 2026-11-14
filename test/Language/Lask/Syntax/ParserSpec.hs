@@ -315,14 +315,14 @@ spec = do
           ]
 
     it "parses an access constraint on a function, after its return type (spec 5)" $
-      pModule "f(): String within { network: \"none\" } = \"x\""
+      pModule "f(): String within { outbound: false } = \"x\""
         `shouldBe` Right
           [ DFunction
               "f"
               []
               []
               (Just (ty SString))
-              (Just (AccessSpec NoSpan [(Spanned NoSpan "network", ex (EString [TPChunk NoSpan "none"]))]))
+              (Just (AccessSpec NoSpan [(Spanned NoSpan "outbound", ex (EBool False))]))
               (ex (EString [TPChunk NoSpan "x"]))
           ]
 
@@ -332,6 +332,16 @@ spec = do
           [ DWithin (AccessSpec NoSpan [(Spanned NoSpan "volumes", ex (EBool False))]),
             DValue "within" Public Nothing (num 1),
             dfun "within" [Param NoSpan (PPositional "x" Public Nothing)] Nothing (var "x")
+          ]
+
+    it "parses an access declaration, and a constraint written by its name (spec 5)" $
+      pModule "access Offline = { runs: false }\nwithin Offline\nf() within m.Offline = 1\naccess = 1\naccess(x) = x"
+        `shouldBe` Right
+          [ DAccess "Offline" (AccessSpec NoSpan [(Spanned NoSpan "runs", ex (EBool False))]),
+            DWithin (AccessRef NoSpan Nothing "Offline"),
+            DFunction "f" [] [] Nothing (Just (AccessRef NoSpan (Just "m") "Offline")) (num 1),
+            DValue "access" Public Nothing (num 1),
+            dfun "access" [Param NoSpan (PPositional "x" Public Nothing)] Nothing (var "x")
           ]
 
     it "parses type parameters on a type alias, and arguments on a reference" $ do
@@ -425,6 +435,18 @@ spec = do
       pExpr "1 + 2 == 3"
         `shouldBe` Right (EBin OpEq (ex (EBin OpAdd (num 1) (num 2))) (num 3))
 
+    it "parses && above || (spec 6.2)" $ do
+      pExpr "a || b && c"
+        `shouldBe` Right (EBin OpOr (var "a") (ex (EBin OpAnd (var "b") (var "c"))))
+      pExpr "a && b || c"
+        `shouldBe` Right (EBin OpOr (ex (EBin OpAnd (var "a") (var "b"))) (var "c"))
+
+    it "parses unary minus tightest" $ do
+      pExpr "-a * b"
+        `shouldBe` Right (EBin OpMul (ex (ENeg (var "a"))) (var "b"))
+      pExpr "a - -b"
+        `shouldBe` Right (EBin OpSub (var "a") (ex (ENeg (var "b"))))
+
     it "parses pipes at the lowest precedence" $
       pExpr "a && b |> f"
         `shouldBe` Right (EBin OpPipeR (ex (EBin OpAnd (var "a") (var "b"))) (var "f"))
@@ -465,9 +487,20 @@ spec = do
       pExpr "\\(x: Number): Number -> x + 1"
         `shouldBe` Right
           ( ELambda
+              []
               [Param NoSpan (PPositional "x" Public (Just (ty SNumber)))]
               (Just (ty SNumber))
               (ex (EBin OpAdd (var "x") (num 1)))
+          )
+
+    it "parses the type parameters of a lambda (spec 6.1)" $
+      pExpr "\\<T, U: orderable>(x: T): T -> x"
+        `shouldBe` Right
+          ( ELambda
+              [tparam "T", TypeParam (Spanned NoSpan "U") (Just (SBoundNamed (Spanned NoSpan "orderable")))]
+              [Param NoSpan (PPositional "x" Public (Just (ty (SNamed Nothing "T" []))))]
+              (Just (ty (SNamed Nothing "T" [])))
+              (var "x")
           )
 
     it "parses string interpolation" $

@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           lask
-version:        0.16.0
+version:        0.17.0
 description:    Please see the README on GitHub at <https://github.com/lask-task-runner/lask#readme>
 homepage:       https://github.com/lask-task-runner/lask#readme
 bug-reports:    https://github.com/lask-task-runner/lask/issues
@@ -87,7 +87,9 @@ library
       Language.Lask.Runtime.Glob
       Language.Lask.Runtime.Image
       Language.Lask.Runtime.ProcessStop
+      Language.Lask.Runtime.Reaper
       Language.Lask.Runtime.Secrets
+      Language.Lask.Runtime.Shutdown
       Language.Lask.Runtime.Value
       Language.Lask.SecretStore.Resolve
       Language.Lask.SecretStore.Types
@@ -150,9 +152,12 @@ library
     , time >=1.0 && <2
     , tls >=2.0 && <3
     , toml-parser >=2.0 && <3
+    , unix >=2.7 && <3
     , vector ==0.13.*
     , yaml >=0.11 && <1
   default-language: Haskell2010
+  if os(windows)
+    buildable: False
 
 executable lask
   main-is: Main.hs
@@ -202,6 +207,7 @@ executable lask
     , time >=1.0 && <2
     , tls >=2.0 && <3
     , toml-parser >=2.0 && <3
+    , unix >=2.7 && <3
     , vector ==0.13.*
     , yaml >=0.11 && <1
   default-language: Haskell2010
@@ -256,6 +262,7 @@ test-suite edsl-example
     , time >=1.0 && <2
     , tls >=2.0 && <3
     , toml-parser >=2.0 && <3
+    , unix >=2.7 && <3
     , vector ==0.13.*
     , yaml >=0.11 && <1
   default-language: Haskell2010
@@ -271,6 +278,7 @@ test-suite lask-test
       Command.Lask.ExamplesSpec
       Command.Lask.GitPinSpec
       Command.Lask.Harness
+      Command.Lask.SignalSpec
       Command.Lask.SpecExamplesSpec
       Language.Lask.Builtins.DocSpec
       Language.Lask.Builtins.FormatSpec
@@ -357,6 +365,7 @@ test-suite lask-test
     , time >=1.0 && <2
     , tls >=2.0 && <3
     , toml-parser >=2.0 && <3
+    , unix >=2.7 && <3
     , vector ==0.13.*
     , wai >=3.2 && <4
     , warp >=3.3 && <4

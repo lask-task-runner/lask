@@ -46,8 +46,6 @@ data ErrorCode
   | EModuleUnresolved
   | EModuleDeepImport
   | EModuleLockStale
-  | EModuleRevMoved
-  | EModuleHashMismatch
   | EModuleConfirmTarget
   | ERuntimeDivByZero
   | ERuntimeCommandNonzero
@@ -58,12 +56,15 @@ data ErrorCode
   | ERuntimeTimeout
   | ERuntimeUntilExhausted
   | ERuntimeSessionClosed
+  | ERuntimeInterrupted
   | EIoStdinRead
   | EIoEnvResolve
   | EIoImageMissing
   | EIoImageDigest
   | EIoCommandMissing
   | EIoFs
+  | EIoModuleHashMismatch
+  | EIoModuleRevMoved
   | EIoDataDecode
   | EIoSecretProvider
   | EIoSecretRef
@@ -78,15 +79,25 @@ data ErrorCode
 -- mistake that is not an error.
 data AdvisoryCode
   = WAsyncUnused
+  | WAsyncUnawaited
   | WCommandOption
   | WSecretCommandLine
+  | WRegexPattern
+  | WDocParamUnknown
+  | WCliParamShadowed
+  | WExportInconsistent
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 advisoryText :: AdvisoryCode -> Text
 advisoryText c = case c of
   WAsyncUnused -> "W-ASYNC-UNUSED"
+  WAsyncUnawaited -> "W-ASYNC-UNAWAITED"
   WCommandOption -> "W-COMMAND-OPTION"
   WSecretCommandLine -> "W-SECRET-COMMAND-LINE"
+  WRegexPattern -> "W-REGEX-PATTERN"
+  WDocParamUnknown -> "W-DOC-PARAM-UNKNOWN"
+  WCliParamShadowed -> "W-CLI-PARAM-SHADOWED"
+  WExportInconsistent -> "W-EXPORT-INCONSISTENT"
 
 -- | Error stage (spec 14.3).
 data Stage
@@ -130,8 +141,6 @@ codeText c = case c of
   EModuleUnresolved -> "E-MODULE-UNRESOLVED"
   EModuleDeepImport -> "E-MODULE-DEEP-IMPORT"
   EModuleLockStale -> "E-MODULE-LOCK-STALE"
-  EModuleRevMoved -> "E-MODULE-REV-MOVED"
-  EModuleHashMismatch -> "E-MODULE-HASH-MISMATCH"
   EModuleConfirmTarget -> "E-MODULE-CONFIRM-TARGET"
   ERuntimeDivByZero -> "E-RUNTIME-DIV-BY-ZERO"
   ERuntimeCommandNonzero -> "E-RUNTIME-COMMAND-NONZERO"
@@ -142,12 +151,15 @@ codeText c = case c of
   ERuntimeTimeout -> "E-RUNTIME-TIMEOUT"
   ERuntimeUntilExhausted -> "E-RUNTIME-UNTIL-EXHAUSTED"
   ERuntimeSessionClosed -> "E-RUNTIME-SESSION-CLOSED"
+  ERuntimeInterrupted -> "E-RUNTIME-INTERRUPTED"
   EIoStdinRead -> "E-IO-STDIN-READ"
   EIoEnvResolve -> "E-IO-ENV-RESOLVE"
   EIoImageMissing -> "E-IO-IMAGE-MISSING"
   EIoImageDigest -> "E-IO-IMAGE-DIGEST"
   EIoCommandMissing -> "E-IO-COMMAND-MISSING"
   EIoFs -> "E-IO-FS"
+  EIoModuleHashMismatch -> "E-IO-MODULE-HASH-MISMATCH"
+  EIoModuleRevMoved -> "E-IO-MODULE-REV-MOVED"
   EIoDataDecode -> "E-IO-DATA-DECODE"
   EIoSecretProvider -> "E-IO-SECRET-PROVIDER"
   EIoSecretRef -> "E-IO-SECRET-REF"

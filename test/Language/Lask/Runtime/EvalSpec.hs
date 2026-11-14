@@ -17,7 +17,9 @@ import Language.Lask.Elaborate (elaborateProgram)
 import Language.Lask.ErrorCode
 import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
-import Language.Lask.Runtime.Eval (applyValue, mkRtCtx, topValue)
+import qualified Data.Map.Strict as Map
+import Language.Lask.Runtime.Eval (applyValue, castValueEither, mkRtCtx, topValue)
+import Language.Lask.Types (Type (TyEnvironment, TyRunnable))
 import Language.Lask.Runtime.Secrets (maskSecrets, resetSecretRegistryForTests)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue)
@@ -112,6 +114,24 @@ statefulRunner = do
           _ -> mockRunner env cmd
   pure (runner, readIORef calls, readIORef stopped)
 
+-- | A runner that records each command it is given, in order. "hang"
+-- waits until it is stopped, "slow" answers "winner" after a tenth of
+-- a second, "broken" exits 9 at once and "slow_broken" after a tenth of
+-- a second; anything else
+-- succeeds with no output.
+recordingRunner :: IO (CommandRunner, IO [Text])
+recordingRunner = do
+  seen <- newIORef []
+  let runner _ cmd = do
+        atomicModifyIORef' seen (\xs -> (xs <> [cmd], ()))
+        case cmd of
+          "hang" -> threadDelay 10000000 >> pure (Right (0, "", ""))
+          "broken" -> pure (Right (9, "", "broken"))
+          "slow" -> threadDelay 100000 >> pure (Right (0, "winner", ""))
+          "slow_broken" -> threadDelay 100000 >> pure (Right (9, "", "broken"))
+          _ -> pure (Right (0, "", ""))
+  pure (runner, readIORef seen)
+
 spec :: Spec
 spec = do
   describe "literals and operators (spec 8.1)" $ do
@@ -121,6 +141,29 @@ spec = do
       evalsTo "x = 10 / 4" "x" "2.5"
     it "evaluates comparisons and logic with short-circuit" $
       evalsTo "f(): Bool = 1 < 2 && !(2 == 3)" "f" "true"
+    it "expands sugar to the built-ins whatever their names are bound to (spec 7.6)" $ do
+      -- A user map is what a written call reaches; for still maps.
+      evalsTo "map(xs: Array<Number>, f: Function<Number, Number>): String = \"mine\"\nf() = for (x : [1, 2]) { x + 1 }" "f" "[2,3]"
+      evalsTo "map(xs: Array<Number>, f: Function<Number, Number>): String = \"mine\"\nf() = map([1], \\(x: Number): Number -> x)" "f" "\"mine\""
+      -- A local binding of the name does not reach the sugar either.
+      evalsTo "f() = do {\n  spawn = 1\n  h = async 2\n  (await h) + spawn\n}" "f" "3"
+      evalsTo "recover(): Number = 0\nf() = try { fail({code: 1, message: \"x\"}) } catch (e) { e.code + 10 }" "f" "11"
+      evalsTo "run(s: String): String = \"mine\"\nf() = $[#local] echo hi" "f" "\"hi\\n\""
+    it "registers a !! value through the built-in mark_secret whatever the name is bound to" $
+      evalsTo "mark_secret(s: String): String = \"mine\"\nf(x!!: String) = x\ng() = f(\"s\")" "g" "\"s\""
+    it "binds && tighter than || (spec 6.2)" $ do
+      evalsTo "f(): Bool = true || false && false" "f" "true"
+      evalsTo "f(): Bool = false && true || true" "f" "true"
+      evalsTo "f(): Bool = (true || false) && false" "f" "false"
+    it "orders strings by code point" $ do
+      evalsTo "f(): Bool = \"apple\" < \"banana\"" "f" "true"
+      evalsTo "f(): Bool = \"B\" < \"a\"" "f" "true"
+      evalsTo "f(): Bool = \"b\" <= \"b\" && \"c\" > \"b\" && \"a\" >= \"a\"" "f" "true"
+    it "negates with unary minus, binding tighter than the binary operators" $ do
+      evalsTo "f() = -2 * 3" "f" "-6"
+      evalsTo "f() = 1 - -2" "f" "3"
+      evalsTo "f() = -(1 + 2)" "f" "-3"
+      evalsTo "f(): Bool = -1 < 0" "f" "true"
     it "short-circuits && without evaluating the right side" $
       evalsTo "f(): Bool = false && get({\"a\": true}, \"missing\")" "f" "false"
     it "compares structurally" $
@@ -485,6 +528,25 @@ spec = do
       failsWith "f() = sqrt(0 - 1)" "f" ERuntimeValue
       failsWith "f() = clamp(1, 3, 0)" "f" ERuntimeValue
 
+  describe "choices the specification makes, not the implementation (spec 13, 15.3, 15.8)" $ do
+    it "counts a string in code points" $ do
+      evalsTo "f() = length(\"\233\128077\")" "f" "2"
+      evalsTo "f() = substring(\"a\128077b\", 1, 2)" "f" "\"\128077\""
+    it "splits on an empty delimiter into code points, and joins with nothing" $ do
+      evalsTo "f() = split(\"a\128077c\", \"\")" "f" "[\"a\",\"\128077\",\"c\"]"
+      evalsTo "f() = split(\"\", \"\")" "f" "[]"
+      evalsTo "f() = join([\"a\", \"b\"], \"\")" "f" "\"ab\""
+    it "writes the keys of an object in code point order" $ do
+      evalsTo "f() = to_json({b: 1, a: 2, \"Z\": 3})" "f" "\"{\\\"Z\\\":3,\\\"a\\\":2,\\\"b\\\":1}\""
+      evalsTo "m: Map<Number> = {\"b\": 1, \"a\": 2}\nf() = to_json(m)" "f" "\"{\\\"a\\\":2,\\\"b\\\":1}\""
+      evalsTo "f() = encode({b: 1, a: 2}, \"yaml\")" "f" "\"a: 2\\nb: 1\\n\""
+    it "lets a decoded object be used as a record or as a map" $ do
+      evalsTo "f(): String = case (from_json(\"{\\\"a\\\": 1}\")) {\n  Map<Number> -> \"map\"\n  else -> \"other\"\n}" "f" "\"map\""
+      evalsTo "f(): String = case (from_json(\"{\\\"a\\\": 1}\")) {\n  Record<a: Number> -> \"record\"\n  else -> \"other\"\n}" "f" "\"record\""
+    it "reports a format it does not know as E-IO-DATA-DECODE, decoding or encoding" $ do
+      failsWith "f() = decode(\"x\", \"xml\")" "f" EIoDataDecode
+      failsWith "f() = encode(1, \"xml\")" "f" EIoDataDecode
+
   describe "string additions (spec 15.3)" $ do
     it "searches without a substring hack" $ do
       evalsTo "f() = contains(\"abc\", \"b\")" "f" "true"
@@ -682,6 +744,43 @@ spec = do
       failsWith "f(v: String | Null): String = cast(v)\ng() = f(null)" "g" ERuntimeCast
     it "serializes a union as the member the value is (spec 13.1)" $
       evalsTo "f(): Array<String | Null> = [\"a\", null]" "f" "[\"a\",null]"
+    -- A type parameter has no run-time check, so narrowing to one
+    -- passes the value as it is (spec 6.4, 8.5).
+    it "narrows to a type parameter without checking it (spec 6.4)" $ do
+      let orDefault = "or_default<T>(x: T | Null, d: T): T = case (x) {\n  Null -> d\n  else -> x\n}\n"
+      evalsTo (orDefault <> "g(): String = or_default(\"x\", \"y\")") "g" "\"x\""
+      evalsTo (orDefault <> "g(): Number = or_default(null, 3)") "g" "3"
+      evalsTo (orDefault <> "g(): Record<a: Number> = or_default({a: 1}, {a: 2})") "g" "{\"a\":1}"
+    it "narrows to a type that holds a type parameter, checking only the rest" $ do
+      evalsTo
+        "count<T>(xs: Array<T> | Null): Number = case (xs) {\n  Null -> 0\n  else -> size(xs)\n}\ng(): Number = do {\n  v: Array<String> | Null = [\"a\", \"b\"]\n  count(v)\n}"
+        "g"
+        "2"
+      evalsTo
+        "ks<T>(m: Map<T> | Null): Array<String> = case (m) {\n  Null -> []\n  else -> keys(m)\n}\ng(): Array<String> = do {\n  m: Map<Number> | Null = {\"b\": 1, \"a\": 2}\n  ks(m)\n}"
+        "g"
+        "[\"a\",\"b\"]"
+    -- A runnable with run options does not conform to Environment
+    -- (spec 4.4); an environment conforms to Runnable.
+    it "does not take a runnable with run options for an environment (spec 4.4, 15.8)" $ do
+      failsWith "k(x: Any): Environment = cast(x)\ng(): Environment = k(#alpine:3.20{memory: \"1g\"})" "g" ERuntimeCast
+      evalsTo "k(x: Any): Environment = cast(x)\ng(): Environment = k(runnable(#alpine:3.20))" "g" "{\"$type\":\"Environment\",\"kind\":\"docker\",\"params\":{\"image\":\"alpine:3.20\"}}"
+      evalsTo "k(x: Any): Environment = cast(x)\ng(): Environment = k(#alpine:3.20{memory: null})" "g" "{\"$type\":\"Environment\",\"kind\":\"docker\",\"params\":{\"image\":\"alpine:3.20\"}}"
+      evalsTo "k(x: Any): Runnable = cast(x)\ng(): Runnable = k(#alpine:3.20)" "g" "{\"$type\":\"Environment\",\"kind\":\"docker\",\"params\":{\"image\":\"alpine:3.20\"}}"
+    it "dispatches a runnable with run options to a Runnable head, not an Environment one (spec 6.4)" $ do
+      let h = "h(x: Any): String = case (x) {\n  Environment -> \"env\"\n  Runnable -> \"runnable\"\n  else -> \"other\"\n}\n"
+      evalsTo (h <> "g(): String = h(#alpine:3.20{memory: \"1g\"})") "g" "\"runnable\""
+      evalsTo (h <> "g(): String = h(#alpine:3.20)") "g" "\"env\""
+      evalsTo (h <> "g(): String = h(#local)") "g" "\"env\""
+    it "names a runnable with run options as Runnable, and one without as Environment" $ do
+      typeNameOf (VEnv (EnvValue "docker" (Map.fromList [("image", VString "a"), ("memory", VString "1g")]))) `shouldBe` "Runnable"
+      typeNameOf (VEnv (EnvValue "docker" (Map.fromList [("image", VString "a"), ("platform", VString "linux/amd64")]))) `shouldBe` "Environment"
+      typeNameOf (VEnv (EnvValue "local" Map.empty)) `shouldBe` "Environment"
+    it "takes a container session for a runnable and not an environment (spec 15.5)" $ do
+      let session = VEnv (EnvValue "session" (Map.fromList [("origin", VEnv (EnvValue "docker" (Map.fromList [("image", VString "a")])))]))
+      isRight (castValueEither TyEnvironment session) `shouldBe` False
+      isRight (castValueEither TyRunnable session) `shouldBe` True
+      typeNameOf session `shouldBe` "Runnable"
 
   describe "optional record fields (spec 4.2)" $ do
     it "casts a value whose optional key is absent, and not one whose required key is" $ do
@@ -710,6 +809,16 @@ spec = do
     it "omits an absent optional field from the output, and writes a null (spec 13.1)" $ do
       evalsTo "f(): Record<a: Number, b?: String> = {a: 1}" "f" "{\"a\":1}"
       evalsTo "f(): Record<a: Number, b?: String | Null> = {a: 1, b: null}" "f" "{\"a\":1,\"b\":null}"
+
+  describe "lambdas with type parameters (spec 6.1)" $ do
+    it "runs a generic binding at every instantiation, at top level and in a block" $ do
+      evalsTo "ident = \\<T>(x: T): T -> x\ng(): String = \"#{ident(1)} #{ident(\"a\")}\"" "g" "\"1 a\""
+      evalsTo
+        "g(): Array<String> = do {\n  both = \\<T: comparable>(x: T, y: T): Bool -> x == y\n  [to_string(both(1, 1)), to_string(both(\"a\", \"b\"))]\n}"
+        "g"
+        "[\"true\",\"false\"]"
+    it "recurses through a lambda binding with a return type" $
+      evalsTo "count = \\(n: Number): Number -> n < 1 ? 0 : 1 + count(n - 1)\ng(): Number = count(3)" "g" "3"
 
   describe "user type parameters (spec 4.2, 4.4)" $ do
     it "runs one body at every instantiation" $ do
@@ -836,6 +945,46 @@ spec = do
     it "rejects a limit that is not a positive number of seconds" $ do
       failsWith "f() = timeout(0, \\() -> 1)" "f" ERuntimeValue
       failsWith "f() = timeout(0 - 1, \\() -> 1)" "f" ERuntimeValue
+
+  -- A finally block runs when its body is abandoned, as it does when
+  -- the body succeeds or fails (spec 6.9, 8.10).
+  describe "finally on abandonment (spec 6.9, 8.10)" $ do
+    let hang = "hang(): String = $[#local] hang\n"
+        guarded = "guarded(tag: String): String = try { hang() } finally { $[#local]{cleanup #{tag}} }\n"
+    it "runs the finally of a body a timeout abandons, then fails with 124" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> guarded <> "f() = timeout(0.1, \\() -> guarded(\"t\"))") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeTimeout) . fst) (const False)
+      seen `shouldReturn` ["hang", "cleanup 't'"]
+    it "runs the finally of the computations race cancels" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> guarded <> "f() = do {\n  a = async guarded(\"loser\")\n  b = async $[#local] slow\n  race([a, b])\n}") "f"
+      r `shouldBe` Right "\"winner\""
+      seen >>= (`shouldSatisfy` elem "cleanup 'loser'")
+    it "runs the finally of the computations all cancels after a failure" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> guarded <> "f() = do {\n  a = async guarded(\"other\")\n  b = async $[#local] slow_broken\n  all([a, b])\n}") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeCommandNonzero) . fst) (const False)
+      seen >>= (`shouldSatisfy` elem "cleanup 'other'")
+    it "runs nested finally blocks innermost first" $ do
+      (runner, seen) <- recordingRunner
+      _ <- runWith runner (hang <> "f() = timeout(0.1, \\() -> try {\n  try { hang() } finally { $[#local]{inner} }\n} finally { $[#local]{outer} })") "f"
+      seen `shouldReturn` ["hang", "inner", "outer"]
+    it "runs no catch block for an abandonment" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> "f() = timeout(0.1, \\() -> try { hang() } catch (e) { $[#local]{handler} })") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeTimeout) . fst) (const False)
+      seen `shouldReturn` ["hang"]
+    it "keeps the timeout's failure when the finally block fails" $ do
+      (runner, seen) <- recordingRunner
+      r <- runWith runner (hang <> "f() = timeout(0.1, \\() -> try { hang() } finally { $[#local]{broken} })") "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeTimeout) . fst) (const False)
+      seen `shouldReturn` ["hang", "broken"]
+    it "still lets a failing finally take the place of the body's failure" $ do
+      (runner, _) <- recordingRunner
+      r <- runWith runner "f() = try { $[#local]{exit_three} } finally { $[#local]{broken} }" "f"
+      fmap (const ()) r `shouldSatisfy` either ((== Just ERuntimeCommandNonzero) . fst) (const False)
+      fmap (either snd id) (pure r) >>= (`shouldSatisfy` T.isInfixOf "\"code\":9")
 
   describe "nondeterministic generation (spec 15.13)" $ do
     it "generates a version 4 uuid in canonical form" $ do

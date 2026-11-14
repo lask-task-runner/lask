@@ -206,7 +206,7 @@ The thing to take away: every filesystem call names the environment it acts in, 
 lask run --help              # the listing, from the first line of each comment
 lask run publish --help      # one task, from the same comment
 lask eval publish --tag stable
-lask eval --stdout-encode pretty-json matrix
+lask eval --output pretty-json matrix
 ```
 
 The thing to take away: `-` maps to `_`, so `publish(--dry_run = false)` is `--dry-run` on the command line, and the comment above a task is the only place its help is written.

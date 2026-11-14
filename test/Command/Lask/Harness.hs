@@ -112,7 +112,8 @@ withProject files action =
 -- @registry/<ref>@ holds the digest a tag resolves to upstream,
 -- @present/<name>@ an image on the daemon with its repository digests,
 -- @calls@ every invocation, and @env@ each variable a @run@ named by
--- @--env NAME@ with the value the client's environment gave it. A file
+-- @--env NAME@ with the value the client's environment gave it, and
+-- each line of the file a @run@ is given with @--env-file@. A file
 -- @daemon-down@ makes it answer as a client that reaches no daemon: every
 -- command fails. A file @run-fails@ makes a @run@ write its contents to
 -- stderr and exit with the code in @run-exit@. A @run@ of lask's
@@ -171,7 +172,9 @@ fakeDocker =
       "  network) case \"$2\" in create) echo net-id ;; esac ;;",
       "  logs) echo '{\"event\":\"ready\"}'; [ -f \"$S/workload-ran\" ] && [ -f \"$S/denied\" ] && cat \"$S/denied\"; exit 0 ;;",
       "  inspect) echo true ;;",
-      "  ps) ;;",
+      -- The containers an invocation labelled as its own, as the
+      -- reaper asks for them (spec 11.12).
+      "  ps) case \"$*\" in *io.lask.owner=*) echo lask-left-behind ;; esac ;;",
       "  run) prev=''",
       "    case \" $* \" in *' -d '*) echo container-id; exit 0 ;; esac",
       "    touch \"$S/workload-ran\"",
@@ -182,6 +185,7 @@ fakeDocker =
       "    case \"$*\" in *'command -v'*) w=0; for a in \"$@\"; do if [ $w = 1 ]; then if [ -f \"$S/missing/$a\" ]; then echo \"-$a\"; else echo \"+$a\"; fi; fi; [ \"$a\" = sh ] && w=1; done; exit 0 ;; esac",
       "    for a in \"$@\"; do",
       "      if [ \"$prev\" = --env ]; then case \"$a\" in *=*) ;; *) eval \"v=\\${$a-UNSET}\"; echo \"$a=$v\" >> \"$S/env\" ;; esac; fi",
+      "      [ \"$prev\" = --env-file ] && cat \"$a\" >> \"$S/env\"",
       "      prev=\"$a\"",
       "    done",
       -- A command string lask gives the shell on its stdin is read

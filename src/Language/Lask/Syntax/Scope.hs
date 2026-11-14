@@ -4,6 +4,8 @@
 module Language.Lask.Syntax.Scope
   ( localsAt,
     enclosingCall,
+    childExprs,
+    paramDefaults,
   )
 where
 
@@ -35,7 +37,7 @@ localsAt path (Module ds _ _) pos = nub (concat (reverse (concatMap goDecl ds)))
     goExpr e@(Expr sp f)
       | not (at sp) = []
       | otherwise = case f of
-          ELambda ps _ b ->
+          ELambda _ ps _ b ->
             [map paramName ps] <> concatMap goExpr (paramDefaults ps) <> goExpr b
           EFor (Spanned _ x) xs b
             | at (blockSpan b) -> [x] : goBlock b
@@ -107,12 +109,13 @@ childExprs (Expr _ f) = case f of
   EString ps -> partExprs ps
   EArray es -> es
   EObject kvs -> map snd kvs
-  ELambda ps _ b -> paramDefaults ps <> [b]
+  ELambda _ ps _ b -> paramDefaults ps <> [b]
   ECall fn as -> fn : map argExpr as
   EDot e _ -> [e]
   EIndex e i -> [e, i]
   EBin _ a b -> [a, b]
   ENot e -> [e]
+  ENeg e -> [e]
   EDo b -> blockExprs b
   EIf c t mElse -> c : blockExprs t <> maybe [] blockExprs mElse
   ECond c a b -> [c, a, b]

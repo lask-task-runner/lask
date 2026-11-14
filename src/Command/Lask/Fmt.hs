@@ -9,7 +9,7 @@ module Command.Lask.Fmt
   )
 where
 
-import Command.Lask.Common (renderDiagsLines, usageError)
+import Command.Lask.Common (jsonOut, outputJson, renderDiagsLines, usageError)
 import Command.Lask.Options (CommonOpts (..), FmtOpts (..))
 import Control.Exception (IOException, try)
 import Control.Monad (forM, unless, when)
@@ -48,8 +48,8 @@ cmdFmt o
       outcomes <- forM files $ \f -> (,) f <$> fmtFile o f
       let changed = [f | (f, Changed) <- outcomes]
           failures = [c | (_, Failed c) <- outcomes]
-      if optJsonFormat opts
-        then BL.putStr (A.encode changed <> "\n")
+      if outputJson opts
+        then TIO.putStrLn (jsonOut opts (TE.decodeUtf8 (BL.toStrict (A.encode changed))))
         else mapM_ putStrLn changed
       case failures of
         (c : _) -> exitWith (ExitFailure c)
@@ -99,7 +99,7 @@ fmtFile o path = do
   where
     ioFailure msg = do
       TIO.hPutStrLn stderr $
-        if optJsonFormat (fmtCommon o)
+        if optLogJson (fmtCommon o)
           then jsonLine [("code", A.String (codeText EIoFs)), ("file", A.String (T.pack path)), ("message", A.String msg)]
           else codeText EIoFs <> ": " <> T.pack path <> ": " <> msg
       pure (Failed 3)
@@ -125,11 +125,11 @@ fmtStdinOnly o = do
 reportError :: CommonOpts -> FilePath -> FormatError -> IO Outcome
 reportError opts path err = case err of
   FormatSyntax ds -> do
-    TIO.hPutStrLn stderr (renderDiagsLines (optJsonFormat opts) ds)
+    TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) ds)
     pure (Failed 1)
   FormatInternal msg -> do
     TIO.hPutStrLn stderr $
-      if optJsonFormat opts
+      if optLogJson opts
         then jsonLine [("file", A.String (T.pack path)), ("message", A.String ("internal error: " <> msg))]
         else T.pack path <> ": internal error: " <> msg <> "; the file is left as it is (please report this)"
     pure (Failed 1)

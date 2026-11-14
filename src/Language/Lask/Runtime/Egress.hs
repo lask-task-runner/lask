@@ -44,6 +44,7 @@ import Language.Lask.ErrorCode (ErrorCode (..))
 import Language.Lask.Runtime.Container (ContainerBackend (..), Engine (..), engineName)
 import Language.Lask.Runtime.EgressProxy (embeddedProxyImage)
 import Language.Lask.Runtime.ProcessStop (liveOf)
+import Language.Lask.Runtime.Reaper (egressOwnerLabel, ensureReaper, processOwner)
 import Language.Lask.Runtime.Value (LaskFailure, Value (..), ioFailure, runtimeFailure)
 import System.Entropy (getEntropy)
 import System.Environment (lookupEnv)
@@ -108,14 +109,11 @@ swept = unsafePerformIO (newIORef False)
 {-# NOINLINE swept #-}
 
 ownerLabel :: Text
-ownerLabel = "io.lask.egress.owner"
+ownerLabel = egressOwnerLabel
 
 -- | This process, as its labels name it: @<host>:<pid>@.
 owner :: IO Text
-owner = do
-  host <- getHostName
-  pid <- P.getCurrentPid
-  pure (T.pack host <> ":" <> T.pack (show pid))
+owner = pure processOwner
 
 -- | The placement for these entries, made if this invocation has none.
 placeEgress :: ContainerBackend -> [EgressEntry] -> IO (Either LaskFailure Placement)
@@ -150,6 +148,9 @@ make backend key = do
               client = cbClient backend
               undo = removePieces backend [base] [inside, outside]
               engineText = engineName (cbEngine backend)
+          -- What this makes is removed by the reaper should the
+          -- invocation be killed (spec 11.12).
+          ensureReaper (T.unpack engineText)
           r1 <- client (["network", "create", "--internal"] <> labels <> [T.unpack inside])
           case r1 of
             Left e -> pure (Left (ioFailure EIoEnvResolve ("egress needs a network with no route out, which " <> engineText <> " could not create: " <> e)))

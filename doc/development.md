@@ -46,7 +46,7 @@ $ dist/bin/lask run ci-cabal             # lask.cabal is what stack generates fr
 $ dist/bin/lask run ci-test              # unit tests with coverage, then doctests, on the host
 $ dist/bin/lask run smoke-colon-dir      # a containerized task from a directory with a colon in its path
 $ dist/bin/lask run smoke-completion     # the completion scripts, through bash, zsh and fish if present
-$ dist/bin/lask eval --stdout-encode text coverage-report   # per-module coverage, after ci-test
+$ dist/bin/lask eval --output text coverage-report   # per-module coverage, after ci-test
 ```
 
 `ci-cabal` fails when `package.yaml` changed and the regenerated `lask.cabal` was not committed: commit it along with the change.

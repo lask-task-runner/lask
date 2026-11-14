@@ -90,6 +90,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [11.9 Interactive Session (`repl`)](#119-interactive-session-repl)
     - [11.10 Secret References (`secrets`)](#1110-secret-references-secrets)
     - [11.11 Formatting (`fmt`)](#1111-formatting-fmt)
+    - [11.12 Signals](#1112-signals)
   - [12. Observability](#12-observability)
     - [12.1 Observation Targets and Design Principles](#121-observation-targets-and-design-principles)
     - [12.2 Execution Log](#122-execution-log)
@@ -137,6 +138,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [16.7 CLI Execution Examples](#167-cli-execution-examples)
     - [16.8 Execution Event Example](#168-execution-event-example)
     - [16.9 Error Handling and Exit Codes](#169-error-handling-and-exit-codes)
+  - [Appendix A. Command Schemas](#appendix-a-command-schemas)
 
 ## 1. Introduction
 
@@ -198,7 +200,7 @@ This section defines the principal terms used in this specification.
 - Serialization: The process of converting a value into an external representation so that it can be stored and transferred.
 - Core expression: An expression remaining after static expansion of syntactic sugar (7.6). The evaluation target of the dynamic semantics (Chapter 8).
 - Syntactic sugar: Surface syntax that is normalized into core expressions. Only the semantics of the expressions after normalization are normative (7.6).
-- Core function: A built-in function that is the normalization target of syntactic sugar, or is integral to a language feature. It cannot be declared or overridden by user code (7.2).
+- Core function: A built-in function that is the normalization target of syntactic sugar, or is integral to a language feature. Syntactic sugar refers to it directly, whatever its name is bound to in scope (7.6), so a user definition of the same name shadows it for ordinary references only (7.2).
 - Built-in library: The set of built-in symbols available without explicit imports (Chapter 15).
 - Pre-execution error: A failure detected and reported before function evaluation begins (environment resolution, argument binding, etc.).
 - Runnable: An execution environment together with run options for its container, such as `memory` or `network` (6.7, 15.5). An `Environment` is a `Runnable` with no options, so wherever a command takes a `Runnable`, an `Environment` may be given.
@@ -277,7 +279,7 @@ The contiguous block of comments directly above a declaration (Chapter 5) is the
   - `@example <text>`: a usage example. Multiple occurrences are permitted and are displayed in order of appearance.
   - `@hidden`: excludes the declaration from listings (11.6). Help requested by name is still displayed.
 - Unknown tags are not errors; they are carried through into the description as written (forward compatibility).
-- An `@param` that names a parameter the declaration does not have is not an error either. It may be reported as the advisory diagnostic `W-DOC-PARAM-UNKNOWN` (14.2).
+- An `@param` that names a parameter the declaration does not have is not an error either. It is reported as the advisory diagnostic `W-DOC-PARAM-UNKNOWN` (14.2).
 - Documentation comments have no effect on static or dynamic semantics. They are consumed by editor integration (`serve`) and by help display (11.6).
 
 ### 3.2 Identifiers
@@ -285,7 +287,7 @@ The contiguous block of comments directly above a declaration (Chapter 5) is the
 ```ebnf
 identifier = lower_id | upper_id .
 lower_id   = ( "a" … "z" | "_" ) { letter | decimal_digit | "_" } .
-upper_id   = ( "A" … "Z" | "_" ) { letter | decimal_digit | "_" } .
+upper_id   = "A" … "Z" { letter | decimal_digit | "_" } .
 letter        = "A" … "Z" | "a" … "z" .
 decimal_digit = "0" … "9" .
 ```
@@ -293,6 +295,7 @@ decimal_digit = "0" … "9" .
 Rules:
 
 - Identifiers cannot contain `-`. Because `-` is always interpreted as a binary operator (6.2), `a-b` is unambiguously parsed as `a - b` (subtraction).
+- The two are told apart by their first character alone. An identifier that begins with `_` is a `lower_id`, whatever follows: `_X` is the name of a value, and no type, type alias or type parameter is named with a leading `_`. Since a type head of `case` (6.4) is recognized by its leading `upper_id`, `_X` written there is a value head.
 - Multi-word identifiers are composed in snake case using `_` (`show_version`).
 - The name mapping for calling functions from the CLI with `-`-separated names (`show-version`) is defined in 11.2. Because identifiers cannot contain `-`, this mapping is collision-free.
 
@@ -329,7 +332,7 @@ Lexical rules:
 - Consecutive newlines (blank lines) are treated as equivalent to a single newline token. Blank lines produce no declarations or statements.
 - Comments are treated the same as whitespace for the purposes of lexical analysis.
 - A line comment ends at a newline, and a block comment is enclosed by `/*` and `*/`.
-- Number literals do not include a sign. `-` and `+` are always interpreted as binary operators. Negative numbers cannot be expressed as literals and are constructed with expressions such as `0 - 1` (unary minus is not provided).
+- Number literals do not include a sign. A negative number is written with unary minus (6.2), `-1`, which is the expression `0 - 1` and not a literal. `+` is always a binary operator.
 - `env_head` is the leading token of an environment expression (6.7) and is read with longest match. It terminates at the position where a character that is not an `env_char` (whitespace, `]`, `,`, `)`, `}`, etc.) appears.
 - A `#` not followed by at least one `env_char` is a lexical error (except for the interpolation opener `#{` inside interpreted strings and command strings).
 - The character set of `env_char` is defined so that any Docker image reference including registry, repository, tag, and digest can be written. `@` is included for digest specification (e.g. `#alpine@sha256:...`). It also covers a relative path to a Dockerfile (`#./images/build/Dockerfile`, 6.7).
@@ -341,7 +344,8 @@ Reserved words:
 - `import`, `export`, `internal`, `from`, `as`, `type`, `command`, `do`, `async`, `await`, `if`, `else`, `case`, `for`, `return`, `try`, `catch`, `finally`, `true`, `false`, `null`
 - `return` is reserved but begins no construct: Lask has no return statement (6.5). It is kept so that a program written as in another language is told what to write instead, by a syntax error (`E-SYNTAX-UNEXPECTED-TOKEN`) rather than an undefined name.
 - `on` is not a reserved word. It is a contextual keyword recognized only within a command declaration (Chapter 5), directly after the closing brace of its command words, where no other token may appear; it remains usable as an identifier elsewhere. Because the position is lexical, an editor can show `on` as a keyword there without elaborating the module.
-- `within` is not a reserved word either. It is a contextual keyword recognized in two positions only (Chapter 5): at the start of a top-level declaration, directly followed by `{`, and in a function declaration, after its parameter list and return type and before its `=`. Neither position admits an identifier, so `within` remains usable as an identifier everywhere else.
+- `within` is not a reserved word either. It is a contextual keyword recognized in two positions only (Chapter 5): at the start of a top-level declaration, directly followed by `{`, by an `upper_id`, or by a `lower_id` and `.`, and in a function declaration, after its parameter list and return type and before its `=`. Neither position admits an identifier, so `within` remains usable as an identifier everywhere else.
+- `access` is a contextual keyword of the same kind, recognized only at the start of a top-level declaration, after its visibility marker if it has one, directly followed by an `upper_id` (Chapter 5). No declaration named `access` is followed by one, so `access` remains usable as an identifier everywhere else.
 - `stdin` is not a reserved word but is a reserved identifier (9.3), and must not be declared or rebound in user code.
 
 String interpolation:
@@ -388,7 +392,7 @@ This chapter defines the types of values that Lask handles, type annotations, ty
 Type              = UnionType .
 UnionType         = SingleType { "|" SingleType } .
 SingleType        = BaseType | ArrayType | MapType | RecordType | AsyncHandleType | FunctionType | NamedType .
-BaseType          = "Any" | "Number" | "String" | "Bool" | "Null" | "Void" | "Environment" .
+BaseType          = "Any" | "Number" | "String" | "Bool" | "Null" | "Void" | "Environment" | "Runnable" .
 ArrayType         = "Array" "<" Type ">" .
 MapType           = "Map" "<" Type ">" .
 RecordType        = "Record" "<" [ RecordFieldType { "," RecordFieldType } ] ">" .
@@ -414,6 +418,7 @@ Representation of Function types:
 Definition of named types:
 
 - Named types are defined by the type alias declaration `type`.
+- The names the grammar reads as types of its own — those of `BaseType` (`Any`, `Number`, `String`, `Bool`, `Null`, `Void`, `Environment`, `Runnable`) and of the type constructors (`Array`, `Map`, `Record`, `AsyncHandle`, `Function`) — always denote those types, so no type alias and no type parameter can take one. Declaring one is a duplicate definition error (`E-NAME-DUPLICATE`), as declaring a built-in type alias (`Error`, `CommandResult`, ...) is.
 - The form is `type TypeName = Type`, or `type TypeName<A, B> = Type` for an alias with parameters (below).
 - A type alias defined in another module is referenced either by its bare name (`upper_id`), after bringing it in with a named import, or, when the defining module is brought in with a namespace import (5), qualified as `namespace.TypeName` (`QualifiedNamedType`). Either form takes type arguments where the alias has parameters (`m.Pair<Number, String>`). The two forms name the same declaration; a module may use either, or both, for the same type. `namespace` must be a namespace bound by a `NamespaceImport` in the current module, and `TypeName` must be a public type alias of the module that namespace refers to (5, "Public scope and visibility"); otherwise it is an undefined reference error. `QualifiedNamedType` is recognized only in type-annotation position (wherever `Type` appears in this grammar) — it does not extend to a namespace chain (`m.n.TypeName`) and does not change how `namespace.symbol` is resolved as a value or function reference (7.2).
 - Example: `type Strings = Array<String>`
@@ -421,10 +426,10 @@ Definition of named types:
 
 Type parameters:
 
-- A function declaration (5) and a type alias may declare type parameters, written `<T>` or `<A, B>` after the name. Within their scope, each stands for a type that the use site determines.
+- A function declaration (5) and a type alias may declare type parameters, written `<T>` or `<A, B>` after the name, and so may a lambda, after its `\` (6.1). Within their scope, each stands for a type that the use site determines.
 - An `upper_id` in type position resolves to a type parameter when one of that name is in scope, and to a `NamedType` otherwise. A qualified `namespace.TypeName` is never a type parameter.
-- A type parameter's scope is: for a function, its parameter types, its return type, and the type annotations inside its body (6.5); for a type alias, the right-hand side of the alias.
-- Declaring a type parameter whose name is that of a type alias visible at the declaration is a duplicate definition error (`E-NAME-DUPLICATE`). Shadowing is not permitted, so a type name means one thing throughout a declaration.
+- A type parameter's scope is: for a function or a lambda, its parameter types, its return type, and the type annotations inside its body (6.5); for a type alias, the right-hand side of the alias.
+- Declaring a type parameter whose name is that of a type alias visible at the declaration, or of a type the grammar reads as its own (above), is a duplicate definition error (`E-NAME-DUPLICATE`). Shadowing is not permitted, so a type name means one thing throughout a declaration.
 - A type parameter that appears in no position is permitted. Nothing determines it and nothing needs to.
 - Type parameters are not written at a use site: a call instantiates them from the argument types and the expected type (4.4), and there is no syntax for giving them explicitly.
 
@@ -482,7 +487,7 @@ Type identity is structural (4.4), so every union is reduced to a canonical form
 Well-formedness of a union:
 
 - `Void` must not be a member of a union (`E-TYPE-ILLFORMED`), as in every other position other than a function return type and the type argument of `AsyncHandle`.
-- Every member of a union must be a data type: `Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, and `Array` / `Map` / `Record` composed of them — the same set that `cast` may target (15.8). A union having a member that contains `Function<...>` or `AsyncHandle<T>` is a static error (`E-TYPE-ILLFORMED`).
+- Every member of a union must be a data type: `Number`, `String`, `Bool`, `Null`, `Environment`, `Runnable`, `Any`, and `Array` / `Map` / `Record` composed of them — the same set that `cast` may target (15.8). A data type is not necessarily directly serializable: `Environment` and `Runnable` are written as tagged metadata (4.5). A union having a member that contains `Function<...>` or `AsyncHandle<T>` is a static error (`E-TYPE-ILLFORMED`).
 - The reason for the second rule is that a union is only useful if a program can get back out of it, and both ways out — the runtime type check of `cast` (15.8) and the type dispatch of `case` (6.4) — are defined for data types alone. A type such as `Function<Number, Number> | Null` would be inhabited but unusable, and it is rejected where it is written rather than where it is used.
 
 Optional fields:
@@ -554,9 +559,15 @@ Type annotations are optional, and the following type inference rules apply wher
 - Type annotations (on variables, parameters, and return values) and the argument types of a callee propagate as the expected type for the corresponding expression, and are used for the expected-type-directed checking of literals (described below).
 - A number literal is `Number`, a string literal is `String`, a boolean literal is `Bool`, and the `null` literal is `Null`. An environment expression `#...` (6.7) is `Environment`.
 - An optional field is never inferred: a record literal with no expected type infers every key it gives as required (`{a: 1}` is `Record<a: Number>`), so an optional field, like a union, appears only where it was written.
-- A union type is never inferred. It is the type of an expression only where an annotation or a callee's signature says so, and the rules below are unchanged by the existence of unions: a heterogeneous array literal is still `Array<Any>` and not an array of a union, and two branches of differing types are still a type error rather than a union of the two. This keeps every union in a program one that someone wrote.
+- A union type is inferred in two cases only: the join with `Null` (below), and the type of a parameter inferred from its uses (Inference of parameter types, below), which is a part of the types written at those uses. Everywhere else it is the type of an expression only where an annotation or a callee's signature says so, and the rules below are unchanged by the existence of unions: a heterogeneous array literal is still `Array<Any>` and not an array of a union, and two branches of differing types are still a type error rather than a union of the two. This keeps every union in a program one that someone wrote, or one that says no more than that a value may be absent.
+- Join with `Null`: the branches of one expression are the two branches of an `IfExpr` (6.4) or of a conditional expression `c ? a : b` (6.2), the arms of a `CaseExpr` (6.4), and the body and the `catch` block of a `TryExpr` (6.9). When they are checked with no expected type, and every branch whose type is not `Null` has one same type `T`, the type of the whole expression is `T | Null`, reduced to canonical form (4.2), when some branch is `Null`, and `T` when none is; when every branch is `Null`, it is `Null`.
+  - `T` must be a data type (4.2), as every member of a union must be: a branch of a function type, of `AsyncHandle<T>`, or of `Void`, joined with a `Null` branch, is `E-TYPE-ILLFORMED`. This holds where the value is used. A statement that is not the last of its block discards its value (6.5), and there `T` may be any type, which is then the type of the statement, as for an `if` without `else` (6.4). The branches must still agree otherwise: a discarded `if (c) { 1 } else { "a" }` is a type error all the same.
+  - A `T` that already admits `Null`, or is `Any`, is unchanged by the join.
+  - So `if (c) { "x" } else { null }` and `c ? "x" : null` are `String | Null`, and `case (s) { "a" -> 1; else -> null }` is `Number | Null`, which is also what an `if` without `else` is (6.4). Any other difference between the types of branches is a type error, as before: `if (c) { 1 } else { "a" }` is not `Number | String`.
+  - With an expected type, each branch is checked against it (below), and the join plays no part.
+- Branches of conforming types: when the branches of one expression (above) are checked with no expected type, and the types of the branches that are not `Null` differ, but one of them is a type every other conforms to (4.4), the type is that one, joined with `Null` by the rule above where a branch is `Null`. So `c ? names : maybe_names` and `c ? maybe_names : names`, with `names: Array<String>` and `maybe_names: Array<String | Null>`, are both `Array<String | Null>`, and `if (c) { #alpine:3.20 } else { #alpine:3.20{memory: "1g"} }` is `Runnable`. This builds no type of its own, unlike a union of the branches, so the order of the branches never decides the type.
 - For an array literal `[e1, e2, ...]` with no expected type, the type of each element is inferred; if all are the same type `T`, the literal is `Array<T>`, and if heterogeneous, it is `Array<Any>`.
-- When the expected type is `Array<T>`, if every element expression conforms to `T`, the literal's type is `Array<T>`. If any element does not conform, it is a type error (conformance is invariant (4.4), but literals can promote element-wise to `Any` etc. via expected-type-directed checking).
+- When the expected type is `Array<T>`, if every element expression conforms to `T`, the literal's type is `Array<T>`. If any element does not conform, it is a type error.
 - The empty array `[]` follows the expected type if one exists; with no expected type it is `Array<Any>`.
 - When the expected type is a union of which exactly one member is an `Array<T>`, an array literal is checked against that member by the rules above, as an object literal is against its one `Record` or `Map` (below). So `f(--hosts: Array<String> | Null = null)` takes `f(hosts = [])`, an empty list of strings. Otherwise the literal is inferred as when there is no expected type, and the inferred type must conform to the union (4.4).
 - For an object literal `{k1: e1, ...}` with no expected type, it is inferred as `Record<k1: T1, ...>` (`Ti` is the inferred type of each `ei`). When a key is a string literal, that string is the field name (per the record field name rules of 4.2).
@@ -569,13 +580,28 @@ Type annotations are optional, and the following type inference rules apply wher
 - When the expected type is a union `U1 | ... | Un`, the expression is checked against it by the conformance relation of 4.4, and an expected type is propagated into the branches of an `IfExpr` and of a conditional expression `c ? a : b` (6.2), and the arms of a `CaseExpr` (6.4), unchanged. Therefore `f(): String | Null = if (c) { "x" } else { null }` is well-typed: each branch is checked against `String | Null`, and both `String` and `Null` conform to it.
 - When a variable or function declaration has no annotation, the type of the right-hand-side expression is adopted as the declared type.
 - When a function has no return-value annotation, the type of the function body is inferred as the return type.
-- When a parameter has no annotation, `Any` is adopted.
+- When a positional, variadic or required keyword parameter has no annotation, its type is inferred from how the body uses it (Inference of parameter types, below). A keyword parameter with a default value and no annotation takes the type of its default, as before.
 - In a function call `f(a1, ..., an)`, `f` must resolve to `Function<T1, T2, ..., Tm, R>`, the argument binding must satisfy the rules of 7.5 (including keyword arguments and default-value completion), and each bound argument must conform to the type at the corresponding position. The result type is `R`.
 - In the form `Function<T1, T2, ..., R>`, the last type argument is the return type, and the preceding ones are the positional parameter types.
 - A `NamedType` is expanded into its `TypeAliasDecl` before type checking, and inference is performed on the expanded type.
 - Overloading is not supported. One symbol has one function type.
 - Abstract types (type classes, etc.) are not supported. A type parameter may carry a bound from a closed set of predicates, or a type bound (4.2), and nothing more: an operation beyond what the bounds give is taken as an argument instead (`Function<T, T, Bool>` as an equality).
 - A declaration may declare type parameters (4.2), and its annotations — including those on bindings inside its body — may mention them. They are instantiated per call by the rules of 4.4.
+
+Inference of parameter types:
+
+A parameter written without a type annotation is not `Any`: its type is the one the body of its function needs it to have. This holds for the positional, variadic and required keyword parameters of a function declaration and of a lambda, at top level or in a block. A lambda checked against an expected type takes its parameter types from it (6.1), as before, and infers none.
+
+- **Uses.** Each place the body puts the parameter in a position that requires a type `U` — an argument of a callee whose parameter is `U`, an operand of an operator (6.2), the condition of `if` or `case`, the scrutinee of a `case` with value patterns (6.4) at the type of those patterns, an operand of `==`, `!=`, `<`, `<=`, `>` or `>=` (6.2) at the type of the other operand, the environment of a command (6.6), a binding or a return with an annotation, a field of a record literal with an expected type — is a *use* at `U`. A position that requires `Any`, such as the argument of `to_json` or `cast` (15.8), constrains nothing, since every type conforms to `Any`, and is not a use. The scrutinee of a `case` with type heads (6.4) is a use at `Any`: a type is dispatched on only in an `Any` or a union. Compared with `null`, a parameter is used at no type; compared or ordered with another parameter whose type is inferred, the two have one type.
+- **The inferred type** is the most general type that conforms (4.4) to every type the parameter is used at: the one a caller can pass the most values of. Used at `String` and at `String | Null`, a parameter is `String`; put at `Number` and at `Any`, it is `Number`; put only at `Any`, it is a type parameter (below), so that `wrap(x) = [to_json(x), x]` keeps the type of `x` in its result. A parameter used at two types that no type conforms to both of, such as `Number` and `String`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names both uses and suggests an annotation.
+- **A use at a type that has a type variable** in it, as an argument of a generic function (4.4) or as the element of an array the function takes, gives the parameter that shape, with the variable left to be inferred in turn: `size(xs)` makes `xs` an `Array<a>` for an `a` still to be found. A use inside a lambda the parameter is passed to counts as any other use.
+- **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (6.2, 15.4). Where its uses need two of them, it has the one that entails the other (`orderable` entails both others); two of which neither entails the other, such as `comparable` and `stringifiable`, are a type error (`E-TYPE-BOUND`) that asks for an annotation: a type parameter has at most one bound, written or inferred. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
+- **A value put where the parameter is.** A parameter used at no type, which the body joins with values of one type, as the other branches of an `if` or a `case` (4.3) or as arguments a generic function needs to be of one type with it (4.4), has that type: `f(c: Bool, n) = c ? 0 : n` is `f(c: Bool, n: Number): Number`. `null` joins with any type and says nothing of it, so `c ? x : null` keeps `x` a type parameter.
+- **What the body cannot tell.** A field access (`u.name`) or an index (`u[0]`, `u["X"]`) on a parameter whose type is not otherwise known, or a function value called with arguments, does not say what the whole type is: Lask has no record type open to further fields. It is a type error that asks for an annotation (`E-TYPE-ACCESS`, `E-TYPE-CALL`).
+- **A parameter marked `!!`** (6.10) is used at `String | Null` by its marker, so it is `String` or `String | Null`.
+- **Only the body decides.** The type of a function does not depend on how it is called: a call is checked against the inferred type, as against a written one. A declaration's type is therefore known from the declaration alone, for help, editor integration and the command line (11.2) alike.
+- **Recursion.** A recursive call is not a use. A function that calls itself has its parameters' types inferred from the other uses in its body, and each recursive call is then checked against those types, as any other call is: an argument of it must conform to the parameter it is passed to, which says what the caller may pass and nothing of what the parameter is. The function is not generalized within its own body, so a recursive call passes its parameters' types as they are. Its return type is to be written, as before (6.1). Declarations that call one another through other declarations have their parameters annotated, every one of them in the cycle: a call that comes back to a declaration whose parameters' types are still being found is a type error (`E-TYPE-MISMATCH`) that names the cycle.
+- An annotation always wins over inference: a parameter that is annotated has that type, and its uses are checked against it.
 
 Diagnostic rules on inference failure:
 
@@ -596,7 +622,8 @@ Examples of type inference:
 - `hdrs = {"X-Api-Key": "secret"}` is inferred as `hdrs: Record<"X-Api-Key": String>` because there is no expected type.
 - `bad: Map<Number> = {"a": "x"}` is a type error because the value `"x"` does not conform to `Number`.
 - For `add(x: Number, y: Number) = x + y`, the call `add(1, 2)` is inferred to have result type `Number`.
-- `identity(x) = x` is inferred as `identity: Function<Any, Any>` because the parameter has no annotation and no default value.
+- `identity(x) = x` is inferred as `identity<T>(x: T): T`: nothing in the body says what `x` is, so its type is a type parameter (Inference of parameter types, above).
+- `inc(x) = x + 1` is inferred as `inc(x: Number): Number`, `shout(s) = to_upper(s)` as `shout(s: String): String`, and `count(xs) = size(xs)` as `count<T>(xs: Array<T>): Number`.
 - For `inc(--x = 0) = x + 1`, the keyword parameter `x: Number` is inferred from the default value `0`, and `inc` is inferred as `inc: Function<Number>` (no positional parameters). The calls `inc()` and `inc(x = 5)` are both legal, with result type `Number`.
 - Given `type Strings = Array<String>`, `xs: Strings = ["a"]` is treated as equivalent to `xs: Array<String>`.
 
@@ -611,17 +638,19 @@ Type conformance relation:
 - Union introduction: a type `T` that is not a union conforms to `U1 | ... | Un` when `T` conforms to some `Ui`.
 - Union elimination: `T1 | ... | Tm` conforms to `U` when every `Ti` conforms to `U`.
 - Environments: `Environment` conforms to `Runnable`. An environment is a runnable with no run options (10.1), so it may be placed wherever a command execution needs a runnable. `Runnable` does not conform to `Environment`.
+- Containers: `Array<T>` conforms to `Array<U>`, `Map<T>` to `Map<U>`, and `AsyncHandle<T>` to `AsyncHandle<U>`, when `T` conforms to `U` (covariance).
+- Records: `Record<...>` conforms to `Record<...>` when the two have the same required fields and the same optional fields (4.2), and the type of each field conforms to the type of the same field in the other.
+- Functions: `Function<T1, ..., Tn, R>` conforms to `Function<U1, ..., Un, S>` when each `Ui` conforms to `Ti` (contravariance in the parameters), and `R` conforms to `S` (covariance in the result), except that a result of `Void` conforms only to `Void` and nothing else conforms to `Void`: a function that returns no value cannot stand for one that returns one.
 - No conformance relation exists for any pair of types other than the above.
 
 The two union rules together give: `String` conforms to `String | Null`; `String | Null` conforms to `String | Null | Number`; `String | Null` conforms to `Any`; and `String | Null` does **not** conform to `String`. Moving from a union to one of its members is not a conformance step: it requires the runtime check of `cast` (15.8) or the type dispatch of `case` (6.4). The relation remains reflexive, transitive, and antisymmetric on canonical forms, and `Any` remains the only top type.
 
-Invariance (no variance):
+Variance:
 
-- Conformance is not lifted into the interior of type constructors (invariant). `Array<Number>` does not conform to `Array<Any>` (element types must be identical). The same applies to `Map` and `AsyncHandle`.
-- The union rules are likewise not lifted: `Array<String>` does not conform to `Array<String | Null>`, and `Record<a: String>` does not conform to `Record<a: String | Null>`. A union describes one position, never the interior of a constructor at that position. An array or object literal can still be written directly at the union element type through expected-type-directed checking (4.3), as in `xs: Array<String | Null> = ["a", null]`.
-- `Record` has no width or depth subtyping. It conforms only when the required field set, the optional field set (4.2) and each field type are identical. `Record<a: String>` therefore does not conform to `Record<a?: String>`, nor the reverse: whether a key has to be there is part of the type.
-- Function types conform only when identical. No variance (contravariance or covariance) is introduced for argument positions or return-value positions.
-- Under this definition, the soundness conditions of variance associated with subtyping (contravariance in function argument positions, etc.) do not arise.
+- No value is ever changed (15.4): an array, a map, a record or a handle is read and never written. Reading a value at a wider type than it has is therefore always safe, and conformance is lifted into the contents of the type constructors that hold values. `Array<Number>` conforms to `Array<Any>`, `Array<String>` to `Array<String | Null>`, `Array<Environment>` to `Array<Runnable>`, and `Record<a: String>` to `Record<a: String | Null>`; the reverse of each does not.
+- A record's fields are not widened or narrowed, only their types: a record with an extra field does not conform to one without it (no width subtyping), since its serialization (13.1) and its equality (6.2) would show the field the type does not have. Whether a field may be absent is part of the type, so `Record<a: String>` does not conform to `Record<a?: String>`, nor the reverse.
+- A function that accepts more, or returns less, stands in for one that accepts less, or returns more: `Function<Any, String>` conforms to `Function<String, String>`, and `Function<Number, String>` to `Function<Number, String | Null>`.
+- Conformance is a check of types already determined. A type variable is instantiated by matching the types it appears in exactly (Polymorphic types, below), and conformance applies to the result. A type variable inside a function type is therefore determined by exact matching too: for `for_each(xs, show)` with `xs: Array<String>` and `show: Function<Any, Void>`, the variable `T` of `for_each` is `String` by the one and `Any` by the other, and the call is a type error, although a lambda written in place adopts the parameter type it is given.
 
 The meaning of types is defined by the following rules.
 
@@ -638,14 +667,14 @@ The meaning of types is defined by the following rules.
 - The division of roles is: `Map<T>` for structures whose key set may vary at runtime, and `Record<...>` for structures with a key set fixed by specification.
 - `T1 | T2 | ...` denotes the values of any one member. A value of a union type carries no tag of its own: it is a value of exactly one member type at runtime, and which one is observed by the runtime type check of `cast` (15.8) or by `case` type dispatch (6.4).
 - `AsyncHandle<T>` is a runtime handle managing the lifecycle of an asynchronous computation, and is resolved to `T` by `await`.
-- Conformance between function types `Function<T1, T2, ..., R>` follows the conformance relation at the beginning of this section, and holds only when the number of positional parameters, each parameter type, and the return type are all identical (promotion to `Any` occurs only in positions requiring a top-level `Any`).
+- Conformance between function types `Function<T1, T2, ..., R>` follows the conformance relation at the beginning of this section: the number of positional parameters must be the same, the parameters conform the other way round, and the results conform as they are (Variance, above).
 - Parameter names, keyword parameters, and variadicity are not part of a function type. Because declared parameter information cannot be consulted when a function is applied after being passed around as a function value, binding is performed with positional arguments only, and all keyword parameters are completed with their default values (7.5). A function with a required keyword parameter has no such completion, and cannot be a function value (6.1).
 - Because overloading is not permitted, multiple function types must not be assigned to a single function symbol at the same time.
 - A `NamedType` is treated as equivalent to the type obtained after expanding the corresponding `TypeAliasDecl`.
 
 Polymorphic types:
 
-- A signature contains type variables when it belongs to a built-in symbol defined by this specification (core functions and functions of the built-in library; chapters 6 and 15), or to a declaration that declares type parameters (4.2). The two are checked by one set of rules, given below.
+- A signature contains type variables when it belongs to a built-in symbol defined by this specification (core functions and functions of the built-in library; chapters 6 and 15), or to a declaration that declares type parameters (4.2), or to a name bound to a lambda that does (6.1), or to one whose parameters' inferred types have them (4.3). These are checked by one set of rules, given below.
 - An `upper_id` in a type annotation that is not a type parameter in scope is a `NamedType`, resolved as a type alias reference; if there is no corresponding declaration (for the qualified form: no such namespace, or no public type alias of that name in the module it refers to), it is an undefined reference error.
 - A signature containing type variables is treated as a type scheme, and is instantiated to concrete types independently for each call and then checked. Within a single call, type variables of the same name must be bound to the same concrete type.
 - Instantiation is determined from the argument types and the contextual expected type. If a single concrete type cannot be determined, it is an inference failure error (4.3).
@@ -684,12 +713,13 @@ Type parameters within the body of their declaration (rigidity):
 
 - Directly serializable
   - `Any`, `Number`, `String`, `Bool`, `Null`
-  - `Array<T>`, `Map<T>`, `Record<field1: T1, field2: T2, ...>`
-  - `T1 | T2 | ...` (every member of a union is a data type by the well-formedness rules of 4.2, so a union is always directly serializable; a value serializes as the member it actually is, 13.1)
+  - `Array<T>`, `Map<T>` and `Record<field1: T1, field2: T2, ...>` whose element, value and field types are directly serializable
+  - `T1 | T2 | ...` whose members are all directly serializable
 - Not directly serializable
   - `Void`, `Environment`, `Runnable`
   - `AsyncHandle<T>`
   - `Function<T1, T2, ..., R>`
+- A composite type or a union that holds a type that is not directly serializable is serialized all the same, part by part (13.1). A union value serializes as the member it actually is, so `Environment | Null` writes `null` or the tagged metadata of the environment. Every union member is a data type (4.2), and `Environment` and `Runnable` are the only data types that are not directly serializable.
 - Function values are converted to reference metadata (`FunctionRef`; 13.2) in execution records and external output.
 - Likewise, `Void`, `Environment` and `Runnable` are converted to a tagged metadata representation (13.1) in external output. Restoration by deserialization is not guaranteed for either (the round-trip rules of 13.1).
 
@@ -700,7 +730,7 @@ This chapter defines modules, declarations, public symbols, and imports.
 ```ebnf
 Module        = { TopLevelDecl } .
 TopLevelDecl  = ( ImportDecl | ExportDecl | ModuleWithin
-                | [ Visibility ] ( CommandDecl | TypeAliasDecl | Declaration ) ) decl_end .
+                | [ Visibility ] ( CommandDecl | TypeAliasDecl | AccessDecl | Declaration ) ) decl_end .
 decl_end      = newline | ";" .
 Visibility    = "export" | "internal" .
 TypeAliasDecl = "type" upper_id [ TypeParams ] "=" Type .
@@ -709,8 +739,11 @@ ValueDecl   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
 FunctionDecl = lower_id [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" Type ]
                [ WithinClause ] "=" Expression .
 
-ModuleWithin  = "within" AccessSpec .
-WithinClause  = "within" AccessSpec .
+ModuleWithin  = "within" AccessBound .
+WithinClause  = "within" AccessBound .
+AccessBound   = AccessSpec | AccessName .
+AccessName    = [ lower_id "." ] upper_id .
+AccessDecl    = "access" upper_id "=" AccessSpec .
 AccessSpec    = "{" [ AccessField { "," AccessField } ] "}" .
 AccessField   = lower_id ":" Expression .
 
@@ -734,12 +767,13 @@ Declaration termination rules:
 - `as` and `from` are not continuation tokens (6.5). An `import` declaration must be written on one line, except inside the braces of `NamedImports` (which may span multiple lines by the open-bracket continuation rule). The closing `}` and the `from` clause must be placed on the same line.
 - A line-leading `(` or `[` does not continue the preceding declaration and is interpreted as the start of a new declaration. Since a top-level declaration begins with `import`, `type`, or an identifier, this case results in a syntax error.
 - The optional `!!` marker on a `ValueDecl` name declares a secret binding (6.10); it does not affect parsing of the rest of the declaration.
-- A `<` following the name of a `FunctionDecl` or a `TypeAliasDecl` begins its type parameters (4.2), and needs no lookahead to recognize: the name of a declaration is otherwise followed by `(`, `!!`, `:` or `=`, and a declaration never begins with an expression, so `<` can be nothing else there. A `ValueDecl` takes no type parameters, having no place to instantiate them.
+- A `<` following the name of a `FunctionDecl` or a `TypeAliasDecl` begins its type parameters (4.2), and needs no lookahead to recognize: the name of a declaration is otherwise followed by `(`, `!!`, `:` or `=`, and a declaration never begins with an expression, so `<` can be nothing else there. A `ValueDecl` takes no type parameters after its name, having no place to instantiate them; a lambda it binds may declare its own (6.1).
 - Type parameters are not part of a declaration's name. `first<T>` declares the symbol `first`, which is what an import, an export and a duplicate-definition check see.
 - `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
 - `schema` is a contextual keyword, like `on`: it is a keyword only after the environment of a command declaration, and remains usable as an identifier everywhere else. The environment expression ends before it, and it must be placed on the same line as the end of that expression; the schema expression may span lines by the open-bracket continuation rule.
-- `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none; the `AccessSpec` may span lines by the open-bracket continuation rule, and the `=` follows its closing `}`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
+- `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none; the `AccessSpec` may span lines by the open-bracket continuation rule, and the `=` follows its closing `}`, or the `AccessName`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
+- `access` is a contextual keyword (3.3). An `AccessDecl` is written on one line up to the `{` of its `AccessSpec`, which may span lines by the open-bracket continuation rule.
 
 Access constraints:
 
@@ -748,6 +782,15 @@ Access constraints:
 - A module constraint is a ceiling. A function's own constraint narrows it and cannot widen it: the constraint a function is checked against is the intersection of the two (10.11).
 - A module constraint belongs to the module it is written in. It does not cover a module that imports it, nor one it imports; the declarations of a module it imports are still checked as part of whatever in it calls them (10.11).
 - A `ValueDecl` takes no `WithinClause`. It is covered by its module's constraint.
+
+Access declarations:
+
+- An `AccessDecl` names an access constraint: `access Offline = { outbound: false, inbound: false }` declares `Offline`, and `within Offline`, as a `ModuleWithin` or a `WithinClause`, is the constraint its `AccessSpec` gives, as if its braces were written there. Nothing is evaluated: the name is replaced by what it names, and its fields are read and checked as 10.11 reads and checks those written in place.
+- The name of an access declaration is in the namespace of type aliases (4.2). It is a public symbol unless it is marked `internal`, is imported, renamed and re-exported as a type alias is, and is written qualified, `m.Offline`, through a namespace import, in an `AccessName` only. A type alias and an access declaration of one name in one module are a duplicate definition (`E-NAME-DUPLICATE`).
+- An `AccessName` names an access declaration visible in the module, by its bare name or qualified; anything else is a static error. A name that is neither an access declaration nor a type alias visible in the module, or a namespace with no such public symbol, is `E-NAME-UNDEFINED`; the name of a type alias, a built-in one included, is `E-TYPE-WITHIN-SPEC`. The name of an access declaration written where a type is is `E-NAME-UNDEFINED`, as an undefined type is (4.4): it is no type.
+- An `AccessDecl` takes an `AccessSpec` only, not the name of another declaration, so a name always stands for braces written once.
+- Its `secrets`, when given, is `false`. The names an array gives are secret bindings of what the constraint covers (10.11), which a declaration written apart from it has none of; any other value is `E-TYPE-WITHIN-SPEC`.
+- What is wrong with the fields of an access declaration is reported once, where it is declared, whether or not it is named. A constraint that names one is then checked as if it were not written.
 
 - `CommandWords` is written in braces in every form — a declaration, an import and a re-export — so that the three read alike. The braces may span lines by the open-bracket continuation rule; the closing `}` and the `on` or `from` that follows it must be placed on the same line. After `export command`, the word after the closing brace decides the form: `on` begins a command declaration, `from` a re-export.
 
@@ -777,86 +820,9 @@ internal command { "mv", "rm", "ls" } on #local
 
 Command schemas:
 
-- A command declaration may give its words **command schemas** after `schema`: what options and subcommands each program takes, against which the command strings that run it are checked before execution. The expression is checked against the expected type `Map<CommandSchema>`, keyed by words of the declaration; a word with no key has no schema. A key that is not one of them is a static error (`E-TYPE-COMMAND-SCHEMA`) where the map is a literal written in the declaration, and is ignored where it comes from a top-level value the declaration refers to: a module may publish the schemas of several words as one map, `schema tools.python.schema`, of which a declaration uses those it declares.
-- The types of a schema are built-in type aliases, and must not be overridden by user-defined type aliases or value declarations:
-
-  ```lask fragment
-  type CommandOption = Record<
-    names: Array<String>,         // "-v", "--verbose", "-run"
-    value?: String,               // "none" (the default), "required" or "optional"
-    values?: Array<String>,       // the values the option takes, when they are a closed set
-    global?: Bool,                // also accepted by every subcommand below (default false)
-    stops?: Bool,                 // what follows the option and its value belongs to another program, as after `python -m mod`
-    prefix?: Bool,                // the value is written right after the name, in the same word: `-Xmx2g`, `-DNAME=value`, `-Wall`
-    description?: String
-  >
-
-  type CommandSpec = Record<
-    closed?: Bool,                // no option or subcommand exists but those listed (default false)
-    style?: String,               // "gnu" or "single-dash"; the parent's when absent, "gnu" at the root
-    options?: Array<CommandOption>,
-    intermixed?: Bool,            // options may follow positional arguments; default true for gnu, false for single-dash
-    stop_at_first_positional?: Bool,  // what follows the first positional argument belongs to another program
-    subcommand_optional?: Bool,   // a positional argument that names no subcommand is an argument: `grype alpine:3.20` beside `grype db update`
-    abbreviations?: Bool,         // a long option may be shortened to a unique prefix, as getopt_long and optparse allow; the parent's when absent, false at the root
-    description?: String
-  >
-
-  type CommandSchema = Record<
-    root: CommandSpec,
-    subcommands?: Map<CommandSpec>   // keyed by path: "test", "mod tidy"
-  >
-  ```
-
-- Subcommands are keyed by their path, the words that select them separated by single spaces, because a type alias cannot refer to itself (4.2). A path of more than one word requires its parent path among the keys.
-- A schema must be known without evaluation, as the command words are. The schema expression must be a **static value**: a `null`, number, boolean or string literal without interpolation; an array, map or record literal whose elements are static values; or a reference to a top-level value declaration, in this module or reached through an import, whose right-hand side is a static value and which is not a secret binding (6.10). Anything else — a call, an operator, a conditional — is a static error (`E-TYPE-COMMAND-SCHEMA`). A static value has no effect, so the restriction on the environment above holds of it as well.
-- A binding that holds a schema is annotated with its type (`go_schema: CommandSchema = {...}`). Without the annotation, the record literal infers every field it gives as required (4.3), and that record type does not conform to `CommandSchema` (4.4).
-- What the types cannot say is checked where the schema is written, and a violation is `E-TYPE-COMMAND-SCHEMA`: `style` is `"gnu"` or `"single-dash"`; `value` is `"none"`, `"required"` or `"optional"`; an option has at least one name, and each name begins with `-` — or, for an option with `prefix`, with `+` —, is neither `-` nor `--`, and contains no whitespace, `=` or quotation character; no name is given twice within one spec together with the global options of its ancestors; `values` lists at least one value and is not given for an option whose `value` is `"none"`; an option with `prefix` takes a value; a subcommand path is words without whitespace or quotation characters, none beginning with `-`, and its parent path is a key.
-- A schema belongs to the declaration: a word imported or re-exported keeps the schema the declaring module gave it.
-
-Checking a command string against a schema:
-
-- The check applies to a command execution expression whose environment is selected by dispatch (10.9), and to each simple command of its shell reading (6.6) whose command word is plainly written (no quotation, escape or expansion, and no `/`) and is a command word of the module whose declaration has the source dispatch selected and gives the word a schema. An expression with an environment specification is not checked: the program it runs may not be the one declared.
-- The words after the command word are read in order, assignments and redirections left out:
-  1. A word that follows an option requiring a value is its value, whatever it is, provided it expands to one field. If the option lists `values`, a literal value not among them is an error.
-  2. An option with `stops` ends the check once it and its value are read: `python -m pytest -k smoke` checks `-m` and its value, and leaves `-k` to pytest.
-  3. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
-  4. `--` ends the check.
-  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
-  6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. With `subcommand_optional`, a word that names no subcommand is a positional argument of the current spec instead of an unknown subcommand. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
-- Each of the following is reported, and the check ends at the first:
-  - an option the current spec does not have, or a subcommand it does not have, or an abbreviated option that is ambiguous;
-  - an option written with `=value` whose `value` is `"none"`;
-  - an option whose `value` is `"required"` at the end of the command, unless the shell reading stopped inside it;
-  - a literal value not among the option's `values`.
-- An unknown option or subcommand, or an ambiguous abbreviation, is a static error (`E-TYPE-COMMAND-OPTION`) when the current spec is `closed`, and otherwise the advisory `W-COMMAND-OPTION` (14.2), since a spec that is not closed does not claim to be complete. The other findings are `E-TYPE-COMMAND-OPTION` whatever the spec says.
-
-```lask
-go_schema: CommandSchema = {
-  root: { closed: true, style: "single-dash" },
-  subcommands: {
-    "test": {
-      closed: true,
-      intermixed: true,
-      options: [
-        { names: ["-v"], description: "verbose output" },
-        { names: ["-run"], value: "required" },
-        { names: ["-covermode"], value: "required", values: ["set", "count", "atomic"] }
-      ]
-    },
-    "run": { closed: true, stop_at_first_positional: true },
-    "mod": { closed: true },
-    "mod tidy": { closed: true, options: [{ names: ["-v"] }] }
-  }
-}
-
-command { "go", "gofmt" } on #golang:1.25 schema { "go": go_schema }
-
-ok() = $ go test -v -run TestParse ./...
-// $ go tset ./...         E-TYPE-COMMAND-OPTION: 'go' has no subcommand 'tset'
-// $ go test -run          E-TYPE-COMMAND-OPTION: '-run' requires a value
-// $ go test -covermode x  E-TYPE-COMMAND-OPTION: '-covermode' takes one of 'set', 'count', 'atomic'
-```
+- A command declaration may give its words **command schemas** after `schema`: what options and subcommands each program takes, against which the command strings that run it are checked before execution. The expression has the expected type `Map<CommandSchema>`, keyed by words of the declaration, and must be a static value, known without evaluation as the command words are. `CommandSchema` and the types it is made of are built-in type aliases.
+- The check applies to a command execution expression whose environment is selected by dispatch (10.9), to each simple command whose command word is plainly written and has a schema. It changes nothing about what runs: a finding is a static error (`E-TYPE-COMMAND-OPTION`) or an advisory (`W-COMMAND-OPTION`, 14.2), and an invalid schema is `E-TYPE-COMMAND-SCHEMA`.
+- The types of a schema, what makes one valid, and how a command string is read against one are defined in Appendix A.
 
 Command imports and exports:
 
@@ -897,10 +863,10 @@ Import path resolution:
 
 Public scope and visibility:
 
-- A `Declaration` or `TypeAliasDecl` declared at the top level is a public symbol of that module, unless it carries the `internal` marker.
+- A `Declaration`, `TypeAliasDecl` or `AccessDecl` declared at the top level is a public symbol of that module, unless it carries the `internal` marker.
 - Omitting the visibility marker is equivalent to `export`. The explicit form changes nothing about the meaning of the declaration; it exists so that a module can state its public surface where the surface matters.
 - A declaration marked `internal` is not a public symbol. It is therefore unreachable by external import, by local import from another file of the same tree, by `ExportDecl`, by CLI invocation (11.2), and from the function listing of help display (11.6). References from within the same module are unaffected.
-- An implementation may report the advisory diagnostic `W-EXPORT-INCONSISTENT` (14.2) when one file mixes explicit and omitted markers, because an omitted marker may then be misread as non-public. The meaning is unambiguous in either case, so this is never an error.
+- The advisory diagnostic `W-EXPORT-INCONSISTENT` (14.2) is reported when one file mixes explicit and omitted markers, because an omitted marker may then be misread as non-public. The meaning is unambiguous in either case, so this is never an error.
 - Local bindings defined inside a module (function parameters, bindings inside `do`, etc.) are not public.
 - The same top-level symbol name must not be declared more than once within the same module.
 
@@ -909,7 +875,7 @@ Import forms:
 - A named import `import { a, b } from "path"` brings only the specified names, among the public symbols of the target module, into the name resolution scope of the current module. If a specified name does not exist among the public symbols, it is an error before type checking.
 - `import { a as b } from "path"` brings in the public symbol `a` under the name `b` (renaming import). The identifiers before and after renaming must be of the same kind (`lower_id` with `lower_id`, `upper_id` with `upper_id`).
 - A namespace import `import * as m from "path"` refers to the target module through the namespace `m`. Public symbols are not brought in implicitly and are referenced in the form `m.symbol`.
-- Type aliases (`upper_id`) can be brought in by named import, which binds the bare name directly.
+- Type aliases and access declarations (`upper_id`) can be brought in by named import, which binds the bare name directly.
 - A namespace import also makes the target module's public type aliases available, in type-annotation position only, qualified as `m.TypeName` (`QualifiedNamedType`, 4.2). This is the one context where a namespace member is written into a grammar position other than an expression: elsewhere, a namespace import brings in no names of its own and is referenced only as `m.symbol` in expressions (above). Bringing a type in by named import and referencing it through its module's namespace both denote the same declaration; a module may use either form, or both, for the same type.
 - A namespaced type reference resolves against the same public/internal boundary as any other namespace reference: `m.TypeName` is well-formed only when `TypeName` is a public type alias (not `internal`) of the module `m` refers to.
 - No form is provided that unconditionally brings in all public symbols (the names to be brought in are made explicit in the declaration).
@@ -918,7 +884,7 @@ Re-export (`ExportDecl`):
 
 - `export { a, b } from "path"` is a named import whose bound names are, in addition, public symbols of the current module. The `ImportSpecifier` rules, including `as` renaming, are those of a named import.
 - Because the names are bound as declarations and not as values, a re-exported function retains its parameter list: keyword parameters, defaults, variadics, and arity are preserved, and calls through the re-exported name follow 7.5 exactly as calls through the original declaration do. (A value binding such as `f = m.f` produces a function value instead, and calls through function values cannot supply keyword arguments (6.1).)
-- Type aliases may be re-exported.
+- Type aliases and access declarations may be re-exported.
 - A name that is not a public symbol of the target module is an error before type checking.
 - `ImportPath` may be a local path or a dependency name. Re-exporting from a dependency republishes that dependency's symbols as part of the current module's public API.
 - No wildcard form is provided: there is no `export * from`. The names to be published are made explicit in the declaration, for the same reason that no bulk import form is provided.
@@ -930,8 +896,7 @@ Namespace re-export:
 - A namespace is not a value: `m.ns` written where a value is expected is an error before type checking (`E-NAME-UNDEFINED`), as is a member that is not a public symbol of the module the namespace refers to.
 - It brings no name in: only `ns` is published, and what it holds is reached only qualified, so the rule above still holds. A type alias is referenced through one namespace only (`m.TypeName`, 4.2); a public type of a re-exported namespace is reached by importing that module, or by the alias's own re-export.
 - The public functions and values of a namespace the entry module re-exports are invoked and listed by the CLI under their qualified name, `lask eval python.env --image ...` (11.2, 11.6), through any number of namespaces.
-- Same-name collision rules are those of namespace imports.
-- Same-name collision rules are those of named imports. `ExportDecl` edges participate in the acyclicity requirement of the module dependency graph.
+- Same-name collision rules are those of namespace imports: `ns` must not be the name of a top-level declaration, of a name brought in by a named import or re-export, or of another namespace.
 
 Evaluation timing of top-level declarations:
 
@@ -948,6 +913,7 @@ Rules for same-name symbol collisions:
 Handling of circular imports:
 
 - The module dependency graph must be a directed acyclic graph (DAG). This requirement extends across external dependencies.
+- Every form that names a module is an edge of the graph: a named or namespace import, a command import (`import command { ... } from`), and every re-export (`export { ... } from`, `export * as ns from`, `export command { ... } from`). A cycle through any of them is `E-MODULE-CYCLE`.
 - If a circular import is detected, it is a module resolution error before execution.
 
 External dependencies:
@@ -1011,7 +977,8 @@ Lock file:
     "deploy-kit>notify": {"url": "https://example.com/tasks/notify.lask", "hash": "sha256-..."}
   },
   "images": {
-    "deploy-kit#sha256-71bc...": {"kind": "recipe", "tag": "lask/deploy-kit/sha256-71bc..."},
+    "#infra/Dockerfile": {"kind": "recipe", "tag": "lask/71bc04d9e2aa..."},
+    "#.lask/deps/sha256-0cad.../images/unix/Dockerfile": {"kind": "recipe", "tag": "lask/9e46282b8259..."},
     "#alpine:3.20": {"kind": "registry", "ref": "alpine:3.20", "digest": "sha256:..."},
     "#golang:1.25": {"kind": "registry", "ref": "golang:1.25", "digest": "sha256:...", "commands": {"go": "present", "gofmt": "present"}}
   }
@@ -1022,9 +989,9 @@ Lock file:
 - `rev` in the lock must be a full 40-hexadecimal-digit commit SHA. `requested` preserves the reference that was resolved.
 - `hash` (a content hash of the fetched source) is required for every entry, in the form `sha256-` followed by 64 lower-case hexadecimal digits. The same entry must always yield identical source code.
 - A lock entry whose `hash` or `rev` is not of its form is a static error (`E-MODULE-LOCK-STALE`).
-- `images` records the container images the resolved graph requires (10.3). Keys are `<dependency path>#<image key>`, where the dependency path is empty for the root project.
-- A registry reference is recorded once for the whole graph, under the empty path, whichever module writes it: one reference names one image wherever it appears, and resolving it when a command runs (10.4) needs nothing but the reference. Its entry holds the reference as written (`ref`) and the digest it is pinned to (`digest`).
-- The egress proxy (10.12) is recorded as a registry reference written with its digest, under the empty path, when the program requires it.
+- `images` records the container images the resolved graph requires (10.3). A key is `#` followed by the image: a registry reference as written in its head (6.7) (`#alpine:3.20`), or the path of a recipe's Dockerfile relative to the base directory, written without a leading `./` (`#infra/Dockerfile` for the head `#./infra/Dockerfile`). A recipe written in a dependency is keyed by its path under `.lask/deps` (Fetching and verification, below), which holds the dependency's content hash, so the recipes of two dependencies never share a key unless they are the same content. A recipe built with no network is keyed with `(build_network = "none")` after its path (10.3).
+- A registry reference is recorded once for the whole graph, whichever module writes it: one reference names one image wherever it appears, and resolving it when a command runs (10.4) needs nothing but the reference. Its entry holds the reference as written (`ref`) and the digest it is pinned to (`digest`).
+- The egress proxy (10.12) is recorded as a registry reference written with its digest, when the program requires it.
 - An entry that no image of the program references any more is dropped when the images are next materialized.
 - `commands` records, for each command word declared on the image that `sync` probes (11.7), whether the image provides it: `"present"` or `"missing"`. A word that was not probed has no key, and an entry with none has no `commands`. Any other value is a static error (`E-MODULE-LOCK-STALE`).
 
@@ -1035,13 +1002,13 @@ Consistency:
 
 Fetching and verification:
 
-- Dependencies are fetched into a per-project, content-addressed cache and verified against `hash` by the CLI (`lask sync`; 11.7). A verification failure is `E-MODULE-HASH-MISMATCH`.
+- Dependencies are fetched into a per-project, content-addressed cache and verified against `hash` by the CLI (`lask sync`; 11.7). A verification failure is `E-IO-MODULE-HASH-MISMATCH`.
 - The cache is located at `.lask/deps` under the base directory for module resolution, unless `LASK_CACHE_DIR` names another directory. A project may therefore be copied, cache included, to a machine without network access.
 - Where the cache is does not reach the lock file. A recipe written in a dependency is recorded, in its lock key and in the context path its hash covers (10.3), by its path under `.lask/deps`, as if the cache were in its default place, and read from wherever `LASK_CACHE_DIR` puts it. A lock written on one machine therefore holds on another whose cache is elsewhere.
 - The presence of an entry is not taken as proof of its content: a cache may be shared between projects or written by something other than `sync`. Every subcommand that resolves a dependency verifies its entry against `hash` when it uses it, at most once per resolution. An entry that is itself a symbolic link does not verify. `sync` replaces an entry that does not verify with a fresh fetch.
 - A dependency must not contain symbolic links: their content would depend on the machine that reads them, outside what `hash` covers. A source that contains one is refused when it is fetched. The content hash of a tree never follows a link; it covers the link's own path and target text.
 - A local import (`./`, `../`) in a module of a dependency must resolve inside that dependency's tree; a single-file dependency has no local imports. Otherwise it is `E-MODULE-UNRESOLVED`. What a dependency loads is thereby what its `hash` covers.
-- If a tag recorded as `requested` later resolves to a different commit, `sync` reports `E-MODULE-REV-MOVED`. This is distinguished from `E-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
+- If a tag recorded as `requested` later resolves to a different commit, `sync` reports `E-IO-MODULE-REV-MOVED`. This is distinguished from `E-IO-MODULE-HASH-MISMATCH`, which denotes content differing from the pinned hash for an unchanged reference.
 - `check`, `run`, `eval`, and `envs` must not access the network for module resolution. If a declared dependency is not present in the cache, or fails verification, it is a static error (`E-MODULE-UNRESOLVED`).
 - An external module may itself have a `lask.json`. Transitive dependencies are resolved independently per dependency (no version unification is performed; duplication across the dependency graph is permitted) and are recorded in the root project's lock file, each under its dependency path (`parent>child`).
 - A `lask.json` that a fetched dependency carries but that is not a valid project file is a failure of that dependency in `sync` and `deps add`, reported with the dependency it belongs to; its dependencies are not taken to be none.
@@ -1122,14 +1089,14 @@ PositionalParameter   = lower_id [ "!!" ] [ ":" Type ] .
 VariadicParameter     = "..." lower_id [ ":" ArrayType ] .
 KeywordParameters     = KeywordParameter { "," KeywordParameter } .
 KeywordParameter      = "--" lower_id [ "!!" ] [ ":" Type ] [ "=" Expression ] .
-LambdaExpr            = "\\" "(" [ FunctionParameterList ] ")" [ ":" Type ] "->" Expression .
+LambdaExpr            = "\\" [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" Type ] "->" Expression .
 ```
 
 Meaning of the parameter notation:
 
 - At declaration time, each parameter is clearly distinguished as a positional parameter (`name`), a variadic parameter (`...name`), or a keyword parameter (`--name`). The declaration order is: the sequence of positional parameters, the variadic parameter (at most one), then the sequence of keyword parameters (enforced by the grammar).
 - Positional parameters are bound only by positional arguments. All are required and cannot have default values.
-- Keyword parameters are bound only by name (`name = expression` in in-language calls, `--name <value>` on the CLI; 11.2). A keyword parameter with a default value expression is optional: when unspecified, it is completed with the default value. One without a default value expression is **required**: every call must bind it, and a call that does not is a static error (`E-TYPE-KEYWORD`). Like a positional parameter, a required keyword parameter without a type annotation has type `Any`.
+- Keyword parameters are bound only by name (`name = expression` in in-language calls, `--name <value>` on the CLI; 11.2). A keyword parameter with a default value expression is optional: when unspecified, it is completed with the default value. One without a default value expression is **required**: every call must bind it, and a call that does not is a static error (`E-TYPE-KEYWORD`). Like a positional parameter, a required keyword parameter without a type annotation has the type its uses give it (4.3).
 - Required and optional keyword parameters may be declared in any order among the keyword parameters. A default value expression may refer to a required keyword parameter declared before it (8.3): `deploy(--target: String, --url = "https://#{target}.example.com")`.
 - A default value expression is checked once, at the declaration, against the declared type of its parameter. Where the declaration has type parameters (4.2) they are opaque during that check, as everywhere else in the declaration (4.4), so the default has to be one that holds for every instantiation. This admits `--y: T = x` where `x` is a preceding parameter of type `T` (the evaluation environment of a default includes the parameters bound before it, 8.3), `--xs: Array<T> = []`, `--m: Map<T> = {}`, `--y: T | Null = null` and an identity lambda, and rejects `--y: T = 1`, whose type would otherwise depend on the instantiation. No rule forbids a default on a parameter whose type mentions a type parameter; conformance decides it.
 - Binding a positional parameter by name, and binding a keyword parameter by position, are not possible (`E-TYPE-KEYWORD`).
@@ -1150,7 +1117,7 @@ Keyword arguments:
 Variadic parameters:
 
 - Immediately after the sequence of positional parameters, at most one variadic parameter `...name` may be declared (keyword parameters are placed after it).
-- The type annotation of a variadic parameter must be of the form `Array<T>`. If there is no annotation, it is `Array<Any>`. Within the function body it is referenced as a value of type `Array<T>`.
+- The type annotation of a variadic parameter must be of the form `Array<T>`. If there is no annotation, it is `Array<T>` with `T` inferred from the uses of its elements (4.3). Within the function body it is referenced as a value of type `Array<T>`.
 - A variadic parameter cannot have a default value expression. If zero corresponding positional arguments are given, the empty array `[]` is bound.
 - The positional arguments remaining after all positional parameters have been bound are collected in written order and bound as one array. Each argument must conform to the element type `T`.
 - A variadic parameter cannot be bound by a keyword argument (`E-TYPE-KEYWORD`).
@@ -1179,11 +1146,28 @@ g1 = greet("alice")
 g2 = greet("alice", prefix = "hi")
 ```
 
-Desugaring rules for function declarations:
+Lambdas with type parameters:
 
-- `name(p1, p2, ..., pn) = body` is equivalent to `name = \(p1, p2, ..., pn) -> body`.
-- The parameter specification of `FunctionDecl` follows the same rules as the `FunctionParameterList` of `LambdaExpr`.
-- Therefore, the notation of including parameters in a declaration is syntactic sugar for the notation of assigning a lambda expression as a value.
+- A lambda may declare type parameters, written `<T>` or `<A, B: orderable>` after the `\`, as a function declaration does (4.2): `\<T>(x: T): T -> x`. Within the lambda they are opaque, as in a declaration (4.4), and they add to the type parameters of the declaration the lambda is written in. A name that is already one of those is a duplicate definition error (`E-NAME-DUPLICATE`): a type name means one thing throughout a declaration.
+- A function value has no type variables of its own (4.4), so a lambda with type parameters is generic only where it is bound to a name: by a top-level `ValueDecl`, or by a `BindStmt` of a block (6.5). The name is then generic, and each reference instantiates it as a reference to a generic declaration is instantiated (4.4): a call from its arguments and the expected type, and a reference as a value from the expected type alone.
+  - A top-level binding is a generic declaration in every respect, keyword parameters, defaults and variadic collection included (7.5), and the command line calls it as one (11.2).
+  - A binding of a block is a value, so a call of it takes positional arguments only (7.5). It is generic for the rest of the block.
+- A lambda with type parameters written anywhere else (an argument, a return value, an element, a callee written in place) is a static error (`E-TYPE-ILLFORMED`): it would be instantiated where it stands, so its type parameters could stand for nothing. A binding of one takes no type annotation, since the lambda gives its types; one with an annotation is `E-TYPE-ILLFORMED`.
+
+```lask
+largest = \<T: orderable>(xs: Array<T>): T -> last(sort(xs))
+
+labels(): String = do {
+  both = \<T: comparable>(x: T, y: T): Bool -> x == y
+  "#{both(1, 1)} #{both("a", "b")} #{largest(["b", "c", "a"])}"
+}
+```
+
+Function declarations and lambdas:
+
+- `name(p1, p2, ..., pn) = body` binds the same function as `name = \(p1, p2, ..., pn) -> body`, and a call of either is checked and evaluated alike: both keep their declaration parameter information (7.5), so keyword arguments, defaults and variadic collection work through either. The parameter specification of `FunctionDecl` follows the same rules as the `FunctionParameterList` of `LambdaExpr`, and both may declare type parameters (above).
+- The two are not interchangeable in every respect, so the first is not sugar for the second. Only a function declaration may carry an access constraint (`within`, Chapter 5), which is a property of a declaration rather than of a value.
+- A declaration that refers to itself is checked against the type its annotations give, since it is still being checked when the reference is reached: for a function declaration, its return type and the types of its positional parameters; for a binding, the type annotation of the binding, or, when the binding is a lambda with its return type written, that lambda's type. A recursive declaration that gives neither is a static error (`E-TYPE-MISMATCH`).
 
 Equivalence example:
 
@@ -1197,7 +1181,7 @@ The `f` and `g` above declare essentially the same function.
 ### 6.2 Operators
 
 ```ebnf
-unary_op  = "!" .
+unary_op  = "!" | "-" .
 binary_op = "*" | "/" | "+" | "-" | "==" | "!=" | "<" | "<=" | ">" | ">="
           | "&&" | "||" | "|>" | "<|" | ">>" | "<<" .
 ```
@@ -1206,19 +1190,20 @@ Operators are syntactic sugar for writing function application readably. Operato
 
 Operator precedence, from highest to lowest, is as follows.
 
-1. Unary operator `!`
+1. Unary operators `!` `-`
 2. Multiplicative operators `*` `/`
 3. Additive operators `+` `-`
 4. Comparison operators `==` `!=` `<` `<=` `>` `>=`
-5. Logical operators `&&` `||`
-6. Pipe and composition operators `|>` `<|` `>>` `<<`
-7. Conditional operator `? :`
+5. Logical AND `&&`
+6. Logical OR `||`
+7. Pipe and composition operators `|>` `<|` `>>` `<<`
+8. Conditional operator `? :`
 
 Operators of the same precedence associate from left to right, except the conditional operator, which associates from right to left.
 
 The conditional operator `c ? a : b`:
 
-- `c ? a : b` is syntactic sugar for `if (c) { a } else { b }` (6.4). It is the form of `IfExpr` whose branches are single expressions, and it is typed and evaluated exactly as that `IfExpr` is: `c` must be `Bool`, the two branches must have the same type `T`, which is the type of the whole expression, an expected type is propagated into both branches unchanged (4.3), and only the selected branch is evaluated.
+- `c ? a : b` is syntactic sugar for `if (c) { a } else { b }` (6.4). It is the form of `IfExpr` whose branches are single expressions, and it is typed and evaluated exactly as that `IfExpr` is: `c` must be `Bool`, the two branches must have the same type `T`, which is the type of the whole expression (with no expected type, they may instead differ only as the joins of 4.3 allow, whose result is then the type of the whole expression), an expected type is propagated into both branches unchanged (4.3), and only the selected branch is evaluated.
 - It binds more loosely than every binary operator, so the condition is a whole `BinaryExpr`: `xs |> is_empty ? 0 : 1` tests `is_empty(xs)`. Each branch is a whole `Expression`, so `c ? a || b : xs |> f` needs no parentheses.
 - It associates to the right: `a ? x : b ? y : z` is `a ? x : (b ? y : z)`, and a conditional may stand in the middle branch without parentheses, as in `a ? b ? x : y : z`. A multi-way choice with more than two conditions is usually clearer as the condition form of `case` (6.4).
 - A newline before a line-leading `?` or `:`, and after a line-final `?` or `:`, continues the expression (6.5), so a long conditional may put each branch on its own line. This is one way a branch can be a command execution expression other than the last one: a command string runs to the end of its line (6.6), so in `c ? $ echo a : $ echo b` the then branch swallows `: $ echo b`, while the three-line form below does not. The other is the braced form, which ends at its closing brace: `c ? ${echo a} : ${echo b}`.
@@ -1247,15 +1232,15 @@ The meaning of each operator is as follows.
 
 The types of the operators are as follows.
 
-- `!` is typed as `Function<Bool, Bool>`.
+- `!` is typed as `Function<Bool, Bool>`, and unary `-` as `Function<Number, Number>`: `-e` is `0 - e`.
 - `*`, `/`, `+`, `-` are typed as `Function<Number, Number, Number>`.
-- `<`, `<=`, `>`, `>=` are typed as `Function<Number, Number, Bool>`.
+- `<`, `<=`, `>`, `>=` are `<T: orderable> Function<T, T, Bool>` (4.4): both operands have one type, `Number` or `String` (or a type parameter whose bound entails `orderable`), and a type that is not orderable is `E-TYPE-BOUND`. Numbers are ordered by value, and strings by Unicode code point, as `sort` orders them (15.4).
 - `&&`, `||` are typed as `Function<Bool, Bool, Bool>`.
-- `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. In the terms of 4.4 they are `<T: comparable> Function<T, T, Bool>`, instantiated at the wider type, and a type that is not comparable is `E-TYPE-BOUND`. When neither side is a union this is the same rule as "the two types match", because conformance between non-union types is identity or promotion to `Any`, and `Any` is not comparable.
-- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, a union all of whose members are comparable types, and a type parameter whose bound entails `comparable` (4.4). This is the named bound `comparable` (4.2).
+- `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. In the terms of 4.4 they are `<T: comparable> Function<T, T, Bool>`, instantiated at the wider type, and a type that is not comparable is `E-TYPE-BOUND`. So `xs == ys` with `xs: Array<String>` and `ys: Array<String | Null>` compares at `Array<String | Null>`. A comparison with an `Any` side is never well-typed, since `Any` is not comparable.
+- The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Runnable`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, a union all of whose members are comparable types, and a type parameter whose bound entails `comparable` (4.4). This is the named bound `comparable` (4.2).
 - Therefore `x == null` is well-typed when `x: String | Null`, since `Null` conforms to `String | Null` and that union is comparable. It compares values and does not by itself narrow the type of `x`; narrowing is a property of `case` (6.4).
 - Applying `==` / `!=` to types containing `Function`, `AsyncHandle`, `Void`, or `Any` is a static error. To compare values of `Any`, first move to a concrete type with `cast` (15.8), or narrow with `case` (6.4), and then compare.
-- Equality of structured values (`Array` / `Map` / `Record`) is determined by recursive structural comparison of elements, keys, and fields. Equality of `Environment` follows 8.8.
+- Equality of structured values (`Array` / `Map` / `Record`) is determined by recursive structural comparison of elements, keys, and fields. Equality of `Environment` and `Runnable` follows 8.8.
 - `e1 |> f` is well-typed when `e1: T` and `f: Function<T, R>` hold, and the type of the whole expression is `R`.
 - `f <| e1` is well-typed when `e1: T` and `f: Function<T, R>` hold, and the type of the whole expression is `R`.
 - `f >> g` is well-typed when `f: Function<T, U>` and `g: Function<U, R>` hold, and the type of the whole expression is `Function<T, R>`.
@@ -1286,7 +1271,7 @@ Syntax rules:
 - The operand of `AsyncExpr` / `AwaitExpr` is a `UnaryExpr`. Therefore `await h |> f` is interpreted as `(await h) |> f`. To mean `await (h |> f)`, make it explicit with parentheses.
 - `await` is a reserved word and can appear only in the form of an `AwaitExpr`. To pass it around as a function value, write `\(h) -> await h`.
 
-Here `spawn` and `await` are core functions and must not be directly declared or overridden by user code.
+Here `spawn` is the core function `async` expands to, and `async` refers to the built-in `spawn` whatever that name is bound to in scope (7.6). `await` is a reserved word, not a name.
 
 Typing rules:
 
@@ -1301,7 +1286,7 @@ Evaluation rules:
 - `await h` suspends the current evaluation until `h` completes, and returns the result value after completion.
 - Applying `await h` multiple times to the same handle returns the same completion result.
 - If a failure occurs inside `async e`, that failure is re-raised at the time of `await h`.
-- A handle is **consumed** when it is passed to `await`, `all`, or `race`, or when its computation is cancelled because a `timeout` body that started it was abandoned (15.7). A computation whose handle is never consumed is not cut short by the end of the top-level execution (`run` / `eval`, Chapter 11): the execution waits for it, including any computation it starts in turn, and then reports it as the advisory `W-ASYNC-UNAWAITED` (14.2). The report names where it was started and, if it failed, its failure. It changes neither the result nor the exit code of the execution: a failure nobody awaited is reported, not raised.
+- A handle is **consumed** when it is passed to `await`, `all`, or `race`, or when its computation is cancelled because a `timeout` body that started it was abandoned (15.7). A computation whose handle is never consumed is not cut short by the end of the top-level execution (`run` / `eval`, Chapter 11): the execution waits for it, including any computation it starts in turn, and then reports it as the advisory `W-ASYNC-UNAWAITED` (14.2). The report names where it was started and, if it failed, its failure. One that completed changes nothing else. One that failed fails the execution, as if its failure had been raised at the end of it: a failure nobody awaited is never lost, and a CI job that runs it does not pass. A computation whose failure is to be ignored says so, by catching it where it starts (`async try { ... } catch (e) { null }`, 6.9).
 - A handle that can be seen from the text alone never to be consumed is reported statically as the advisory `W-ASYNC-UNUSED` (14.2): an expression of type `AsyncHandle<T>` or `Array<AsyncHandle<T>>` that is a statement of a block other than its last, so that its value is discarded (6.5); or a binding in a block of either type whose name no later statement of the block refers to. A handle that is referred to — awaited, passed to a function, stored, returned — is not reported, whether or not it is eventually consumed; `W-ASYNC-UNAWAITED` covers those at run time.
 
 The execution environment may choose the concurrency mechanism for `async` (threads, an event loop, a remote execution queue, etc.) as implementation-defined, but must satisfy the typing rules and evaluation rules above.
@@ -1356,13 +1341,13 @@ Desugaring rules:
 - For iteration for side effects where the result array is unnecessary, either make the body of type `Void` or use `for_each` directly.
 - `case (e) { p -> b; R }` is syntactic sugar for `do { s = e; choose(s == p, \() -> b, \() -> C) }`, where `s` is a fresh name that no source program can write (it therefore captures nothing and shadows nothing) and `C` is the expansion of the remaining arms `R`. Because the scrutinee is bound once, it is evaluated exactly once however many arms are tested.
 - A type head expands the same way, with the condition being the runtime type test of `s` against the head type rather than an equality: `case (e) { M -> b; R }` is `do { s = e; choose(<s is M>, \() -> b, \() -> C) }`. The test `<s is M>` is the runtime type check of `cast` at target `M` (15.8) used as a predicate, without its conversion and without its failure.
-- When the scrutinee is a plain local name `x` and the arm narrows it, the arm body is expanded with the narrowing in place: the branch function is `\() -> do { x = <narrowed x>; b }`, where `<narrowed x>` is `cast(s)` at the narrowed type when narrowing leaves exactly one member, and `s` itself otherwise. The rebinding is inside the branch function, so it is confined to that arm.
+- When the scrutinee is a plain local name `x` and the arm narrows it, the arm body is expanded with the narrowing in place: the branch function is `\() -> do { x = <narrowed x>; b }`, where `<narrowed x>` is `cast(s)` at the narrowed type when narrowing leaves exactly one member, and `s` itself otherwise. Each type parameter (4.2) the narrowed type mentions is replaced by `Any` for this conversion, and a narrowed type that is a type parameter is `s` itself (below). The rebinding is inside the branch function, so it is confined to that arm.
 - An arm with several heads tests their disjunction: `p1, p2 -> b` produces the condition `s == p1 || s == p2` in the scrutinee form, and `p1 || p2` in the condition form.
 - `case { c -> b; R }` (the condition form) is syntactic sugar for `choose(c, \() -> b, \() -> C)`. It introduces no binding.
 - The final arm `else -> bz` expands to `bz` itself, as the false branch of the innermost `choose`.
 - `case` introduces no core function of its own, and no new evaluation rule: every form of it is a nested `choose`.
 
-Here `choose` is a core function that exists only to serve as a normalization target, and is not exposed in the built-in library (it cannot be referenced, declared, or overridden by user code). `map` / `filter` / `reduce` / `for_each` are functions of the built-in library (15.4) and at the same time core functions serving as normalization targets, and likewise must not be overridden.
+Here `choose` is a core function that exists only to serve as a normalization target, and is not exposed in the built-in library: no name refers to it. `map` / `for_each` are functions of the built-in library (15.4) and at the same time the normalization targets of `for`; `for` refers to the built-ins whatever those names are bound to in scope (7.6).
 
 Typing rules:
 
@@ -1370,18 +1355,18 @@ Typing rules:
 - `map` is typed as `Function<Array<T>, Function<T, U>, Array<U>>`.
 - `filter` is typed as `Function<Array<T>, Function<T, Bool>, Array<T>>`.
 - `reduce` is typed as `Function<Array<T>, U, Function<U, T, U>, U>`.
-- `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because conformance of function types is limited to identity (4.4), in order to accept bodies of arbitrary return type through instantiation).
-- An `IfExpr` is well-typed only when the condition expression is `Bool` and the types of the two branch blocks are the same `T`, and the type of the whole expression is `T`.
-- An `if` without `else` is well-typed when the condition expression is `Bool` and its block has a type `T`. Its type is `T | Null`, reduced to canonical form (4.2): when the condition is false its value is `null`. A `T` that already admits `Null`, or is `Any`, is unchanged by this. When `T` is `Void` — a block run for its effect — the type is `Void`, as with an empty `else`.
+- `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because a body that returns `Void` does not conform to one that returns `Any`, and a type variable inside a function type is matched exactly (4.4); `U` accepts a body of any return type through instantiation).
+- An `IfExpr` is well-typed only when the condition expression is `Bool` and the types of the two branch blocks are the same `T`, and the type of the whole expression is `T`; or, with no expected type, when they differ only as the joins of 4.3 allow, whose result is the type of the whole expression.
+- An `if` without `else` is typed as the `if` with `else { null }` it is sugar for. With no expected type, its block of type `T` is joined with `Null` (4.3), so its type is `T | Null`, reduced to canonical form (4.2): when the condition is false its value is `null`. When `T` is `Void` — a block run for its effect — the sugar has an empty `else` instead, and the type is `Void`.
 - With an expected type `E` (4.3), the block is checked against `E`, and `Null` must also conform to `E`, unless `E` is `Void`. So `f(c: Bool): String | Null = if (c) { "x" }` is well-typed and `f(c: Bool): String = if (c) { "x" }` is a type error (`E-TYPE-MISMATCH`), whose remedy is an `else`.
 - Without an expected type, a block whose type is given only by its context, such as `fail(e)` (15.7), is checked as `Void`, the type an empty `else` would give it. `if (bad) { fail(e) }` therefore stands as a statement that stops the function when `bad` holds.
-- `T | Null` must be a type, so `T` must be a data type (4.2) when the value is used; a block of a function type or of `AsyncHandle<T>` is `E-TYPE-ILLFORMED`, and wants an `else`. A statement that is not the last of its block discards its value (6.5), and there the block may have any type.
+- `T | Null` must be a type, so `T` must be a data type (4.2) when the value is used, as for every join with `Null` (4.3); a block of a function type or of `AsyncHandle<T>` is `E-TYPE-ILLFORMED`, and wants an `else`. A statement that is not the last of its block discards its value (6.5), and there the block may have any type, as the branches of every join may (4.3).
 - A `CaseExpr` with a scrutinee is well-typed only when every value head's type conforms (4.4) to the type `S` of the scrutinee, and, when the expression has at least one value head, `S` is a comparable type (6.2). These are exactly the rules of `==`, because the expansion of a value head is a chain of `==`. A scrutinee of type `Any` is therefore a type error in a `case` having any value head, because `Any` is not comparable: dispatch on its type with type heads (below), or move to a concrete type with `cast` (15.8) first.
 - A type head is well-typed only when `S` is a union and the head is one of its members, or when `S` is `Any` and the head is a type `cast` may target (a data type; 4.2, 15.8). `E-TYPE-MISMATCH` for a head that is not a member of the union, and `E-TYPE-ILLFORMED` for a head that is not a data type. Dispatching on the type of a value of any other type decides nothing statically — the answer is already known — so it is rejected rather than being allowed as dead code.
 - The two admissible scrutinees are exactly the two types whose runtime kind is not settled statically. `Any` admits every data type as a head, because nothing is known about it; a union admits only its own members, because everything else is known not to occur.
 - A `case` all of whose heads are type heads does not require `S` to be comparable, since it performs no equality test. This is what makes `case` usable on an `Any`: `Any` is not comparable (6.2), so a value head on an `Any` scrutinee stays a type error while a type head is well-typed.
 - A `CaseExpr` without a scrutinee is well-typed only when every arm head has type `Bool`.
-- A `CaseExpr` is well-typed only when the bodies of all arms, the `else` arm included, have the same type `T`, and the type of the whole expression is `T`.
+- A `CaseExpr` is well-typed only when the bodies of all arms, the `else` arm included, have the same type `T`, and the type of the whole expression is `T`; or, with no expected type, when they differ only as the joins of 4.3 allow, whose result is the type of the whole expression.
 - Two heads of the same `CaseExpr` that are literals denoting the same value are a static error (`E-TYPE-CASE-DUPLICATE`): the later arm can never be selected. Heads that are not literals are not compared with one another. Two type heads of the same `CaseExpr` denoting the same type are a static error for the same reason; two type heads denoting different types are not compared, even when one can match values the other also matches (below).
 - A `ForExpr`, when the target expression is `Array<T>` and the type of the body block is `R` (`R` other than `Void`), has the type `Array<R>` as the whole expression.
 - When the type of the body block is `Void`, the `ForExpr` is normalized to `for_each` and the type of the whole expression is `Void`.
@@ -1397,6 +1382,17 @@ Within the body of an arm, the scrutinee is known to be narrower than its declar
 - Narrowing is a property of `case` alone. `if (x == null) { ... } else { ... }` does not narrow `x` in either block.
 
 The narrowed name is a binding of the arm body, so it shadows the outer binding inside that body and is invisible outside it (7.3). Where the narrowed type is a single type other than the declared one, the narrowed name is bound to the result of the same check-and-convert that `cast` performs at that type (15.8), so that a record value narrowed to `Map<T>`, or the reverse, reaches the body in the representation its type promises. Where the narrowed type is a union of two or more members, or is the declared type unchanged, the value is passed to the body as it is.
+
+A type parameter has no run-time check: it is not a type `cast` may target (4.4), and within the body it is opaque, so its values need no particular representation. The conversion therefore treats each position of the narrowed type that is a type parameter as `Any`, which passes without checking (15.8). `x: T | Null` narrowed to `T` is passed as it is, and `xs: Array<T> | Null` narrowed to `Array<T>` is checked to be an array and its elements passed as they are:
+
+```lask
+or_default<T>(x: T | Null, d: T): T = case (x) {
+  Null -> d
+  else -> x                // x: T here, the value as the caller gave it
+}
+
+s(): String = or_default(find_env("HOME"), "/")
+```
 
 ```lask
 // The scrutinee is a name, so the else arm knows it is a String.
@@ -1415,7 +1411,7 @@ Evaluation rules:
 - A `ForExpr` evaluates the target collection, then traverses the elements from left to right, applies the body block, and aggregates the results into an array in the same order (following `map` of 8.5).
 - A `CaseExpr` with a scrutinee evaluates the scrutinee exactly once, before any arm head. It then tests the heads in order, top to bottom and left to right within an arm, and stops at the first head that selects: a value head selects when it is equal to the scrutinee, and a type head selects when the scrutinee passes the runtime type check for that type. The remaining heads are not evaluated or tested, and only the body of the selected arm is evaluated. When no head selects, the body of the `else` arm is evaluated.
 - A type head is tested and never evaluated: it is a type, not an expression, so it can neither fail nor have an effect.
-- Because 15.8 accepts a record value and a map value for either of `Record<...>` and `Map<T>`, two type heads of one `case` can both match the same runtime value. Order decides, as it does for value heads: the first arm that selects wins.
+- Because 15.8 accepts a record value and a map value for either of `Record<...>` and `Map<T>`, two type heads of one `case` can both match the same runtime value. Order decides, as it does for value heads: the first arm that selects wins. The same holds of `Runnable` and `Environment`: an environment value passes the check for `Runnable`, which it conforms to (4.4), so an `Environment` arm placed after a `Runnable` arm is never selected.
 - A `CaseExpr` without a scrutinee evaluates the conditions in order and stops at the first that is `true`, evaluating only that arm's body. When none is `true`, the body of the `else` arm is evaluated.
 - If evaluation of the scrutinee or of an arm head fails, the whole expression fails at that point, and no further head or body is evaluated (8.10).
 - The interior of a `Block` follows the same statement rules as a `do` block (6.5), and the value of the block is the value of its final statement. The value of an empty block with no statements is `Void` (6.5).
@@ -1638,7 +1634,7 @@ Desugaring rules:
 
 - `$2[env] cmd` is syntactic sugar for the expression above with its success branch replaced by `r.stderr`.
 - A form written without an environment specification (`$ cmd`, `$1 cmd`, `$2 cmd`, `$* cmd`) expands identically, with the environment supplied by dispatch (10.9) over the command string. When dispatch selects no environment the expression is a static error (`E-TYPE-COMMAND-NOENV`); there is no fallback.
-- Only core functions (normalization to `run`, `fail`, and `choose`), a record literal and the internal escaping of the holes (Escaping, below) appear in the expanded forms, so the behavior can never be changed by user definitions.
+- Only core functions (normalization to `run`, `fail`, and `choose`), a record literal and the internal escaping of the holes (Escaping, below) appear in the expanded forms, and they refer to the built-ins whatever those names are bound to in scope (7.6), so the behavior can never be changed by user definitions.
 - `#{e}` and `#!{e}` inside a `shell_string` are evaluated first as string interpolation, and the post-interpolation string is passed as the command body. The value of each `#{e}` hole is escaped before it is substituted, and that of each `#!{e}` hole is not (Escaping, below).
 
 Lexical rules:
@@ -1651,12 +1647,12 @@ Lexical rules:
 - If the line ends with `\`, it is a continuation line; the `\` and the newline are removed and the next line is concatenated.
 - Inside the command string, the shell's `;`, quotation marks, pipes, etc. can be used without escaping.
 - `#{` starts an interpolation, and `#!{` a raw hole. To include a literal `#{` or `#!{`, write `\#{` or `\#!{`. A `#` followed by neither `{` nor `!{` is treated as an ordinary character, so `$ echo '#!/bin/sh'` needs no escape.
-- A raw hole exists only in a command string. In an interpreted string (3.4), `#!{` is ordinary text: `"#!{x}"` is the five characters it shows.
+- A raw hole exists only in a command string. In an interpreted string (3.3), `#!{` is ordinary text: `"#!{x}"` is the five characters it shows.
 - Inside `do`, the newline that terminates a command string simultaneously serves as statement termination (6.5).
 - An unbraced command string always terminates at a newline, but the enclosing expression can be continued by a binary operator on the next line following the continuation rules of 6.5. For example, placing `|> trim` on the line after `$[#local] git --version` is interpreted as `run(#local, "git --version") |> trim`.
 - All tokens on the same line after an unbraced command execution expression become part of the command string. Therefore, no subsequent tokens of the expression (closing brackets, etc.) can be placed on the same line. A command that has to be followed on its line — by `|> trim`, by the `)` of a call, by the `,` of a list — is written braced: `${git --version} |> trim`, `retry(delays, \() -> ${make test})`.
 
-Here `run` is a core function and must not be directly declared or overridden by user code (15.5).
+Here `run` is a core function (15.5), which the command sugar refers to whatever the name `run` is bound to in scope (7.6).
 
 Escaping:
 
@@ -1666,7 +1662,7 @@ Escaping:
   - Inside `'...'`, each `'` of the value is written `'\''`: `$ sh -c 'grep -q "^#{name}:" /etc/passwd'`.
 - A hole in `$(...)` or backquotes is escaped for the quoting in force where the substitution is written; the shell's own reparsing of the substitution is not followed.
 - A raw hole `#!{e}` is substituted without escaping, so the shell parses the value: `$ go build #!{flags}` passes each flag in `flags` as a word of its own. It is written with its own delimiter, not with a function, so that what the shell parses is visible where the hole is written: no expression inside an ordinary hole, whatever function it calls, is substituted unescaped. Because the shell parses the value, a value from outside the program (an argument, a file, a command's output) must not reach a raw hole: it would run what it contains.
-- The escaping is POSIX shell escaping. The shell of a `local` environment on Windows is `cmd.exe` (10.2), which does not read it; a command meant for it writes its holes as raw holes and quotes them itself.
+- The escaping is POSIX shell escaping, which the shell of every environment reads (10.2).
 - Only holes of a command execution expression are escaped. A string passed to `run` (15.5) is a command line as it is, so a value interpolated into it is quoted with `shell_quote` where it needs to be.
 - The escaping is part of the desugaring: it is written with internal builtins that no program can name, so user definitions cannot change it.
 
@@ -1690,8 +1686,6 @@ Shell syntax:
   - a newline that ends a command, as one written between two commands of a braced command string. The shell would run them one after the other, and `$` checks the exit code of the last one only, so a failure of the first would go unnoticed. A newline is well formed where the shell reads it as continuing the list: after `&&`, `||` or `|`, and where no command has begun, after `;`, `&` or `(`. Commands that depend on each other are joined with `&&`, or written as commands of their own;
   - `|>` or `<|`, lask's application operators (6.2), which the shell would read as a pipe and a redirection, as `uname -s |> trim` would be read as `uname -s | > trim`. The diagnostic suggests the braced form, `${uname -s} |> trim`. Written apart, as `| >`, they are the shell's operators and are not reported.
 - A command consisting only of assignments or redirections is a command, as in the shell: `FOO=1` and `> out.txt` are well formed. A trailing `;` or `&` ends a list and is well formed.
-- The check is not made where the environment may be the `local` environment of a Windows host, whose shell is `cmd.exe` (10.2): on such a host it is made only when the environment is known from the text to be a container environment, written as a container environment expression directly or through top-level bindings.
-- There instead, a command string that holds a newline is the static error `E-TYPE-COMMAND-SYNTAX`: `cmd.exe /c` runs the first line of what it is given and nothing after it, so a braced command spanning lines would run only its start.
 - Examples: `$[#local] make &&`, `$[#local] cat >`, `$[#local] echo "unterminated` and `$[#local] | grep x` are `E-TYPE-COMMAND-SYNTAX`. `$[#local] for f in *.go; do gofmt -l $f; done`, `$[#local] echo #!{flags} &&` and `$[#local] echo hi # it's` are not, because reading stops at `for`, at the raw hole, and at the comment.
 
 Environment specification rules:
@@ -1791,12 +1785,12 @@ Syntax rules:
 - `RunOptions` takes the run options of 10.2, by the same names as the keyword parameters of `runnable`. A run option takes any expression of its type, including a function's parameters and values read from outside the program (15.9). An image option, an unknown name or a duplicate is a static error (`E-TYPE-ENV-CONSTRUCT`). A key is a `lower_id`; the braces are not an object literal and build no value of their own.
 - `#local` with either list, even an empty one, is a static error (`E-TYPE-ENV-CONSTRUCT`).
 - A Docker image whose reference is `local` is written with its namespace, `#library/local`.
-- Environment profile names such as `local` / `docker` are not reserved words. In positions without `#`, they can be used as ordinary identifiers. `#docker` is the registry reference to the image `docker`.
+- Environment profile names such as `local` / `container` are not reserved words. In positions without `#`, they can be used as ordinary identifiers. `#docker` is the registry reference to the image `docker`.
 - Because `env_char` includes `.`, an accessor `.` cannot follow immediately after `env_head` (it is absorbed into the token). If processing is needed, first bind it to a variable.
 
 Desugaring rules:
 
-- `#head(image options){k1: e1, ..., kn: en}` is syntactic sugar for `runnable(#head(image options), k1 = e1, ..., kn = en)` (15.5). It refers to the built-in `runnable` whatever the name `runnable` is bound to in scope.
+- `#head(image options){k1: e1, ..., kn: en}` is syntactic sugar for `runnable(#head(image options), k1 = e1, ..., kn = en)` (15.5). It refers to the built-in `runnable` whatever the name `runnable` is bound to in scope (7.6).
 - The sugar is available on a head only. Run options for an environment held in a variable are given with `runnable(e, ...)`.
 
 Typing rules:
@@ -1888,7 +1882,7 @@ CatchClause   = "catch" "(" lower_id ")" Block .
 FinallyClause = "finally" Block .
 ```
 
-An error handling expression is an expression that catches failures during evaluation (runtime errors and external I/O errors) and joins to an alternative computation. Semantically it is handled by normalization to the core functions `recover` and `fail`.
+An error handling expression is an expression that catches failures during evaluation (runtime errors and external I/O errors) and joins to an alternative computation. Semantically `catch` is handled by normalization to the core functions `recover` and `fail`, and `finally` has an evaluation rule of its own (8.10), because it also runs when its body is abandoned, which is not a failure.
 
 The `Error` type:
 
@@ -1901,19 +1895,19 @@ Definitions as functions:
 - `fail` is a core function that receives an `Error` value and raises that failure. It is used for re-raising within a handler and for raising user-defined errors.
 - `error` is a helper function for constructing error values (15.7).
 
-Here `recover` and `fail` are core functions and must not be directly declared or overridden by user code.
+Here `recover` and `fail` are core functions, which `try` refers to whatever those names are bound to in scope (7.6).
 
 Desugaring rules:
 
 - `try B catch (e) H` is syntactic sugar for `recover(\() -> do { B }, \(e) -> do { H })`.
-- `try B finally F` is syntactic sugar for `do { v = recover(\() -> do { B }, \(e) -> do { F; fail(e) }); F; v }` (`v` is a fresh identifier that does not collide with others). `F` is evaluated exactly once on both the success and the failure path.
+- `try B finally F` is not an expansion through `recover`: it is evaluated by the rule of 8.10, which evaluates `F` exactly once whether `B` succeeds, fails, or is abandoned (8.7). On the success and the failure path it behaves as `do { v = recover(\() -> do { B }, \(e) -> do { F; fail(e) }); F; v }` would; the abandonment path has no such expansion, since abandoning a body is not a failure `recover` could catch.
 - `try B catch (e) H finally F` is equivalent to `try (try B catch (e) H) finally F` (`catch` is applied first, and `finally` is applied to the whole).
 
 Typing rules:
 
 - `recover` is typed as `Function<Function<T>, Function<Error, T>, T>`.
 - `fail` is typed as `Function<Error, T>`. The return type `T` is instantiated from the context's expected type (4.4).
-- A `TryExpr` with `catch` is well-typed only when the types of the body block and the `catch` block are the same `T`, and the type of the whole expression is `T`.
+- A `TryExpr` with `catch` is well-typed only when the types of the body block and the `catch` block are the same `T`, and the type of the whole expression is `T`; or, with no expected type, when they differ only as the joins of 4.3 allow, whose result is the type of the whole expression.
 - The `e` of `catch (e)` is in effect only inside the `catch` block, with type `Error`.
 - The type of the `finally` block is arbitrary, and its value is discarded. The expression type of `try B finally F` is the type of the body block.
 
@@ -1921,6 +1915,7 @@ Catch rules:
 
 - The targets of catching are runtime errors and external I/O errors that occur during evaluation of the body block. Syntax and static errors are detected before evaluation and are therefore not targets.
 - A failure that occurs inside a `catch` block or a `finally` block is not caught by the same `TryExpr` and propagates outward.
+- An abandonment (8.7) is not a failure, and no `catch` block sees it, so that a `try` inside a `timeout` cannot keep the body from being abandoned. Every `finally` block of the abandoned body runs (8.10).
 - When `TryExpr`s are nested, the innermost `TryExpr` catches first.
 
 Examples:
@@ -1975,7 +1970,7 @@ Desugaring rules:
   f(x: String) = do { x = mark_secret(x); body }
   ```
   The same transform applies to a `!!`-marked keyword parameter, after default-value completion (8.3).
-- `mark_secret` is a core function (15.9) and must not be directly declared or overridden by user code (7.2).
+- `mark_secret` is a core function (15.9). `!!` refers to the built-in `mark_secret` whatever that name is bound to in scope (7.6).
 
 Typing rules:
 
@@ -2046,7 +2041,7 @@ Resolution rules:
 - If no candidate exists at any precedence level, it is an undefined reference error.
 - Reserved words must not be bound as identifiers.
 - Symbols of the built-in library are resolved at the lowest level (fifth precedence), so a user-defined symbol of the same name always takes priority (shadowing; 15.1).
-- However, core function names specified as non-overridable (`spawn`, `choose`, `map`, `filter`, `reduce`, `for_each`, `run`, `recover`, `fail`, Chapter 6; `get_env`, `mark_secret`, 6.10/15.9) and `stdin` (9.3) must not be declared or bound at any of the first through fourth precedence levels. A violation is a duplicate definition error (`E-NAME-DUPLICATE`).
+- A built-in symbol, core functions included, may be shadowed at any of the first through fourth precedence levels. Syntactic sugar is not affected: it refers to the built-ins it is normalized to directly (7.6). Only `stdin` (9.3), a reserved identifier, must not be declared or bound at any of the first through fourth precedence levels; a violation is a duplicate definition error (`E-NAME-DUPLICATE`).
 
 ### 7.3 Scope and Shadowing
 
@@ -2139,13 +2134,15 @@ The expansion order during static verification is as follows.
 4. `if (c) { ... } else { ... }` -> `choose(c, \() -> do { ... }, \() -> do { ... })`; without `else`, the false branch is `\() -> null`, or `\() -> do {}` for a `Void` block (6.4)
 5. `case (e) { ... }` / `case { ... }` -> nested `choose` (6.4); the scrutinee form first binds the scrutinee to a fresh name, and an arm with a type head expands to a runtime type test, with the narrowing rebinding of 6.4 inside the branch function
 6. `for (x: xs) { ... }` -> `map(xs, \(x) -> do { ... })` (or `for_each(xs, \(x) -> do { ... })` when the type of the body block is `Void`; 6.4)
-7. `try ... catch (...) { ... }` / `finally { ... }` -> expansion to expressions using `recover` / `fail` (6.9)
+7. `try ... catch (...) { ... }` -> an expression using `recover` (6.9); `finally { ... }` stays a core expression of its own (8.10)
 8. Sequential-execution expansion of `do { ... }`
 9. Classification of environment heads into the `local`, registry-reference and recipe forms, and expansion of `#head{...}` -> `runnable(#head, ...)` (6.7)
 10. Dispatch of command execution expressions with no environment specification (10.9), determining the environment of each from its command string
 11. Command sugar expansion of `$ cmd` / `$[env] cmd`
 
 Type checking is performed on the core expressions after expansion. The meaning of the expansion result must be equivalent to that of the original syntax.
+
+Expansion is hygienic. Every core function an expansion produces (`spawn`, `choose`, `map`, `for_each`, `recover`, `fail`, `run`, `runnable`, `mark_secret`, and the others this chapter names) is the built-in itself, whatever that name is bound to where the sugar is written: a user definition of the same name shadows the built-in for references written in the source (7.2), and never for the sugar. A fresh name an expansion binds is one no source program can write, so it captures nothing and shadows nothing. Adding a form of sugar therefore never changes the meaning of a program that already uses its target's name.
 
 Two expansions are type-directed, and every other expansion is purely syntactic.
 
@@ -2154,38 +2151,7 @@ Two expansions are type-directed, and every other expansion is purely syntactic.
 
 ### 7.7 Static Errors
 
-The error kinds reported by static verification include at least the following.
-
-- `E-NAME-UNDEFINED`: undefined reference
-- `E-NAME-DUPLICATE`: duplicate definition
-- `E-TYPE-MISMATCH`: type mismatch
-- `E-TYPE-ARITY`: function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2)
-- `E-TYPE-KEYWORD`: invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5)
-- `E-TYPE-CALL`: invalid call (calling a non-function value, etc.)
-- `E-TYPE-COMMAND-ENV`: invalid command execution environment type, at a command execution expression or a command declaration (6.6, Chapter 5)
-- `E-TYPE-COMMAND-NOENV`: a command execution expression with no environment specification for which dispatch selects no environment (6.6, 10.9)
-- `E-TYPE-COMMAND-CONFLICT`: one command string selects environments not known to be one (10.9)
-- `E-TYPE-COMMAND-EFFECT`: the environment of a command declaration can reach an effect (Chapter 5)
-- `E-TYPE-COMMAND-NAME`: a command declaration names a program that could never be recognized in a command string (Chapter 5)
-- `E-TYPE-COMMAND-DUPLICATE`: the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5)
-- `E-TYPE-COMMAND-SYNTAX`: a command string is not well formed as POSIX shell syntax (6.6)
-- `E-TYPE-COMMAND-SCHEMA`: the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5)
-- `E-TYPE-COMMAND-OPTION`: a command string invokes a program in a way its command schema rules out (Chapter 5)
-- `E-TYPE-ENV-CONSTRUCT`: invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree, an `egress` entry that is not one or `egress` given with `network` or `publish`; 6.7, 10.2, 10.3, 10.12, 15.5)
-- `E-TYPE-WITHIN-SPEC`: an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, or a second module constraint; Chapter 5, 10.11)
-- `E-TYPE-WITHIN-EXCEEDED`: what a declaration covered by an access constraint can reach is shown to exceed it (10.11)
-- `E-TYPE-WITHIN-UNPROVEN`: what a declaration covered by an access constraint can reach cannot be determined statically, so it is not shown to stay within it (10.11)
-- `E-TYPE-ACCESS`: invalid accessor (field access on a non-`Record`, unknown field, invalid index type)
-- `E-TYPE-FIELD-DUPLICATE`: duplicate record field name or object literal key (4.2)
-- `E-TYPE-CASE-DUPLICATE`: two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4)
-- `E-TYPE-ILLFORMED`: violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`; 4.2, 6.4, 15.8)
-- `E-TYPE-SECRET-NON-STRING`: `!!` applied to a binding whose type is not `String` (6.10)
-- `E-TYPE-BOUND`: a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 6.2, 6.4, 6.6)
-- `E-MODULE-CYCLE`: module circular dependency
-- `E-MODULE-UNRESOLVED`: unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5)
-- `E-MODULE-DEEP-IMPORT`: an external import naming a path inside a dependency tree rather than its entry module (Chapter 5)
-- `E-MODULE-LOCK-STALE`: the lock file is missing, incomplete, or inconsistent with the project file (Chapter 5)
-- `E-MODULE-CONFIRM-TARGET`: a `confirm` entry of the project file names a function, a parameter or a value that does not fit the program (Chapter 5)
+The errors static verification reports are the codes of the classes syntax and static in the table of 14.2.
 
 Error diagnostics include at least the following.
 
@@ -2267,7 +2233,7 @@ Evaluation of the condition of a type-head arm (6.4):
 
 1. The scrutinee has already been evaluated and bound, so nothing further is evaluated to test a type head.
 2. The bound value is checked against the head type by the runtime type check rules of `cast` (15.8). The check yields `true` or `false`; unlike `cast` it neither converts the value nor fails.
-3. When the arm is selected and the scrutinee is a narrowed name whose narrowed type calls for the conversion of 6.4, the value bound in the branch is the result of the corresponding `cast`, so that a record value narrowed to `Map<T>`, or the reverse, is converted before the body runs. The conversion follows a check that has just succeeded, or, in an `else` arm, a narrowing that leaves one member of the scrutinee's own type, so it cannot fail.
+3. When the arm is selected and the scrutinee is a narrowed name whose narrowed type calls for the conversion of 6.4, the value bound in the branch is the result of the corresponding `cast`, so that a record value narrowed to `Map<T>`, or the reverse, is converted before the body runs. A position of the narrowed type that is a type parameter is converted as `Any` is, passing as it is (6.4). The conversion follows a check that has just succeeded, or, in an `else` arm, a narrowing that leaves one member of the scrutinee's own type, so it cannot fail.
 
 Evaluation of `map(xs, body)`:
 
@@ -2324,6 +2290,7 @@ At the end of a top-level execution, before its result is output or its failure 
 
 1. While some `h` created during the execution has never been passed to `await`, `all`, or `race`, nor cancelled by `timeout` (15.7), wait until `A[h]` is no longer `running`.
 2. Report each such `h` as `W-ASYNC-UNAWAITED` (6.3), in the order the handles were created, with its failure if `A[h] = failure(err)`.
+3. If the execution itself succeeded and some such `A[h] = failure(err)`, the execution fails with the `err` of the first of them in that order: its exit code is that error's `code` (8.10, 11.3), and `eval` outputs no result. If the execution failed already, its own failure is the one reported as the outcome, and these stay reported by step 2.
 
 ### 8.7 Command Execution (Core Function)
 
@@ -2338,24 +2305,25 @@ Evaluation of `run(env, cmd)`:
 Construction rules for `CommandResult`:
 
 - `code`: set to the process's exit code as is. Termination by signal may be mapped according to shell convention (`128 + signal number`).
-- `stdout` / `stderr`: set to the contents of each stream (up to an implementation-defined size limit; on overflow, a summary preserving the head and tail may be used).
+- `stdout` / `stderr`: set to the whole contents of each stream. Neither is truncated or summarized, however long: a program that reads the output, as `from_json(r.stdout)` does, would otherwise read a value that is not the one the command wrote, and not know it.
 - `run` fails only in the case of execution infrastructure failures (environment unresolvable, connection failure, command unable to start, etc.) (external I/O error; Chapter 14).
 
 Error value conversion of failures caused by non-zero exit (carrying over the exit code and standard error output) follows 8.10.
 
 Stopping an abandoned command:
 
-- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7).
+- The evaluation of `run` is **abandoned** when the computation it belongs to is cancelled before the command exits: `race` cancels the computations of the handles that did not finish first, `all` cancels the computations of the other handles once one has failed (15.6), and `timeout` abandons a body that outlives its limit, together with the computations the body started (15.7). A `run` or `eval` stopped by SIGINT or SIGTERM abandons its whole evaluation the same way (11.12).
 - An abandoned command is stopped. The process, and every process it started, receive a termination request; whatever remains after an implementation-defined grace period is terminated forcibly. A command running in a container is stopped together with its container, which is removed. A command running in the container of a session (15.5) is stopped without it: its own processes in the container are stopped, and the container and the session's other processes stay. The container runs under an init process unless its environment turns that off (10.2), so the request reaches a command that is not written to handle it.
 - The command keeps the process group it was started in, so a command that reads the terminal (a password prompt) and an interrupt from the terminal behave as they would for any child process. The processes to stop are therefore found from the process tree when the command is abandoned, and a process that has left the tree by then (a daemon that detached itself) is not reached.
 - An abandoned `run` returns no result. Its command execution log records the command as `killed` in place of the exit line (12.3).
+- Abandoning a computation stops its command first and then runs the `finally` blocks it is inside, innermost first (8.10). What cancelled it — `race`, `all` or `timeout` — goes on once those blocks have ended.
 
 ### 8.8 Evaluation of Environment Expressions (Core Expression)
 
 An environment expression `#head(image options)` (6.7) is a core expression evaluated by the following procedure.
 
 1. Evaluate the argument expressions from left to right in written order.
-2. Return an `Environment` value consisting of the profile (`local` or `docker`) and the image the head names, with its image options.
+2. Return an `Environment` value consisting of the profile (`local` or `container`) and the image the head names, with its image options.
 3. If the evaluation of an argument expression fails, the entire environment expression fails.
 
 The sugar `#head(image options){run options}` has been expanded to `runnable(#head(image options), run options)` (7.6). An application of `runnable(e, k1 = e1, ..., kn = en)` (15.5) is evaluated as follows.
@@ -2371,7 +2339,8 @@ Resolution of an environment or runnable value to an execution environment (10.4
 
 Equality comparison:
 
-- `==` / `!=` (6.2) on `Environment` and `Runnable` values is determined by structural equality of the profile, the image with its image options, and the set of run options that are set. An `Environment` and a `Runnable` with no run option set are equal: `#alpine:3.20 == runnable(#alpine:3.20)`, and `#alpine:3.20{memory: null} == #alpine:3.20`.
+- `==` / `!=` (6.2) on `Environment` and `Runnable` values is determined by structural equality of the profile, the image with its image options, and the set of run options that are set. An `Environment` and a `Runnable` with no run option set are equal: `#alpine:3.20 == runnable(#alpine:3.20)`, and `#alpine:3.20{memory: null} == #alpine:3.20`. The order run options are written in is not part of the value (10.2), so it plays no part.
+- The session a `with_container` call that starts a container gives its body (15.5) is equal only to itself: not to the environment it was opened on, nor to the session of another call. A call given `#local`, or a session that is open, gives the body that value itself, which compares as it does anywhere else.
 
 ### 8.9 Evaluation of Accessor Expressions (Core Expression)
 
@@ -2416,6 +2385,14 @@ Evaluation of `recover(body, handler)`:
 2. If it succeeds, return its value. `handler` is not evaluated.
 3. If it fails, map the failure to an `Error` value `err`, evaluate `handler(err)`, and return its result.
 4. Failures during the evaluation of `handler` are not caught by this `recover` and propagate outward.
+
+Evaluation of `try B finally F` (6.9):
+
+1. Evaluate `B`.
+2. If it succeeds with `v`, evaluate `F`, and return `v`. A failure of `F` propagates.
+3. If it fails, evaluate `F`, and propagate the failure of `B`. A failure of `F` propagates in its place.
+4. If it is abandoned (8.7), the command it is running has been stopped. Evaluate `F`, and let the abandonment go on to what caused it. `F` is not abandoned by that same cause: a `timeout` whose limit passed waits for `F` to end before it fails, so a body with a long `finally` returns after its limit. Something further out, such as an enclosing `timeout`, may still abandon `F`. A failure of `F` here does not propagate, since the outcome is decided by what abandoned the body (a `timeout`'s code `124`, or the result of `race` or `all`); it is written to the execution log (12.2), naming its code and message.
+5. A `catch` block is not evaluated for an abandonment (6.9). `F` is evaluated exactly once on every path. A `finally` block that is already running when its body is abandoned is part of what is abandoned, and is not started again.
 
 Evaluation of `fail(err)`:
 
@@ -2579,11 +2556,13 @@ deploy(
 Form:
 
 ```ebnf
-SecretReference = "{" , Scheme , "://" , Body , "}" ;
-Scheme          = lower , { lower | digit | "+" | "." | "-" } ;
-Body            = char , { char } ;   (* scheme-specific *)
+SecretReference = "{" Scheme "://" Body "}" .
+Scheme          = lower_letter { lower_letter | decimal_digit | "+" | "." | "-" } .
+lower_letter    = "a" … "z" .
+Body            = ref_char { ref_char } .
 ```
 
+- The grammar is that of a variable's value, not of Lask source. `ref_char` is any character, and a reference ends at the value's last `}`, so that `Body` may hold a `}` of its own. What `Body` means is the scheme's.
 - A variable is a reference only when its **whole** value has this form. A reference embedded in a longer value (`"x-{vault://...}"`) is not recognized, and the value is read as it is.
 - A value that starts with `{`, a scheme and `://` but does not end the reference with its closing `}` is a malformed reference (`E-IO-SECRET-REF`), never an ordinary value: a mistyped reference must not be handed on as a password.
 - The scheme selects the store. The schemes an implementation provides are listed below; any other is `E-IO-SECRET-PROVIDER`.
@@ -2606,9 +2585,13 @@ Reading:
 The `vault` scheme (HashiCorp Vault, and stores serving the same HTTP API, such as OpenBao):
 
 ```ebnf
-VaultBody = Path , [ "?version=" , digit , { digit } ] , "#" , Field ;
-Path      = Name , { "/" , Name } ;
+VaultBody = Path [ "?version=" Version ] "#" Field .
+Path      = Name { "/" Name } .
+Version   = decimal_digit { decimal_digit } .
+Field     = ref_char { ref_char } .
 ```
+
+- A `Name` is one or more characters other than `/`, `?` and `#`, and is neither `.` nor `..`. The path ends at the first `?` or `#`, and the field is everything after the first `#`. `Version` is a positive integer, and `version` is the only parameter a reference takes. A body outside this form is `E-IO-SECRET-REF`.
 
 - The path is written as `vault kv get` takes it, and the field names one key of the secret: `{vault://secret/app#password}`. The field is required.
 - Whether the path is on a key/value version 2 mount is asked of the server. There the path is read at its `data/` location and `version` selects a version, the latest when omitted. On any other mount the path is read as written, and a `version` is `E-IO-SECRET-REF`. When the server will not say, the path is read as written.
@@ -2637,10 +2620,10 @@ This chapter defines the execution environments that can be specified when invok
 
 Rules:
 
-- `Environment` must not be overridden by user-defined type aliases or value declarations.
+- `Environment` and `Runnable` are names of `BaseType`, and no type alias can take them (4.2).
 - `Environment` values must be resolvable to at least the following 2 profiles.
   - `local`: `#local` (local execution)
-  - `docker`: a registry-reference head `#<image>` or a recipe head `#./<Dockerfile>` (container execution)
+  - `container`: a registry-reference head `#<image>` or a recipe head `#./<Dockerfile>` (container execution)
 - The `env` argument of `run` must be normalized to an `Environment` or `Runnable` value at evaluation time.
 - There is no default execution environment. Every command execution expression determines its environment from the expression itself — from its environment specification, or by dispatch over its command string (6.6, 10.9) — and an expression that determines none is a static error (`E-TYPE-COMMAND-NOENV`). Local execution is written `#local`, like any other environment, or is registered for a program by a command declaration (Chapter 5).
 - No CLI option or other external configuration may supply or replace the environment of a command, or name its image. A value from outside the program may reach a run option, as an argument passed to a function that gives it to `runnable` (15.5); it cannot reach the image.
@@ -2653,11 +2636,16 @@ Type conformance:
 
 ### 10.2 Target Environment Profiles and Their Options
 
-The execution environment profiles specified by this specification are `local` and `docker`. Both are self-contained on the host running Lask. Environments that span hosts are not provided: their contents cannot be pinned, they carry state between runs, and no boundary can be placed around what they may do. A remote host is reached by running a client for it inside a container (`$[#alpine:3.20] ssh ...`), which keeps the tool that reaches it pinned.
+The execution environment profiles specified by this specification are `local` and `container`. Both are self-contained on the host running Lask. Environments that span hosts are not provided: their contents cannot be pinned, they carry state between runs, and no boundary can be placed around what they may do. A remote host is reached by running a client for it inside a container (`$[#alpine:3.20] ssh ...`), which keeps the tool that reaches it pinned.
+
+The host running Lask is a POSIX system, such as Linux or macOS. Windows is not a host: on Windows, Lask runs inside WSL 2, where the host is the Linux distribution it runs in.
+
+- Both profiles therefore run a command string with a POSIX shell, `/bin/sh`, so a command string has one meaning, its escaping one form, and its syntax one check (6.6), whichever environment it runs in.
+- The container engines a Windows machine runs Linux containers with already run them in a WSL 2 virtual machine, so a project that uses containers on Windows already depends on it.
 
 - `local`: local process execution on the calling host
   - Written `#local`. It takes no options.
-- `docker`: execution inside a container
+- `container`: execution inside a container, run by the container engine of 10.10, whichever it is
   - The image is named by the head of the environment expression (6.7), in one of two forms.
     - **Registry reference**: `#<reference>`, an image in a registry. It may carry a registry, a tag or a digest, or none of them: a bare repository name names its `latest`. Whatever a reference names upstream, the lock pins the image it resolved to when it was materialized (10.3), so a reference that moves upstream does not move a run.
     - **Recipe**: `#./<path>`, a Dockerfile, with the image options `context`, naming its build context, and `build_args`, supplying the build arguments the recipe hash covers (10.3). `context` defaults to the directory containing the Dockerfile. `context` and `build_args` given to a registry reference are static errors (`E-TYPE-ENV-CONSTRUCT`), because there is then no build for them to reach.
@@ -2681,11 +2669,11 @@ The run options this implementation provides:
 | Host filesystem | `base_mount`, `base_access`, `volumes` |
 
 - `ulimits`, `tmpfs`, `cap_drop`, `dns`, `dns_search`, `publish` and `volumes` are `Array<String | Null>`, and `egress` is `Array<String | Null> | Null`, since an empty `egress` is not one left out (10.12); `env` and `add_hosts` are `Map<String | Null>`; `init` and `read_only` are `Bool | Null`; `cpus`, `cpu_shares`, `pids_limit` and `blkio_weight` are `Number | Null`; `base_access` is `String | Map<String> | Null`; the rest are `String | Null`.
-- A list or table option also takes a value already typed `Array<String>` or `Map<String>`, and `egress` one typed `Array<String> | Null`. Containers are invariant (4.4), so such a value does not conform to the nullable element type; it holds no null to leave out, and means the same.
+- A value already typed `Array<String>` or `Map<String>`, or for `egress` `Array<String> | Null`, conforms to these types (4.4); it holds no null to leave out.
 - An option given `null` is left out, as if it had not been written; so is a `null` element of a list or a `null` value of a table, and an empty list or table gives nothing, except for `egress`, which lists what a container may reach rather than what it is given, so that an empty list admits no destination (10.12). This is how an argument says "not given" — a function that builds a runnable passes its own optional parameters straight through. Any other value is passed as given, the empty string included: `env = {"PAGER": ""}` sets the variable to the empty string.
 - `workdir` is the explicit working directory 10.5 gives precedence over the default.
-- `env` is the explicit specification of 10.6, and is therefore the highest-precedence source of the variable set.
-- A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the engine client's command line (10.10) and sets its value in the client's environment, from which the client takes it. A variable the client reads itself is passed with its value on the command line instead, since setting it for the client would change which engine it reaches or how. In any case, that is a name ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, and, by engine:
+- `env` sets variables of the container over those its image and engine give, and over the proxy's of `egress` (10.6).
+- A value of `env` must not appear on the command line of a process lask starts, which every user of the host can read: `env` is where a program passes a credential to a container (9.8). This implementation names each variable on the engine client's command line (10.10) and sets its value in the client's environment, from which the client takes it. A variable the client reads itself cannot be set for it that way, since that would change which engine it reaches or how; it is written instead, with its value, to a file the client is given with `--env-file`, in a directory of its own that only the user can enter, and removed once the client has exited (for a `with_container` session, once its container has started). Since the file holds a variable to a line, such a variable whose name is empty or holds `=` or a line break, or whose value holds a line break, is refused when the command is launched (`E-IO-ENV-RESOLVE`) rather than put on a command line. A variable the client reads itself is, in any case, a name ending with `_PROXY`, or `PATH`, `HOME` or `SSH_AUTH_SOCK`, and, by engine:
   - `docker`: a name beginning with `DOCKER_`.
   - `podman`: a name beginning with `CONTAINER_`, `CONTAINERS_`, `PODMAN_`, `BUILDAH_` or `XDG_`, or `TMPDIR` or `REGISTRY_AUTH_FILE`.
   - `nerdctl`: a name beginning with `CONTAINERD_`, `NERDCTL_`, `BUILDKIT_`, `CNI_` or `XDG_`, or `TMPDIR`.
@@ -2712,14 +2700,14 @@ Each profile has at least the following execution attributes.
 
 How this implementation launches a command:
 
-- `docker`: the container is started with the image's entrypoint replaced by `/bin/sh`, and the command string is run by it as `/bin/sh -c <command string>` would run it. This implementation gives the command string to `/bin/sh` on its standard input, which the shell reads to the end, with its builtins alone, before running the command with that input empty, as a command's is: so the command string is on no command line, neither the engine client's on the host nor the shell's in the container, both of which the host's process list shows. An image must therefore provide `/bin/sh`; an image without a shell (a distroless or `scratch`-based tool image) cannot run a command, and is wrapped in an image that has one.
-- `local`: the command string is run by the host's shell, `/bin/sh -c` on POSIX systems and `cmd.exe /c` on Windows.
+- `container`: the container is started with the image's entrypoint replaced by `/bin/sh`, and the command string is run by it as `/bin/sh -c <command string>` would run it. This implementation gives the command string to `/bin/sh` on its standard input, which the shell reads to the end, with its builtins alone, before running the command with that input empty, as a command's is: so the command string is on no command line, neither the engine client's on the host nor the shell's in the container, both of which the host's process list shows. An image must therefore provide `/bin/sh`; an image without a shell (a distroless or `scratch`-based tool image) cannot run a command, and is wrapped in an image that has one.
+- `local`: the command string is run by the host's shell, as `/bin/sh -c <command string>`.
 
 Implementations may extend with additional profiles, but must not break compatible behavior with the above 2 profiles.
 
 ### 10.3 Container Image Resolution and Materialization
 
-A `docker` environment names its image by its head, as a registry reference or as a recipe (10.2). Both forms are resolved to a concrete, immutable image ahead of execution and recorded in the lock file (Chapter 5).
+A `container` environment names its image by its head, as a registry reference or as a recipe (10.2). Both forms are resolved to a concrete, immutable image ahead of execution and recorded in the lock file (Chapter 5).
 
 Statically known images:
 
@@ -2735,7 +2723,7 @@ Materialization:
 - A reference written with a digest (`#alpine@sha256:...`) pins itself: it is recorded with that digest.
 - A reference with `platform` is pulled for that platform. The digest the lock records is the one the reference resolves to, which for a multi-platform image is that of its index and covers every platform; the same reference used with several platforms is one lock entry, materialized once per platform.
 - The pin moves only when the program does. Writing another reference — a new tag — materializes a new image; the same tag pointing somewhere new upstream changes nothing until its entry is removed from the lock.
-- A recipe is built, for its `platform` if one is given. The resulting image is tagged `lask/<dependency path>/<recipe hash>`, where the recipe hash covers the Dockerfile, the build context, the declared build arguments, and the platform. A changed recipe therefore yields a different image and cannot reuse a cached one.
+- A recipe is built, for its `platform` if one is given. The resulting image is tagged `lask/<recipe hash>`, the recipe hash being the 64 lower-case hexadecimal digits of a SHA-256 that covers the contents of the Dockerfile, the path of the build context, the declared build arguments, the platform, and a build with no network (below). A changed recipe therefore yields a different image and cannot reuse a cached one. The tag names no dependency: a recipe in a dependency has a context path under `.lask/deps` that holds the dependency's content hash (Chapter 5), so two dependencies share an image only when their recipes are the same content.
 - Builds are performed with no host mount other than the declared context, without privileged mode, and without host networking.
 - What a build's steps reach is the network the engine gives a build, unless the recipe is given `build_network = "none"`, which builds it with no network at all. A recipe a dependency writes builds as it is written, so what a project's builds may reach is read in its recipes, and `sync`'s summary and `envs list` show a recipe built with no network as `(no network)`. A build cannot be given `egress` (10.12): an engine places a build's steps on no network Lask makes, so it is reached either without a network or with the engine's own.
 - A recipe built with no network is an image of its own: its hash covers that too, so an image a build with the network made is never taken for one, and its lock entry is keyed `#<Dockerfile>(build_network = "none")`. A recipe built with the default network hashes as it did before `build_network` was covered, whether it gives `"default"` or nothing.
@@ -2754,15 +2742,15 @@ Environment resolution is performed immediately before command launch by `run`.
 Resolution procedure:
 
 1. Evaluate the `env` expression to obtain an `Environment` value (profile, image and options).
-2. Classify the value's profile as one of `local` / `docker`.
-3. For `docker`, resolve its image to the image recorded in the lock file (10.3).
+2. Classify the value's profile as one of `local` / `container`.
+3. For `container`, resolve its image to the image recorded in the lock file (10.3).
 4. Normalize into an executable concrete runtime configuration.
 
 Resolution rules:
 
-- A `docker` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3), and runs as that image: a registry reference as its repository at the pinned digest. If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`, and the diagnostic names `lask sync`. An image is told absent only by a daemon that answers: when the daemon cannot be reached, it is `E-IO-ENV-RESOLVE`, which `lask sync` would not mend.
+- A `container` value is resolved to the digest or the content-addressed local tag recorded for it in the lock file (10.3), and runs as that image: a registry reference as its repository at the pinned digest. If the lock has no entry, or the image is absent from the target daemon, it is `E-IO-IMAGE-MISSING`, and the diagnostic names `lask sync`. An image is told absent only by a daemon that answers: when the daemon cannot be reached, it is `E-IO-ENV-RESOLVE`, which `lask sync` would not mend.
 - A reference written with a digest resolves to itself, entry or not.
-- Every image a `docker` value can carry was written as a head (6.7), so a missing entry means only that the lock is behind the program; there is no image the lock cannot record.
+- Every image a `container` value can carry was written as a head (6.7), so a missing entry means only that the lock is behind the program; there is no image the lock cannot record.
 
 Failure rules:
 
@@ -2772,7 +2760,7 @@ Failure rules:
 
 Determinism:
 
-- For the same `Environment` value, the same environment definition file content, and the same execution settings, the environment resolution result must be deterministic.
+- The same environment value and the same lock file resolve to the same image: the digest a registry reference is pinned to, or the tag of a recipe (10.3). Resolution reads nothing else.
 
 ### 10.5 Working Directory Rules
 
@@ -2781,7 +2769,7 @@ The working directory (cwd) is the base for relative path resolution during comm
 Rules:
 
 - The default cwd for `local` is the project base directory where execution started.
-- The default cwd for `docker` is the working directory determined by the implementation inside the container.
+- The default cwd for `container` is the working directory determined by the implementation inside the container.
   - This implementation bind-mounts the project base directory in the container, read-write at `/work` unless the run options `base_mount` and `base_access` (10.2) move it or narrow what it permits, and uses the path it is mounted at as the default cwd. A relative path in a command therefore names the same file on the host and in the container wherever the base directory is mounted, and a file the command writes there is on the host afterwards, where the mount permits writing.
 - An explicit specification takes precedence over the default cwd.
 - If the cwd does not exist or is inaccessible, it is a pre-execution error.
@@ -2792,21 +2780,11 @@ Portability requirements:
 
 ### 10.6 Environment Variable Rules
 
-The execution environment constructs the environment variable set `E` at process launch.
+The variables a command is started with depend on its environment, and on nothing outside the program: no CLI option or setting supplies or replaces them (10.1).
 
-Construction rules:
-
-1. Obtain the execution environment's default variables as the base set.
-2. Apply override variables from implementation settings or CLI specification.
-3. Exclude variables prohibited by security policy.
-
-Conflict rules:
-
-- If the same key is supplied by multiple sources, resolve with the precedence: explicit specification > implementation settings > environment defaults.
-
-Compatibility rules:
-
-- Case sensitivity of variable names is execution-infrastructure dependent, but must be handled with consistent rules within the same infrastructure.
+- `local`: the command inherits the process environment of lask as it is. A variable that holds a secret reference is seen as the reference, not as the secret (9.8). `#local` takes no run options (10.2), so nothing is added or removed.
+- `container`: the command sees the variables the image and the engine give a container, with the variables of the run option `env` (10.2) set over them. A container given `egress` is also given the variables of the proxy, unless `env` sets them (10.12), and a command run in a `with_container` session carries the marker variable of 15.5. No variable of lask's own process reaches a container unless `env` passes it, as `{"TOKEN": get_env("TOKEN")}` does.
+- Where two of these set the same variable, `env` wins over the variables of the proxy, and both win over the image and the engine. The marker of a session is set by lask on each command it runs there, and `env` does not replace it.
 
 ### 10.7 Permission Boundary
 
@@ -2819,10 +2797,10 @@ Each profile must explicitly have the following permission boundaries.
 Rules:
 
 - `local` is bounded above by the calling process's privileges.
-- `docker` is bounded above by the privileges within the container isolation boundary.
+- `container` is bounded above by the privileges within the container isolation boundary.
 - The filesystem functions (15.11) are bounded by the same boundary as command execution in the environment they are given: they see exactly the filesystem that environment's commands see, and never the host's filesystem by default. There is no filesystem access that does not name an environment.
 - If execution is impossible due to insufficient privileges, it is a runtime error, and the cause must be reported in a diagnosable form.
-- Within a `docker` environment, the part of the filesystem and network boundaries that reaches past the container — the host paths it may read or write, and the networks it may reach or be reached from — is decided by its run options, and is described by its access set (10.11), together with the secrets it is given. A container given `egress` reaches only the destinations it lists (10.12). An access constraint bounds it statically, and `envs files`, `envs network`, `envs access` and `envs secrets` (11.4) list it.
+- Within a `container` environment, the part of the filesystem and network boundaries that reaches past the container — the host paths it may read or write, and the networks it may reach or be reached from — is decided by its run options, and is described by its access set (10.11), together with the secrets it is given. A container given `egress` reaches only the destinations it lists (10.12). An access constraint bounds it statically, and `envs files`, `envs network`, `envs access` and `envs secrets` (11.4) list it.
 
 Security requirements:
 
@@ -2943,15 +2921,15 @@ Engines:
   - Whether the engine can be reached is asked of the engine, not of the client: `docker version` for Docker, and the engine's information for the others.
   - A registry reference is read as Docker reads it, a name with no registry being on Docker Hub. Podman resolves such a name through its own configuration, which may name other registries or none, so it is pulled by its Docker Hub name.
   - A failure of the engine itself — the container never ran — is `E-IO-ENV-RESOLVE`, and never taken for the exit code of the command (8.7). Docker and Podman report it with exit code 125; nerdctl with exit code 1 and a fatal log line, which is what tells it apart.
-  - The variables of the `env` option are given to the client by name, as 10.2 requires, except those the client reads itself (10.2), which differ by engine.
+  - The variables of the `env` option are given to the client by name, as 10.2 requires, except those the client reads itself (10.2), which differ by engine and are given in a file (`--env-file`), which the three clients take alike.
 - A client that runs the engine elsewhere and does not pass its own environment on — such as a nerdctl that runs inside a virtual machine on macOS — cannot receive a variable by name, and a value of `env` given that way does not reach the container. Such a client is outside what this implementation supports for `env`.
 
 ### 10.11 Access Constraints
 
-An access constraint bounds the host files and the networks that the commands of what it covers may reach, and the secrets they may be given. It is written on a function or on a module (Chapter 5), and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
+An access constraint bounds the host files and the networks that the commands of what it covers may reach, the connections they may accept, the secrets they may be given, and the kinds of environment they may run in. It is written on a function or on a module (Chapter 5), by its fields or by the name of an access declaration, and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
 
 ```lask
-within { network: "none", volumes: false }
+within { outbound: false, volumes: false }
 
 node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: "none"}
 
@@ -2972,8 +2950,8 @@ Access sets:
 - The **access set** of a use describes what its container reaches past itself, and what it is given. It has five components. The first four are read from the run options of its environment:
   - `files`: a table from paths relative to the base directory to `"rw"`, `"ro"` or `"none"`, read from `base_access` (10.2): `{".": "rw"}` when it is not given, `{".": m}` when it is the mode `m`, and the table when it is one.
   - `volumes`: the host paths and named volumes the `volumes` option mounts, each with `"rw"` or `"ro"`. This implementation reads an entry as `[<source>:]<target>[:<options>]`: a source beginning with `/` is a host path, any other source a named volume, and an entry with no source adds nothing, since an anonymous volume holds nothing from the host. The mode is `"ro"` when the options include `ro`, and `"rw"` otherwise.
-  - `network`: `none`, the entries of `egress`, `default` or `host`. It is the entries of `egress` when `egress` is given (10.12). Otherwise it is read from `network`: `none` for `"none"`; `host` for `"host"`; `default` when it is not given, for `"bridge"` and `"default"`, and for any other name of a network (letters, digits, `_`, `.` and `-`, beginning with a letter or digit); and `host` for any other value, such as one naming another container's or a namespace's network (`container:<name>`), whose reach is not known.
-  - `publish`: whether `publish` has an entry.
+  - `outbound`: `none`, the entries of `egress`, `default` or `host`. It is the entries of `egress` when `egress` is given (10.12). Otherwise it is read from `network`: `none` for `"none"`; `host` for `"host"`; `default` when it is not given, for `"bridge"` and `"default"`, and for any other name of a network (letters, digits, `_`, `.` and `-`, beginning with a letter or digit); and `host` for any other value, such as one naming another container's or a namespace's network (`container:<name>`), whose reach is not known.
+  - `inbound`: the host addresses and ports the entries of `publish` open. This implementation reads an entry as `[[<ip>:][<hostPort>]:]<containerPort>[/<proto>]`, an IPv6 address in brackets, a port as a range where it is one: it opens the host ports it names, or ports the engine chooses when it names none, on its address, or on every interface of both families, `0.0.0.0` and `::`, when it names none. An entry it does not read this way opens any port on every interface.
 - The fifth, `secrets`, is read from the values the use is given (Secret flow, below): the secrets that reach it, each with the **channel** by which it does:
   - `env <NAME>`: in the value of the variable `NAME` of the `env` option.
   - `option <name>`: in any other run option, or in a key of `env`. These are given to the engine client on its command line (10.10).
@@ -2982,25 +2960,28 @@ Access sets:
 - No other run option enters an access set. `base_mount` moves the base directory without widening what reaches it, and `read_only`, `tmpfs`, `cap_drop`, `dns`, `dns_search` and `add_hosts` stay inside the container or the network it is already on.
 - `egress` enters the access set, and must be static as `network` must (Resolution, below).
 - A run option that reaches past the container in another way — a device, a privilege, a namespace of the host — must not be provided unless this section gives it a place in the access set.
-- A use in `#local` reaches everything its process can (10.7). Its access set is unbounded in `files`, `volumes`, `network` and `publish`; its `secrets` are read as for any other use.
-- So is a use that mounts a host path that gives a container what the host has, whatever its mode: the root, `/`; the kernel's interfaces, `/proc`, `/sys` and `/dev`, and what is under them; the socket or the state of a container engine, which starts any container with any option (`/var/run/docker.sock`, `/run/docker.sock`, `/run/containerd`, `/run/podman`, `/var/lib/docker`, `/var/lib/containerd`, `/var/lib/containers`, and any path ending in `/docker.sock`, `/podman.sock`, `/containerd.sock` or `/buildkitd.sock`); the host's configuration and root's home, `/etc`, `/root` and `/boot`; and any directory that holds one of those, such as `/var/run`. A path is read with `.` and `..` resolved as written, and no link is followed. A constraint that admits the volume does not make it less than the host, so it is within no constraint that gives `files`, `volumes`, `network` or `publish`.
+- A use in `#local` reaches everything its process can (10.7). Its access set is unbounded in `files`, `volumes`, `outbound` and `inbound`; its `secrets` are read as for any other use.
+- So is a use that mounts a host path that gives a container what the host has, whatever its mode: the root, `/`; the kernel's interfaces, `/proc`, `/sys` and `/dev`, and what is under them; the socket or the state of a container engine, which starts any container with any option (`/var/run/docker.sock`, `/run/docker.sock`, `/run/containerd`, `/run/podman`, `/var/lib/docker`, `/var/lib/containerd`, `/var/lib/containers`, and any path ending in `/docker.sock`, `/podman.sock`, `/containerd.sock` or `/buildkitd.sock`); the host's configuration and root's home, `/etc`, `/root` and `/boot`; and any directory that holds one of those, such as `/var/run`. A path is read with `.` and `..` resolved as written, and no link is followed. A constraint that admits the volume does not make it less than the host, so it is within no constraint that gives `files`, `volumes`, `outbound` or `inbound`, and it is counted as `local` by `runs` (below).
 
 Constraints:
 
-- An access constraint is written as an `AccessSpec` (Chapter 5). Its fields bound the components of the same name:
+- An access constraint is written as an `AccessSpec`, or by the name of an `AccessDecl` that gives one (Chapter 5). Its fields bound the components of the same name, and `runs` the kind of environment of each use:
   - `files`: `"rw"`, `"ro"`, `"none"`, or a table of them, as `base_access` takes them (10.2), with `"."` required.
-  - `volumes`: `false`, admitting none, or a table from host paths (absolute, normalized as for `base_mount`) and volume names to `"rw"` or `"ro"`.
-  - `network`: `"none"`, `"default"`, or an array of egress entries, written as `egress` takes them (10.12), admitting a use whose `egress` only lists destinations they cover.
-  - `publish`: `false` or `true`.
+  - `volumes`: `false`, admitting none; `true`, admitting any; or a table from host paths (absolute, normalized as for `base_mount`) and volume names to `"rw"` or `"ro"`.
+  - `outbound`: `false`, admitting no network; `true`, admitting any network but the host's; or an array of egress entries, written as `egress` takes them (10.12), admitting a use whose `egress` only lists destinations they cover.
+  - `inbound`: `false`, admitting no published port; `true`, admitting any; or an array of host addresses a port may be published on, each `<addr>` or `<addr>:<port>`, the port a range where it is one (`"127.0.0.1:8000-8010"`). An address is an IPv4 address or an IPv6 one, in brackets when a port follows it (`"::1"`, `"[::1]:8080"`); `0.0.0.0` and `::` are written to admit every interface of their family. Only where a port is opened is bounded, not who may connect to it.
   - `secrets`: `false`, admitting none, or an array of names, written as identifiers (`[key, token]`), admitting the secrets bound to them, and those only in `env`. A name is one of the secret bindings (6.10) of what the constraint covers: for a function's constraint, a `!!`-marked parameter of the function or a `!!`-marked binding in its body; for either, a top-level value of the module that is a secret binding. A binding through `mark_secret` (`a = mark_secret(e)`) is one, as 6.10 makes it. Any other name is `E-TYPE-WITHIN-SPEC`. A secret of another module is named by binding it, marked, to a name of this one.
-- Every value is a literal, containing no interpolation. A field not given leaves its component unbounded, and `within {}` constrains nothing. Any other field or value is `E-TYPE-WITHIN-SPEC`.
+  - `runs`: `false`, admitting no use at all, or a non-empty array of the kinds of environment (10.2) a use may run in, `"local"` and `"container"`. A use in `#local` runs in `local`, and so does one in a container whose volume gives what the host has (Access sets, above); any other use in a container runs in `container`.
+- The values follow one rule: a field not given leaves its component unbounded, `false` admits nothing, `true` admits anything a container can be given, and an array or table admits what it lists. `files` alone is written with modes, as `base_access` is, and `secrets` and `runs` take no `true`, which would be no bound.
+- Every value is a literal, containing no interpolation, and `within {}` constrains nothing. Any other field or value is `E-TYPE-WITHIN-SPEC`.
 - An access set is **within** a constraint when each component the constraint bounds is:
   - `files`: for `"."` and for every key of either table, the mode the access set gives the path is no wider than the mode the constraint gives it, both read by the longest key that is the path or an ancestor of it (10.2), where `"none"` < `"ro"` < `"rw"`. Modes change only at keys, so these paths are enough.
-  - `volumes`: every host path is the key, or under a key, of a host path the constraint gives a mode no narrower than its own; every named volume is a key of its own with such a mode. Paths are compared by their components as written; a symbolic link on the host is not followed.
-  - `network`: no wider, where `none` < the entries of `egress` < `default` < `host`. A use's `egress` is within an array the constraint gives when each of its entries is covered by one of the array (10.12, Entries), within `"default"` whatever it lists, and within `"none"` when it lists nothing, since it then reaches nothing. Two arrays are compared only by coverage, so `["*.github.com:443"]` admits `egress: ["api.github.com:443"]` and not the reverse.
-  - `publish`: not `true` when the constraint gives `false`.
+  - `volumes`: anything, when the constraint gives `true`; otherwise every host path is the key, or under a key, of a host path the constraint gives a mode no narrower than its own; every named volume is a key of its own with such a mode. Paths are compared by their components as written; a symbolic link on the host is not followed.
+  - `outbound`: no wider, where `none` < the entries of `egress` < `default` < `host`, `false` admitting `none` and `true` admitting `default`. A use's `egress` is within an array the constraint gives when each of its entries is covered by one of the array (10.12, Entries), within `true` whatever it lists, and within `false` when it lists nothing, since it then reaches nothing. Two arrays are compared only by coverage, so `["*.github.com:443"]` admits `egress: ["api.github.com:443"]` and not the reverse.
+  - `inbound`: anything, when the constraint gives `true`; otherwise every address each entry of `publish` opens a port on is an address of the array, compared as addresses, whose port, when it gives one, holds every host port the entry opens. An entry whose host ports the engine chooses is admitted only by an address the array gives with no port, and one that names no address only when both `0.0.0.0` and `::` are given.
   - `secrets`: none when the constraint gives `false`; otherwise every secret is bound to one of the names the constraint gives (Secret flow, below), and reaches the use by the channel `env`. The channels `option`, `command` and `file` are within no constraint that gives `secrets`, and a secret bound to no name — one marked by a `mark_secret` that no binding takes — is within none either.
-- The access set of `#local` is within no constraint that gives `files`, `volumes`, `network` or `publish`: the host cannot be bounded by any of them. Its `secrets` are checked as any use's.
+- A use is within `runs` when its kind of environment is one the array gives. A constraint that gives `runs: false` is exceeded by every use, whatever its environment, whether it is resolved or not, and whether a parameter gives it or not.
+- The access set of `#local` is within no constraint that gives `files`, `volumes`, `outbound` or `inbound`, whatever their values: the host cannot be bounded by any of them. Its `secrets` are checked as any use's, and `runs` as above, so `runs: ["container"]` excludes the host without bounding anything else.
 - The constraint a declaration is checked against is the module constraint of its module together with its own, if it has one. An access set is within it when it is within both, so a function's constraint can narrow its module's and never widen it.
 
 Resolution:
@@ -3015,7 +2996,7 @@ Resolution:
   - the session `with_container` gives its body: what the call's first argument can be;
   - a parameter, resolved at each call (below).
 - The access set of a resolved environment is read from the options it is given. An option that does not enter an access set may be any expression; one that does — `base_access`, `volumes`, `network`, `egress` and `publish` — must be **static**: a literal containing no interpolation, `null`, an array or table literal of static values, a reference to a top-level value binding whose expression is static, a parameter, resolved at each call, or an expression that **only computes**. Any other expression leaves the access set unresolved.
-- An expression only computes when it, and every top-level declaration it reaches, reaches no effect (Chapter 5: no command execution, filesystem, diagnostic output, nondeterministic generation, waiting or standard input), reads no variable of the process (15.9) and awaits nothing (6.3), and every local it reads is static. Its value is the one evaluating it gives, as a run would evaluate it; one whose evaluation fails, or does not end within an implementation-defined time (one second in this implementation), is not static. So is the result of a call of a top-level function that only computes, and a field of a record or table literal that only computes, whatever the other fields are: a library that builds its run options with functions, such as `mount(config_dir, "/root/.aws:ro")`, is read as the run would read them.
+- An expression only computes when it, and every top-level declaration it reaches, reaches no effect (Chapter 5: no command execution, filesystem, diagnostic output, nondeterministic generation, waiting or standard input), reads no variable of the process (15.9) and awaits nothing (6.3), and every local it reads is static. Its value is the one evaluating it gives, as a run would evaluate it; one whose evaluation fails, or takes more than 1,000,000 steps, is not static. A step is the evaluation of one expression of the core program (Chapter 8), and each element or character of a string, array or map that an interpolation or a built-in function produces; the bound is counted in steps rather than in time so that whether an expression is static is the same on every machine and under any load. A run is not bounded. So is the result of a call of a top-level function that only computes, and a field of a record or table literal that only computes, whatever the other fields are: a library that builds its run options with functions, such as `mount(config_dir, "/root/.aws:ro")`, is read as the run would read them.
 - A use whose environment or static options depend on a parameter of the declaration it is written in is **parametric**. It is resolved at each call of the declaration from the argument given there, or the default of a keyword parameter not given, by the same rules; an argument that is a parameter of the calling declaration leaves it parametric in that one, so resolution proceeds outward through the calls.
 - A call of a parameter of function type — directly, or by a built-in function that calls the function it is given — reaches the uses of the argument given at each call: those of a lambda, of a top-level function named, or, for a parameter of the calling declaration, those resolved further out.
 - A use that reaches the function invoked by `run` or `eval` (11.2) still parametric is resolved from the command line, before anything is evaluated: the arguments given there, and the defaults of the keyword parameters not given. A parameter of type `Environment` or `Runnable` takes its default, since none can be given there (11.2).
@@ -3040,7 +3021,7 @@ Secret flow:
 
 Checking:
 
-- For every declaration covered by a constraint, every use it reaches is checked against the constraint the declaration is checked against. A use whose access set is resolved and is not within it is `E-TYPE-WITHIN-EXCEEDED`. A use whose access set is unresolved is `E-TYPE-WITHIN-UNPROVEN`: a constraint holds only of what is shown to hold it.
+- For every declaration covered by a constraint, every use it reaches is checked against the constraint the declaration is checked against. A use whose access set is resolved and is not within it is `E-TYPE-WITHIN-EXCEEDED`. A use whose access set is unresolved is `E-TYPE-WITHIN-UNPROVEN`: a constraint holds only of what is shown to hold it. Under `runs: false` it is `E-TYPE-WITHIN-EXCEEDED`, since no environment would be within it.
 - A parametric use is checked at each call that resolves it, and at the invocation that resolves it from the command line.
 - Whether or not a constraint covers it, a secret that reaches a use by the channel `option` or `command` is the advisory `W-SECRET-COMMAND-LINE` (14.2), placed where the secret enters the option or the command string, or, when it enters through a parameter, at the call that gives it. The diagnostic names the secret and the use, and suggests giving the value in `env`, to a program that reads the variable itself: expanded into a program's arguments by the shell (`--password "$PASSWORD"`), it is on that program's command line all the same.
 
@@ -3048,15 +3029,33 @@ Checking:
 alpine = #alpine:3.22.2
 sealed = #alpine:3.22.2{network: "none"}
 
-release_of(e: Runnable): String within { network: "none" } =
+release_of(e: Runnable): String within { outbound: false } =
   $[e] cat /etc/alpine-release
 
 ok(): String = release_of(sealed)
 bad(): String = release_of(alpine)   // E-TYPE-WITHIN-EXCEEDED: network default, at this call
 
 // E-TYPE-WITHIN-UNPROVEN: the network is read from outside the program.
-probe(): String within { network: "none" } =
+probe(): String within { outbound: false } =
   $[runnable(alpine, network = get_env("NET"))] true
+```
+
+```lask fragment
+access Contained = { runs: ["container"] }
+access Pure = { runs: false }
+access Loopback = { inbound: ["127.0.0.1", "::1"], outbound: false }
+
+// E-TYPE-WITHIN-EXCEEDED: it runs in local.
+kernel(): String within Contained = $[#local] uname -s
+
+sum(xs: Array<Number>): Number within Pure = reduce(xs, 0, \(a: Number, x: Number) -> a + x)
+
+serve(): String within Loopback =
+  $[#nginx:1.27{publish: ["127.0.0.1:8080:80", "[::1]:8080:80"], network: "none"}] nginx
+
+// E-TYPE-WITHIN-EXCEEDED: a port is published on 0.0.0.0:8080, and on :: too.
+open_to_all(): String within Loopback =
+  $[#nginx:1.27{publish: ["8080:80"], network: "none"}] nginx
 ```
 
 ```lask fragment
@@ -3092,7 +3091,7 @@ leak(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secret
 ```lask
 npm = #node:24.21.0-alpine3.24{egress: ["registry.npmjs.org:443"]}
 
-fetch(): String within { network: ["registry.npmjs.org:443", "*.github.com:443"] } =
+fetch(): String within { outbound: ["registry.npmjs.org:443", "*.github.com:443"] } =
   $[npm] npm ci
 ```
 
@@ -3133,7 +3132,7 @@ Reporting:
 Lifetime:
 
 - The network and the proxy a container is given are made when the first use that needs them runs, and are shared by every use of one invocation (`run`, `eval`, `cmd`, a `repl` session) whose `egress` lists the same entries, those running concurrently (6.3) included. A `with_container` session (15.5) keeps them as long as it is open.
-- They are removed when the invocation ends, by an error and by the termination of 8.7 too. They are marked as Lask's and as the invocation's, and what an invocation that ended without removing them left is removed by a later one on the same machine.
+- They are removed when the invocation ends, by an error, by the termination of 8.7 and by a signal (11.12) too. They are marked as Lask's and as the invocation's, and what an invocation that ended without removing them left is removed by its reaper (11.12) or by a later one on the same machine.
 
 The proxy image:
 
@@ -3187,7 +3186,9 @@ lask <subcommand> [options]
 Common options:
 
 - `--module <path>`: specifies the target module for execution. When unspecified, `main.lask` in the execution directory is used.
-- `--format <text|json>`: specifies the display format of CLI responses.
+- `--output <text|json|pretty-json>`: what is written to **stdout**: the evaluation result of `eval`, and the report of a command — the diagnostics of `check`, the tables of `envs`, `deps`, `secrets` and `sync`, the list of `fmt`, and help (11.6). `json` is compact JSON and `pretty-json` the same JSON indented. Its default is `json` for the evaluation result of `eval`, which is meant to be read by another program, and `text` for every report and for help. `run` and `cmd` write no result of their own (11.3), so it applies to them only for help.
+- `--log-format <text|json>`: what is written to **stderr**: logs, the command execution log, diagnostics and execution events (Chapter 12). `json` is JSON Lines, one object per line (12.2). The default is `text`.
+- The two are independent, one per stream, so that a CI job can read the logs of a run as JSON Lines while what it prints stays text, or the other way round.
 - `--trace-id <id>`: specifies the execution trace identifier.
 - `--no-color`: disables decorative colors in the output.
 - `--help` / `-h`: displays usage. For `run` / `eval`, when a function name is given, the help of that function is displayed (11.6).
@@ -3243,7 +3244,7 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 
 - The invocation syntax of `run` and `eval` is identical. The rules of this section (function-name mapping, keyword arguments, binding, decoding) apply equally to both.
 - When `--module` is unspecified, `main.lask` is the target. Therefore the minimal form is `lask run <function> [args ...]` / `lask eval <function> [args ...]`.
-- Options of `lask` itself (`--module`, `--arg-decode`, `--format`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
+- Options of `lask` itself (`--module`, `--arg-decode`, `--output`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
 - The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
 - `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
 - For `cmd`, no token after the command name is intercepted, `--help` included: those tokens are the invoked program's own arguments (11.8). The help of the subcommand is obtained with `lask cmd --help`, with no command name.
@@ -3272,6 +3273,7 @@ Flags:
 Binding rules:
 
 1. Resolve the target module (`--module`, default `main.lask`) and obtain the function specified by the first positional argument, among the public symbols of that module: those it declares, and those it re-exports under the name it publishes them by (Chapter 5). A re-exported function is invoked as the declaration it names, with its parameter list intact. A declaration marked `internal` is not reachable.
+   The command line calls functions: a public symbol whose type is a function type, which is a function declaration or a value binding whose value is a function (`inc = \(x: Number) -> x + 1`). A plain value binding (`version = "1.0"`) is not called, and naming one is a usage error (`E-CLI-USAGE`) that says so; a value the command line is to print is written as a function of no parameters (`version() = "1.0"`). The same holds wherever a subcommand takes a function name: `run`, `eval`, their `--help` (11.6), `envs` (11.4) and `secrets` (11.10).
 2. Bind the positional arguments after the function name, from left to right, to the positional parameters in declaration order. Positional arguments exceeding the number of positional parameters are collected into the variadic parameter (variadic collection in 7.5).
 3. Bind keyword arguments to parameters with matching names. Unknown names and duplicate bindings are pre-execution errors (corresponding to `E-TYPE-KEYWORD` in 7.5).
 4. Keyword parameters that were not bound are completed with the default values from the function definition (default-value completion in 7.5). A required keyword parameter (6.1) that was not bound is a pre-execution error (`missing keyword argument: '--target'`).
@@ -3291,10 +3293,11 @@ Type conformance rules:
 - In `auto` mode, when ambiguous, `String` takes precedence.
 - A parameter whose type is a union is bound when the decoded value conforms to one of its members (4.4); no member is preferred over another, and the decoding mode alone decides what the token becomes. So for a parameter of type `Number | Null`, `--n 8080` binds a `Number` and `--n null` binds `Null` under `auto` or `json`, while under `text` both are `String` and neither conforms.
 - Decoding failure or type mismatch must be reported as an error before function evaluation begins.
-- A function that declares type parameters (4.2) is invoked with each type parameter instantiated as follows, and its arguments are decoded and checked against the resulting types.
+- A function that declares type parameters (4.2), or whose parameters' inferred types have them (4.3), is invoked with each type parameter instantiated as follows, and its arguments are decoded and checked against the resulting types.
   - An unbounded one is instantiated at `Any`. This is sound because it is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
   - One with a type bound `B` is instantiated at `B`, the widest type it admits.
   - One with a named bound is decoded at `Any`, then instantiated from the types of the decoded values, as a call instantiates it from the types of its arguments (4.4). Each value in a position of the parameter's type contributes the type a literal of it would have (4.3). The values must agree on one type, and that type must satisfy the bound; otherwise it is a usage error (`E-CLI-USAGE`) before evaluation begins. A body may compare, sort or interpolate such a value, so it cannot be handed one outside its bound.
+  - One that a parameter written without an annotation gave rise to (4.3), with a named bound that admits `String`, is instantiated at `String`, and its values are taken as the text written. A body that does no more with a value than interpolate or compare it does not say it wants a number, so `--version 1.0` stays `"1.0"` and is not read as the number `1`. Annotating the parameter, or writing the type parameter, chooses another decoding.
 - Functions with positional parameters of type `Environment` or `Runnable` are excluded from direct CLI invocation (since no decoding mode can construct such a value, this is a pre-execution error). Keyword parameters of these types are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive a `String` etc. and choose inside the function among environments written there (`case (target) { "amd64" -> #alpine:3.20(platform = "linux/amd64") ... }`); every image stays written as a head (6.7). A run option may be taken from such a value directly, and given to `runnable` (15.5).
 
 Confirmation:
@@ -3329,10 +3332,9 @@ Standard input contract:
 
 Standard output contract:
 
-- `--stdout-encode <text|json|pretty-json>` may be specified.
-- The default when unspecified is `json`.
+- What is written to stdout is written in the format `--output` gives (11.1): `text`, `json` or `pretty-json`, `json` by default for the evaluation result of `eval` and `text` for everything else.
 - `text` is human-readable display, `json` is machine-readable display, and `pretty-json` is formatted JSON display.
-- `eval` outputs the evaluation result to stdout with the specified encoding.
+- `eval` outputs the evaluation result to stdout in that format.
 - `run` does not output the evaluation result to stdout. `run` must not output anything to stdout.
 - `cmd` produces no evaluation result. Its stdout is the invoked program's stdout, passed through unchanged and never relayed (11.8), so the rule for evaluation results does not apply to it and the output of `lask cmd` can be piped.
 - The one exception is help display (11.6). When `--help` is given, no function is evaluated, so the contract for evaluation results does not apply and `run` writes the help to stdout.
@@ -3343,7 +3345,7 @@ Standard error contract:
 
 - stderr is the output destination for logs (9.6). During execution of `run` / `eval`, the command execution log (12.3) is output to stderr in real time.
 - On execution failure, the error code, a summary, and, as necessary, position information are output to stderr.
-- When `--format json` is specified, stderr output uses JSON Lines as the canonical form (12.2).
+- When `--log-format json` is specified, stderr output uses JSON Lines as the canonical form (12.2).
 - Secrets must not be output in plaintext to stderr.
 
 Exit code contract:
@@ -3352,6 +3354,7 @@ Exit code contract:
 - Uncaught failure: the `code` of the `Error` value (8.10). Command failure passes through that command's exit code; other runtime errors default to `2`; external I/O errors (including image materialization failure and environment resolution failure) default to `3`; `fail` passes through the specified value. If `code` is not an integer in 1–255, it is normalized to `1`.
 - `1`: syntax or static validation error (detected before evaluation; no `Error` value is generated)
 - `4`: CLI usage error (invalid option, missing argument, etc.), including a refused confirmation (`E-CLI-NOT-CONFIRMED`, 11.2)
+- `128 + n`: a `run` or `eval` stopped by the signal `n` (`E-RUNTIME-INTERRUPTED`, 11.12): `130` for SIGINT, `143` for SIGTERM
 
 Overlap of exit codes:
 
@@ -3396,7 +3399,7 @@ lask envs list [--module <path>] [<function>]
 Enumeration rules:
 
 - If no function is specified, the environments reachable from the module are enumerated (static scan of environment heads, 6.7): those in its declarations, keyword parameter defaults included, and in the environment of every command word the module has, declared or imported, through every declaration they reference in any module (Chapter 5). A declaration of an imported module that nothing reachable references is not scanned.
-- If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. Function-name mapping follows 11.2.
+- If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. It names a function the command line can call, as `run` takes it, by the function-name mapping of 11.2.
 - Reachability is an over-approximation. A superset of the environments that may be used must be reported; under-reporting is not permitted. Functions passed around as function values are included conservatively.
 - What is enumerated is the heads: every image is named by one (6.7), so every environment is enumerated concretely. Run options change no image, and add no entry.
 
@@ -3406,18 +3409,18 @@ Columns:
 - `KIND`: `local`, `registry` or `recipe`.
 - `PINNED`: what the lock resolves it to: the digest of a registry reference, the content-addressed tag of a recipe, shown to its first twelve hexadecimal digits (`sha256:be7c8de0160a`, `lask/b61fd44bd7eb`). `—` when there is nothing to resolve or the lock does not pin it yet.
 - `REQUIRED BY`: where each head naming it is written: the module — a file of the project by its path, a dependency by its name — and the declaration, or the command word of the entry module whose environment it is; `(default --<name>)` when the head is the default of a keyword parameter (10.3). A head that dispatch copies into a command string (10.9) is shown where it is written. Two are shown, and how many more.
-- `STATUS`: `ok` for `local`; for a `docker` environment `present`, `missing (lask sync)`, `not pinned (lask sync)`, or `?` when the daemon cannot be reached.
+- `STATUS`: `ok` for `local`; for a `container` environment `present`, `missing (lask sync)`, `not pinned (lask sync)`, or `?` when the daemon cannot be reached.
 
 Rules:
 
 - The container engine is asked once whether it can be reached, and then whether each pinned image is present. Nothing is pulled or built, and no command runs in any environment.
-- When the daemon cannot be reached, a warning on stderr says so and why, and every `docker` status is `?`.
+- When the daemon cannot be reached, a warning on stderr says so and why, and every `container` status is `?`.
 - `envs list` reports; it does not fail. A missing or unpinned image, or a daemon that cannot be reached, is a status, and the exit code is `0`.
 - After the table, one line counts the environments by kind and by status.
 
 Output and exit codes:
 
-- The table is on stdout. With `--format json` it is an array with one object per environment: `environment`, `kind`, `pinned` (in full, or `null`), `required_by` (every place, in full) and `status`.
+- The table is on stdout. With `--output json` it is an array with one object per environment: `environment`, `kind`, `pinned` (in full, or `null`), `required_by` (every place, in full) and `status`.
 - Exit codes: `0` when the environments were listed; `1` for static errors (invalid module, invalid lock file); `4` for CLI usage errors (nonexistent function name, etc.) (following the classification in 11.3).
 
 Execution example:
@@ -3475,7 +3478,7 @@ Rules (`--verbose`):
 Output and exit codes:
 
 - The table is on stdout, followed by one line counting the environments, the programs and the commands.
-- With `--format json` the output is the same whether or not `--verbose` is given: an array with one object per environment: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `programs` (an array of `program` and `used_by`, every place in full) and `commands` (an array of `command`, `programs`, `module`, `line`, `declaration` and `via`, the environment expression, `null` when it is the head of the environment).
+- With `--output json` the output is the same whether or not `--verbose` is given: an array with one object per environment: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `programs` (an array of `program` and `used_by`, every place in full) and `commands` (an array of `command`, `programs`, `module`, `line`, `declaration` and `via`, the environment expression, `null` when it is the head of the environment).
 - Exit codes: as for `envs list`.
 
 Execution example:
@@ -3522,7 +3525,7 @@ Enumeration rules:
 Common columns:
 
 - `ENVIRONMENT`: the head, in the notation of `envs list`, followed in braces by the names of the options the listing shows that are given (`#node:24.21.0-alpine3.24{base_access,network}`), or `(dynamic)`. Rows are ordered as `envs commands` orders environments.
-- `CHECK`: what the constraints covering the uses of the row (10.11) find: `ok`, `exceeded` or `unproven`, the worst of them when they differ, or `—` when no use of the row is covered by one. A use left to a parameter of the function enumerated from is `—`: each call of it, and its invocation, is where it is checked.
+- `CHECK`: what the constraints covering the uses of the row (10.11) find: `ok`, `exceeded` or `unproven`, the worst of them when they differ, or `—` when no use of the row is covered by one. A use left to a parameter of the function enumerated from is `—`: each call of it, and its invocation, is where it is checked. A use covered by `runs: false` is `exceeded` whatever its environment is.
 - The listings are made whether or not the program keeps to its constraints: they are where what a constraint finds is seen whole.
 - `REQUIRED BY`: the declarations whose uses are in the row, in the notation of `envs list`, two shown and how many more. A parametric use resolved at a call is shown as the declaration of the call, `→`, and the declaration the use is written in (`main.lask: ok → release_of`), unless the call is in the declaration the use is written in.
 - An entry that reaches past what the base directory alone gives is marked `!`: the host for `#local`, a volume, a `default` or `host` network, and a published port. A volume that gives what the host has (10.11) is marked `! (host)`. An `egress` network is not marked: it reaches only the destinations it lists, which are shown.
@@ -3546,12 +3549,12 @@ Columns (`envs access`):
 
 - `FILES`: the `files` table of the row in one line (`. ro, dist rw, .env none`), followed by the number of volumes when there are any; `host (unbounded)` for `#local`.
 - `NETWORK`: as for `envs network`, followed by `+ inbound` when `publish` has an entry.
-- With `<function>`, the table is preceded by one line giving the constraint the function is checked against (10.11), or none.
+- With `<function>`, the table is preceded by one line giving the constraint the function is checked against (10.11), as it is written, by its fields or `within Name`, or none.
 
 Output and exit codes:
 
 - The table is on stdout, followed by one line counting the rows by kind and by `CHECK`, where `—` is counted as `unconstrained`.
-- With `--format json` each is an array with one object per row: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `check` (`null` for `—`), `required_by` (every place, in full), and `files`, `network`, or both for `envs access`:
+- With `--output json` each is an array with one object per row: `environment`, `kind` (`local`, `registry`, `recipe` or `dynamic`), `check` (`null` for `—`), `required_by` (every place, in full), and `files`, `network`, or both for `envs access`:
   - `files`: an array with one object per line of `envs files`, `target`, `source` and `access`, without the `!` mark.
   - `network`: `class` (`none`, `egress`, `default`, `host`, `computed`, or `dynamic`), `name` (the value of `network`, or `null`), `egress` (the entries of `egress`, or `null` when it is not given), `inbound` (the entries of `publish`) and `name_resolution` (the entries of the `NAME RESOLUTION` column).
   - `reads`, for `envs files --verbose`: an array of `function`, `path` and `declaration`, the calls of filesystem functions with a literal path.
@@ -3581,7 +3584,7 @@ ENVIRONMENT                        NETWORK             EGRESS                  I
 6 rows (1 local, 4 registry, 1 dynamic): 1 ok, 1 exceeded, 4 unconstrained
 
 $ lask envs access build
-within { network: "none", volumes: false, files: { ".": "ro", "dist": "rw" } }
+within { outbound: false, volumes: false, files: { ".": "ro", "dist": "rw" } }
 ENVIRONMENT                                    FILES          NETWORK  CHECK  REQUIRED BY
 #node:24.21.0-alpine3.24{base_access,network}  . ro, dist rw  none     ok     main.lask: build
 
@@ -3615,7 +3618,7 @@ Columns:
 Output and exit codes:
 
 - The table is on stdout, followed by one line counting the rows by `CHECK`, as for `envs access`.
-- With `--format json`, an array with one object per row: `secret` (`module`, `declaration`, `name` and `kind` — `value`, `parameter`, `binding` or `mark_secret` — and `location`; `null` for `(unknown)`), `channel` (`kind`: `env`, `option`, `command` or `file`, and `name`, `null` for `command`, `file`, and a variable of `env` whose name is not static), `environment`, `kind`, `network` (as for `envs network`), `check` and `required_by`.
+- With `--output json`, an array with one object per row: `secret` (`module`, `declaration`, `name` and `kind` — `value`, `parameter`, `binding` or `mark_secret` — and `location`; `null` for `(unknown)`), `channel` (`kind`: `env`, `option`, `command` or `file`, and `name`, `null` for `command`, `file`, and a variable of `env` whose name is not static), `environment`, `kind`, `network` (as for `envs network`), `check` and `required_by`.
 - It reports, and does not fail, as `envs access` does.
 
 Execution example:
@@ -3656,7 +3659,7 @@ Rules (`list`):
   - `not locked (lask sync)`: declared, with no lock entry.
   - `not in lask.json (lask sync drops it)` (`not declared by its parent` for a transitive one): a lock entry nothing declares.
   - `unknown: its parent is not cached (lask sync)`: a transitive dependency whose parent's tree, which declares it, is not in the cache.
-  - `stale: <reason> (lask sync)`: the lock entry disagrees with the declaration: another repository or URL, or another requested reference (`locked v0.3.0, declared v0.4.0`). This is exactly the disagreement for which reading the program is `E-MODULE-LOCK-STALE` (Chapter 5), and for which `sync` pins the entry afresh. Nothing else makes an entry stale: a newer revision upstream is not known without the network, and a tag moved upstream is found by `sync` (`E-MODULE-REV-MOVED`).
+  - `stale: <reason> (lask sync)`: the lock entry disagrees with the declaration: another repository or URL, or another requested reference (`locked v0.3.0, declared v0.4.0`). This is exactly the disagreement for which reading the program is `E-MODULE-LOCK-STALE` (Chapter 5), and for which `sync` pins the entry afresh. Nothing else makes an entry stale: a newer revision upstream is not known without the network, and a tag moved upstream is found by `sync` (`E-IO-MODULE-REV-MOVED`).
   - `unused (lask sync --prune)`: a direct dependency no `.lask` file of the project imports.
   - `not cached (lask sync)`: the cache does not hold the content the lock pins.
   - `ok`.
@@ -3685,10 +3688,10 @@ Rules (`rm`):
 
 Output and exit codes:
 
-- `list` and `graph` write a table and a tree to stdout; with `--format json`, an array and a nested object.
+- `list` and `graph` write a table and a tree to stdout; with `--output json`, an array and a nested object.
 - `0`: the operation completed successfully.
 - `1`: the project file or the lock file is malformed or violates the schema (Chapter 5); or a policy violation was detected before fetching.
-- `3`: a fetch or verification failure in `add` (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`).
+- `3`: a fetch or verification failure in `add` (network failure, `E-IO-MODULE-HASH-MISMATCH`, `E-IO-MODULE-REV-MOVED`).
 - `4`: CLI usage error, including `rm` of a dependency still imported or not declared, and `graph` of a name the lock does not hold.
 
 ### 11.6 Help Display (`--help`)
@@ -3709,7 +3712,7 @@ lask eval [--module <path>] [lask options ...] --help
 - Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
 - A function that declares type parameters (4.2) is displayed with them and their bounds, as `first<T>` or `largest<T: orderable>`, where its declaration is being described: the heading of its help, the list of a module's functions, and an editor hover. Where the name is instead something to type — the usage line, a completion candidate, the function argument of `lask run` — it appears plain, since the type parameters are not written at a use site (4.2). A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
 - The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
-- If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. An implementation may report the advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2).
+- If the function declares a keyword parameter named `help`, `--help` still displays the help. That parameter can be supplied only as `--help=<value>`. The advisory diagnostic `W-CLI-PARAM-SHADOWED` (14.2) is reported for it.
 - Help display takes precedence over argument binding. Binding errors (11.2) are not reported when `--help` is present: `lask run build --out_dir 1 --help` displays the help and exits `0`.
 
 Sources of help information:
@@ -3718,25 +3721,25 @@ Sources of help information:
 - The signature (the kind of each parameter, its type, and its default value) is taken from the result of static verification (7.5).
 - Default values are displayed as their source text and **must not be evaluated**, since evaluating them may have side effects.
 - The default value of a parameter marked `!!` (6.10) is displayed as `<secret>` and must never be displayed in plaintext (12.8).
-- The environments used are enumerated by the reachability analysis of 11.4. A recipe-form environment is shown by its Dockerfile path. When the enumeration yields only `#local`, the section is omitted.
+- The environments used are enumerated by the reachability analysis of 11.4, and each is shown as `envs list` shows it: its head in the notation of 6.7 (`#local`, `#golang:1.22`, `#./infra/builder.Dockerfile`) and its kind (`local`, `registry` or `recipe`), `#local` first and the others in order of their notation. When the enumeration yields only `#local`, the section is omitted.
 - When the project file asks for confirmation before the function (Chapter 5), a `Confirmation:` section states the condition (`requires confirmation when env is prod or production`), and JSON output carries it as `confirm` (`null` otherwise). An editor hover shows the same.
 
 Rendering rules:
 
-- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
+- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. An `_` that leads a name is kept, since a word on the command line that begins with `-` is read as an option: the function `_build_all` is shown as `_build-all`, and its parameter `_dry_run` as `--_dry-run`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
 - In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`. A required keyword parameter (6.1) is rendered without the brackets, `--name <Type>`, and a flag (11.2) without the type, `[--name]`.
 - In the parameter list, a required keyword parameter is marked `(required)` after its type, in place of a default value.
 - A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
-- The function list holds the module's functions — declarations written as functions, and bindings whose value is a function — whether it declares them or re-exports them (Chapter 5). Plain value bindings are callable (11.2) and have help of their own, but are not listed.
+- The function list holds the module's functions — declarations written as functions, and bindings whose value is a function — whether it declares them or re-exports them (Chapter 5). Plain value bindings are not functions the command line calls (11.2), and are not listed.
 - A re-exported function is listed and described under the name the module publishes, from the declaration it names: the documentation comment, parameters and location are those of the file that declares it.
 - The function list omits declarations marked `@hidden` (3.1), and shows only the name for functions that have no summary.
 
-Text output (`--format text`, the default). For the declaration:
+Text output (`--output text`, the default). For the declaration:
 
 ```lask
 // Build the project and publish the artifact.
 //
-// The build runs in the `builder` environment; the artifact is
+// The build runs in the image infra/builder.Dockerfile builds; the artifact is
 // uploaded only when `--publish` is set.
 //
 // @param target   Build target name.
@@ -3756,7 +3759,7 @@ build - Build the project and publish the artifact.
 Usage:
   lask run build <target> [--out-dir <String>] [--publish]
 
-The build runs in the `builder` environment; the artifact is
+The build runs in the image infra/builder.Dockerfile builds; the artifact is
 uploaded only when `--publish` is set.
 
 Parameters:
@@ -3772,7 +3775,7 @@ Returns:
       The path of the produced artifact.
 
 Environments:
-  builder  docker  golang:1.22
+  #./infra/builder.Dockerfile  recipe
 
 Examples:
   lask run build release --out-dir dist --publish true
@@ -3791,7 +3794,7 @@ Functions in main.lask:
   uninstall
 ```
 
-JSON output (`--format json`) is the structured form of the same information, intended for reuse by editor integration.
+JSON output (`--output json`) is the structured form of the same information, intended for reuse by editor integration.
 
 ```json
 {
@@ -3800,7 +3803,7 @@ JSON output (`--format json`) is the structured form of the same information, in
   "function": "build",
   "location": {"line": 12, "column": 1},
   "summary": "Build the project and publish the artifact.",
-  "description": "The build runs in the `builder` environment; the artifact is\nuploaded only when `--publish` is set.",
+  "description": "The build runs in the image infra/builder.Dockerfile builds; the artifact is\nuploaded only when `--publish` is set.",
   "params": [
     {"name": "target", "kind": "positional", "type": "String",
      "default": null, "required": false, "secret": false, "doc": "Build target name."},
@@ -3810,13 +3813,14 @@ JSON output (`--format json`) is the structured form of the same information, in
      "default": "false", "required": false, "secret": false, "doc": "Whether to upload the artifact."}
   ],
   "returns": {"type": "String", "doc": "The path of the produced artifact."},
-  "environments": [{"name": "builder", "kind": "docker", "target": "golang:1.22"}],
+  "environments": [{"environment": "#./infra/builder.Dockerfile", "kind": "recipe"}],
   "examples": ["lask run build release --out-dir dist --publish true"]
 }
 ```
 
 - `kind` is `function-help` for the help of a single function, and `function-list` for the function list. The latter holds `functions`, an array of objects with `name`, `summary`, and `signature`.
 - `kind` for a parameter is one of `positional` / `variadic` / `keyword`.
+- `environments` holds one object per environment, `environment` (the head) and `kind`, as the `--output json` output of `envs list` names them (11.4).
 - `default` is `null` for a parameter that has no default value, and `"<secret>"` for a parameter marked `!!`.
 - `required` is `true` for a required keyword parameter (6.1), and `false` for every other parameter. A positional parameter is always required by its kind, so the field speaks only of keyword parameters.
 - A field whose information is unavailable is `null`; a section that is omitted in text output is an empty array.
@@ -3825,7 +3829,7 @@ Output destination and exit codes:
 
 - Help is written to stdout (the exception in 11.3). Diagnostics are written to stderr as usual.
 - `0`: the help was displayed.
-- `4`: the specified name is not a top-level declaration of the module. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`. A declaration that is not a function is not an error: a plain value binding is callable with no arguments (11.2), so its help is displayed with an empty parameter list.
+- `4`: the specified name is not a function the command line can call (11.2): no public symbol of the module has it, or it names a plain value binding. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`.
 - `1`: the target module could not be parsed. Diagnostics are written to stderr and no help is displayed.
 - Static errors (14.4) do **not** prevent help display. The help is rendered from the information that is available, a type that could not be determined is displayed as `?`, the diagnostics are written to stderr, and the exit code is `0`. Help is most needed while a module is broken, so this is a deliberate exception to the rule of 14.4 that static errors stop `run` / `eval`; no function is evaluated in this case either.
 - For `lask run --help` / `lask eval --help` without a function name, the CLI option help must always be displayed with exit code `0`. If the target module cannot be loaded, the function list is omitted.
@@ -3843,9 +3847,9 @@ lask sync [--module <path>] [--frozen] [--prune]
 Rules (modules):
 
 - `sync` resolves every declared dependency — including transitive dependencies — fetches it into the per-project cache (Chapter 5), and verifies it against its hash.
-- A reference recorded as `rev` is resolved to a full commit SHA once and pinned thereafter. A subsequent resolution of the same reference to a different SHA is `E-MODULE-REV-MOVED`.
+- A reference recorded as `rev` is resolved to a full commit SHA once and pinned thereafter. A subsequent resolution of the same reference to a different SHA is `E-IO-MODULE-REV-MOVED`.
 - Fetched sources are stored content-addressed; re-running `sync` with an unchanged project file performs no network access for already-verified entries.
-- A hash verification failure is reported as `E-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
+- A hash verification failure is reported as `E-IO-MODULE-HASH-MISMATCH` and the entry must not be placed in the cache.
 - An entry whose lock record is stale (11.5) is pinned afresh: its new content is not held to the hash recorded for the old source.
 - A direct dependency no `.lask` file of the project imports (11.5) is reported with a warning. With `--prune` it is removed first, as `deps rm` removes one (11.5): from `lask.json`, from the lock with the dependencies under it, and from the project's own cache.
 
@@ -3877,15 +3881,15 @@ General rules:
 Progress and the summary:
 
 - While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
-- On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--format json` each of these is a JSON Lines event.
-- When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--format json` the summary is one object, `modules` and `images`.
+- On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--log-format json` each of these is a JSON Lines event.
+- When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--output json` the summary is one object, `modules` and `images`.
 - The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the container engine.
 
 Exit codes:
 
 - `0`: the operation completed successfully.
 - `1`: the project file or the lock file is missing (while dependencies are declared), malformed, stale under `--frozen`, or violates the schema (Chapter 5); a policy violation was detected before fetching; or the program has a static error.
-- `3`: a fetch, verification, or image materialization failure, or a declared command missing from its image (network failure, `E-MODULE-HASH-MISMATCH`, `E-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`, `E-IO-COMMAND-MISSING`).
+- `3`: a fetch, verification, or image materialization failure, or a declared command missing from its image (network failure, `E-IO-MODULE-HASH-MISMATCH`, `E-IO-MODULE-REV-MOVED`, `E-IO-IMAGE-DIGEST`, `E-IO-IMAGE-MISSING`, `E-IO-COMMAND-MISSING`).
 - `4`: CLI usage error.
 
 ### 11.8 Command Invocation (`cmd`)
@@ -3922,10 +3926,10 @@ Execution rules:
 Stream rules:
 
 - The program's stdin and stdout are always those of the `cmd` process. `cmd` produces no evaluation result, so its stdout belongs to the program (11.3), and `lask cmd` can therefore be piped exactly as the program it runs can.
-- When stdin, stdout and stderr are all terminals, stderr is attached to the program as well, and a terminal is allocated in the `docker` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
+- When stdin, stdout and stderr are all terminals, stderr is attached to the program as well, and a terminal is allocated in the `container` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
 - Otherwise the program's standard error is relayed as the command execution log (12.3). The relay is applied to standard error only: relaying standard output would either duplicate it or withhold it from the pipe, and interactivity and pipeability both take precedence over the completeness of the relay.
 - The start line and the exit line of 12.3 are emitted in every case, so every invocation is recorded with its environment, its argument vector and its exit status.
-- `INT` and `TERM` are forwarded to the program, and the container must be removed on exit, including on signal.
+- `INT` and `TERM` are forwarded to the program, and the container must be removed on exit, including on signal (11.12).
 
 Exit code rules:
 
@@ -3935,7 +3939,7 @@ Exit code rules:
 Rules (`--help`):
 
 - `lask cmd --help` (or `-h`), with no command name, displays the CLI option help followed by the list of command words, in the way `lask run --help` lists functions (11.6).
-- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--format json`.
+- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--output json`.
 - An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
 - The list is produced with no network access and no build, on the same terms as `envs` (11.4).
 - The option help is displayed whatever state the target module is in. When the module does not compile, its diagnostics go to stderr, the list is omitted, and the exit code is `0`.
@@ -3944,7 +3948,7 @@ Execution example:
 
 ```text
 $ lask cmd --help
-Usage: lask cmd [--module PATH] [--format text|json] [--trace-id ID] [--no-color]
+Usage: lask cmd [--module PATH] [--output text|json|pretty-json] [--log-format text|json] [--trace-id ID] [--no-color]
                 [-h|--help] [COMMAND] [ARGS...]
 ...
 
@@ -4013,7 +4017,7 @@ lask secrets check [--module <path>] [<function>] [--read]
 Scope:
 
 - Without a function, every variable of the process environment is considered, and no module is read: `secrets` also works outside a project.
-- With a function, only the variables it can read are considered: the names given as string literals to `get_env`, `find_env` and `get_env_or` in the declarations it reaches, and in the environments of the module's command declarations. Reachability over-approximates as in 11.4. When a name is computed, or one of these functions is passed as a value, any variable may be read, and every variable is considered.
+- With a function — one the command line can call, as `run` takes it (11.2) — only the variables it can read are considered: the names given as string literals to `get_env`, `find_env` and `get_env_or` in the declarations it reaches, and in the environments of the module's command declarations. Reachability over-approximates as in 11.4. When a name is computed, or one of these functions is passed as a value, any variable may be read, and every variable is considered.
 - Neither subcommand prints a secret value or a credential.
 
 `list`:
@@ -4033,7 +4037,7 @@ Scope:
 - The stores checked are those enabled in `LASK_SECRETS` and those the references in scope name, so that a store can be checked before any variable refers to it.
 - A reference is not read by default, because reading can have effects: a store that issues a credential on every read issues one. `--read` also reads each reference and checks that its field exists; a credential issued by that read under a lease is revoked at once.
 - It exits `0` when every stage and every reference passed, and `3` otherwise (14.8).
-- With `--format json`, the report is one JSON document on stdout: `{"stores": [...], "malformed": [...]}`, where each store has its `scheme`, `target`, `stages` and `references`, and each stage or reference has a `status` of `ok`, `NG` or `skipped`, a `message`, and the error `code` when it failed.
+- With `--output json`, the report is one JSON document on stdout: `{"stores": [...], "malformed": [...]}`, where each store has its `scheme`, `target`, `stages` and `references`, and each stage or reference has a `status` of `ok`, `NG` or `skipped`, a `message`, and the error `code` when it failed.
 
 Example:
 
@@ -4085,7 +4089,7 @@ Rules:
 
 - A file with a syntax error is left as it is, and its diagnostics are reported as `check` reports them (14.3). The other files are still formatted.
 - Before a file is written, the result is checked to lex to the same tokens and comments, and to parse to the same module, as the source. A result that fails this check is a defect of the implementation: the file is left as it is and the failure is reported.
-- The files that were changed (with `--check`, the files that are not formatted) are listed on stdout, one per line, or as a JSON array of paths with `--format json`.
+- The files that were changed (with `--check`, the files that are not formatted) are listed on stdout, one per line, or as a JSON array of paths with `--output json`.
 - It exits `0` when nothing failed; with `--check`, only when every file is formatted already. A file that does not parse, or is not formatted under `--check`, exits `1`; a file that cannot be read or written exits `3` (14.8); a `<path>` that does not exist is a CLI usage error and exits `4`.
 
 Example:
@@ -4100,6 +4104,32 @@ main.lask
 $ lask fmt --check
 $
 ```
+
+### 11.12 Signals
+
+`run` and `eval` stop on SIGINT and SIGTERM as a `timeout` stops a body it abandons (8.7, 15.7): what is running is stopped, and every `finally` block runs before lask exits. A second signal stops lask at once. SIGKILL cannot be handled by the process it kills, so the containers a killed invocation leaves are removed by another process, the reaper.
+
+Graceful stop:
+
+- The first SIGINT or SIGTERM a `run` or `eval` receives while it evaluates abandons the evaluation (8.7). The command running is stopped, and the `finally` blocks of the evaluation run (8.10), innermost first, as do those of every computation it started with `async`, each of which is cancelled. No `catch` block sees it. A line on stderr says the signal was received and that a second one stops at once.
+- When they have ended, the run fails with `E-RUNTIME-INTERRUPTED` (14.5), whose `Error` has `code` `128 + n` for the signal `n`: `130` for SIGINT and `143` for SIGTERM, as a shell reports a command a signal ended. The containers the run started have been stopped and removed with their commands (8.7), and the networks of `egress` are removed (10.12).
+- What has not started does not start: the run does not go on past the abandonment. Computations nothing awaited are cancelled rather than waited for (6.3), and are not reported as `W-ASYNC-UNAWAITED`.
+- A signal that arrives before the evaluation starts, or after it has ended, is not handled this way.
+
+Immediate stop:
+
+- A second SIGINT or SIGTERM while the graceful stop is under way stops lask at once, with the same exit code. No further `finally` block runs. The processes the run's commands started are killed (`SIGKILL`), and no process is started after that. The containers are left to the reaper.
+
+The reaper:
+
+- Every container lask starts — the container of a command, of a `with_container` session (15.5), of `cmd` (11.8), of a probe (11.7) and of the egress proxy (10.12) — is labelled with the invocation that starts it, `io.lask.owner=<host>:<pid>` (the networks and proxy of `egress` keep their label of 10.12).
+- Before it starts its first container, an invocation starts the reaper: a process of its own, outside the terminal's process group so that the signal that stops lask does not stop it, which ignores SIGINT, SIGTERM and SIGHUP. The reaper waits for the invocation to end.
+- An invocation that ends in any other way than at once tells the reaper so, and the reaper exits doing nothing. When the invocation ends without telling it — it was killed with SIGKILL, it stopped at once on a second signal, or it failed in a way that skipped its clean-up — the reaper force-removes every container labelled with it, and the containers and networks of its `egress`.
+- What the reaper cannot do is not done: a reaper that is killed itself (as by a SIGKILL sent to every process of a session or a control group) removes nothing, and the processes of `local` commands are not containers and are not its concern. The networks and proxy of `egress` such an invocation left are still removed by a later invocation (10.12).
+
+`cmd`:
+
+- `cmd` (11.8) does not stop on a signal: SIGTERM is passed on to the program it runs, and SIGINT reaches it from the terminal. Its exit code is the program's.
 
 ## 12. Observability
 
@@ -4138,7 +4168,7 @@ Output rules:
 - `info` and below are classified as operational logs, and `warn` / `error` as diagnostic logs.
 - `error`-level logs must be cross-referenceable with the corresponding failure event (12.6).
 - The line format of the default text display is implementation-defined. However, each line contains `level` and `message`, and the command execution log (12.3) follows the text-format provisions.
-- When `--format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3)).
+- When `--log-format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3)).
 
 ### 12.3 Command Execution Log
 
@@ -4176,11 +4206,11 @@ Output example:
 2026-07-23T10:15:05.002Z [#golang:1.22:1] exit 0
 ```
 
-JSON format (with `--format json`):
+JSON format (with `--log-format json`):
 
 - Each line of the command execution log is output as one object of the JSON Lines of 12.2.
 - Required fields for all lines: `timestamp`, `level`, `traceId`, `exec` (execution number).
-- Start line: in addition to `event: "start"`, `command` (the executed command string) and `env` (the metadata representation of 13.1; named environments include `name`) are required.
+- Start line: in addition to `event: "start"`, `command` (the executed command string) and `env` (the metadata representation of 13.1) are required.
 - Relay lines: `stream` (`1` or `2`) and `message` (the line's content) are required. `command` and `env` may be omitted (correlated with the start line via `exec`).
 - Exit line: `event: "exit"` and `code` (exit code) are required.
 - Killed line: `event: "killed"` is required. It has no `code`: the command did not exit on its own.
@@ -4249,7 +4279,7 @@ Rules:
 
 - In-flight diagnostics must not corrupt the primary result (the stdout output of `eval`).
 - Human-oriented progress display must be output to stderr or a dedicated channel.
-- When `--format json` is specified, progress diagnostics may be output as structured events.
+- When `--log-format json` is specified, progress diagnostics may be output as structured events.
 
 ### 12.8 Protection of Sensitive Information and Retention Policy
 
@@ -4301,6 +4331,7 @@ For `json` / `pretty-json`, the following mapping rules must be satisfied.
 - `Environment`, `Runnable`: not directly serializable (4.5). When output is required, convert to the tagged metadata `{"$type":"Environment","kind":"<environment kind>","params":{...}}`. `kind` is the environment kind name, and `params` is the normalized parameter set: the image with its image options, and the run options that are set (e.g., `{"$type":"Environment","kind":"docker","params":{"image":"alpine:3.20"}}`). A value with at least one run option set is tagged `"$type":"Runnable"` instead; a runnable with none is its environment (8.8). A session (15.5) is converted as the environment it was started on. Parameters containing secret information are masked according to the rules in Chapter 12.
 - `Array<T>`: maps to a JSON array preserving element order.
 - `Map<T>`: maps to a JSON object with string keys.
+- The keys of an object written from a `Map<T>` or a `Record<...>` are in ascending Unicode code point order, the order `keys` and `entries` traverse a map in (15.4), in JSON and in every format of 15.8. The same value is therefore always written as the same text.
 - `Record<...>`: maps to a JSON object with field names as keys. An optional field (4.2) that is absent contributes no key at all; one that is present contributes its key, including when its value is null. This is where the difference between an absent key and a null value is written down.
 
 Rules for unions:
@@ -4466,77 +4497,92 @@ Category list:
 - `IO`: external I/O error
 - `CLI`: CLI usage error
 
+The category of a code gives its classification (14.1): `SYNTAX` is a syntax error; `NAME`, `TYPE` and `MODULE` are static errors; `RUNTIME` is a runtime error; `IO` is an external I/O error; and `CLI` is a CLI usage error. Its default exit code follows from the classification (14.8). A code whose failure arises at an external boundary is an `IO` code whatever it concerns: a dependency that does not fetch or verify while `sync` or `deps add` fetches it is `E-IO-MODULE-...`, while a dependency the program cannot be resolved against is `E-MODULE-...`.
+
 Naming rules:
 
 - Use only uppercase Latin letters and hyphens.
 
-Representative codes:
+Codes:
 
-- `E-SYNTAX-UNEXPECTED-TOKEN`
-- `E-SYNTAX-CASE-ELSE`
-- `E-NAME-UNDEFINED`
-- `E-NAME-DUPLICATE`
-- `E-TYPE-MISMATCH`
-- `E-TYPE-ARITY`
-- `E-TYPE-CALL`
-- `E-TYPE-COMMAND-ENV`
-- `E-TYPE-COMMAND-NOENV`
-- `E-TYPE-COMMAND-CONFLICT`
-- `E-TYPE-COMMAND-EFFECT`
-- `E-TYPE-COMMAND-NAME`
-- `E-TYPE-COMMAND-DUPLICATE`
-- `E-TYPE-COMMAND-SYNTAX`
-- `E-TYPE-COMMAND-SCHEMA`
-- `E-TYPE-COMMAND-OPTION`
-- `E-TYPE-ENV-CONSTRUCT`
-- `E-TYPE-WITHIN-SPEC`
-- `E-TYPE-WITHIN-EXCEEDED`
-- `E-TYPE-WITHIN-UNPROVEN`
-- `E-TYPE-ACCESS`
-- `E-TYPE-FIELD-DUPLICATE`
-- `E-TYPE-CASE-DUPLICATE`
-- `E-TYPE-KEYWORD`
-- `E-TYPE-ILLFORMED`
-- `E-TYPE-SECRET-NON-STRING`
-- `E-TYPE-BOUND`
-- `E-MODULE-CYCLE`
-- `E-MODULE-UNRESOLVED`
-- `E-MODULE-HASH-MISMATCH`
-- `E-MODULE-CONFIRM-TARGET`
-- `E-RUNTIME-DIV-BY-ZERO`
-- `E-RUNTIME-COMMAND-NONZERO`
-- `E-RUNTIME-ACCESS`
-- `E-RUNTIME-CAST`
-- `E-RUNTIME-VALUE`
-- `E-RUNTIME-REGEX`
-- `E-RUNTIME-TIMEOUT`
-- `E-RUNTIME-UNTIL-EXHAUSTED`
-- `E-RUNTIME-SESSION-CLOSED`
-- `E-IO-STDIN-READ`
-- `E-IO-ENV-RESOLVE`
-- `E-IO-FS`
-- `E-IO-DATA-DECODE`
-- `E-IO-SECRET-PROVIDER`
-- `E-IO-SECRET-REF`
-- `E-IO-SECRET-UNREACHABLE`
-- `E-IO-SECRET-AUTH`
-- `E-IO-SECRET-NOT-FOUND`
-- `E-CLI-USAGE`
-- `E-CLI-NOT-CONFIRMED`
+The table below is the complete list of codes. An implementation reports every one of them where this specification says it occurs, and reports no code the table does not have, so that a program reading diagnostics can rely on the table alone. The class of a code follows from its category, and the exit code from its class (14.8); the meaning names the section that defines when the code occurs.
+
+| Code | Class | Exit code | Meaning |
+|---|---|---|---|
+| `E-SYNTAX-UNEXPECTED-TOKEN` | syntax | `1` | a token the grammar does not allow where it stands (Chapter 3, 6) |
+| `E-SYNTAX-CASE-ELSE` | syntax | `1` | a `case` with no arms, with no `else` arm, with more than one, or with one that is not last (6.4) |
+| `E-NAME-UNDEFINED` | static | `1` | undefined reference |
+| `E-NAME-DUPLICATE` | static | `1` | duplicate definition |
+| `E-TYPE-MISMATCH` | static | `1` | type mismatch |
+| `E-TYPE-ARITY` | static | `1` | function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2) |
+| `E-TYPE-CALL` | static | `1` | invalid call (calling a non-function value, etc.) |
+| `E-TYPE-COMMAND-ENV` | static | `1` | invalid command execution environment type, at a command execution expression or a command declaration (6.6, Chapter 5) |
+| `E-TYPE-COMMAND-NOENV` | static | `1` | a command execution expression with no environment specification for which dispatch selects no environment (6.6, 10.9) |
+| `E-TYPE-COMMAND-CONFLICT` | static | `1` | one command string selects environments not known to be one (10.9) |
+| `E-TYPE-COMMAND-EFFECT` | static | `1` | the environment of a command declaration can reach an effect (Chapter 5) |
+| `E-TYPE-COMMAND-NAME` | static | `1` | a command declaration names a program that could never be recognized in a command string (Chapter 5) |
+| `E-TYPE-COMMAND-DUPLICATE` | static | `1` | the same command word is declared twice in one module, or both declared and imported, or imported from two declarations (Chapter 5) |
+| `E-TYPE-COMMAND-SYNTAX` | static | `1` | a command string is not well formed as POSIX shell syntax (6.6) |
+| `E-TYPE-COMMAND-SCHEMA` | static | `1` | the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5, Appendix A) |
+| `E-TYPE-COMMAND-OPTION` | static | `1` | a command string invokes a program in a way its command schema rules out (Chapter 5, Appendix A) |
+| `E-TYPE-ENV-CONSTRUCT` | static | `1` | invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree, an `egress` entry that is not one or `egress` given with `network` or `publish`; 6.7, 10.2, 10.3, 10.12, 15.5) |
+| `E-TYPE-WITHIN-SPEC` | static | `1` | an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, a name in the `secrets` of an access declaration, the name of a type where an access declaration is named, or a second module constraint; Chapter 5, 10.11) |
+| `E-TYPE-WITHIN-EXCEEDED` | static | `1` | what a declaration covered by an access constraint can reach is shown to exceed it (10.11) |
+| `E-TYPE-WITHIN-UNPROVEN` | static | `1` | what a declaration covered by an access constraint can reach cannot be determined statically, so it is not shown to stay within it (10.11) |
+| `E-TYPE-ACCESS` | static | `1` | invalid accessor (field access on a non-`Record`, unknown field, invalid index type) |
+| `E-TYPE-FIELD-DUPLICATE` | static | `1` | duplicate record field name or object literal key (4.2) |
+| `E-TYPE-CASE-DUPLICATE` | static | `1` | two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4) |
+| `E-TYPE-KEYWORD` | static | `1` | invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5) |
+| `E-TYPE-ILLFORMED` | static | `1` | violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`; 4.2, 6.4, 15.8) |
+| `E-TYPE-SECRET-NON-STRING` | static | `1` | `!!` applied to a binding whose type is not `String` (6.10) |
+| `E-TYPE-BOUND` | static | `1` | a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 6.2, 6.4, 6.6) |
+| `E-MODULE-CYCLE` | static | `1` | module circular dependency |
+| `E-MODULE-UNRESOLVED` | static | `1` | unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5) |
+| `E-MODULE-DEEP-IMPORT` | static | `1` | an external import naming a path inside a dependency tree rather than its entry module (Chapter 5) |
+| `E-MODULE-LOCK-STALE` | static | `1` | the lock file is missing, incomplete, or inconsistent with the project file (Chapter 5) |
+| `E-MODULE-CONFIRM-TARGET` | static | `1` | a `confirm` entry of the project file names a function, a parameter or a value that does not fit the program (Chapter 5) |
+| `E-RUNTIME-DIV-BY-ZERO` | runtime | `2`¹ | invalid arithmetic |
+| `E-RUNTIME-COMMAND-NONZERO` | runtime | `2`¹ | failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6) |
+| `E-RUNTIME-ACCESS` | runtime | `2`¹ | index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9) |
+| `E-RUNTIME-CAST` | runtime | `2`¹ | failure of the runtime type check of `cast` (15.8) |
+| `E-RUNTIME-VALUE` | runtime | `2`¹ | a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13); or `runnable` was given a run option for a `local` environment (8.8, 15.5) |
+| `E-RUNTIME-REGEX` | runtime | `2`¹ | a malformed regular expression pattern (15.3) |
+| `E-RUNTIME-TIMEOUT` | runtime | `2`¹ | the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10). |
+| `E-RUNTIME-UNTIL-EXHAUSTED` | runtime | `2`¹ | the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10). |
+| `E-RUNTIME-SESSION-CLOSED` | runtime | `2`¹ | a command was run with the session of a `with_container` whose body had returned, or was running in it when it did (15.5). |
+| `E-RUNTIME-INTERRUPTED` | runtime | `2`¹ | a `run` or `eval` was stopped by SIGINT or SIGTERM (11.12). Its `Error` has `code` `128 + n` for the signal `n`. It is an abandonment, not a failure of the program, so no `catch` block sees it. |
+| `E-IO-STDIN-READ` | external I/O | `3`¹ | stdin read failure |
+| `E-IO-ENV-RESOLVE` | external I/O | `3`¹ | execution environment resolution failure, including a container engine that cannot be reached or cannot run the container (10.4, 10.10) |
+| `E-IO-IMAGE-MISSING` | external I/O | `3`¹ | a required container image has not been materialized (10.3) |
+| `E-IO-IMAGE-DIGEST` | external I/O | `3`¹ | a pulled image's digest does not match the pinned digest (10.3) |
+| `E-IO-COMMAND-MISSING` | external I/O | `3`¹ | a command word declared on a container image names a program the image does not provide, as `sync` probed it (Chapter 5, 11.7) |
+| `E-IO-FS` | external I/O | `3`¹ | filesystem access failure (the filesystem functions of 15.11) |
+| `E-IO-MODULE-HASH-MISMATCH` | external I/O | `3`¹ | a dependency fetched by `sync` or `deps add` differs from the content hash the lock pins (Chapter 5, 11.5, 11.7) |
+| `E-IO-MODULE-REV-MOVED` | external I/O | `3`¹ | a pinned reference now resolves to a different commit (Chapter 5) |
+| `E-IO-DATA-DECODE` | external I/O | `3`¹ | failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8) |
+| `E-IO-SECRET-PROVIDER` | external I/O | `3`¹ | a secret reference names a scheme no store provides (9.8) |
+| `E-IO-SECRET-REF` | external I/O | `3`¹ | a malformed secret reference (9.8) |
+| `E-IO-SECRET-UNREACHABLE` | external I/O | `3`¹ | the store of a secret reference cannot be reached (9.8) |
+| `E-IO-SECRET-AUTH` | external I/O | `3`¹ | the store refuses the credentials of a secret reference (9.8) |
+| `E-IO-SECRET-NOT-FOUND` | external I/O | `3`¹ | the store has no secret at the path, version or field a reference names (9.8) |
+| `E-CLI-USAGE` | CLI usage | `4` | a command line `lask` does not accept: an unknown command, option or option value, a missing argument, an argument that does not decode to its parameter's type (11.1-11.3) |
+| `E-CLI-NOT-CONFIRMED` | CLI usage | `4` | the confirmation the project file asks for before a function was refused (11.2) |
+| `W-ASYNC-UNUSED` | advisory | — | a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`. |
+| `W-ASYNC-UNAWAITED` | advisory | — | an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6); if it failed, the execution fails with its failure. Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`. |
+| `W-COMMAND-OPTION` | advisory | — | a command string uses an option or subcommand that a command schema which is not closed does not list (Chapter 5, Appendix A). Reported statically, with `stage: "static"`. |
+| `W-SECRET-COMMAND-LINE` | advisory | — | a secret reaches a use in its command string, from which it becomes the arguments of the programs the command runs, or in a run option other than a value of `env`, which is on the engine client's command line (10.11). Reported statically, with `stage: "static"`. |
+| `W-REGEX-PATTERN` | advisory | — | a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached. |
+| `W-DOC-PARAM-UNKNOWN` | advisory | — | an `@param` in a documentation comment (3.1) names a parameter the declaration does not have. |
+| `W-CLI-PARAM-SHADOWED` | advisory | — | a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6). |
+| `W-EXPORT-INCONSISTENT` | advisory | — | one module writes `export` on some of its declarations and leaves it out on others, so an omitted marker may be misread as non-public (5) |
+
+¹ The default: a runtime or external I/O error carries the `code` of its `Error` value, which a command failure takes from the process (8.10, 14.8).
 
 Advisory codes:
 
 - Codes of the form `W-<CATEGORY>-<DETAIL>` are advisory diagnostics. They report a probable mistake that is not an error: analysis continues, evaluation is not prevented, and the exit code is unaffected.
 - Advisory diagnostics follow the output requirements of 14.3 and additionally carry `severity: "warning"`. A diagnostic without a `severity` field is an error.
-- Representative codes:
-  - `W-DOC-PARAM-UNKNOWN`: an `@param` in a documentation comment (3.1) names a parameter the declaration does not have.
-  - `W-CLI-PARAM-SHADOWED`: a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6).
-  - `W-REGEX-PATTERN`: a regular expression written as a string literal with no interpolation (15.3) is malformed, and the call will fail whenever it is reached.
-  - `W-ASYNC-UNUSED`: a handle is discarded, or bound to a name nothing refers to, so it is never awaited (6.3). Reported statically, with `stage: "static"`.
-  - `W-COMMAND-OPTION`: a command string uses an option or subcommand that a command schema which is not closed does not list (Chapter 5). Reported statically, with `stage: "static"`.
-  - `W-SECRET-COMMAND-LINE`: a secret reaches a use in its command string, from which it becomes the arguments of the programs the command runs, or in a run option other than a value of `env`, which is on the engine client's command line (10.11). Reported statically, with `stage: "static"`.
-  - `W-ASYNC-UNAWAITED`: an asynchronous computation was never awaited, so the execution waited for it at its end (6.3, 8.6). Reported at run time, with `stage: "runtime"`, a `location` for the `async` that started it, and, if it failed, a `failure` object carrying its `code` and `message`.
-- Reporting advisory diagnostics is optional, with one exception: `W-ASYNC-UNAWAITED` is always reported, because a failure it carries is otherwise invisible. `check` and `serve` are the expected places for the static ones; `run` and `eval` report the run-time ones on stderr.
+- The advisory codes are listed in the table above with the class `advisory`. Each is reported where the section that defines it says, as an error code is.
 
 ### 14.3 Minimum Requirements for Diagnostic Information
 
@@ -4565,7 +4611,7 @@ Additional requirements related to commands:
 Additional requirements related to reporting several errors:
 
 - Independent errors are all reported; an error that only follows from another is not. A top-level declaration, a type alias, a command declaration and a command import are each checked on their own, and each reports at most its first error.
-- A declaration that uses one that failed is still checked when the failed one's annotations give all of its type: a function declaration with its return type and the type of every keyword parameter with a default written (a required one without an annotation is `Any`, 6.1), or a value declaration with its type written. Otherwise the declaration that uses it reports nothing. Likewise, a type that refers to a failed type alias, and a command string whose command words include one whose declaration or import failed, report nothing.
+- A declaration that uses one that failed is still checked when the failed one's annotations give all of its type: a function declaration with its return type and the type of every parameter written (a keyword parameter with a default is typed by it, 6.1), or a value declaration with its type written. A parameter's inferred type (4.3) is known only from a body that checked, so a failed declaration's unannotated parameters give nothing to check against. Otherwise the declaration that uses it reports nothing. Likewise, a type that refers to a failed type alias, and a command string whose command words include one whose declaration or import failed, report nothing.
 - A declaration that holds an error of name resolution (7.1-7.3) is not type checked; the declarations that do not are.
 - A syntax error is reported for each top-level declaration that has one: parsing resumes at the next token in column 1. A module with a syntax error is not checked further. A lexical error is the only error reported for its module.
 - Diagnostics are reported in order of file and position, each once. Text output shows at most 50 errors and then the number left out; JSON output carries every one.
@@ -4605,38 +4651,7 @@ main.lask:2:10-2:14: E-NAME-UNDEFINED [static]: undefined name: 'helo'
 
 Static errors are reported by pre-execution verification (Chapter 7).
 
-Minimum targets:
-
-- `E-NAME-UNDEFINED`
-- `E-NAME-DUPLICATE`
-- `E-TYPE-MISMATCH`
-- `E-TYPE-ARITY`
-- `E-TYPE-CALL`
-- `E-TYPE-COMMAND-ENV`
-- `E-TYPE-COMMAND-NOENV`
-- `E-TYPE-COMMAND-CONFLICT`
-- `E-TYPE-COMMAND-EFFECT`
-- `E-TYPE-COMMAND-NAME`
-- `E-TYPE-COMMAND-DUPLICATE`
-- `E-TYPE-COMMAND-SYNTAX`
-- `E-TYPE-COMMAND-SCHEMA`
-- `E-TYPE-COMMAND-OPTION`
-- `E-TYPE-ENV-CONSTRUCT`
-- `E-TYPE-WITHIN-SPEC`
-- `E-TYPE-WITHIN-EXCEEDED`
-- `E-TYPE-WITHIN-UNPROVEN`
-- `E-TYPE-ACCESS`
-- `E-TYPE-FIELD-DUPLICATE`
-- `E-TYPE-CASE-DUPLICATE`
-- `E-TYPE-KEYWORD`
-- `E-TYPE-ILLFORMED`
-- `E-TYPE-SECRET-NON-STRING`
-- `E-TYPE-BOUND`
-- `E-MODULE-CYCLE`
-- `E-MODULE-UNRESOLVED`
-- `E-MODULE-DEEP-IMPORT`
-- `E-MODULE-LOCK-STALE`
-- `E-MODULE-CONFIRM-TARGET`
+Its codes are those of the class static in the table of 14.2.
 
 Rules:
 
@@ -4647,17 +4662,7 @@ Rules:
 
 Runtime errors occur during evaluation under the dynamic semantics (Chapter 8).
 
-Representative examples:
-
-- `E-RUNTIME-DIV-BY-ZERO`: invalid arithmetic
-- `E-RUNTIME-COMMAND-NONZERO`: failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6)
-- `E-RUNTIME-ACCESS`: index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9)
-- `E-RUNTIME-CAST`: failure of the runtime type check of `cast` (15.8)
-- `E-RUNTIME-VALUE`: a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13); or `runnable` was given a run option for a `local` environment (8.8, 15.5)
-- `E-RUNTIME-REGEX`: a malformed regular expression pattern (15.3)
-- `E-RUNTIME-TIMEOUT`: the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10).
-- `E-RUNTIME-UNTIL-EXHAUSTED`: the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10).
-- `E-RUNTIME-SESSION-CLOSED`: a command was run with the session of a `with_container` whose body had returned, or was running in it when it did (15.5).
+Its codes are those of the class runtime in the table of 14.2.
 
 Rules:
 
@@ -4668,17 +4673,7 @@ Rules:
 
 External I/O errors occur at boundaries external to the language.
 
-Representative examples:
-
-- `E-IO-STDIN-READ`: stdin read failure
-- `E-IO-ENV-RESOLVE`: execution environment resolution failure, including a container engine that cannot be reached or cannot run the container (10.4, 10.10)
-- `E-IO-IMAGE-MISSING`: a required container image has not been materialized (10.3)
-- `E-IO-COMMAND-MISSING`: a command word declared on a container image names a program the image does not provide, as `sync` probed it (Chapter 5, 11.7)
-- `E-IO-IMAGE-DIGEST`: a pulled image's digest does not match the pinned digest (10.3)
-- `E-MODULE-REV-MOVED`: a pinned reference now resolves to a different commit (Chapter 5)
-- `E-IO-FS`: filesystem access failure (the filesystem functions of 15.11)
-- `E-IO-DATA-DECODE`: failure decoding input data (stdin decoding in 9.4, `from_json`/`decode` in 15.8)
-- `E-IO-SECRET-PROVIDER`, `E-IO-SECRET-REF`, `E-IO-SECRET-UNREACHABLE`, `E-IO-SECRET-AUTH`, `E-IO-SECRET-NOT-FOUND`: failure resolving a secret reference (9.8)
+Its codes are those of the class external I/O in the table of 14.2.
 
 Rules:
 
@@ -4716,7 +4711,7 @@ The CLI follows the exit code contract of 11.3 and maps error classifications as
 Rules:
 
 - When multiple classifications exist simultaneously, adopt the exit code of the fatal classification that occurred first.
-- With `--format json`, an error object corresponding to the exit code must be output to stderr.
+- With `--log-format json`, an error object corresponding to the exit code must be output to stderr.
 - Exit code normalization (values outside 1-255 become `1`) and the handling of exit code overlap follow 11.3.
 
 ## 15. Built-in Library
@@ -4751,7 +4746,7 @@ A built-in that looks something up says in its name what it does when the thing 
 Publication rules:
 
 - Symbols of the built-in library are positioned at the lowest level of name resolution (the 5th rank in 7.2). If a user definition declares a symbol with the same name, it may shadow it according to the ordinary name resolution rules.
-- However, core function names specified as "must not be overridden" in Chapter 6 cannot be declared or bound (7.2).
+- This holds for core functions too: syntactic sugar refers to the built-ins directly (7.6), so a user definition of a core function's name changes only the references written in the source. `stdin` is a reserved identifier and cannot be declared or bound (7.2, 9.3).
 
 Typing rules:
 
@@ -4818,8 +4813,8 @@ The built-in library provides at least the following functions.
 Semantics:
 
 - Strings are treated as UTF-8.
-- `length` may count in units of characters, but the implementation must keep the counting rule consistent. `index_of` and `substring` count in the same unit as `length`.
-- The behavior of `split`/`join` when the delimiter string is empty may be implementation-defined.
+- `length` counts Unicode code points: `length("é👍")` is `2`. It counts neither UTF-8 bytes nor user-perceived characters (grapheme clusters). `index_of`, `substring`, `pad_start` and `pad_end` count in the same unit.
+- With an empty delimiter, `split(s, "")` splits `s` into its code points, `split("abc", "")` being `["a", "b", "c"]`, and `split("", "")` is `[]`; `join(xs, "")` concatenates the elements with nothing between them.
 - `concat` concatenates 2 strings. To concatenate 3 or more, use nested applications of `concat` or `join`.
 - String concatenation is done with `concat` (or `join`). `+` is exclusive to `Number`, and applying it to `String` is a type error (6.2).
 - `contains(s, needle)` is true when `needle` occurs anywhere in `s`. An empty `needle` is always true.
@@ -4842,7 +4837,7 @@ Regular expressions:
 - `regex_match(s, pattern)` returns, for the leftmost-longest match, an array whose element `0` is the whole matched text and whose element `i` is the text of the `i`-th capture group, with a group that did not participate yielding the empty string. When there is no match it returns the empty array, so a caller tests with `is_empty` (15.4) rather than against a null: a successful match always has at least element `0`, so the empty array cannot be confused with one, and the result type stays `Array<String>`.
 - `regex_replace(s, pattern, replacement)` replaces every non-overlapping match from left to right. In `replacement`, `$0` to `$9` stand for the whole match and the capture groups, and `$$` stands for a literal `$`. A match of the empty string advances one character before the next attempt.
 - A pattern is normally written as a raw string (3.3), which performs no escape processing: `regex_match(s, '(\\d+)')`. In an interpreted string every backslash of the pattern has to be doubled.
-- A malformed pattern is `E-RUNTIME-REGEX`. When the pattern is a string literal containing no interpolation, an implementation may additionally report it statically as the advisory `W-REGEX-PATTERN` (14.2), since the call is then certain to fail.
+- A malformed pattern is `E-RUNTIME-REGEX`. When the pattern is a string literal containing no interpolation, it is also reported statically as the advisory `W-REGEX-PATTERN` (14.2), since the call is then certain to fail.
 
 ### 15.4 Array, Map, and Record Operations
 
@@ -4893,7 +4888,7 @@ Semantics:
 - `map`/`filter`/`reduce`/`for_each` traverse the input array from left to right (evaluation rules in 8.5).
 - `reduce` requires an initial value.
 - `for_each` discards each application result and returns `Void`. It is used for iteration whose purpose is side effects.
-- `map`, `filter`, `reduce`, and `for_each` are core functions that include the normalization targets of the control structures of 6.4, and must not be overridden by user code (subject to the exception provision of 15.1).
+- `map` and `for_each` are the normalization targets of `for` (6.4). Like every built-in symbol they may be shadowed by a user definition (15.1), which `for` does not see (7.6).
 - `get` results in a runtime error (`E-RUNTIME-ACCESS`) when the key is absent. This is the same failure contract as index access `m[k]` (6.8, 8.9), and it is what the `get_` prefix means throughout the library (15.1). To tolerate a missing key, use `get_or`, or check in advance with `has_key`.
 - Every function in this section is pure and returns a new value. No built-in mutates the array, map, or record it is given (8.2).
 
@@ -4911,7 +4906,7 @@ Ordering:
 
 - `sort(xs)` returns the elements in ascending order. The element type is bounded by `orderable`, so it is `Number` or `String`; any other element type is a static error (`E-TYPE-BOUND`).
 - `sort_by(xs, key)` sorts by the value of `key` applied once to each element, under the same bound on the key type `U`, and is stable: elements with equal keys keep their input order.
-- `String` ordering is lexicographic by Unicode code point. This definition is local to `sort` / `sort_by`, and does not extend the ordering operators `<` `<=` `>` `>=` of 6.2, which remain `Number`-only.
+- `String` ordering is lexicographic by Unicode code point. The ordering operators `<` `<=` `>` `>=` (6.2) order strings the same way.
 
 Searching:
 
@@ -4929,7 +4924,7 @@ Searching:
   ```
 
 - `find_index(xs, p)` returns the index of the first element for which `p` is true, or `-1`. It reports a position rather than a value, so the absent case is `-1` and not `Null` (15.1). Use `find` when the element is wanted and `find_index` when the position is.
-- A type variable inside a union is permitted in the return type of a signature, which is what `find` relies on, and not in a parameter type (4.4). One consequence of the canonical form of a union (4.2) is worth noting: searching an `Array<Any>` gives `Any | Null`, which is `Any`, so the absent case is then not distinguishable by type. That is inherent to `Any`, and the answer is the usual one — `cast` the decoded value to a concrete element type before searching it.
+- A type variable may occur inside a union in any position of a signature (4.4): `find` relies on it in its return type, and a declaration may take `T | Null` as a parameter. One consequence of the canonical form of a union (4.2) is worth noting: searching an `Array<Any>` gives `Any | Null`, which is `Any`, so the absent case is then not distinguishable by type. That is inherent to `Any`, and the answer is the usual one — `cast` the decoded value to a concrete element type before searching it.
 - `every(xs, p)` is true when `p` holds for every element, and is true for an empty array. `any(xs, p)` is true when `p` holds for at least one element, and is false for an empty array. Both stop applying `p` at the first element that decides the result.
 - The name `all` is not used for `every`, because it is already the asynchronous helper of 15.6.
 
@@ -5035,12 +5030,12 @@ Semantics:
 - `spawn`/`await` follow the rules of 6.3 and 8.6.
 - Because `await` is a reserved word, it can only be applied in the `AwaitExpr` form (`await h`); when passing it as a function value, write `\(h) -> await h` (6.3).
 - `all` waits for all handles to complete and returns the result array in input order.
-- `race` returns the first result to succeed or fail. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7).
+- `race` returns the first result to succeed or fail. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7). Their `finally` blocks run, and `race` returns once they have ended (8.10).
 
 Failure rules:
 
 - `await` on a handle whose computation failed re-raises that failure unchanged (6.3, 8.6): the same `Error` value, with its code and message, and therefore the same exit code if it goes uncaught (11.3). `all` and `race` do the same with the failure they receive.
-- `all` fails as soon as any one of them fails, whichever position it holds in the array, with that failure. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7), so none is left running after the failure is reported.
+- `all` fails as soon as any one of them fails, whichever position it holds in the array, with that failure. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7), so none is left running after the failure is reported. Their `finally` blocks run before it is (8.10).
 - `race` on an empty array is `E-RUNTIME-VALUE`: there is no result to return.
 
 ### 15.7 Error Handling Functions
@@ -5057,7 +5052,7 @@ The `Error` type:
 
 Semantics:
 
-- `recover` / `fail` follow the rules of 6.9 and 8.10. Both are core functions and must not be overridden by user code (7.2).
+- `recover` / `fail` follow the rules of 6.9 and 8.10. Both are core functions, which `try` refers to whatever those names are bound to in scope (7.6).
 - `error(code, message)` is a helper function that constructs an `Error` value equivalent to `{code: code, message: message}`.
 - The return type `T` of `fail` is concretized from the context's expected type (4.4).
 
@@ -5136,7 +5131,7 @@ Evaluation of `timeout(seconds, body)`:
 1. `seconds` must be finite and positive; fractions are allowed. Anything else is `E-RUNTIME-VALUE`.
 2. Evaluate `body()`, measuring the time from the call. If it finishes, successfully or not, before `seconds` have passed, its result is the result of the call.
 3. Once `seconds` have passed without it finishing, the body is abandoned: the command it is running is stopped (8.7), and every computation it started with `async`, directly or through the computations those started, is cancelled, and its commands stopped. The call then fails with the `Error` `{code: 124, message: "timed out after <seconds>s"}` and the diagnostic code `E-RUNTIME-TIMEOUT` (8.10, 14.5). There is no grace setting and no per-environment default.
-4. The failure is raised at the `timeout` call, not inside the body. A `try` inside the body does not see it, and its `finally` does not run, because abandoning the body is not a failure of the body; a `try` around the call sees it. Clean-up that must run belongs outside the `timeout`.
+4. The failure is raised at the `timeout` call, not inside the body. A `catch` inside the body does not see it, because abandoning the body is not a failure of the body; a `try` around the call sees it. The `finally` blocks of the body, and of the computations it started, do run (8.10), after its commands are stopped and before the call fails, so the call may return later than `seconds` by the time they take. To bound clean-up as well, write a `timeout` around the whole.
 5. A computation the body started is cancelled only when the body is abandoned. When the body finishes in time, what it started runs on as usual (6.3).
 
 `timeout` bounds what it is given, so where it is written decides what it bounds. `timeout(30, \() -> await h)` bounds the wait for `h`, and `h` runs on after the limit; `async timeout(30, \() -> work())` bounds `work` itself.
@@ -5164,7 +5159,7 @@ Format arguments:
 - `dotenv` decodes `NAME=value` lines to an object whose values are all `String`, ignoring blank lines and lines whose first non-space character is `#`, and stripping one layer of surrounding quotation from a value. Only the first `=` of a line separates the name from the value, so a value may contain further ones. Encoding emits one `NAME=value` line per entry, quoting a value that needs it, and is defined only for string-valued objects.
 - A value that the requested format cannot represent is `E-RUNTIME-VALUE`; input that is not well-formed in the requested format is `E-IO-DATA-DECODE`.
 - The format argument selects a syntax, not a schema. Every format decodes to the ordinary value kinds of 4.1, and a decoded value is moved to a concrete type with `cast`, exactly as for `json`.
-- Every format represents a decoded object the same way `from_json` does. The choice between `Record<...>` and `Map<Any>` is the implementation's (see the JSON conversion rules below), but one implementation must make it identically for every format, so that `cast` behaves the same whichever syntax the data arrived in.
+- Every format represents a decoded object the same way `from_json` does: as a record (see the JSON conversion rules below), so that `cast` behaves the same whichever syntax the data arrived in.
 
 JSON conversion rules of `from_json` / `decode`:
 
@@ -5173,23 +5168,23 @@ JSON conversion rules of `from_json` / `decode`:
 - JSON boolean -> `Bool`
 - JSON null -> `Null`
 - JSON array -> array value (elements have these rules applied recursively)
-- JSON object -> `Record<...>` or `Map<Any>` (implementation choice. However, it must be consistent within the same implementation)
+- JSON object -> a record, whose fields are the object's keys. `cast` (and a type head of `case`, 6.4) accepts it as a `Map<T>` as well as a `Record<...>`, by the rule below, so a program sees no difference between the two.
 - Tagged metadata representations (objects with a `$type` field) are also not treated specially, and are converted as ordinary objects under the above rules. Restoration of `Void`, `Environment`, and `FunctionRef` is not performed (round-trip rules of 13.1).
 
 Type migration via `cast`:
 
 - `cast(v)` checks at runtime whether the value `v` conforms to the target type `T`, and if it conforms, returns `v` as a value of type `T`. Together with the type dispatch of `case` (6.4), which runs the same check without failing, it is one of the two means of migration from `Any` or from a union to a concrete type (4.4). Use `cast` where any other kind of value is an error, and `case` where the other kinds are to be handled.
 - The target type `T` must be uniquely concretized from the expected type at the reference position (4.4) (e.g., `user: Record<name: String> = cast(from_json(stdin))`).
-- The target type `T` is limited to data types (`Number`, `String`, `Bool`, `Null`, `Environment`, `Any`, `Array`/`Map`/`Record` composed of them, and unions of those). A `cast` to a type containing `Void`, `Function`, or `AsyncHandle` is a static error (`E-TYPE-ILLFORMED`). Every well-formed union is a legal target, because 4.2 already restricts a union's members to this same set.
+- The target type `T` is limited to data types (`Number`, `String`, `Bool`, `Null`, `Environment`, `Runnable`, `Any`, `Array`/`Map`/`Record` composed of them, and unions of those). A `cast` to a type containing `Void`, `Function`, or `AsyncHandle` is a static error (`E-TYPE-ILLFORMED`). Every well-formed union is a legal target, because 4.2 already restricts a union's members to this same set.
 - `cast` is also the way out of a union when only one member is expected and any other is an error: `cast(v)` at target `String` on a `v: String | Null` succeeds when the value is a string and fails with `E-RUNTIME-CAST` when it is null. When the absent case is to be handled rather than rejected, use `case` (6.4), which tests without failing.
 
 Runtime type check rules for `cast`:
 
-- Basic types: the kind of the runtime value matches the target type.
+- Basic types: the kind of the runtime value matches the target type. An environment value also passes the check for `Runnable`, which it conforms to (4.4).
 - `Array<T>`: the value is an array value and every element conforms at runtime to `T`.
 - `Map<T>`: every value conforms at runtime to `T`.
 - `Record<...>`: every required field of the target type is present, no key outside its field set is present, and each value conforms at runtime to the corresponding field type. An optional field (4.2) may be absent, and is checked only when present. A missing required key fails, as it always has.
-- Record values and map values are mutually acceptable. When the structural conditions are satisfied, the implementation converts to the target type's representation (record or map) as needed (to absorb the implementation choice for JSON objects in `from_json`).
+- Record values and map values are mutually acceptable. When the structural conditions are satisfied, the value is converted to the target type's representation (record or map), so a decoded object can be used as either.
 - `T1 | T2 | ...`: the value conforms when it conforms to some member. Members are tried in the canonical order of 4.2 and the first that matches decides the result, which matters only where two members can accept one value, as `Record<...>` and `Map<T>` can by the rule above.
 - Positions of `Any` within the target type pass without checking.
 - If the check fails, it is a runtime error (`E-RUNTIME-CAST`). The diagnostics should include the failing position (field path, index).
@@ -5205,7 +5200,7 @@ Contract:
 
 - Follows the Serialization Conventions of Chapter 13.
 - Invalid JSON is reported as `E-IO-DATA-DECODE`.
-- An unsupported format specification is reported consistently as either `E-CLI-USAGE` or `E-IO-DATA-DECODE`.
+- A format argument that is not one of the formats above is `E-IO-DATA-DECODE`, an external I/O error (exit code `3`), whether the call decodes or encodes: the format is a value of the running program, not a part of the command line. A format the command line takes as an option (`--arg-decode`, `--stdout-encode`, 11.2) that is not one it accepts is a usage error instead (`E-CLI-USAGE`, exit code `4`).
 
 ### 15.9 Environment Access and Secret Marking Functions
 
@@ -5219,17 +5214,17 @@ The built-in library provides at least the following functions.
 
 Semantics:
 
-- `get_env(name)` returns the value of the process environment variable `name`. It presupposes that the variable is set, and a variable that is not set is a runtime error (`E-RUNTIME-ACCESS`) whose diagnostic names the variable (15.1, 14.5). This is the form for a variable the task requires in order to run at all, such as a credential: the failure names what is missing, at the point it is missing, instead of letting an absent value travel on. `get_env` is a core function (7.2) and must not be directly declared or overridden by user code.
+- `get_env(name)` returns the value of the process environment variable `name`. It presupposes that the variable is set, and a variable that is not set is a runtime error (`E-RUNTIME-ACCESS`) whose diagnostic names the variable (15.1, 14.5). This is the form for a variable the task requires in order to run at all, such as a credential: the failure names what is missing, at the point it is missing, instead of letting an absent value travel on.
 - `find_env(name)` returns the value of `name`, or `Null` when it is not set. Its result type is the union `String | Null` (4.2), which the caller resolves with `case` (6.4) — or with `cast` (15.8) when an unset variable is to be treated as an error after all. This is the form for a variable the task merely accepts.
 - `has_env(name)` is true when `name` is set in the process environment, including when it is set to the empty string.
 - `get_env_or(name, fallback)` returns the value of `name` when it is set, and `fallback` when it is not. It always returns a `String`, so it is the form to prefer wherever a missing variable has a sensible default, and it says at the call site what that default is.
 - The four differ only in what an unset variable means — a failure, a `Null`, a `Bool`, or a fallback — and follow the naming rules of 15.1. `find_env` is the only one of them whose result can be absent, and `get_env_or(name, fallback)` is exactly the `case` over `find_env(name)` that returns `fallback` for `Null`.
 - All four read the process environment of the Lask process itself. They do not read the variables of an execution `Environment` (10.6); a command reads those through the shell it runs in.
-- `find_env`, `has_env` and `get_env_or` are ordinary built-in symbols and may be shadowed by a user definition (15.1). Only `get_env` and `mark_secret` are core functions.
+- All four are built-in symbols and may be shadowed by a user definition (15.1). What a function reads from the environment (11.10) is found from the references that resolve to the built-ins, so a user function of one of these names reads nothing.
 - A variable holding a secret reference (9.8) is resolved by `get_env`, `find_env` and `get_env_or`, which return the value it names; `has_env` does not resolve it.
 - `get_env` does not register what it returns for masking (12.8): reading a value from the environment says nothing about whether it is sensitive. The exception is a value resolved from a secret reference, which is registered (9.8). Bind a credential read this way to a `!!`-marked name (6.10) to have it masked. `find_env` and `get_env_or` behave the same way. `!!` accepts `String | Null` (6.10), so a credential that may be unset can be read with `find_env` and still be masked when present.
 - `mark_secret(v)` registers `v` for masking (12.8) and returns `v` unchanged. When `v` is `null`, nothing is registered (6.10).
-- `mark_secret` is a core function and must not be directly declared or overridden by user code (7.2). It is the desugaring target of `!!` secret bindings (6.10); user code may also call it directly to register a value that isn't declared with `!!`.
+- `mark_secret` is a core function, the desugaring target of `!!` secret bindings (6.10), which refer to the built-in whatever the name is bound to in scope (7.6). User code may also call it directly to register a value that isn't declared with `!!`; a user definition of the name shadows it there, as any built-in.
 - Calling `mark_secret` has no effect on the type of its argument (`String` in, `String` out; `String | Null` in, `String | Null` out) and no effect on control flow: it is not a source of failure.
 
 ### 15.10 Path Operations
@@ -5246,7 +5241,7 @@ The built-in library provides at least the following functions.
 Semantics:
 
 - These are pure, lexical operations on strings. They never consult the filesystem, and therefore take no `Environment`: `dirname` of a path that does not exist is still its parent, and `normalize_path` never resolves a symbolic link.
-- Paths are POSIX paths whatever the host operating system is: `/` is the only separator, and no drive letter or backslash is recognized. A path computed on the host therefore still means the same thing inside a container, which is the case these functions exist for (10.8).
+- Paths are POSIX paths, as the host's are (10.2): `/` is the only separator, and no drive letter or backslash is recognized. A path computed on the host therefore still means the same thing inside a container, which is the case these functions exist for (10.8).
 - `path_join(parts)` joins the parts with a single `/`, dropping empty parts, and normalizes the result. A part that is absolute discards everything before it. An empty array yields the empty string.
 - `dirname(p)` returns everything before the final component: `"a/b/c"` gives `"a/b"`, a path with no separator gives `"."`, and a child of the root gives `"/"`.
 - `basename(p)` returns the final component, ignoring trailing separators: `"a/b/c.txt"` gives `"c.txt"` and `"a/b/"` gives `"b"`.
@@ -5707,3 +5702,89 @@ $ lask run release
 - If `./release.sh` fails with exit code `75`, the failure is caught, `"retry-later"` is returned, and it terminates normally (process exit code `0`).
 - Other failures are re-raised by `fail(e)`. If it reaches the top level uncaught, the `lask` process exits with that command's exit code, and `e.message` (the command's standard error output) is output as diagnostics (8.10, 11.3).
 - The `finally` block is evaluated exactly once on every path: success, catch, or re-raise.
+
+## Appendix A. Command Schemas
+
+This appendix defines the command schemas a command declaration may give its words (Chapter 5): their types, their validity, and how a command string is checked against them. It is normative. A schema is a lint over command strings: it changes neither the type nor the evaluation of any expression.
+
+
+- A command declaration may give its words **command schemas** after `schema`: what options and subcommands each program takes, against which the command strings that run it are checked before execution. The expression is checked against the expected type `Map<CommandSchema>`, keyed by words of the declaration; a word with no key has no schema. A key that is not one of them is a static error (`E-TYPE-COMMAND-SCHEMA`) where the map is a literal written in the declaration, and is ignored where it comes from a top-level value the declaration refers to: a module may publish the schemas of several words as one map, `schema tools.python.schema`, of which a declaration uses those it declares.
+- The types of a schema are built-in type aliases, and must not be overridden by user-defined type aliases or value declarations:
+
+  ```lask fragment
+  type CommandOption = Record<
+    names: Array<String>,         // "-v", "--verbose", "-run"
+    value?: String,               // "none" (the default), "required" or "optional"
+    values?: Array<String>,       // the values the option takes, when they are a closed set
+    global?: Bool,                // also accepted by every subcommand below (default false)
+    stops?: Bool,                 // what follows the option and its value belongs to another program, as after `python -m mod`
+    prefix?: Bool,                // the value is written right after the name, in the same word: `-Xmx2g`, `-DNAME=value`, `-Wall`
+    description?: String
+  >
+
+  type CommandSpec = Record<
+    closed?: Bool,                // no option or subcommand exists but those listed (default false)
+    style?: String,               // "gnu" or "single-dash"; the parent's when absent, "gnu" at the root
+    options?: Array<CommandOption>,
+    intermixed?: Bool,            // options may follow positional arguments; default true for gnu, false for single-dash
+    stop_at_first_positional?: Bool,  // what follows the first positional argument belongs to another program
+    subcommand_optional?: Bool,   // a positional argument that names no subcommand is an argument: `grype alpine:3.20` beside `grype db update`
+    abbreviations?: Bool,         // a long option may be shortened to a unique prefix, as getopt_long and optparse allow; the parent's when absent, false at the root
+    description?: String
+  >
+
+  type CommandSchema = Record<
+    root: CommandSpec,
+    subcommands?: Map<CommandSpec>   // keyed by path: "test", "mod tidy"
+  >
+  ```
+
+- Subcommands are keyed by their path, the words that select them separated by single spaces, because a type alias cannot refer to itself (4.2). A path of more than one word requires its parent path among the keys.
+- A schema must be known without evaluation, as the command words are. The schema expression must be a **static value**: a `null`, number, boolean or string literal without interpolation; an array, map or record literal whose elements are static values; or a reference to a top-level value declaration, in this module or reached through an import, whose right-hand side is a static value and which is not a secret binding (6.10). Anything else — a call, an operator, a conditional — is a static error (`E-TYPE-COMMAND-SCHEMA`). A static value has no effect, so the restriction on the environment of a command declaration (Chapter 5) holds of it as well.
+- A binding that holds a schema is annotated with its type (`go_schema: CommandSchema = {...}`). Without the annotation, the record literal infers every field it gives as required (4.3), and that record type does not conform to `CommandSchema` (4.4).
+- What the types cannot say is checked where the schema is written, and a violation is `E-TYPE-COMMAND-SCHEMA`: `style` is `"gnu"` or `"single-dash"`; `value` is `"none"`, `"required"` or `"optional"`; an option has at least one name, and each name begins with `-` — or, for an option with `prefix`, with `+` —, is neither `-` nor `--`, and contains no whitespace, `=` or quotation character; no name is given twice within one spec together with the global options of its ancestors; `values` lists at least one value and is not given for an option whose `value` is `"none"`; an option with `prefix` takes a value; a subcommand path is words without whitespace or quotation characters, none beginning with `-`, and its parent path is a key.
+- A schema belongs to the declaration: a word imported or re-exported keeps the schema the declaring module gave it.
+
+Checking a command string against a schema:
+
+- The check applies to a command execution expression whose environment is selected by dispatch (10.9), and to each simple command of its shell reading (6.6) whose command word is plainly written (no quotation, escape or expansion, and no `/`) and is a command word of the module whose declaration has the source dispatch selected and gives the word a schema. An expression with an environment specification is not checked: the program it runs may not be the one declared.
+- The words after the command word are read in order, assignments and redirections left out:
+  1. A word that follows an option requiring a value is its value, whatever it is, provided it expands to one field. If the option lists `values`, a literal value not among them is an error.
+  2. An option with `stops` ends the check once it and its value are read: `python -m pytest -k smoke` checks `-m` and its value, and leaves `-k` to pytest.
+  3. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
+  4. `--` ends the check.
+  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
+  6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. With `subcommand_optional`, a word that names no subcommand is a positional argument of the current spec instead of an unknown subcommand. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
+- Each of the following is reported, and the check ends at the first:
+  - an option the current spec does not have, or a subcommand it does not have, or an abbreviated option that is ambiguous;
+  - an option written with `=value` whose `value` is `"none"`;
+  - an option whose `value` is `"required"` at the end of the command, unless the shell reading stopped inside it;
+  - a literal value not among the option's `values`.
+- An unknown option or subcommand, or an ambiguous abbreviation, is a static error (`E-TYPE-COMMAND-OPTION`) when the current spec is `closed`, and otherwise the advisory `W-COMMAND-OPTION` (14.2), since a spec that is not closed does not claim to be complete. The other findings are `E-TYPE-COMMAND-OPTION` whatever the spec says.
+
+```lask
+go_schema: CommandSchema = {
+  root: { closed: true, style: "single-dash" },
+  subcommands: {
+    "test": {
+      closed: true,
+      intermixed: true,
+      options: [
+        { names: ["-v"], description: "verbose output" },
+        { names: ["-run"], value: "required" },
+        { names: ["-covermode"], value: "required", values: ["set", "count", "atomic"] }
+      ]
+    },
+    "run": { closed: true, stop_at_first_positional: true },
+    "mod": { closed: true },
+    "mod tidy": { closed: true, options: [{ names: ["-v"] }] }
+  }
+}
+
+command { "go", "gofmt" } on #golang:1.25 schema { "go": go_schema }
+
+ok() = $ go test -v -run TestParse ./...
+// $ go tset ./...         E-TYPE-COMMAND-OPTION: 'go' has no subcommand 'tset'
+// $ go test -run          E-TYPE-COMMAND-OPTION: '-run' requires a value
+// $ go test -covermode x  E-TYPE-COMMAND-OPTION: '-covermode' takes one of 'set', 'count', 'atomic'
+```

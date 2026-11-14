@@ -36,6 +36,10 @@ spec = do
                       "r: Record<a: String, b?: Number> = { a: \"x\", \"b-c\": 2 }"
                     ]
 
+    it "keeps unary minus apart from a minus it applies to" $
+      ["a=-1", "b=- -1", "c=1- -x", "d=-(1+2)"]
+        `formatsTo` ["a = -1", "b = - -1", "c = 1 - -x", "d = -(1 + 2)"]
+
     it "pads the braces of record literals, imports and command words, and not of annotation options" $
       [ "import {a,b as c} from \"./lib\"",
         "command {\"go\"} on #golang:1.25{env:{}}",
@@ -54,6 +58,9 @@ spec = do
           "export command { \"npm\" } on #local",
           "export { a } from \"./lib\""
         ]
+
+    it "keeps the type parameters of a lambda (spec 6.1)" $
+      ["ident = \\<T>(x:T):T->x"] `formatsTo` ["ident = \\<T>(x: T): T -> x"]
 
     it "keeps how literals are spelt" $
       unchanged ["x = ['raw \\n', \"a\\tb #{1.50}\", 1.50, 007]"]

@@ -1,7 +1,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Command schemas (spec ch. 5, "Command schemas"): what a command
+-- | Command schemas (spec ch. 5 and appendix A): what a command
 -- declaration says about the options and subcommands of a program, and
 -- the check of a command string's simple commands against it.
 --
@@ -105,7 +105,7 @@ data ValueKind = ValueNone | ValueRequired | ValueOptional
 -- Validation -------------------------------------------------------------------
 
 -- | Read and validate one @CommandSchema@ value. Its type has been
--- checked; what is left is what the type cannot say (spec ch. 5).
+-- checked; what is left is what the type cannot say (spec appendix A).
 fromStatic :: Static -> Either (Span, Text) Schema
 fromStatic (Static sp f) = do
   fields <- object sp f
@@ -540,7 +540,7 @@ parentOf k = case T.breakOnEnd " " k of
 -- Editor support -------------------------------------------------------------------
 
 -- | Something an editor may offer where a word of an invocation is
--- being written (spec ch. 5): an option, a subcommand or a value.
+-- being written (spec appendix A): an option, a subcommand or a value.
 data Offer = Offer
   { ofText :: Text,
     ofKind :: OfferKind,
@@ -568,7 +568,7 @@ offersAfter schema word ws = case wkEnd (walkCommand schema word ws) of
   _ -> []
 
 -- | The values the option a word names takes, for a word written
--- @name=@ (spec ch. 5).
+-- @name=@ (spec appendix A).
 valuesOf :: Schema -> Text -> [ShellWord] -> Text -> [Offer]
 valuesOf schema word ws name = case wkEnd (walkCommand schema word ws) of
   EndAt path _ _ ->

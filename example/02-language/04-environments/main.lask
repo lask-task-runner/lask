@@ -81,16 +81,21 @@ kernel(): String = $ uname -s
 alpine_version(): String = $[alpine] cat /etc/alpine-release
   |> trim
 
+// What a sealed task may reach: the base directory read-only, and no
+// network. `access` gives an access constraint a name, which `within`
+// takes in place of its braces, and which another module can import.
+access Sealed = { files: "ro", outbound: false }
+
 // A container that reaches no network and writes nowhere but /tmp.
 //
 // `within` says so of the function, and `lask check` holds it to it:
 // every command it can reach, in any module, must run where the base
 // directory is read-only and there is no network, or the program does
 // not run. A module can say the same of all its declarations with a
-// `within { ... }` of its own.
+// `within Sealed` of its own.
 //
 // @return The user the sealed container runs as.
-sealed_user(): String within { files: "ro", network: "none" } = $ id -un
+sealed_user(): String within Sealed = $ id -un
   |> trim
 
 // The release of the digest-pinned image.

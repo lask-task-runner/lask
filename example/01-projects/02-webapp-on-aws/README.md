@@ -84,6 +84,16 @@ aws = tools.aws.env(
 )
 ```
 
+`within` says how far a task may reach, and `lask check` holds it to that before anything runs. The unit tests are given no secret and run nothing on the host; `deploy` is given the two AWS keys and nothing else, and only as variables:
+
+```lask
+test() within { secrets: false, runs: ["container"] } = do { ... }
+
+deploy() within { secrets: [aws_access_key_id, aws_secret_access_key], runs: ["container"] } = do { ... }
+```
+
+Pass an AWS key to a test, or run one of its commands on `#local`, and `lask check` reports `E-TYPE-WITHIN-EXCEEDED` at that command.
+
 ## What you're building
 
 A cheap, disposable AWS stack.
@@ -131,7 +141,7 @@ lask run healthcheck_api
 lask run healthcheck_web
 
 # open this URL in a browser and sign in with the user you just created
-lask eval --stdout-encode text terraform_output website_url
+lask eval --output text terraform_output website_url
 
 lask run test_e2e     # optional: a real browser clicking through the app for you
 

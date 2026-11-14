@@ -4,7 +4,7 @@
 -- @rev@ is the commit the requested reference named when it was
 -- fetched, recorded by whichever of @deps add@ and @sync@ fetched
 -- it, and a reference that later names another commit is
--- @E-MODULE-REV-MOVED@ whether or not the cache still holds the old
+-- @E-IO-MODULE-REV-MOVED@ whether or not the cache still holds the old
 -- content.
 module Command.Lask.GitPinSpec (spec) where
 
@@ -85,9 +85,9 @@ addKit w url = do
 shouldReportMoved :: Result -> Expectation
 shouldReportMoved r = do
   resExit r `shouldBe` 3
-  resErr r `shouldSatisfy` isInfixOf "E-MODULE-REV-MOVED"
-  resErr r `shouldNotSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
-  resOut r `shouldSatisfy` isInfixOf "failed: E-MODULE-REV-MOVED"
+  resErr r `shouldSatisfy` isInfixOf "E-IO-MODULE-REV-MOVED"
+  resErr r `shouldNotSatisfy` isInfixOf "E-IO-MODULE-HASH-MISMATCH"
+  resOut r `shouldSatisfy` isInfixOf "failed: E-IO-MODULE-REV-MOVED"
 
 spec :: Spec
 spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ do
@@ -106,7 +106,7 @@ spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ d
     git repo ["tag", "v2"]
     writeFile (wProj w </> "lask.json") ("{\"dependencies\": {\"kit\": {\"git\": \"" <> url <> "\", \"rev\": \"v2\"}}}")
     r <- wRun w ["sync"]
-    resErr r `shouldNotSatisfy` isInfixOf "E-MODULE-HASH-MISMATCH"
+    resErr r `shouldNotSatisfy` isInfixOf "E-IO-MODULE-HASH-MISMATCH"
     resOut r `shouldSatisfy` isInfixOf "fetched"
     lockField w "kit" "requested" `shouldReturn` Just "v2"
     new <- lockField w "kit" "hash"
@@ -189,7 +189,7 @@ spec = beforeAll findLask $ describe "git dependency pinning (spec 5, 11.5)" $ d
   where
     shouldReportMovedOn r = do
       resExit r `shouldBe` 3
-      resErr r `shouldSatisfy` isInfixOf "E-MODULE-REV-MOVED"
+      resErr r `shouldSatisfy` isInfixOf "E-IO-MODULE-REV-MOVED"
 
 -- | Replace every occurrence of a substring.
 replace :: String -> String -> String -> String

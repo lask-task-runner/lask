@@ -371,13 +371,13 @@ record fs = uniqueKeys @kvs `seq` E (recordTm fs)
 recordAs :: forall r kvs v. (UniqueKeys kvs, FitsRecord r kvs) => Fields v kvs -> E v r
 recordAs fs = uniqueKeys @kvs `seq` fitsRecord @r @kvs `seq` E (recordTm fs)
 
--- | The ordering operators, which Lask defines on @Number@ only (spec
--- 6.2).
-(<.), (<=.), (>.), (>=.) :: E v 'TNumber -> E v 'TNumber -> E v 'TBool
-E a <. E b = node2 NoSpan (CBin PLt) a b
-E a <=. E b = node2 NoSpan (CBin PLe) a b
-E a >. E b = node2 NoSpan (CBin PGt) a b
-E a >=. E b = node2 NoSpan (CBin PGe) a b
+-- | The ordering operators, on one orderable type (spec 6.2): Number or
+-- String.
+(<.), (<=.), (>.), (>=.) :: forall t v. (Orderable t) => E v t -> E v t -> E v 'TBool
+E a <. E b = orderable @t `seq` node2 NoSpan (CBin PLt) a b
+E a <=. E b = orderable @t `seq` node2 NoSpan (CBin PLe) a b
+E a >. E b = orderable @t `seq` node2 NoSpan (CBin PGt) a b
+E a >=. E b = orderable @t `seq` node2 NoSpan (CBin PGe) a b
 
 infix 4 ==., /=., <., <=., >., >=.
 

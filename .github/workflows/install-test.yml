@@ -21,7 +21,7 @@ on:
 
 jobs:
   # Resolved once so every platform installs the same version, and so a
-  # version that was never released fails here instead of four times.
+  # version that was never released fails here instead of three times.
   resolve:
     runs-on: ubuntu-latest
 
@@ -76,12 +76,6 @@ jobs:
           - os: macos-26-intel
             target: macos-amd64
             docker: true
-          # Hosted Windows VMs are already nested one level deep, so
-          # they run Windows containers only and cannot run a Linux
-          # image such as rancher/cowsay — actions/runner-images#1143.
-          - os: windows-latest
-            target: windows-amd64
-            docker: false
 
     runs-on: ${{ matrix.os }}
 
@@ -95,8 +89,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       # Installation page — "macOS / Linux · download the binary".
-      - name: Install lask (Unix)
-        if: runner.os != 'Windows'
+      - name: Install lask
         shell: bash
         run: |
           set -euo pipefail
@@ -104,18 +97,6 @@ jobs:
             "https://github.com/${{ github.repository }}/releases/download/${TAG}/lask-${TAG}-${TARGET}.tar.gz"
           tar -xzf lask.tar.gz
           sudo mv ./lask /usr/local/bin
-
-      # Installation page — "Windows · PowerShell". The page's `setx`
-      # only reaches later terminals, which a job does not have, so the
-      # same directory goes on the path the way Actions exposes it.
-      - name: Install lask (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/$env:TAG/lask-$env:TAG-$env:TARGET.zip" -OutFile lask.zip
-          Expand-Archive -Path lask.zip -DestinationPath "$env:LOCALAPPDATA\Programs\lask" -Force
-          "$env:LOCALAPPDATA\Programs\lask" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       # Docker Desktop is not on the macOS image, so the daemon the
       # example needs has to be brought up. The action installs Docker
@@ -147,7 +128,7 @@ jobs:
           lask envs list
 
       # `hello` is pure, so it is the part of the example that still runs
-      # on the two platforms where no Linux container can be started.
+      # on the platform where no Linux container can be started.
       - name: Run the pure task
         shell: bash
         working-directory: example/01-projects/01-hello-world
@@ -158,7 +139,7 @@ jobs:
           test "${OUTPUT}" = '"Hello, Lask!"'
 
       # cowsay_hello runs in a Linux container, so this step covers every
-      # platform whose runner can start one — see the matrix for the two
+      # platform whose runner can start one — see the matrix for the one
       # that cannot.
       - name: Run the containerized task
         if: matrix.docker

@@ -103,6 +103,9 @@ data Program = Program
 data LoadedModule = LoadedModule
   { lmPath :: FilePath,
     lmModule :: Module,
+    -- | The text the module was parsed from, for what reads its
+    -- comments (spec 3.1).
+    lmSource :: Text,
     -- | Import path -> resolved module key, in declaration order.
     lmImportKeys :: Map Text FilePath
   }
@@ -253,6 +256,7 @@ loadProgramEnv env entryPath = do
                               LoadedModule
                                 { lmPath = path,
                                   lmModule = m,
+                                  lmSource = src,
                                   lmImportKeys = Map.fromList [(p, k) | (p, k, _) <- resolved]
                                 }
                         pure (Map.insert path lm done', path : order')
@@ -271,8 +275,11 @@ loadProgramEnv env entryPath = do
         Left ds -> pure (Left ds)
         Right (done', order') -> loadAll visiting done' order' rest
 
+    -- The modules from the first visit of @path@ back to it, in the
+    -- order they import one another. @visiting@ is the stack of the
+    -- modules being loaded, innermost first.
     showCycle path visiting =
-      let chain = reverse (path : takeWhile (/= path) visiting) <> [path]
+      let chain = path : reverse (takeWhile (/= path) visiting) <> [path]
        in foldr1 (\a b -> a <> " -> " <> b) chain
 
 -- | Resolve one import path (spec chapter 5): local (@./@\/@..\/@)

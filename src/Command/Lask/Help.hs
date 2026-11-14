@@ -29,6 +29,7 @@ import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import Command.Lask.ArgCodec (isFlagType)
 import Command.Lask.Envs (EnvRef (..))
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -36,7 +37,7 @@ import Language.Lask.Doc (DocComment (..))
 import Language.Lask.Elaborate (CoreDecl (..), StaticParams (..))
 import Language.Lask.Span (Position (..), Span (..), spanText)
 import qualified Language.Lask.Syntax.AST as AST
-import Language.Lask.Types (Type (..), renderType)
+import Language.Lask.Types (Type (..), renderBound, renderType, varDisplay)
 import Language.Lask.Utils (snakeToKebab)
 
 data ParamKind = ParamPositional | ParamVariadic | ParamKeyword
@@ -102,7 +103,7 @@ buildFunctionHelp ::
 buildFunctionHelp path src decl mCore doc envs =
   FunctionHelp
     { fhName = declName decl,
-      fhTypeParams = declTypeParams decl,
+      fhTypeParams = declTypeParams decl <> inferredTypeParams,
       fhModule = path,
       fhLine = declLine decl,
       fhSummary = docSummary doc,
@@ -118,6 +119,16 @@ buildFunctionHelp path src decl mCore doc envs =
     }
   where
     params = cdParams =<< mCore
+
+    -- Those its unannotated parameters' types gave it (spec 4.3),
+    -- after the ones it writes.
+    inferredTypeParams = case mCore of
+      Just cd ->
+        [ varDisplay v <> maybe "" ((": " <>) . renderBound) (Map.lookup v (cdBounds cd))
+        | v <- cdTypeVars cd,
+          "%" `T.isSuffixOf` v
+        ]
+      Nothing -> []
 
     isFunctionType = case cdType <$> mCore of
       Just (TyFun _ _) -> True
@@ -187,8 +198,11 @@ buildFunctionHelp path src decl mCore doc envs =
 -- bound as written: @T@, @T: orderable@.
 declTypeParams :: AST.Decl -> [Text]
 declTypeParams d = case AST.declF d of
-  AST.DFunction _ tps _ _ _ _ -> [T.drop 1 (T.dropEnd 1 (AST.renderTypeParams [tp])) | tp <- tps]
+  AST.DFunction _ tps _ _ _ _ -> rendered tps
+  AST.DValue _ _ _ (AST.Expr _ (AST.ELambda tps _ _ _)) -> rendered tps
   _ -> []
+  where
+    rendered tps = [T.drop 1 (T.dropEnd 1 (AST.renderTypeParams [tp])) | tp <- tps]
 
 -- | The declaration's name with its type parameters, for the places
 -- that describe it rather than ask for it to be typed (spec 11.6).
@@ -223,7 +237,7 @@ isFunctionDecl d = case AST.declF d of
 declParams :: AST.Decl -> [AST.Param]
 declParams d = case AST.declF d of
   AST.DFunction _ _ ps _ _ _ -> ps
-  AST.DValue _ _ _ (AST.Expr _ (AST.ELambda ps _ _)) -> ps
+  AST.DValue _ _ _ (AST.Expr _ (AST.ELambda _ ps _ _)) -> ps
   _ -> []
 
 -- Text rendering ---------------------------------------------------------------
@@ -313,11 +327,10 @@ section header body = T.intercalate "\n" (header : map ("  " <>) body)
 -- | Drop the fields that would only repeat one another: a bare
 -- @#local@ is just @local@, and an image head is labelled by its own
 -- image.
+-- | One environment as @envs list@ writes it (spec 11.4, 11.6): its
+-- head and its kind.
 envRow :: EnvRef -> [Text]
-envRow ref
-  | refLabel ref == refTarget ref && refKind ref == refTarget ref = [refKind ref]
-  | refLabel ref == refTarget ref = [refKind ref, refTarget ref]
-  | otherwise = [refLabel ref, refKind ref, refTarget ref]
+envRow ref = [refHead ref, refKind ref]
 
 -- | Left-align rows into columns padded to the widest cell.
 columns :: [[Text]] -> [Text]
@@ -418,9 +431,8 @@ listed fh = fhFunction fh && not (fhHidden fh)
 envJson :: EnvRef -> A.Value
 envJson ref =
   A.object
-    [ (AK.fromText "name", A.String (refLabel ref)),
-      (AK.fromText "kind", A.String (refKind ref)),
-      (AK.fromText "target", A.String (refTarget ref))
+    [ (AK.fromText "environment", A.String (refHead ref)),
+      (AK.fromText "kind", A.String (refKind ref))
     ]
 
 maybeText :: Maybe Text -> A.Value

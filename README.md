@@ -20,7 +20,7 @@ The recording above and the excerpt below come from [example/01-projects/02-weba
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="doc/assets/example-dark.svg">
-    <img alt="An excerpt of the example's main.lask: Python and Node commands declared on pinned images from an imported tools module, a one-line unit-test task, and a typed end-to-end test task that runs Playwright in its own image" src="doc/assets/example-light.svg" width="620">
+    <img alt="An excerpt of the example's main.lask: Python, Node, Terraform and AWS commands declared on pinned images from an imported tools module, a one-line unit-test task, a test task that within keeps free of secrets and off the host, and a deploy task that within limits to the two AWS keys" src="doc/assets/example-light.svg" width="676">
   </picture>
 </div>
 
@@ -28,12 +28,12 @@ The recording above and the excerpt below come from [example/01-projects/02-weba
 
 ## Why Lask
 
-- **Approachable**: one `.lask` file is a project, in a syntax borrowed from languages you already write.
-- **Verifiable**: `lask check` resolves every name, argument and type before a single command runs, and your editor shows the same errors as you type.
-- **Portable**: every command runs in an environment you pin, such as `command { "go" } on #golang:1.22`, the same on your laptop and in CI.
-- **Programmable**: a task is a typed function, with error handling and concurrency in the language and tasks imported across projects.
-- **Runnable**: a task's signature is its command line, and its doc comment is its `--help`.
-- **Secure**: secrets are masked in the log and can come from Vault, and imports are pinned by content hash.
+- **One small file**: a project is a `main.lask` in a small language with familiar syntax, and Lask and a container engine are all it needs.
+- **Checked before it runs**: `lask check` verifies the whole file, from names and types to where each command runs, before anything runs, and your editor shows the same errors as you type.
+- **The same everywhere**: every command runs in the environment the file names, a container image pinned by digest unless it says otherwise, on a laptop and in CI alike.
+- **Tasks are functions**: tasks take typed arguments, call each other, and handle errors and concurrency in the language, and each one is a command with its own `--help`.
+- **Reusable**: tasks, and the environments they run in, are imported from other projects and pinned in a lock file.
+- **Safe by default**: nothing runs on the host unless the file says so, secrets stay out of the log, and what a task may reach can be declared and checked.
 
 Lask is a task runner, not a build system or a CI platform: it replaces what your CI jobs run, not the CI itself. [Why Lask](https://lask-task-runner.github.io/guide/why-lask) covers all of this, with a [comparison to make, Taskfile and Dagger](https://lask-task-runner.github.io/guide/why-lask#how-lask-compares).
 
@@ -45,7 +45,7 @@ $ brew trust lask-task-runner/tap
 $ brew install lask
 ```
 
-Lask also needs a container engine: Docker, Podman or nerdctl (containerd). [Installation](https://lask-task-runner.github.io/guide/installation) covers Linux, Windows, building from source, shell completion and the VS Code extension; then [Getting started](https://lask-task-runner.github.io/guide/getting-started) takes you to a first task in about five minutes.
+Lask also needs a container engine: Docker, Podman or nerdctl (containerd). [Installation](https://lask-task-runner.github.io/guide/installation) covers Linux, macOS, Windows through WSL 2, building from source, shell completion and the VS Code extension; then [Getting started](https://lask-task-runner.github.io/guide/getting-started) takes you to a first task in about five minutes.
 
 ## Documentation
 

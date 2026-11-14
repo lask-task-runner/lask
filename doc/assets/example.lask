@@ -2,28 +2,27 @@ import * as tools from "tools"
 
 command { "python", "pip" } on python
 command { "node", "npm", "npx" } on node
+command { "terraform" } on terraform
+command { "aws" } on aws
 
-python = tools.python(tag = "3.12.14-alpine3.24")
-node = tools.node(tag = "20.20.2-alpine3.23")
-playwright = tools.playwright(tag = "v1.62.1-jammy")
+python = tools.python.env(image = #python:3.12.14-alpine3.24)
+node = tools.node.env(image = #node:24.22.1-alpine3.24)
 
 // Runs the frontend's unit tests (web/).
 test_web() = $ cd web && npm ci --no-audit --no-fund && npm test
 
-// Browser end-to-end test against the deployed site (e2e/).
-//
-// @param email     The user to sign in as.
-// @param password  That user's password; `!!` masks it in logs.
-test_e2e(
-  --email: String = get_env("E2E_EMAIL"),
-  --password!!: String = get_env("E2E_PASSWORD")
-) = do {
-  website = tf_output().website_url
+// The fast, offline tests. No secret reaches them, and none of
+// their commands runs on the host: `lask check` holds them to that.
+test() within { secrets: false, runs: ["container"] } = do {
+  test_api()
+  test_web()
+}
 
-  $[playwright] cd e2e && \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && \
-    E2E_BASE_URL="#{website}" \
-    E2E_EMAIL="#{email}" \
-    E2E_PASSWORD="#{password}" \
-    npx playwright test
+// Applies the infra, then builds and uploads the site. The AWS
+// keys are the only secrets its commands are given.
+deploy() within { secrets: [aws_access_key_id, aws_secret_access_key] } = do {
+  $ terraform -chdir=infra apply -input=false -auto-approve
+  output = tf_output()
+  build_web(output.api_url)
+  $ aws s3 sync web/dist "s3://#{output.frontend_bucket}" --delete
 }

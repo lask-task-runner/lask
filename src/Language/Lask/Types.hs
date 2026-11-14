@@ -12,6 +12,7 @@ module Language.Lask.Types
     unionMembers,
     dataType,
     renderType,
+    varDisplay,
     conformsTo,
     conformsUnder,
     applySubst,
@@ -72,6 +73,13 @@ data Type
     -- that invariant; pattern matching on it is fine anywhere.
     TyUnion [Type]
   deriving (Show, Eq, Ord)
+
+-- | The name a type variable is shown by. A variable renamed apart
+-- (a generalized local one, @T\@line:column@) or one that inference
+-- made (@T%@, @?x%3@; spec 4.3) carries a part no source can write,
+-- and is shown without it.
+varDisplay :: Text -> Text
+varDisplay = T.takeWhile (\c -> c /= '@' && c /= '%')
 
 -- | The union of a member and any number of further members, reduced
 -- to the canonical form of 4.2: members are flattened, @Any@ absorbs
@@ -161,7 +169,7 @@ commandResultType =
         ]
     )
 
--- | Builtin alias @CommandOption@ (spec ch. 5, command schemas).
+-- | Builtin alias @CommandOption@ (spec appendix A).
 commandOptionType :: Type
 commandOptionType =
   TyRecord
@@ -176,7 +184,7 @@ commandOptionType =
         ]
     )
 
--- | Builtin alias @CommandSpec@ (spec ch. 5, command schemas).
+-- | Builtin alias @CommandSpec@ (spec appendix A).
 commandSpecType :: Type
 commandSpecType =
   TyRecord
@@ -192,7 +200,7 @@ commandSpecType =
         ]
     )
 
--- | Builtin alias @CommandSchema@ (spec ch. 5, command schemas).
+-- | Builtin alias @CommandSchema@ (spec appendix A).
 commandSchemaType :: Type
 commandSchemaType =
   TyRecord
@@ -224,7 +232,8 @@ renderType t = case t of
       <> ">"
   TyAsync e -> "AsyncHandle<" <> renderType e <> ">"
   TyFun ps r -> "Function<" <> T.intercalate ", " (map renderType (ps <> [r])) <> ">"
-  TyVar v -> v
+  -- A generalized variable (Elaborate.generalizedVars) shows as written.
+  TyVar v -> varDisplay v
   TyUnion ts -> T.intercalate " | " (map renderType ts)
   where
     renderField k
@@ -255,8 +264,11 @@ applySubst s t = case t of
 
 
 -- | @conformsTo t u@: an expression of type @t@ may be placed where
--- @u@ is requiredField (spec 4.4). Reflexive structural identity, plus
--- @Any@ as the sole top type. No variance.
+-- @u@ is required (spec 4.4): reflexive, with @Any@ as the sole top
+-- type, unions, and an environment as a runnable; covariant in the
+-- contents of an array, a map, a handle and the field types of a
+-- record, since no value is ever changed; and for a function type,
+-- contravariant in its parameters and covariant in its result.
 conformsTo :: Type -> Type -> Bool
 conformsTo = conformsUnder (const Nothing)
 
@@ -277,6 +289,29 @@ conformsUnder upper = go
       -- An environment is a runnable with no run options (spec 4.4).
       | t == TyEnvironment, u == TyRunnable = True
       | TyVar v <- t, Just b <- upper v = go b u
+      -- No value is ever changed (15.4), so reading a container at a
+      -- wider element type is safe: Array<String> is an
+      -- Array<String | Null>.
+      | TyArray a <- t, TyArray b <- u = go a b
+      | TyMap a <- t, TyMap b <- u = go a b
+      | TyAsync a <- t, TyAsync b <- u = go a b
+      -- A record keeps its field set, and which fields may be absent:
+      -- only the field types widen.
+      | TyRecord fa <- t,
+        TyRecord fb <- u =
+          Map.keysSet fa == Map.keysSet fb
+            && and
+              [ fieldOptional x == fieldOptional y && go (fieldType x) (fieldType y)
+              | (x, y) <- Map.elems (Map.intersectionWith (,) fa fb)
+              ]
+      -- A function that takes more, or returns less, stands in for one
+      -- that takes less or returns more. A result of Void is no value,
+      -- and stands only for Void.
+      | TyFun ps r <- t,
+        TyFun qs s <- u =
+          length ps == length qs
+            && and (zipWith (flip go) ps qs)
+            && (r == s || (r /= TyVoid && s /= TyVoid && go r s))
       | otherwise = False
 
 -- | The named bounds of a type parameter (spec 4.2): a closed set of

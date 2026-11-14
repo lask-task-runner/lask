@@ -25,7 +25,7 @@ module Language.Lask.Runtime.Environment
 where
 
 import Control.Concurrent.Async (concurrently)
-import Control.Exception (IOException, bracket, throwIO, try, uninterruptibleMask_)
+import Control.Exception (IOException, bracket, finally, throwIO, try, uninterruptibleMask_)
 import Control.Monad (forM, forM_, unless, void)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Set (Set)
@@ -74,6 +74,7 @@ import Language.Lask.Runtime.ProcessStop
     withStoppableProcess,
   )
 import Language.Lask.Runtime.Secrets (maskSecrets, maskSecretsJson)
+import Language.Lask.Runtime.Shutdown (withForwardedSignals)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (valueToJson)
 import System.Exit (ExitCode (..))
@@ -182,7 +183,7 @@ runDeclaredCommand ::
   ImagePins ->
   FilePath ->
   CommandLogSink ->
-  -- | Force the relay even on a terminal (@--format json@).
+  -- | Force the relay even on a terminal (@--log-format json@).
   Bool ->
   EnvValue ->
   -- | Program name (the declared command word).
@@ -199,8 +200,9 @@ runDeclaredCommand backend pins baseDir0 sink forceRelay envValue prog argv = do
     Right resolved -> do
       let (sm, ej) = envLogInfo envValue resolved
           rendered = T.unwords (prog : argv)
-          launch cp = do
-            r <- try (runAttachedProcess sink sm ej rendered interactive cp)
+          launch cp = launchWith (pure (cp, pure ()))
+          launchWith acquire = do
+            r <- try (bracket acquire snd (runAttachedProcess sink sm ej rendered interactive . fst))
             pure (mapLaunchFailure r)
       case resolved of
         ResolvedLocal ->
@@ -218,10 +220,10 @@ runDeclaredCommand backend pins baseDir0 sink forceRelay envValue prog argv = do
             -- streams are one.
             Right (Just (image, opts, mounts, placement)) ->
               withDenials sink sm ej 1 rendered placement $
-                launch
-                  =<< cbRunProcess
-                  backend
-                  RunSpec
+                launchWith
+                  . cbRunProcess
+                    backend
+                  $ RunSpec
                     { runBaseDir = baseDir,
                       runName = Nothing,
                       runImage = image,
@@ -263,8 +265,14 @@ runAttachedProcess sink summary envJson0 rendered interactive cp = do
           std_err = if interactive then Inherit else CreatePipe,
           delegate_ctlc = True
         }
-  mapM_ (relayErr maskedCmd) mErr
-  exitCode <- waitForProcess ph
+  -- SIGTERM goes to the program, as INT does from the terminal
+  -- (spec 11.8), for as long as it runs: lask waits for it to act on
+  -- it. The relay of its stderr lasts until it exits, so it is covered
+  -- too.
+  pid <- getPid ph
+  exitCode <- withForwardedSignals pid $ do
+    mapM_ (relayErr maskedCmd) mErr
+    waitForProcess ph
   let code = case exitCode of
         ExitSuccess -> 0
         ExitFailure n -> n
@@ -314,8 +322,8 @@ mkCommandRunner backend pins baseDir0 sink = do
       Right resolved -> do
         execNo <- atomicModifyIORef' counter (\n -> (n + 1, n + 1))
         let (summary, envJson) = envLogInfo envValue resolved
-            run' fed stopC cp engineFailure = do
-              r <- try (runLoggedProcess sink summary envJson execNo cmd fed stopC cp)
+            run' fed stopC acquire engineFailure = do
+              r <- try (bracket acquire snd (\(cp, _) -> runLoggedProcess sink summary envJson execNo cmd fed stopC cp))
               pure $ case r of
                 Left e ->
                   Left (ioFailure EIoEnvResolve ("cannot launch command: " <> T.pack (show (e :: IOException))))
@@ -336,15 +344,14 @@ mkCommandRunner backend pins baseDir0 sink = do
                   run'
                     (Just cmd)
                     (stopSessionCommand backend name marker)
-                    (cbExecProcess backend (sessionExecFed name marker))
+                    (pure (cbExecProcess backend (sessionExecFed name marker), pure ()))
                     (\_ _ -> Nothing)
           Right Nothing ->
-            run' Nothing (pure ()) ((shell (T.unpack cmd)) {cwd = Just baseDir}) (\_ _ -> Nothing)
+            run' Nothing (pure ()) (pure ((shell (T.unpack cmd)) {cwd = Just baseDir}, pure ())) (\_ _ -> Nothing)
           Right (Just (image, opts, mounts, placement)) -> do
             name <- newContainerName
-            cp <- cbRunProcess backend (shellRunFed baseDir name image opts mounts)
             withDenials sink summary envJson execNo cmd placement $
-              run' (Just cmd) (cbStop backend stopGraceSeconds name) cp (cbRunFailure backend)
+              run' (Just cmd) (cbStop backend stopGraceSeconds name) (cbRunProcess backend (shellRunFed baseDir name image opts mounts)) (cbRunFailure backend)
 
 -- Container sessions (spec 15.5) -------------------------------------------
 
@@ -483,12 +490,20 @@ mkSessionOpener backend pins baseDir0 = do
         Right (Just (image, opts, mounts, _)) -> do
           name <- newContainerName
           let (summary, _) = envLogInfo envValue resolved
-          cp <-
-            cbRunProcess
-              backend
-               (shellRun baseDir name image opts mounts True ("echo " <> sessionReady <> "; while read -r _; do :; done"))
-          bracket (start cp name) (close say name) $ \p -> do
+          acquired <-
+            try
+              ( cbRunProcess
+                  backend
+                  (shellRun baseDir name image opts mounts True ("echo " <> sessionReady <> "; while read -r _; do :; done"))
+              )
+          (cp, cleanup) <- case acquired of
+            Left e -> throwIO (ioFailure EIoEnvResolve ("cannot launch " <> engineName (cbEngine backend) <> ": " <> T.pack (show (e :: IOException))))
+            Right x -> pure x
+          -- The client has read its file of variables once the
+          -- container is up, so the file goes then, not with the session.
+          flip finally cleanup . bracket (start cp name) (close say name) $ \p -> do
             awaitReady p
+            cleanup
             say ("container " <> name <> " started on " <> summary <> " for with_container")
             body (EnvValue "session" (Map.fromList [("container", VString name), ("origin", VEnv envValue)]))
   where
@@ -747,6 +762,7 @@ mkFileRunner backend pins baseDir0 = do
                   let launch wantStdin cmd =
                         pure
                           ( cbExecProcess backend (sessionExec name wantStdin marker cmd),
+                            pure (),
                             stopSessionCommand backend name marker,
                             \_ _ -> Nothing
                           )
@@ -755,8 +771,8 @@ mkFileRunner backend pins baseDir0 = do
           Right (Just (image, opts, mounts, _)) ->
             let launch wantStdin cmd = do
                   name <- newContainerName
-                  cp <- cbRunProcess backend (shellRun baseDir name image opts mounts wantStdin cmd)
-                  pure (cp, cbStop backend stopGraceSeconds name, cbRunFailure backend)
+                  (cp, cleanup) <- cbRunProcess backend (shellRun baseDir name image opts mounts wantStdin cmd)
+                  pure (cp, cleanup, cbStop backend stopGraceSeconds name, cbRunFailure backend)
              in containerFileOp backend summary launch op
 
 -- | Resolve a path written by the program against the base directory
@@ -849,8 +865,9 @@ containerFileOp ::
   ContainerBackend ->
   Text ->
   -- | The process that runs a command string, given whether it is fed
-  -- on stdin; how to stop it; and which of its exits are the engine's.
-  (Bool -> Text -> IO (CreateProcess, IO (), Int -> Text -> Maybe Text)) ->
+  -- on stdin; what to do once it has exited; how to stop it; and which
+  -- of its exits are the engine's.
+  (Bool -> Text -> IO (CreateProcess, IO (), IO (), Int -> Text -> Maybe Text)) ->
   FileOp ->
   IO (Either LaskFailure Value)
 containerFileOp backend summary launch op = case op of
@@ -887,14 +904,15 @@ containerFileOp backend summary launch op = case op of
           Right (globResult pat (map stripDot (lines' out)))
   where
     run cmd mStdin = do
-      (cp, stopC, engineFailure) <- launch (mStdin /= Nothing) cmd
-      r <- try (runQuietProcess stopC cp mStdin)
+      r <- try $ do
+        (cp, cleanup, stopC, engineFailure) <- launch (mStdin /= Nothing) cmd
+        (\x -> (x, engineFailure)) <$> (runQuietProcess stopC cp mStdin `finally` cleanup)
       pure $ case r of
         Left e ->
           Left (ioFailure EIoEnvResolve ("cannot launch " <> engineName (cbEngine backend) <> ": " <> T.pack (show (e :: IOException))))
-        Right (code, _, err)
+        Right ((code, _, err), engineFailure)
           | Just msg <- engineFailure code err -> Left (ioFailure EIoEnvResolve msg)
-        Right ok -> Right ok
+        Right (ok, _) -> Right ok
 
     -- Run, and turn a non-zero exit into E-IO-FS carrying the
     -- command's own diagnosis of the path (spec 15.11). The contents

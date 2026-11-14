@@ -12,7 +12,9 @@ import Command.Lask.Harness
 import Control.Monad (void)
 import Data.List (isInfixOf)
 import qualified Data.Text as T
-import Language.Lask.ErrorCode (ErrorCode (..), codeText)
+import Language.Lask.ErrorCode (AdvisoryCode (..), ErrorCode (..), advisoryText, codeText)
+import qualified Data.Set as Set
+import Text.Regex.TDFA (getAllTextMatches, (=~))
 import Language.Lask.SecretStore.FakeVault (FakeVault (..), withFakeVault)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
@@ -54,9 +56,9 @@ trigger c = case c of
   ETypeCommandOption ->
     check "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { closed: true } } }\nv() = $ go -x\n"
   ETypeEnvConstruct -> check "e = #local(memory = \"1g\")\n"
-  ETypeWithinSpec -> check "within { network: \"host\" }\n"
-  ETypeWithinExceeded -> check "f() within { network: \"none\" } = $[#alpine:3.20] true\n"
-  ETypeWithinUnproven -> check "f() within { network: \"none\" } = $[runnable(#alpine:3.20, network = get_env(\"NET\"))] true\n"
+  ETypeWithinSpec -> check "within { outbound: \"host\" }\n"
+  ETypeWithinExceeded -> check "f() within { outbound: false } = $[#alpine:3.20] true\n"
+  ETypeWithinUnproven -> check "f() within { outbound: false } = $[runnable(#alpine:3.20, network = get_env(\"NET\"))] true\n"
   ETypeAccess -> check "u = {name: \"a\"}\nn = u.nope\n"
   ETypeFieldDuplicate -> check "r = {a: 1, a: 2}\n"
   ETypeCaseDuplicate -> check "f(x: String) = case (x) {\n  \"a\" -> 1\n  \"b\", \"a\" -> 2\n  else -> 3\n}\n"
@@ -79,7 +81,7 @@ trigger c = case c of
       -- The project file now asks for a source the lock never saw.
       writeFile (proj </> "lask.json") "{\"dependencies\": {\"notify\": {\"url\": \"file:///elsewhere.lask\"}}}"
       run ["check"]
-  EModuleRevMoved -> Scripted 3 $ \lask ->
+  EIoModuleRevMoved -> Scripted 3 $ \lask ->
     withGitDep lask $ \repo _ run -> do
       -- The first sync pins the commit the tag names.
       void (run ["sync"])
@@ -90,7 +92,7 @@ trigger c = case c of
   -- A confirm entry of the project file that names no function.
   EModuleConfirmTarget ->
     Check [("main.lask", "a(): String = \"a\"\n"), ("lask.json", "{\"confirm\": {\"b\": {}}}")]
-  EModuleHashMismatch -> Scripted 3 $ \lask ->
+  EIoModuleHashMismatch -> Scripted 3 $ \lask ->
     withUrlDep lask $ \published _ run -> do
       writeFile published "send(x: String): String = concat(\"evil:\", x)\n"
       run ["sync"]
@@ -111,6 +113,16 @@ trigger c = case c of
     withFakeDocker $ \_ extra -> withProject leaked $ \dir -> do
       void (runLaskEnv lask dir extra ["sync"] "")
       runLaskEnv lask dir extra ["eval", "f"] ""
+  -- A run stopped by a signal exits 128 + n (spec 11.12).
+  ERuntimeInterrupted -> Scripted 143 $ \lask ->
+    withProject [("main.lask", "f(): String = $[#local] sleep 30\n")] $ \dir -> do
+      (code, out, err) <-
+        readCreateProcessWithExitCode
+          ( (proc "sh" ["-c", "\"$0\" run f & p=$!; sleep 2; kill -TERM $p; wait $p", lask])
+              {cwd = Just dir}
+          )
+          ""
+      pure (Result (exitOf code) out err)
   -- External I/O errors (spec 14.6) default to exit 3.
   EIoStdinRead -> Scripted 3 $ \lask ->
     withProject [("main.lask", "f(): String = stdin\n")] $ \dir -> do
@@ -212,9 +224,42 @@ exitOf ExitSuccess = 0
 exitOf (ExitFailure n) = n
 
 spec :: Spec
-spec = beforeAll findLask $
-  describe "error codes (spec 14)" $
-    mapM_ (\c -> it (T.unpack (codeText c)) (raises c)) [minBound .. maxBound]
+spec = do
+  beforeAll findLask $ do
+    describe "error codes (spec 14)" $
+      mapM_ (\c -> it (T.unpack (codeText c)) (raises c)) [minBound .. maxBound]
+    describe "advisory codes (spec 14.2)" $
+      mapM_ (\c -> it (T.unpack (advisoryText c)) (advises c)) [minBound .. maxBound]
+  -- The table of 14.2 is the complete list (spec 14.2): every code the
+  -- implementation has is in it, and it has no other, and no code is
+  -- named anywhere in the specification without being in it.
+  describe "the code table of spec 14.2" $ do
+    specText <- runIO (readFile "doc/spec.md")
+    let tableCodes = Set.fromList [c | l <- lines specText, [[_, c]] <- [l =~ ("^\\| `([EW]-[A-Z0-9-]+)` \\|" :: String) :: [[String]]]]
+        mentioned = Set.fromList (map (filter (/= '`')) (getAllTextMatches (specText =~ ("`[EW]-[A-Z][A-Z0-9]*(-[A-Z0-9]+)+`" :: String))))
+        implemented = Set.fromList (map (T.unpack . codeText) [minBound .. maxBound :: ErrorCode] <> map (T.unpack . advisoryText) [minBound .. maxBound :: AdvisoryCode])
+    it "lists exactly the codes the implementation has" $
+      tableCodes `shouldBe` implemented
+    it "has every code the specification names" $
+      mentioned `Set.difference` tableCodes `shouldBe` Set.empty
+
+-- | How to make @lask check@ (or a run, for the one advisory reported at
+-- run time) report one advisory code, with the exit code unaffected.
+advises :: AdvisoryCode -> FilePath -> Expectation
+advises c lask = withProject [("main.lask", src)] $ \dir -> do
+  r <- runLask lask dir args ""
+  resExit r `shouldBe` 0
+  (resOut r <> resErr r) `shouldSatisfy` isInfixOf (T.unpack (advisoryText c))
+  where
+    (src, args) = case c of
+      WAsyncUnused -> ("f(): String = do {\n  async \"x\"\n  \"done\"\n}\n", ["check"])
+      WAsyncUnawaited -> ("f(): String = do {\n  h = async \"x\"\n  \"ok\"\n}\n", ["eval", "f"])
+      WCommandOption -> ("command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"-v\"] }] } } }\nv() = $ go -x\n", ["check"])
+      WSecretCommandLine -> ("token!!: String = get_env(\"TOKEN\")\ninline(): String = $[#alpine:3.20] echo #{token}\n", ["check"])
+      WRegexPattern -> ("f(s: String): Bool = regex_test(s, \"a(b\")\n", ["check"])
+      WDocParamUnknown -> ("// Greets.\n// @param nmae who\ngreet(name: String): String = name\n", ["check"])
+      WCliParamShadowed -> ("show(--help: Bool = false): Bool = help\n", ["check"])
+      WExportInconsistent -> ("export a() = 1\nb() = 2\n", ["check"])
 
 raises :: ErrorCode -> FilePath -> Expectation
 raises c lask = case trigger c of
