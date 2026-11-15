@@ -1,0 +1,15 @@
+access Sealed = {
+  runs: ["container"], files: { ".": "ro", "dist": "rw" },
+  volumes: false, outbound: false, inbound: false, secrets: false
+}
+
+node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: "none"}
+
+setup() = do {
+  $[#node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: get_env("NET")}] npm ci
+}
+
+test() within Sealed = do {
+  setup()  // expect: E-TYPE-WITHIN-UNPROVEN
+  $[node] npm test
+}

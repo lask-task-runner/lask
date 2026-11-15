@@ -1,0 +1,4 @@
+release_of(e: Runnable): String within { outbound: false } = $[e] cat /etc/alpine-release
+
+ok(): String = release_of(#alpine:3.22.2{network: "none"})
+bad(): String = release_of(#alpine:3.22.2)  // expect: E-TYPE-WITHIN-EXCEEDED

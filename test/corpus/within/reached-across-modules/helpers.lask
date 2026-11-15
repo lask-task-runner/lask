@@ -1,0 +1,1 @@
+export fetch() = $[#alpine:3.22.2] wget -q https://example.com

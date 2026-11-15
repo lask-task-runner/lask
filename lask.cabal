@@ -287,6 +287,7 @@ test-suite lask-test
       Language.Lask.Builtins.ShellSpec
       Language.Lask.ConfirmSpec
       Language.Lask.Core.LintSpec
+      Language.Lask.CorpusSpec
       Language.Lask.Deps.DepsSpec
       Language.Lask.DocSpec
       Language.Lask.EditorCompileSpec

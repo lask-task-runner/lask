@@ -1,0 +1,4 @@
+import * as policy from "./policy.lask"
+
+ok() within policy.Sealed = $[#alpine:3.22.2{network: "none"}] true
+bad() within policy.Sealed = $[#alpine:3.22.2] true  // expect: E-TYPE-WITHIN-EXCEEDED

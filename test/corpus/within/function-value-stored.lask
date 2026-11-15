@@ -1,0 +1,6 @@
+// pending: a function with parametric uses, stored in a top-level value and called from there, is not followed (spec 10.11, Resolution)
+run_in(e: Runnable): String = $[e] true
+
+fns = [run_in]  // expect: E-TYPE-WITHIN-UNPROVEN
+
+t(): String within { outbound: false } = fns[0](#alpine:3.22.2)

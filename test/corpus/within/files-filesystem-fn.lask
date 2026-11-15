@@ -1,0 +1,1 @@
+t(): String within { files: "none" } = read_file("a.txt", #alpine:3.22.2{network: "none"})  // expect: E-TYPE-WITHIN-EXCEEDED
