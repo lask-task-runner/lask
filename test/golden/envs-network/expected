@@ -1,0 +1,12 @@
+exit: 0
+--- stdout
+ENVIRONMENT                        NETWORK             EGRESS                  INBOUND    NAME RESOLUTION  CHECK  REQUIRED BY
+#local                             host (unbounded) !  —                       —          default          —      main.lask: host
+#alpine:3.22.2{network}            none                —                       —          default          —      main.lask: publish
+#node:24.21.0-alpine3.24{egress}   egress              registry.npmjs.org:443  —          default          ok     main.lask: deps
+#node:24.21.0-alpine3.24{publish}  default !           —                       8080:80 !  default          —      main.lask: serve
+
+4 rows (1 local, 3 registry): 3 unconstrained, 1 ok
+
+--- stderr
+

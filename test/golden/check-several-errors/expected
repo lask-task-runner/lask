@@ -1,0 +1,12 @@
+exit: 1
+--- stdout
+main.lask:1:15-1:18: E-TYPE-MISMATCH [static]: type mismatch
+  expected: Number
+  actual:   String
+main.lask:2:15-2:22: E-NAME-UNDEFINED [static]: undefined name: 'missing'
+main.lask:3:17-3:20: E-TYPE-MISMATCH [static]: type mismatch
+  expected: Number
+  actual:   String
+
+--- stderr
+

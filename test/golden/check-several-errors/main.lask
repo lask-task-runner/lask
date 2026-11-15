@@ -1,0 +1,3 @@
+a(): Number = "x"
+b(): String = missing
+c(): Bool = 1 + "y"

@@ -1,0 +1,12 @@
+exit: 0
+--- stdout
+ENVIRONMENT                                   FILES                  NETWORK                         CHECK  REQUIRED BY
+#local                                        host (unbounded) !     host (unbounded) !              —      main.lask: host
+#alpine:3.22.2{network}                       . rw                   none                            —      main.lask: publish
+#node:24.21.0-alpine3.24{base_access,egress}  . ro, node_modules rw  egress: registry.npmjs.org:443  ok     main.lask: deps
+#node:24.21.0-alpine3.24{publish}             . rw                   default ! + inbound !           —      main.lask: serve
+
+4 rows (1 local, 3 registry): 3 unconstrained, 1 ok
+
+--- stderr
+

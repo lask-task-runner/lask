@@ -277,6 +277,7 @@ test-suite lask-test
       Command.Lask.ErrorCodeSpec
       Command.Lask.ExamplesSpec
       Command.Lask.GitPinSpec
+      Command.Lask.GoldenSpec
       Command.Lask.Harness
       Command.Lask.SignalSpec
       Command.Lask.SpecExamplesSpec

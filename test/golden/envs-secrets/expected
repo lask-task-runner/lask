@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+SECRET            CHANNEL        ENVIRONMENT          NETWORK  CHECK  REQUIRED BY
+main.lask: token  env NPM_TOKEN  #alpine:3.22.2{env}  none     —      main.lask: publish
+
+1 row: 1 unconstrained
+
+--- stderr
+

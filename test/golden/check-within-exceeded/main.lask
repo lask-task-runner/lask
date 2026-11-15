@@ -1,0 +1,8 @@
+access Sealed = { runs: ["container"], outbound: false }
+
+setup() = $[#local] npm ci
+
+test() within Sealed = do {
+  setup()
+  $[#alpine:3.22.2{network: "none"}] true
+}
