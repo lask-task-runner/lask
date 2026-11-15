@@ -299,6 +299,7 @@ test-suite lask-test
       Language.Lask.EmbedRejectSpec
       Language.Lask.EmbedSpec
       Language.Lask.EmbedTwinSpec
+      Language.Lask.Lexer.LayoutSpec
       Language.Lask.LexerSpec
       Language.Lask.Module.LoaderSpec
       Language.Lask.Module.ResolveSpec
@@ -312,9 +313,13 @@ test-suite lask-test
       Language.Lask.SecretStore.ResolveSpec
       Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
+      Language.Lask.Syntax.Gen
       Language.Lask.Syntax.ParserSpec
       Language.Lask.Syntax.PrinterSpec
+      Language.Lask.Syntax.PropertiesSpec
+      Language.Lask.Syntax.ScopeSpec
       Language.Lask.Syntax.ShellSpec
+      Language.Lask.Syntax.TokenStreamSpec
       Language.LaskSpec
       Language.LSP.LaskSpec
       Paths_lask
@@ -322,7 +327,8 @@ test-suite lask-test
       test
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      aeson >=2.0 && <3
+      QuickCheck >=2.14 && <3
+    , aeson >=2.0 && <3
     , aeson-pretty >=0.8 && <1
     , array >=0.5 && <1
     , async >=2.2 && <3
