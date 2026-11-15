@@ -151,9 +151,13 @@ internal built_lask(): String = do {
 // Run the unit tests with coverage and then the doctests, on the host.
 //
 // Coverage is recorded, not enforced: there is no threshold yet, only a
-// number to watch from one push to the next.
+// number to watch from one push to the next. It counts the lask binary
+// the tests start as well: each run of it leaves its own tix in
+// .stack-work/cli-tix, which is emptied first so that no earlier run
+// is counted.
 ci_test() = do {
-  $[#local] stack test --coverage
+  $[#local] rm -rf .stack-work/cli-tix
+  $[#local] LASK_TEST_TIX_DIR="$PWD/.stack-work/cli-tix" stack test --coverage
   $[#local] stack exec doctest app src
 }
 
@@ -178,7 +182,7 @@ ci_cabal(): String = $[#local] git diff --exit-code -I "hpack version" -- lask.c
 // Reads what `ci_test` left behind, so it runs after it.
 //
 // @example lask eval --output text coverage-report
-coverage_report(): String = $[#local] tools/coverage-report.sh
+coverage_report(): String = $[#local] LASK_TEST_TIX_DIR="$PWD/.stack-work/cli-tix" tools/coverage-report.sh
 
 // Run a containerized task from a directory whose path holds a colon.
 //
