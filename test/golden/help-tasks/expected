@@ -1,0 +1,31 @@
+exit: 0
+--- stdout
+Usage: lask run [--module PATH] [--output text|json|pretty-json] 
+                [--log-format text|json] [--trace-id ID] [--no-color] 
+                [--arg-decode text|json|auto] [-h|--help] [--confirm] [FUNCTION]
+                [ARGS...]
+
+  Run a function (result is not printed)
+
+Available options:
+  --module PATH            Path to the entry module (default: "main.lask")
+  --output text|json|pretty-json
+                           What stdout is written in: the result of eval, or the
+                           report of a command
+  --log-format text|json   What stderr is written in: logs and diagnostics, as
+                           text or JSON Lines
+  --trace-id ID            Trace identifier for this execution
+  --no-color               Disable colored output
+  --arg-decode text|json|auto
+                           How to decode function arguments (default: auto)
+  -h,--help                Show the help of FUNCTION, or list the module's
+                           functions
+  --confirm                Approve the confirmation lask.json asks for
+
+Functions in main.lask:
+  build            Builds the site into dist.
+  clean            Removes dist.
+  internal-helper
+
+--- stderr
+

@@ -1,0 +1,14 @@
+access Install = {
+  runs: ["container"], files: { ".": "ro", "node_modules": "rw" },
+  outbound: ["registry.npmjs.org:443"], inbound: false, volumes: false, secrets: false
+}
+
+node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "node_modules": "rw" }, egress: ["registry.npmjs.org:443"]}
+open = #node:24.21.0-alpine3.24{publish: ["8080:80"]}
+token!!: String = get_env("NPM_TOKEN")
+secret_env = #alpine:3.22.2{env: {"NPM_TOKEN": token}, network: "none"}
+
+deps() within Install = $[node] npm ci --no-audit --no-fund
+serve() = $[open] npm start
+publish() = $[secret_env] npm publish
+host() = $[#local] uname -s

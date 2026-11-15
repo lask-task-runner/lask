@@ -1,0 +1,11 @@
+exit: 1
+--- stdout
+main.lask:6:3-6:10: E-TYPE-WITHIN-EXCEEDED [static]: #local reaches the whole host, which within Sealed of 'test' does not allow (outbound)
+  note: the constraint is at main.lask:5
+  note: reached through test → setup, at main.lask:3
+main.lask:6:3-6:10: E-TYPE-WITHIN-EXCEEDED [static]: #local reaches the whole host, which within Sealed of 'test' does not allow (runs)
+  note: the constraint is at main.lask:5
+  note: reached through test → setup, at main.lask:3
+
+--- stderr
+

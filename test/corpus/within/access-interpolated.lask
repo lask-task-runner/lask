@@ -1,0 +1,3 @@
+access Odd = { files: "#{1}" }  // expect: E-TYPE-WITHIN-SPEC
+
+t() within Odd = $[#alpine:3.22.2] true

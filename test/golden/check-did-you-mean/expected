@@ -1,0 +1,7 @@
+exit: 1
+--- stdout
+main.lask:3:19-3:26: E-NAME-UNDEFINED [static]: undefined name: 'greting'
+  note: did you mean 'greeting'?
+
+--- stderr
+

@@ -1,0 +1,3 @@
+access Mounts = { volumes: { "/tmp/cache": "ro" } }
+
+t() within Mounts = $[#alpine:3.22.2{volumes: ["/tmp/cache:/c"], network: "none"}] true  // expect: E-TYPE-WITHIN-EXCEEDED

@@ -1,0 +1,4 @@
+access Contained = { runs: ["container"] }
+
+ok() within Contained = $[#alpine:3.22.2] true
+bad() within Contained = $[#local] true  // expect: E-TYPE-WITHIN-EXCEEDED

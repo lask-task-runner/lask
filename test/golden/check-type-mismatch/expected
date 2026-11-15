@@ -1,0 +1,8 @@
+exit: 1
+--- stdout
+main.lask:1:19-1:26: E-TYPE-MISMATCH [static]: type mismatch
+  expected: Number
+  actual:   String
+
+--- stderr
+

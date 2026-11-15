@@ -1,0 +1,16 @@
+exit: 0
+--- stdout
+ENVIRONMENT                            TARGET              SOURCE        ACCESS  CHECK  REQUIRED BY
+#local                                 /                   (host)        rw !    —      main.lask: host
+#alpine:3.22.2                         /work               .             rw      —      main.lask: publish
+                                       /                   (image)       rw
+#node:24.21.0-alpine3.24               /work               .             rw      —      main.lask: serve
+                                       /                   (image)       rw
+#node:24.21.0-alpine3.24{base_access}  /work               .             ro      ok     main.lask: deps
+                                       /work/node_modules  node_modules  rw
+                                       /                   (image)       rw
+
+4 rows (1 local, 3 registry): 3 unconstrained, 1 ok
+
+--- stderr
+

@@ -1,0 +1,6 @@
+exit: 4
+--- stdout
+
+--- stderr
+E-CLI-USAGE: keyword argument '--jobs' 'many' does not fit the parameter type: expected Number, got String
+

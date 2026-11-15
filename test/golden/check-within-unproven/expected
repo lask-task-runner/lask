@@ -1,0 +1,8 @@
+exit: 1
+--- stdout
+main.lask:2:3-2:50: E-TYPE-WITHIN-UNPROVEN [static]: 'network' is not known here without running the program, so within { outbound: false } of 'probe' cannot be shown to hold
+  note: the constraint is at main.lask:1
+  note: reached through probe, at main.lask:2
+
+--- stderr
+

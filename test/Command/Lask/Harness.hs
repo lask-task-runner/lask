@@ -17,8 +17,8 @@ module Command.Lask.Harness
   )
 where
 
-import System.Directory (createDirectoryIfMissing, findExecutable)
-import System.Environment (getEnvironment)
+import System.Directory (createDirectoryIfMissing, findExecutable, makeAbsolute)
+import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -42,6 +42,13 @@ gitOut repo args = do
     ExitFailure _ -> fail ("git " <> unwords args <> ": " <> err)
 
 -- | Locate the freshly built binary via stack.
+--
+-- With @LASK_TEST_TIX_DIR@ set, it is a wrapper that gives each run its
+-- own coverage file there, named by its process, and execs the binary:
+-- a binary built with @--coverage@ writes @lask.tix@ in the directory it
+-- ran in, which is a throwaway project, and runs at the same time would
+-- write over each other's counts. The process is the binary's, so a
+-- signal sent to it reaches the binary.
 findLask :: IO FilePath
 findLask = do
   stackBin <- findExecutable "stack"
@@ -49,7 +56,17 @@ findLask = do
     Nothing -> fail "stack not found"
     Just _ -> do
       root <- readProcess "stack" ["path", "--local-install-root"] ""
-      pure (takeWhile (/= '\n') root </> "bin" </> "lask")
+      let bin = takeWhile (/= '\n') root </> "bin" </> "lask"
+      tixDir <- lookupEnv "LASK_TEST_TIX_DIR"
+      case tixDir of
+        Nothing -> pure bin
+        Just given -> do
+          dir <- makeAbsolute given
+          createDirectoryIfMissing True dir
+          let wrapper = dir </> "lask"
+          writeFile wrapper ("#!/bin/sh\nexport HPCTIXFILE=\"" <> dir <> "/lask-$$.tix\"\nexec \"" <> bin <> "\" \"$@\"\n")
+          _ <- readProcess "chmod" ["+x", wrapper] ""
+          pure wrapper
 
 data Result = Result
   { resExit :: Int,

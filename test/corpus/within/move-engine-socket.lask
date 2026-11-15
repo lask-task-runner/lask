@@ -1,0 +1,15 @@
+access Sealed = {
+  runs: ["container"], files: { ".": "ro", "dist": "rw" },
+  volumes: false, outbound: false, inbound: false, secrets: false
+}
+
+node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: "none"}
+
+setup() = do {
+  $[#docker:28-cli{volumes: ["/var/run/docker.sock:/var/run/docker.sock"], network: "none"}] docker ps
+}
+
+test() within Sealed = do {
+  setup()  // expect: E-TYPE-WITHIN-EXCEEDED
+  $[node] npm test
+}

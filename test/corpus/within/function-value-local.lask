@@ -1,0 +1,6 @@
+run_in(e: Runnable): String = $[e] true
+
+t(): String within { outbound: false } = do {
+  f = run_in
+  f(#alpine:3.22.2)  // expect: E-TYPE-WITHIN-EXCEEDED
+}

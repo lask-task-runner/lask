@@ -1,0 +1,7 @@
+exit: 4
+--- stdout
+
+--- stderr
+E-CLI-USAGE: no such function: 'buidl'
+  note: did you mean 'build'?
+

@@ -1,0 +1,6 @@
+exit: 4
+--- stdout
+
+--- stderr
+E-CLI-USAGE: missing positional arguments: expected 1, got 0
+

@@ -1,0 +1,24 @@
+exit: 0
+--- stdout
+build - Builds the site into dist.
+
+Usage:
+  lask run build <target> [--minify] [--jobs <Number>]
+
+Parameters:
+  target : String
+      Where the site is deployed later.
+  --minify : Bool = false
+      Shrinks the output.
+  --jobs : Number = 4
+
+Returns:
+  String
+
+Examples:
+  lask run build staging
+
+Defined at main.lask:6
+
+--- stderr
+
