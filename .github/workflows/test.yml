@@ -96,3 +96,42 @@ jobs:
 
       - name: Smoke test on nerdctl
         run: dist/bin/lask run smoke-engine nerdctl --lask dist/bin/lask
+
+  # The same suites on macOS, which lask is released for: the paths,
+  # the process handling and the shells there differ from Linux. The
+  # runner has no container engine, and the tests that need one drive a
+  # fake; the examples that would sync their dependencies, which pulls
+  # images, are left pending, as they are run on Linux above.
+  test-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Haskell Stack
+        uses: haskell-actions/setup@v2
+        with:
+          enable-stack: true
+          stack-no-global: true
+          stack-version: "latest"
+
+      - name: Cache Stack dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack
+            .stack-work
+          key: ${{ runner.os }}-${{ runner.arch }}-stack-${{ hashFiles('stack.yaml', 'package.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-stack-
+
+      - name: Install dependencies
+        run: stack build --only-dependencies --test
+
+      - name: Test
+        env:
+          LASK_TEST_OFFLINE: "1"
+        run: stack test
+
+      - name: Doctest
+        run: stack exec doctest app src
