@@ -1,0 +1,17 @@
+exit: 0
+--- stdout
+#local
+  main.lask:5   clean   rm -rf dist
+  main.lask:14  run_it  run(#local, "ls")
+#alpine:3.22.2
+  main.lask:7  build  make build && make check  ← alpine
+  main.lask:9  pick   make  ← images[env]
+#debian:13
+  main.lask:9  pick  make  ← images[env]
+(dynamic)
+  main.lask:11  show  cat x | sort  ← e
+
+3 environments and (dynamic): 5 programs in 5 commands
+
+--- stderr
+
