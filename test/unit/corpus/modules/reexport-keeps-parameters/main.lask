@@ -1,0 +1,5 @@
+// A re-exported function retains its parameter list (5, Re-export).
+import { greet, hello } from "./lib.lask"
+x = greet("a", prefix = "yo")
+y = hello("a", prefix = "yo")
+z = hello("a", nope = "yo") // expect: E-TYPE-KEYWORD

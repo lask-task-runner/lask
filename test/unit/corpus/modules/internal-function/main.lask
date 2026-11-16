@@ -1,0 +1,4 @@
+// An internal declaration is not a public symbol (5).
+import * as m from "./lib.lask"
+x = m.shown()
+y = m.hidden() // expect: E-NAME-UNDEFINED

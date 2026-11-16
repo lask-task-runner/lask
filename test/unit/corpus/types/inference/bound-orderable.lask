@@ -1,0 +1,4 @@
+// Ordered, an inferred type parameter is orderable (4.3, 6.2).
+less(a, b) = a < b
+ok = less("a", "b")
+bad = less([1], [2]) // expect: E-TYPE-BOUND

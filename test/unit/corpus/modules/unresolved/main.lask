@@ -1,0 +1,4 @@
+// pending: E-MODULE-UNRESOLVED is reported with no location, although the import naming the path is known (14.3)
+// A bare path that is not a declared dependency (5).
+import { x } from "kit" // expect: E-MODULE-UNRESOLVED
+y = x

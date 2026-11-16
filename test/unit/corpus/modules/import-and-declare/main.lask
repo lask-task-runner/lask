@@ -1,0 +1,3 @@
+// A declaration of an imported name (5).
+import { a } from "./lib.lask"
+a = 2 // expect: E-NAME-DUPLICATE

@@ -1,0 +1,3 @@
+// The e of catch (e) is valid only in the catch block (7.3).
+f() = try { 1 } catch (e) { e.code }
+g = e // expect: E-NAME-UNDEFINED

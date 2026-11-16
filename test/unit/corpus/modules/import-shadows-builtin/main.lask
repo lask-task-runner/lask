@@ -1,0 +1,3 @@
+// An imported name shadows a builtin (7.2).
+import { length } from "./lib.lask"
+x: String = length("a")

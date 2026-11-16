@@ -1,0 +1,5 @@
+// A required keyword parameter is inferred from its uses (4.3).
+f(--n) = n + 1
+ok = f(n = 1)
+bad = f(n = "a") // expect: E-TYPE-MISMATCH
+missing = f() // expect: E-TYPE-KEYWORD

@@ -1,0 +1,3 @@
+// A function with a required keyword parameter is no function value (6.1, 4.4).
+f(a: Number, --k: Number) = a + k
+g: Function<Number, Number> = f // expect: E-TYPE-KEYWORD

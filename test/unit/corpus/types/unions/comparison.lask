@@ -1,0 +1,6 @@
+// == needs one side to conform to the other, and a comparable type (6.2).
+x: String | Null = null
+ok = x == null
+mixed = 1 == "a" // expect: E-TYPE-MISMATCH
+v: Any = 1
+any = v == 1 // expect: E-TYPE-BOUND

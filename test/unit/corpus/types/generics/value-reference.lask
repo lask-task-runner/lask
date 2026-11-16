@@ -1,0 +1,3 @@
+// A polymorphic function referenced as a value needs its whole type (4.4).
+ok: Function<Array<Number>, Function<Number, Number>, Array<Number>> = map
+bad = map // expect: E-TYPE-MISMATCH

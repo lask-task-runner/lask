@@ -1,0 +1,28 @@
+// The example of Appendix A. A command string runs to the end of its
+// line (6.6), so a command with an expectation is written braced.
+go_schema: CommandSchema = {
+  root: { closed: true, style: "single-dash" },
+  subcommands: {
+    "test": {
+      closed: true,
+      intermixed: true,
+      options: [
+        { names: ["-v"], description: "verbose output" },
+        { names: ["-run"], value: "required" },
+        { names: ["-covermode"], value: "required", values: ["set", "count", "atomic"] }
+      ]
+    },
+    "run": { closed: true, stop_at_first_positional: true },
+    "mod": { closed: true },
+    "mod tidy": { closed: true, options: [{ names: ["-v"] }] }
+  }
+}
+
+command { "go", "gofmt" } on #golang:1.25 schema { "go": go_schema }
+
+ok() = $ go test -v -run TestParse ./...
+typo() = ${go tset ./...} // expect: E-TYPE-COMMAND-OPTION
+no_value() = ${go test -run} // expect: E-TYPE-COMMAND-OPTION
+not_listed() = ${go test -covermode x} // expect: E-TYPE-COMMAND-OPTION
+other_word() = $ gofmt -anything
+explicit() = $[#golang:1.25] go tset

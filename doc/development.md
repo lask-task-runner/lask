@@ -54,7 +54,7 @@ Two hspec suites, and the doctests:
 |---|---|---|
 | `test/unit` | `lask-unit` | The library, called in process: no binary, no container engine. A spec mirrors the module it tests, `test/unit/Language/Lask/Lexer/LayoutSpec.hs` for `src/Language/Lask/Lexer/Layout.hs`. |
 | `test/e2e` | `lask-e2e` | The built `lask` binary, run as a person or CI runs it. `Cli/` holds one spec per area of the command line; the rest check whole sets: every error code, every example, every spec example, the golden outputs. Some start containers; those that need an engine they cannot have use a fake one. |
-| `test/support` | both | Helpers, never specs: `Support.Harness` (finding and running the binary, throwaway projects, the fake engine), `Support.FakeVault`, `Support.SyntaxGen` (QuickCheck generators of the syntax), `Support.EmbedTwin`. |
+| `test/support` | both | Helpers, never specs: `Support.Harness` (finding and running the binary, throwaway projects, the fake engine), `Support.FakeVault`, `Support.SyntaxGen` (QuickCheck generators of the syntax), `Support.EmbedTwin`, `Support.Pending` (`knownBug`, a test of a known bug). |
 | `src`, `app` | doctests | The `>>>` examples in the documentation of functions. |
 
 A new test goes in `lask-unit` unless it needs the binary. Two kinds of test are files rather than code:
@@ -64,7 +64,7 @@ A new test goes in `lask-unit` unless it needs the binary. Two kinds of test are
 
 **Pending** means one of two things, and its message says which:
 
-- A known bug, with its reproduction. A corpus case marks it with a first line `// pending: <reason>`, a spec with `pendingWith`. It fails once it passes, so the mark goes with the fix.
+- A known bug, with its reproduction. A corpus case marks it with a first line `// pending: <reason>`, a spec with `knownBug`, which still runs it. It fails once it passes, so the mark goes with the fix.
 - A test that needs the network, left pending with `LASK_TEST_OFFLINE=1`, as the macOS job runs.
 
 **Coverage** counts both suites, and with `LASK_TEST_TIX_DIR=<dir>` the runs of the binary the end-to-end tests start, each writing its own tix there; `ci-test` sets it, and `coverage-report` sums them.

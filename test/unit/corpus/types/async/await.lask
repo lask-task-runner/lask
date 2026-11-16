@@ -1,0 +1,7 @@
+// await h is T for h: AsyncHandle<T> (6.3).
+f() = do {
+  h = async 1
+  n: Number = await h
+  s: String = await h // expect: E-TYPE-MISMATCH
+  n
+}

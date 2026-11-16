@@ -1,0 +1,4 @@
+// A use inside a lambda the parameter is passed to counts as any other (4.3).
+f(xs) = map(xs, \(x) -> x + 1)
+ok: Array<Number> = f([1])
+bad = f(["a"]) // expect: E-TYPE-MISMATCH

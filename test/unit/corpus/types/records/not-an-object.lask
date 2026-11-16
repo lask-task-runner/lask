@@ -1,0 +1,2 @@
+// Any other expected type is a type error (4.3).
+x: Number = {a: 1} // expect: E-TYPE-MISMATCH

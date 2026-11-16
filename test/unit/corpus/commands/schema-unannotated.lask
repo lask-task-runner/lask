@@ -1,0 +1,3 @@
+// A binding of a schema is annotated with its type (Appendix A).
+s = { root: {} }
+command { "go" } on #golang:1.25 schema { "go": s } // expect: E-TYPE-MISMATCH

@@ -1,0 +1,5 @@
+// An array of handles nothing refers to (6.3).
+f() = do {
+  hs = [async 1] // expect: W-ASYNC-UNUSED
+  2
+}

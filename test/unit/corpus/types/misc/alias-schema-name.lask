@@ -1,0 +1,2 @@
+// Nor that of a command schema type (Appendix A).
+type CommandSchema = String // expect: E-NAME-DUPLICATE

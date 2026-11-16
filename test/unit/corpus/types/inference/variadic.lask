@@ -1,0 +1,5 @@
+// A variadic parameter is inferred as an array (4.3).
+total(...xs) = sum(xs)
+ok = total(1, 2)
+none = total()
+bad = total("a") // expect: E-TYPE-MISMATCH

@@ -1,0 +1,6 @@
+// Rebinding in one scope is a duplicate (7.3).
+f() = do {
+  a = 1
+  a = 2 // expect: E-NAME-DUPLICATE
+  a
+}

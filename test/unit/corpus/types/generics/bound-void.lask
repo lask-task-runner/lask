@@ -1,0 +1,2 @@
+// A type bound must not be Void (4.2).
+f<T: Void>(x: T) = 1 // expect: E-TYPE-ILLFORMED

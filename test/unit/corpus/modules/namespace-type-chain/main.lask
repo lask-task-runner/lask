@@ -1,0 +1,3 @@
+// A qualified type does not extend to a namespace chain (4.2).
+import * as m from "./lib.lask"
+x: m.ns.T = 1 // expect: E-SYNTAX-UNEXPECTED-TOKEN

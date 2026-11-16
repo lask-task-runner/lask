@@ -1,0 +1,2 @@
+// Field identity is by string, across the two forms (4.2).
+r: Record<name: String, "name": String> = {name: "a"} // expect: E-TYPE-FIELD-DUPLICATE

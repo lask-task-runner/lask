@@ -1,0 +1,5 @@
+// On Any, the else arm learns nothing (4.4).
+f(v: Any): Number = case (v) {
+  Number -> v
+  else -> v // expect: E-TYPE-MISMATCH
+}

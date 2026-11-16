@@ -1,0 +1,3 @@
+// fail stands in any position the other arguments determine (4.4, 15.7).
+f(e: Error, xs: Array<Number>): Number = reduce(xs, fail(e), \(a: Number, x: Number) -> a)
+g(): String | Null = fail(error(1, "x"))

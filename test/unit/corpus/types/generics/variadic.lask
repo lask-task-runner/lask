@@ -1,0 +1,4 @@
+// The first collected argument determines a variadic element type (7.5).
+f<T>(...xs: Array<T>): Array<T> = xs
+ok = f(1, 2)
+bad = f(1, "a") // expect: E-TYPE-MISMATCH

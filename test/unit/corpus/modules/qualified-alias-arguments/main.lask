@@ -1,0 +1,4 @@
+// A qualified alias takes type arguments (4.2).
+import * as m from "./lib.lask"
+x: m.Pair<Number, String> = {first: 1, second: "a"}
+y: m.Pair<Number> = {first: 1, second: 1} // expect: E-TYPE-ARITY

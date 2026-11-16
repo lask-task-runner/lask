@@ -1,0 +1,4 @@
+// type Opt<A> = A | Null applied to a function type is not a type (4.2).
+type Opt<A> = A | Null
+ok: Opt<String> = null
+bad: Opt<Function<Number>> = null // expect: E-TYPE-ILLFORMED

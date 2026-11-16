@@ -6,7 +6,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
-import Language.Lask.Diagnostic (Advisory (..), Diagnostic, diagCode)
+import Language.Lask.Diagnostic (Advisory (..), Diagnostic (..))
 import Language.Lask.Core.Lint (lintProgram)
 import Language.Lask.Elaborate
 import Language.Lask.ErrorCode
@@ -14,6 +14,7 @@ import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Types (renderType)
+import Support.Pending (knownBug)
 import Test.Hspec
 
 -- | Full front-end pipeline over in-memory sources.
@@ -38,6 +39,21 @@ elabProgram files = do
     reader p = pure (maybe (Left "not found") Right (lookup p files))
     codes :: [Diagnostic] -> [ErrorCode]
     codes = map diagCode
+
+-- | The diagnostics main.lask is rejected with, none if it is not.
+diagnosticsOf :: Text -> IO [Diagnostic]
+diagnosticsOf src = do
+  r <- loadProgramWith reader "main.lask"
+  pure $ case r of
+    Left ds -> ds
+    Right prog -> case validateProgram prog of
+      Left ds -> ds
+      Right scopes -> either id (const []) (elaborateProgram prog scopes)
+  where
+    reader p = pure (if p == "main.lask" then Right src else Left "not found")
+
+messagesOf :: Text -> IO [Text]
+messagesOf src = map diagMessage <$> diagnosticsOf src
 
 -- | Type of a declaration in main.lask, rendered.
 typeOf :: Text -> Text -> IO (Either [ErrorCode] Text)
@@ -1469,6 +1485,20 @@ spec = do
       rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.py.nope\n") ENameUndefined
       rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.py.hidden\n") ENameUndefined
       rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.rb.env()\n") ENameUndefined
+
+  describe "the text of diagnostics (spec 4.3, 14.3)" $ do
+    it "names a written type parameter as it is written" $
+      messagesOf "f<T: orderable>(a: T, b: T) = a < b\ng = f([1], [2])"
+        >>= (`shouldSatisfy` any ("requires T to be orderable" `T.isInfixOf`))
+    it "names an inferred type parameter T, as help shows it" $
+      -- The message reads "'show' requires T% to be stringifiable": the
+      -- bound message drops only the '@' suffix of a variable, where
+      -- varDisplay drops '%' as well.
+      knownBug "an inferred type parameter is named T% in the E-TYPE-BOUND message, the elaborator's name for it" $
+        messagesOf "show(x) = \"#{x}\"\ny = show(null)"
+          >>= (`shouldSatisfy` all (\m -> "requires T to be" `T.isInfixOf` m && not ("%" `T.isInfixOf` m)))
+    it "writes a union in canonical form (4.2)" $
+      diagnosticsOf "x: Null | String = 1" >>= (`shouldBe` [Just "String | Null"]) . map diagExpected
 
   describe "misc" $ do
     it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"

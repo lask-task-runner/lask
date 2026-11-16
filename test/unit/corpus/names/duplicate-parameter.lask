@@ -1,0 +1,2 @@
+// Two parameters of one name (7.3).
+f(a: Number, a: Number) = a // expect: E-NAME-DUPLICATE

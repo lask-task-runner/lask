@@ -1,0 +1,7 @@
+// The scrutinee of a case with type heads is a use at Any (4.3).
+f(x) = case (x) {
+  String -> 1
+  else -> 0
+}
+a = f(1)
+b = f([true])

@@ -295,6 +295,7 @@ test-suite lask-e2e
       Support.EmbedTwin.ValuesAndTypes
       Support.FakeVault
       Support.Harness
+      Support.Pending
       Support.SyntaxGen
       Paths_lask
   hs-source-dirs:
@@ -363,9 +364,11 @@ test-suite lask-unit
       Language.Lask.AccessSpec
       Language.Lask.Builtins.DocSpec
       Language.Lask.Builtins.FormatSpec
+      Language.Lask.Builtins.ImplSpec
       Language.Lask.Builtins.PathSpec
       Language.Lask.Builtins.RegexSpec
       Language.Lask.Builtins.ShellSpec
+      Language.Lask.CommandSchemaSpec
       Language.Lask.ConfirmSpec
       Language.Lask.Core.LintSpec
       Language.Lask.CorpusSpec
@@ -390,6 +393,7 @@ test-suite lask-unit
       Language.Lask.Runtime.GlobSpec
       Language.Lask.Runtime.SecretsSpec
       Language.Lask.SecretStore.ResolveSpec
+      Language.Lask.SoundnessSpec
       Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
@@ -403,6 +407,7 @@ test-suite lask-unit
       Support.EmbedTwin.ValuesAndTypes
       Support.FakeVault
       Support.Harness
+      Support.Pending
       Support.SyntaxGen
       Paths_lask
   hs-source-dirs:

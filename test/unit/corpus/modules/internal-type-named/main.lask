@@ -1,0 +1,2 @@
+// An internal type alias is unreachable by import (5).
+import { Hidden } from "./lib.lask" // expect: E-NAME-UNDEFINED

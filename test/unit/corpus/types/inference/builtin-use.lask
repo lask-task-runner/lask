@@ -1,0 +1,4 @@
+// A use as an argument of a builtin gives the parameter its type (4.3).
+shout(s) = to_upper(s)
+ok: String = shout("a")
+bad: Number = shout("a") // expect: E-TYPE-MISMATCH

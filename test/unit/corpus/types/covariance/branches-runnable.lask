@@ -1,0 +1,4 @@
+// An environment and a runnable branch join at Runnable (4.3, example).
+f(c: Bool) = if (c) { #alpine:3.20 } else { #alpine:3.20{memory: "1g"} }
+x: Runnable = f(true)
+y: Environment = f(true) // expect: E-TYPE-MISMATCH

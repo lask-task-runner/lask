@@ -1,0 +1,4 @@
+// Record<a: String> conforms to Record<a: String | Null>, not to Record<a?: String> (4.4).
+r: Record<a: String> = {a: "x"}
+s: Record<a: String | Null> = r
+t: Record<a?: String> = r // expect: E-TYPE-MISMATCH

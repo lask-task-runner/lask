@@ -1,0 +1,2 @@
+// An undefined type name (4.4).
+x: Strng = "a" // expect: E-NAME-UNDEFINED

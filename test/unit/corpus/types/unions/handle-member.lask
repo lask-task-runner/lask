@@ -1,0 +1,2 @@
+// AsyncHandle is not a data type (4.2).
+x: AsyncHandle<Number> | Null = null // expect: E-TYPE-ILLFORMED

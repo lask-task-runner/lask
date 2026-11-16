@@ -1,0 +1,4 @@
+// spawn(f) is AsyncHandle<T> for f: Function<T> (6.3).
+f() = spawn(\() -> 1)
+ok: AsyncHandle<Number> = f()
+bad: AsyncHandle<String> = f() // expect: E-TYPE-MISMATCH

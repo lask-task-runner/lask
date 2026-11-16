@@ -1,0 +1,2 @@
+// An object literal key must not contain interpolation (4.2).
+r = {"a#{1}": 1} // expect: E-SYNTAX-UNEXPECTED-TOKEN

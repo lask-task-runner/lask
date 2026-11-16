@@ -1,0 +1,3 @@
+// A value and a function of one name (7.3).
+a = 1
+a(x: Number) = x // expect: E-NAME-DUPLICATE

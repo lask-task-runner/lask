@@ -1,0 +1,4 @@
+// A syntax error is reported for each top-level declaration that has one (14.3).
+x = = 1 // expect: E-SYNTAX-UNEXPECTED-TOKEN
+y = 2
+z = = 3 // expect: E-SYNTAX-UNEXPECTED-TOKEN

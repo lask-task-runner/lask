@@ -1,0 +1,6 @@
+// A handle referred to is not reported, consumed or not (6.3).
+f() = do {
+  h = async 1
+  g = \() -> await h
+  2
+}

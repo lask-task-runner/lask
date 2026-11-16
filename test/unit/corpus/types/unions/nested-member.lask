@@ -1,0 +1,2 @@
+// Nor is an array of functions (4.2).
+x: Array<Function<Number>> | Null = null // expect: E-TYPE-ILLFORMED

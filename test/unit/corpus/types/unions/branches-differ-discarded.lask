@@ -1,0 +1,5 @@
+// Even where the value is discarded (4.3).
+f(c: Bool) = do {
+  if (c) { 1 } else { "a" } // expect: E-TYPE-MISMATCH
+  1
+}

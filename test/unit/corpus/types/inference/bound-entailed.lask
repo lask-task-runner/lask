@@ -1,0 +1,3 @@
+// orderable entails comparable: the stronger bound is kept (4.3).
+f(xs, x) = contains_array(sort(xs), x)
+ok = f([1], 2)

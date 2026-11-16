@@ -1,0 +1,6 @@
+// A lambda bound to a name is generalized as a declaration is (4.3).
+f(): String = do {
+  id = \(x) -> x
+  n: Number = id(1)
+  id("s")
+}

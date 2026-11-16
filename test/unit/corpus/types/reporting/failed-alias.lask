@@ -1,0 +1,4 @@
+// A type that refers to a failed type alias reports nothing (14.3).
+type Bad = Array<Void> // expect: E-TYPE-ILLFORMED
+x: Bad = []
+y: Number = "a" // expect: E-TYPE-MISMATCH

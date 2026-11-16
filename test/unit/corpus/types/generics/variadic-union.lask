@@ -1,0 +1,3 @@
+// A union is never inferred, so mixed arguments need it written (7.5).
+f(...xs: Array<String | Number>) = xs
+ok = f(1, "a")

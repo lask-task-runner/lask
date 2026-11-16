@@ -1,0 +1,5 @@
+// A call through a re-exported namespace keeps the parameter list (5).
+import * as m from "./lib.lask"
+import { ns } from "./lib.lask"
+x = m.ns.greet("a", prefix = "yo")
+y = ns.greet("a", prefix = "yo")

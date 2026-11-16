@@ -1,0 +1,4 @@
+// Array<Environment> conforms to Array<Runnable>; the reverse does not (4.4).
+es: Array<Environment> = [#local]
+rs: Array<Runnable> = es
+bad: Array<Environment> = rs // expect: E-TYPE-MISMATCH

@@ -1,0 +1,7 @@
+// The scrutinee of a case with value heads is used at their type (4.3).
+f(x) = case (x) {
+  1 -> "one"
+  else -> "other"
+}
+ok = f(1)
+bad = f("a") // expect: E-TYPE-MISMATCH

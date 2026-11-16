@@ -1,0 +1,2 @@
+// A renamed import keeps the identifier kind (5).
+import { greet as Greet } from "./lib.lask" // expect: E-SYNTAX-UNEXPECTED-TOKEN

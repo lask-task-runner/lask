@@ -1,0 +1,6 @@
+// A type bound may be written through an alias (4.2, example).
+type Key = Number | String
+label<T: Key>(x: T): String = "key #{x}"
+a = label(1)
+b = label("s")
+c = label(true) // expect: E-TYPE-BOUND

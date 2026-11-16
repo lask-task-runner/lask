@@ -1,0 +1,3 @@
+// A field named by a reserved word is written as a string (4.2).
+r: Record<"internal": Bool> = {"internal": true}
+k: Bool = r["internal"]

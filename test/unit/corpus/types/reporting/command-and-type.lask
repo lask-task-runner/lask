@@ -1,0 +1,4 @@
+// A command declaration is checked on its own (14.3).
+command { "go" } on #golang:1.25
+command { "go" } on #golang:1.25 // expect: E-TYPE-COMMAND-DUPLICATE
+g: Number = "a" // expect: E-TYPE-MISMATCH

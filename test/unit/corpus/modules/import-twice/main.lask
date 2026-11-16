@@ -1,0 +1,3 @@
+// The same name brought in twice (5).
+import { a } from "./lib.lask"
+import { a } from "./inner.lask" // expect: E-NAME-DUPLICATE

@@ -1,0 +1,3 @@
+// A map literal's values conform to the value type (4.3, example).
+env_map: Map<String> = {"APP_ENV": "prod", "REGION": "ap-northeast-1"}
+bad: Map<Number> = {"a": "x"} // expect: E-TYPE-MISMATCH

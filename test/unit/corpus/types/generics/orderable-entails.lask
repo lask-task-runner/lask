@@ -1,0 +1,4 @@
+// orderable entails comparable and stringifiable (4.4).
+f<T: orderable>(x: T): String = "#{x}"
+g<T: orderable>(x: T, y: T): Bool = x == y
+h<T: orderable>(xs: Array<T>): Array<T> = sort(xs)

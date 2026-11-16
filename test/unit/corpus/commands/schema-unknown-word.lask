@@ -1,0 +1,2 @@
+// A literal key that is not a word of the declaration (Appendix A).
+command { "go" } on #golang:1.25 schema { "gofmt": { root: {} } } // expect: E-TYPE-COMMAND-SCHEMA
