@@ -284,6 +284,7 @@ test-suite lask-e2e
       Cli.GitPinSpec
       Cli.HelpSpec
       Cli.ImagesSpec
+      Cli.InterruptSpec
       Cli.LogsSpec
       Cli.ModulesSpec
       Cli.SecretsSpec
@@ -293,6 +294,7 @@ test-suite lask-e2e
       GoldenSpec
       SpecExamplesSpec
       Support.EmbedTwin.ValuesAndTypes
+      Support.Eval
       Support.FakeVault
       Support.Harness
       Support.Pending
@@ -387,10 +389,13 @@ test-suite lask-unit
       Language.Lask.Module.ResolveSpec
       Language.Lask.Obs.CommandLogSpec
       Language.Lask.ReplSpec
+      Language.Lask.Runtime.CancelScopeSpec
+      Language.Lask.Runtime.ConcurrencySpec
       Language.Lask.Runtime.EgressSpec
       Language.Lask.Runtime.EnvironmentSpec
       Language.Lask.Runtime.EvalSpec
       Language.Lask.Runtime.GlobSpec
+      Language.Lask.Runtime.ProcessStopSpec
       Language.Lask.Runtime.SecretsSpec
       Language.Lask.SecretStore.ResolveSpec
       Language.Lask.SoundnessSpec
@@ -405,6 +410,7 @@ test-suite lask-unit
       Language.LaskSpec
       Language.LSP.LaskSpec
       Support.EmbedTwin.ValuesAndTypes
+      Support.Eval
       Support.FakeVault
       Support.Harness
       Support.Pending
