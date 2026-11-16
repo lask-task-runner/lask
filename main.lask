@@ -32,19 +32,85 @@ completion_hints: Map<String> = {
 // explicitly, so this declaration is only about `lask cmd`.
 command { "stack", "uname", "mv", "rm" } on #local
 
-// Run the unit test suite.
+// Run the unit test suite (test/unit): the library in process, with no
+// binary and no container engine. Seconds, not minutes.
+//
+// @param env    Environment to build and test in ("local" or "docker").
+// @param match  Run only the specs whose description holds this. Empty runs
+//               every spec (hspec reads it from HSPEC_MATCH).
+// @complete env @keys envs
+// @example lask run unittest --match Parser
+unittest(--env: String = "docker", --match: String = "") =
+  $[envs[env]] HSPEC_MATCH=#{match} stack test lask:lask-unit
+
+// Run the end-to-end suite (test/e2e): the built lask binary, as a
+// person or CI runs it. Some of it starts containers.
+//
+// @param env    Environment to build and test in ("local" or "docker").
+// @param match  Run only the specs whose description holds this. Empty runs
+//               every spec (hspec reads it from HSPEC_MATCH).
+// @complete env @keys envs
+// @example lask run e2etest --match Cli.Help
+e2etest(--env: String = "docker", --match: String = "") =
+  $[envs[env]] stack build && HSPEC_MATCH=#{match} stack test lask:lask-e2e
+
+// Run the diagnostics corpus (test/unit/corpus): programs whose expected
+// diagnostics are written on the lines that raise them.
 //
 // @param env  Environment to build and test in ("local" or "docker").
 // @complete env @keys envs
-unittest(--env: String = "docker") = $[envs[env]] stack install --test && stack test
+corpustest(--env: String = "docker") = unittest(env = env, match = "test/unit/corpus")
+
+// Run the property tests (QuickCheck) of the lexer, parser and formatter.
+//
+// @param env  Environment to build and test in ("local" or "docker").
+// @complete env @keys envs
+proptest(--env: String = "docker") = unittest(env = env, match = "Syntax.Properties")
+
+// Compare the binary's output with test/e2e/golden, or with --accept,
+// write what it gives into the expected files: read the diff before
+// committing them.
+//
+// @param env     Environment to build and test in ("local" or "docker").
+// @param accept  Rewrite the expected files instead of comparing.
+// @complete env @keys envs
+// @example lask run goldentest --accept
+goldentest(--env: String = "docker", --accept: Bool = false) =
+  $[envs[env]] stack build && LASK_ACCEPT=#{accept ? "1" : "0"} HSPEC_MATCH=test/e2e/golden stack test lask:lask-e2e
+
+// Check the lask code blocks of doc/spec.md: the examples check
+// cleanly, and the fragments that name their errors report exactly
+// those.
+//
+// @param env  Environment to build and test in ("local" or "docker").
+// @complete env @keys envs
+spectest(--env: String = "docker") = e2etest(env = env, match = "doc/spec.md examples")
+
+// Check every project under example/, synced the way a fresh clone is.
+// With --offline, the ones that declare dependencies are left pending
+// instead of reaching the network.
+//
+// @param env      Environment to build and test in ("local" or "docker").
+// @param offline  Leave the projects with dependencies pending.
+// @complete env @keys envs
+exampletest(--env: String = "docker", --offline: Bool = false) =
+  $[envs[env]] stack build && LASK_TEST_OFFLINE=#{offline ? "1" : "0"} HSPEC_MATCH="example projects" stack test lask:lask-e2e
+
+// Raise every error and advisory code of spec chapter 14 through the
+// binary.
+//
+// @param env  Environment to build and test in ("local" or "docker").
+// @complete env @keys envs
+errorcodetest(--env: String = "docker") = e2etest(env = env, match = "ErrorCode")
 
 // Run the doctests of app/ and src/.
 //
 // @param env  Environment to build and test in ("local" or "docker").
 // @complete env @keys envs
-doctest(--env: String = "docker") = $[envs[env]] stack install --test && stack exec doctest app/** src/**
+doctest(--env: String = "docker") = $[envs[env]] stack build --test --no-run-tests && stack exec doctest app/** src/**
 
-// Run the unit tests and the doctests in parallel.
+// Run every suite: the unit tests and the doctests in parallel, then
+// the end-to-end tests.
 //
 // @param env  Environment to build and test in ("local" or "docker").
 // @return The output of each suite, keyed by its name.
@@ -53,9 +119,12 @@ doctest(--env: String = "docker") = $[envs[env]] stack install --test && stack e
 test(--env: String = "docker") = do {
   t1 = async unittest(env = env)
   t2 = async doctest(env = env)
+  unit = await t1
+  doc = await t2
   {
-    unittest: await t1,
-    doctest: await t2
+    unittest: unit,
+    doctest: doc,
+    e2etest: e2etest(env = env)
   }
 }
 

@@ -267,20 +267,99 @@ test-suite edsl-example
     , yaml >=0.11 && <1
   default-language: Haskell2010
 
-test-suite lask-test
+test-suite lask-e2e
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      Command.Lask.CliSpec
+      Cli.ArgumentsSpec
+      Cli.CheckFmtSpec
+      Cli.CmdSpec
+      Cli.CommandsSpec
+      Cli.CompletionSpec
+      Cli.ConcurrencySpec
+      Cli.ConfirmSpec
+      Cli.DepsCommandsSpec
+      Cli.EnginesSpec
+      Cli.ExitSpec
+      Cli.GitPinSpec
+      Cli.HelpSpec
+      Cli.ImagesSpec
+      Cli.LogsSpec
+      Cli.ModulesSpec
+      Cli.SecretsSpec
+      Cli.SignalSpec
+      ErrorCodeSpec
+      ExamplesSpec
+      GoldenSpec
+      SpecExamplesSpec
+      Support.EmbedTwin.ValuesAndTypes
+      Support.FakeVault
+      Support.Harness
+      Support.SyntaxGen
+      Paths_lask
+  hs-source-dirs:
+      test/e2e
+      test/support
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      QuickCheck >=2.14 && <3
+    , aeson >=2.0 && <3
+    , aeson-pretty >=0.8 && <1
+    , array >=0.5 && <1
+    , async >=2.2 && <3
+    , base >=4.19 && <5
+    , base16-bytestring >=1.0 && <2
+    , base64-bytestring >=1.2 && <2
+    , bytestring >=0.11 && <0.13
+    , co-log-core >=0.3.0 && <0.4
+    , containers >=0.6 && <0.8
+    , cryptohash-md5 >=0.11 && <1
+    , cryptohash-sha256 >=0.11 && <1
+    , crypton-connection ==0.4.*
+    , crypton-x509-store ==1.6.*
+    , crypton-x509-system ==1.6.*
+    , directory >=1.0 && <2
+    , doctest >=0.22 && <0.25
+    , entropy >=0.4 && <1
+    , filepath >=1.4 && <2
+    , haskeline >=0.8 && <1
+    , hspec >=2.11 && <3
+    , hspec-core >=2.11 && <3
+    , hspec-megaparsec >=2.2 && <3
+    , http-client ==0.7.*
+    , http-client-tls ==0.3.*
+    , http-types ==0.12.*
+    , lask
+    , lens >=5.0 && <6
+    , lsp >=2.0 && <3
+    , lsp-types >=2.0 && <3
+    , megaparsec >=9.6 && <10
+    , mtl >=2.0 && <3
+    , optparse-applicative ==0.18.*
+    , parser-combinators >=1.0 && <2
+    , process >=1.6 && <2
+    , process-extras ==0.7.*
+    , random >=1.2 && <2
+    , regex-tdfa >=1.3 && <2
+    , scientific ==0.3.*
+    , stm >=2.0 && <3
+    , temporary >=1.3 && <2
+    , text >=2.0 && <3
+    , time >=1.0 && <2
+    , tls >=2.0 && <3
+    , toml-parser >=2.0 && <3
+    , unix >=2.7 && <3
+    , vector ==0.13.*
+    , wai >=3.2 && <4
+    , warp >=3.3 && <4
+    , yaml >=0.11 && <1
+  default-language: Haskell2010
+
+test-suite lask-unit
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
       Command.Lask.CompleteSpec
-      Command.Lask.DepsCliSpec
-      Command.Lask.ErrorCodeSpec
-      Command.Lask.ExamplesSpec
-      Command.Lask.GitPinSpec
-      Command.Lask.GoldenSpec
-      Command.Lask.Harness
-      Command.Lask.SignalSpec
-      Command.Lask.SpecExamplesSpec
       Language.Lask.Builtins.DocSpec
       Language.Lask.Builtins.FormatSpec
       Language.Lask.Builtins.PathSpec
@@ -293,12 +372,11 @@ test-suite lask-test
       Language.Lask.DocSpec
       Language.Lask.EditorCompileSpec
       Language.Lask.ElaborateSpec
-      Language.Lask.Embed.Twin.ValuesAndTypes
+      Language.Lask.Embed.ConstructsSpec
+      Language.Lask.Embed.RejectSpec
+      Language.Lask.Embed.TwinSpec
       Language.Lask.Embed.TypeSpec
-      Language.Lask.EmbedPhase1Spec
-      Language.Lask.EmbedRejectSpec
       Language.Lask.EmbedSpec
-      Language.Lask.EmbedTwinSpec
       Language.Lask.Lexer.LayoutSpec
       Language.Lask.LexerSpec
       Language.Lask.Module.LoaderSpec
@@ -309,11 +387,9 @@ test-suite lask-test
       Language.Lask.Runtime.EvalSpec
       Language.Lask.Runtime.GlobSpec
       Language.Lask.Runtime.SecretsSpec
-      Language.Lask.SecretStore.FakeVault
       Language.Lask.SecretStore.ResolveSpec
       Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
-      Language.Lask.Syntax.Gen
       Language.Lask.Syntax.ParserSpec
       Language.Lask.Syntax.PrinterSpec
       Language.Lask.Syntax.PropertiesSpec
@@ -322,9 +398,14 @@ test-suite lask-test
       Language.Lask.Syntax.TokenStreamSpec
       Language.LaskSpec
       Language.LSP.LaskSpec
+      Support.EmbedTwin.ValuesAndTypes
+      Support.FakeVault
+      Support.Harness
+      Support.SyntaxGen
       Paths_lask
   hs-source-dirs:
-      test
+      test/unit
+      test/support
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       QuickCheck >=2.14 && <3
