@@ -287,6 +287,7 @@ test-suite lask-e2e
       Cli.InterruptSpec
       Cli.LogsSpec
       Cli.ModulesSpec
+      Cli.RetrySpec
       Cli.SecretsSpec
       Cli.SignalSpec
       ErrorCodeSpec
@@ -396,6 +397,7 @@ test-suite lask-unit
       Language.Lask.Runtime.EvalSpec
       Language.Lask.Runtime.GlobSpec
       Language.Lask.Runtime.ProcessStopSpec
+      Language.Lask.Runtime.RecoverySpec
       Language.Lask.Runtime.SecretsSpec
       Language.Lask.SecretStore.ResolveSpec
       Language.Lask.SoundnessSpec
