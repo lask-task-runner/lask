@@ -391,6 +391,7 @@ test-suite lask-unit
       Language.Lask.Runtime.GlobSpec
       Language.Lask.Runtime.SecretsSpec
       Language.Lask.SecretStore.ResolveSpec
+      Language.Lask.SoundnessSpec
       Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
