@@ -1,0 +1,2 @@
+// Any entails nothing (4.4).
+f<T: Any>(x: T): String = "#{x}" // expect: E-TYPE-BOUND

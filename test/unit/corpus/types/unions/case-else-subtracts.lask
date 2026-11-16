@@ -1,0 +1,5 @@
+// After a String arm, the else arm of String | Null holds Null (6.4).
+f(s: String | Null): String = case (s) {
+  String -> s
+  else -> s // expect: E-TYPE-MISMATCH
+}

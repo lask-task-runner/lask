@@ -1,0 +1,3 @@
+// A namespace and a declaration of one name (5).
+import * as m from "./lib.lask"
+m = 1 // expect: E-NAME-DUPLICATE

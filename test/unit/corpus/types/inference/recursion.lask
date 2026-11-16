@@ -1,0 +1,4 @@
+// A recursive call is not a use, and is checked against the inferred types (4.3).
+count(n): Number = n < 1 ? 0 : 1 + count(n - 1)
+ok = count(3)
+bad = count("a") // expect: E-TYPE-MISMATCH

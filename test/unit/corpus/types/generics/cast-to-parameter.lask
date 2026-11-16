@@ -1,0 +1,2 @@
+// A type parameter is never a cast target (4.4, 15.8).
+f<T>(x: T): T = cast(x) // expect: E-TYPE-ILLFORMED

@@ -1,0 +1,4 @@
+// A use as an operand gives the parameter its type (4.3).
+inc(x) = x + 1
+ok: Number = inc(1)
+bad = inc("a") // expect: E-TYPE-MISMATCH

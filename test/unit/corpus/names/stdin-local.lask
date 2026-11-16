@@ -1,0 +1,5 @@
+// At every level (7.2).
+f() = do {
+  stdin = 1 // expect: E-NAME-DUPLICATE
+  2
+}

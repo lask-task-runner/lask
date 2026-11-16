@@ -1,0 +1,5 @@
+// A bound handle nothing refers to (6.3).
+f() = do {
+  h = async 1 // expect: W-ASYNC-UNUSED
+  2
+}

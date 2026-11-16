@@ -1,0 +1,4 @@
+// Too few and too many positional arguments (7.5).
+f(a: Number) = a
+x = f() // expect: E-TYPE-ARITY
+y = f(1, 2) // expect: E-TYPE-ARITY

@@ -1,0 +1,5 @@
+// The operands of ! and unary - are uses at Bool and Number (6.2).
+neg(x) = -x
+not(x) = !x
+a = neg("a") // expect: E-TYPE-MISMATCH
+b = not(1) // expect: E-TYPE-MISMATCH

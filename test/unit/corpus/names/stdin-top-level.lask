@@ -1,0 +1,2 @@
+// stdin is reserved (7.2, 9.3).
+stdin = 1 // expect: E-NAME-DUPLICATE

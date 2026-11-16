@@ -1,0 +1,2 @@
+// String | Null does not conform to String (4.4).
+f(s: String | Null): String = s // expect: E-TYPE-MISMATCH

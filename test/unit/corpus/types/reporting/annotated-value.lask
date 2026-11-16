@@ -1,0 +1,4 @@
+// A value declaration with its type written is used all the same (14.3).
+bad: Number = "x" // expect: E-TYPE-MISMATCH
+use: Number = bad + 1
+other: String = bad // expect: E-TYPE-MISMATCH

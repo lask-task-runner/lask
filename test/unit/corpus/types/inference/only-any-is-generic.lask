@@ -1,0 +1,7 @@
+// Put only at Any, a parameter is a type parameter: the result keeps its type (4.3).
+f(x) = do {
+  _ = to_json(x)
+  x
+}
+n: Number = f(1)
+s: String = f("a")

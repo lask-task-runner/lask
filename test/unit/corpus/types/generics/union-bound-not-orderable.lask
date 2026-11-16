@@ -1,0 +1,4 @@
+// Number | String entails comparable and stringifiable, not orderable (4.4).
+f<T: Number | String>(x: T): String = "#{x}"
+g<T: Number | String>(a: T, b: T): Bool = a == b
+h<T: Number | String>(xs: Array<T>): Array<T> = sort(xs) // expect: E-TYPE-BOUND

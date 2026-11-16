@@ -1,0 +1,4 @@
+// A named import keeps the parameter list (5).
+import { greet } from "./lib.lask"
+x = greet("a", prefix = "yo")
+y = greet() // expect: E-TYPE-ARITY

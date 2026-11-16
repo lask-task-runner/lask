@@ -1,0 +1,3 @@
+// A schema is a static value (Appendix A).
+mk(): CommandSchema = { root: {} }
+command { "go" } on #golang:1.25 schema { "go": mk() } // expect: E-TYPE-COMMAND-SCHEMA

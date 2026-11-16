@@ -1,0 +1,5 @@
+// A discarded handle is never awaited (6.3).
+f() = do {
+  async 1 // expect: W-ASYNC-UNUSED
+  2
+}

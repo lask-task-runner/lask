@@ -1,0 +1,4 @@
+// Searching an Array<Any> gives Any | Null, which is Any (15.4).
+g(xs: Array<Any>) = find(xs, \(s) -> true)
+h: Any = g([1])
+f(xs: Array<String>): String | Null = find(xs, \(s) -> s == "a")

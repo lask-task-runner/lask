@@ -1,0 +1,4 @@
+// Any | Null is Any (4.2).
+x: Any | Null = 1
+y: Any = x
+z: Number = x // expect: E-TYPE-MISMATCH

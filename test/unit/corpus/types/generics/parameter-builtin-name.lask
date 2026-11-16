@@ -1,0 +1,2 @@
+// No type parameter takes the name of a type the grammar reads as its own (4.2).
+f<String>(x: String) = 1 // expect: E-NAME-DUPLICATE

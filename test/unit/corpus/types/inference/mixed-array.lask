@@ -1,0 +1,3 @@
+// A heterogeneous array literal is Array<Any>, not an array of a union (4.3).
+pair(x) = [x, 1]
+bad: Array<Number> = pair(2) // expect: E-TYPE-MISMATCH

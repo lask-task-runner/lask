@@ -1,0 +1,6 @@
+// Hiding an outer binding from an inner scope is permitted (7.3).
+f() = do {
+  a = 1
+  g = \(a: Number) -> a
+  g(a)
+}

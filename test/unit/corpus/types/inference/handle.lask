@@ -1,0 +1,4 @@
+// A use as the operand of await gives the parameter the shape AsyncHandle<T> (4.3, 6.3).
+f(h) = await h
+n: Number = f(async 1)
+bad: String = f(async 1) // expect: E-TYPE-MISMATCH

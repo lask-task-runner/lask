@@ -1,0 +1,5 @@
+// null says nothing of the parameter: c ? x : null keeps x generic (4.3).
+f(c: Bool, x) = c ? x : null
+ok: String | Null = f(true, "a")
+n: Number | Null = f(true, 1)
+bad: String = f(true, "a") // expect: E-TYPE-MISMATCH

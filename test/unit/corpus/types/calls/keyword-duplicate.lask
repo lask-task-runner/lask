@@ -1,0 +1,3 @@
+// A keyword bound twice (7.5).
+f(a: Number, --k: Number = 1) = a + k
+x = f(1, k = 2, k = 3) // expect: E-TYPE-KEYWORD

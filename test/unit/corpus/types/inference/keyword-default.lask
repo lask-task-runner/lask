@@ -1,0 +1,6 @@
+// A keyword parameter with a default takes its type (4.3, example).
+inc(--x = 0) = x + 1
+a: Number = inc()
+b = inc(x = 5)
+c = inc(5) // expect: E-TYPE-ARITY
+d = inc(x = "a") // expect: E-TYPE-MISMATCH

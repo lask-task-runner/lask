@@ -1,0 +1,4 @@
+// A string-literal key names the field and indexes it (4.2, 6.8).
+r = {"X-Api-Key": "s"}
+k: String = r["X-Api-Key"]
+bad: Number = r["X-Api-Key"] // expect: E-TYPE-MISMATCH

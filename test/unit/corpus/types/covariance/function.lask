@@ -1,0 +1,6 @@
+// Contravariant in the parameters, covariant in the result (4.4).
+f: Function<Any, String> = \(x: Any) -> to_json(x)
+g: Function<String, String> = f
+h: Function<Number, String | Null> = \(n: Number) -> "a"
+k: Function<Number, String> = h // expect: E-TYPE-MISMATCH
+l: Function<Number, Any> = g // expect: E-TYPE-MISMATCH

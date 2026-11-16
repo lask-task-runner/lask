@@ -1,0 +1,2 @@
+// A type alias cannot take a built-in type's name (4.2, Appendix A).
+type Number = String // expect: E-NAME-DUPLICATE

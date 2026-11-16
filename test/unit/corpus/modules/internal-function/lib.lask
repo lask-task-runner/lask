@@ -1,0 +1,2 @@
+internal hidden() = 1
+export shown() = hidden()

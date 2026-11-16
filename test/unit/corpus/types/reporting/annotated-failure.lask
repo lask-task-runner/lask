@@ -1,0 +1,4 @@
+// A use of a failed declaration is checked when its annotations give all its type (14.3).
+bad(x: Number): Number = x + "s" // expect: E-TYPE-MISMATCH
+use() = bad("a") // expect: E-TYPE-MISMATCH
+fine() = bad(1) + 1

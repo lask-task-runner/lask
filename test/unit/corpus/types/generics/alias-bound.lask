@@ -1,0 +1,4 @@
+// A type alias with bounded parameters is held to them where it is applied (4.4).
+type Index<K: comparable> = Array<Record<key: K, at: Number>>
+ok: Index<String> = []
+bad: Index<Function<Number>> = [] // expect: E-TYPE-BOUND

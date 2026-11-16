@@ -1,0 +1,2 @@
+f(): Number = 1
+h: Number = "x" // expect: E-TYPE-MISMATCH

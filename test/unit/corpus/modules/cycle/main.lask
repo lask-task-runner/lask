@@ -1,0 +1,4 @@
+// pending: E-MODULE-CYCLE is reported with no location, although the import that closes the cycle is known (14.3)
+// A module cycle (5, 7).
+import { a } from "./lib.lask" // expect: E-MODULE-CYCLE
+x = a

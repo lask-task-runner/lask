@@ -1,0 +1,3 @@
+// Nor the name of a type alias visible at the declaration (4.2).
+type A = Number
+f<A>(x: A) = 1 // expect: E-NAME-DUPLICATE

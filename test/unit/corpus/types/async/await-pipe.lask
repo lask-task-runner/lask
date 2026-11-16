@@ -1,0 +1,5 @@
+// await h |> f is (await h) |> f (6.3).
+f() = do {
+  h = async 1
+  await h |> to_string
+}

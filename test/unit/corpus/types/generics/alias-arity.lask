@@ -1,0 +1,7 @@
+// Type argument counts must match the alias's parameters (4.2).
+type Pair<A, B> = Record<first: A, second: B>
+type S = String
+ok: Pair<Number, String> = {first: 1, second: "a"}
+few: Pair<Number> = {first: 1, second: 1} // expect: E-TYPE-ARITY
+none: Pair = {first: 1, second: 1} // expect: E-TYPE-ARITY
+extra: S<Number> = "a" // expect: E-TYPE-ARITY

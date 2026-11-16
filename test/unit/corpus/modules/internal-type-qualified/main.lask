@@ -1,0 +1,4 @@
+// m.TypeName needs a public type alias (4.2, 5).
+import * as m from "./lib.lask"
+ok: m.Shown = 1
+x: m.Hidden = 1 // expect: E-NAME-UNDEFINED

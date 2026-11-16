@@ -1,0 +1,4 @@
+// == compares at the wider side (6.2).
+xs: Array<String> = ["a"]
+ys: Array<String | Null> = [null]
+b = xs == ys

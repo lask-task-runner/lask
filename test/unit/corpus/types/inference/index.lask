@@ -1,0 +1,3 @@
+// Nor does an index (4.3).
+f(m) = m["a"] // expect: E-TYPE-ACCESS
+g(xs) = xs[0] + 1 // expect: E-TYPE-ACCESS

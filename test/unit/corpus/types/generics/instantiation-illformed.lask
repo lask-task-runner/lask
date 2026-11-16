@@ -1,0 +1,2 @@
+// An instantiation making map's result Array<Void> is ill-formed (4.2).
+xs = map([1], \(x: Number) -> log("a")) // expect: E-TYPE-ILLFORMED

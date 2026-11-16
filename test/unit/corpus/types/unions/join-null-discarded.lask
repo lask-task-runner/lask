@@ -1,0 +1,5 @@
+// A discarded statement may join any type with null (4.3).
+f(c: Bool) = do {
+  if (c) { \() -> 1 } else { null }
+  1
+}

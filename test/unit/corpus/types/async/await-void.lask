@@ -1,0 +1,6 @@
+// Awaiting a Void computation is Void (6.3).
+f() = do {
+  h = async log("x")
+  await h
+}
+x: Number = f() // expect: E-TYPE-MISMATCH

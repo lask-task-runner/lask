@@ -1,0 +1,2 @@
+// style is "gnu" or "single-dash" (Appendix A).
+command { "go" } on #golang:1.25 schema { "go": { root: { style: "posix" } } } // expect: E-TYPE-COMMAND-SCHEMA

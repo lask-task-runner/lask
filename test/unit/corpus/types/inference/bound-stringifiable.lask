@@ -1,0 +1,5 @@
+// Interpolated, an inferred type parameter is stringifiable (4.3, 6.6).
+show(x) = "#{x}"
+ok = show(1)
+bad = show(null) // expect: E-TYPE-BOUND
+also_bad = show([1]) // expect: E-TYPE-BOUND

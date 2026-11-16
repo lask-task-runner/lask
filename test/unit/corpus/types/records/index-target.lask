@@ -1,0 +1,7 @@
+// Indexing needs an Array, a Map or a Record (6.8).
+n = 1
+s = "abc"
+v: Any = 1
+a = n[0] // expect: E-TYPE-ACCESS
+b = s[0] // expect: E-TYPE-ACCESS
+c = v[0] // expect: E-TYPE-ACCESS

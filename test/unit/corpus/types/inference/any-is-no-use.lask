@@ -1,0 +1,7 @@
+// A use at Any constrains nothing: put at Number and at Any, x is Number (4.3).
+f(x) = do {
+  j = to_json(x)
+  x + 1
+}
+ok = f(1)
+bad = f("a") // expect: E-TYPE-MISMATCH

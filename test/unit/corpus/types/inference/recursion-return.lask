@@ -1,0 +1,2 @@
+// The return type of a recursive declaration is to be written (4.3, 6.1).
+f(n) = n < 1 ? 0 : f(n - 1) // expect: E-TYPE-MISMATCH

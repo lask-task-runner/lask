@@ -1,0 +1,6 @@
+// A declaration reports at most its first error (14.3).
+f() = do {
+  a: Number = "x" // expect: E-TYPE-MISMATCH
+  b: String = 1
+  a
+}

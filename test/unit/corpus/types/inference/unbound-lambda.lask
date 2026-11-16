@@ -1,0 +1,3 @@
+// An unconstrained parameter of an unbound lambda is Any (4.3).
+f() = (\(x) -> to_json(x))(1)
+g() = (\(x) -> to_json(x))(\() -> 1)

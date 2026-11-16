@@ -1,0 +1,3 @@
+// An if with a null branch over a parameter: Number | Null.
+f(x) = if (x > 0) { x } else { null }
+y: Number | Null = f(1)

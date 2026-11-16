@@ -1,0 +1,2 @@
+// comparable and stringifiable: neither entails the other (4.3).
+f(a, b) = a == b ? "#{a}" : "" // expect: E-TYPE-BOUND

@@ -1,0 +1,4 @@
+// AB | Null and Null | String | Number are one type (4.2, canonical form).
+type AB = Number | String
+x: AB | Null = null
+y: Null | String | Number = x

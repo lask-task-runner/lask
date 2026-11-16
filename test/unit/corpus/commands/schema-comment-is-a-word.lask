@@ -1,0 +1,4 @@
+// A // after a command is a word of the command string, not a comment
+// (6.6): here it is the value -run requires, so nothing is missing.
+command { "go" } on #golang:1.25 schema { "go": { root: { closed: true, style: "single-dash", options: [{ names: ["-run"], value: "required" }] } } }
+f() = $ go -run // a comment?

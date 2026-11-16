@@ -1,0 +1,6 @@
+// pending: indexing an Array with a String or a Bool is reported as E-TYPE-MISMATCH; 6.8 and 14.2 make an invalid index type E-TYPE-ACCESS
+// Any other combination of target and index type is E-TYPE-ACCESS (6.8).
+xs = [1, 2]
+ok: Number = xs[0]
+a = xs["a"] // expect: E-TYPE-ACCESS
+b = xs[true] // expect: E-TYPE-ACCESS

@@ -1,0 +1,6 @@
+// Independent errors are all reported (14.3).
+a: Number = "x" // expect: E-TYPE-MISMATCH
+b: String = 1 // expect: E-TYPE-MISMATCH
+c = nope // expect: E-NAME-UNDEFINED
+d(x: Number) = x
+e = d("s") // expect: E-TYPE-MISMATCH

@@ -1,0 +1,6 @@
+// Two literal heads denoting one value (6.4).
+f(x: String) = case (x) {
+  "a" -> 1
+  "a" -> 2 // expect: E-TYPE-CASE-DUPLICATE
+  else -> 3
+}
