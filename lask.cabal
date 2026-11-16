@@ -403,6 +403,7 @@ test-suite lask-unit
       Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
+      Language.Lask.Syntax.PrinterCommentsSpec
       Language.Lask.Syntax.PrinterSpec
       Language.Lask.Syntax.PropertiesSpec
       Language.Lask.Syntax.ScopeSpec
