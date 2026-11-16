@@ -102,3 +102,35 @@ spec = do
       suggests "main() = #alpine:3.20{memroy: \"4g\"}" ETypeEnvConstruct ["memory"]
     it "nothing when no name is close" $
       suggests "main() = zzzzzz" ENameUndefined []
+    it "several candidates, closest first, then by name" $
+      suggests "x = ma([1], \\(v: Number) -> v)" ENameUndefined ["map", "max"]
+    it "an undefined name: the reserved identifier stdin" $
+      suggests "f() = stdn" ENameUndefined ["stdin"]
+    it "an undefined type: built-in type aliases" $
+      suggests "x: Eror = {code: 1, message: \"a\"}" ENameUndefined ["Error"]
+    it "a qualified type: the public type aliases of the namespace's module" $
+      suggestionsFor
+        [ ("main.lask", "import * as m from \"./lib.lask\"\nx: m.Confg = {name: \"a\"}"),
+          ("lib.lask", "type Config = Record<name: String>\ninternal type Confgi = Number")
+        ]
+        >>= (`shouldBe` [(ENameUndefined, ["Config"])])
+    it "a command word an import asks for: the module's exported words" $
+      suggestionsFor
+        [ ("main.lask", "import command { \"pyhton\" } from \"./lib.lask\"\nx = 1"),
+          ("lib.lask", "command { \"python\" } on #local")
+        ]
+        >>= (`shouldBe` [(ENameUndefined, ["python"])])
+    it "a member of a re-exported namespace, and a namespace of a module" $ do
+      let lib = [("lib.lask", "export * as ns from \"./inner.lask\""), ("inner.lask", "hello() = 1")]
+      suggestionsFor (("main.lask", "import * as m from \"./lib.lask\"\nx = m.ns.helo()") : lib)
+        >>= (`shouldBe` [(ENameUndefined, ["hello"])])
+      suggestionsFor (("main.lask", "import * as m from \"./lib.lask\"\nx = m.nss.hello()") : lib)
+        >>= (`shouldBe` [(ENameUndefined, ["ns"])])
+    it "a keyword argument of a function reached through a namespace" $
+      suggestionsFor
+        [ ("main.lask", "import * as m from \"./lib.lask\"\nx = m.greet(\"a\", prefx = \"yo\")"),
+          ("lib.lask", "greet(name: String, --prefix: String = \"hi\") = concat(prefix, name)")
+        ]
+        >>= (`shouldBe` [(ETypeKeyword, ["prefix"])])
+    it "an optional record field" $
+      suggests "r: Record<name?: String> = {}\nx = r.nmae" ETypeAccess ["name"]

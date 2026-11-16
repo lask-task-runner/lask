@@ -1,0 +1,14 @@
+// pending: a lambda's body is not checked against the result type its expected type gives, so fail and cast find no type to take and [] and {a: 1} are inferred as if nothing were expected
+// The expected type of a lambda gives its body an expected type, the result
+// type, as an annotation gives any expression one (4.3); so the T of fail is
+// concretized from it (15.7), and so is that of cast (15.8).
+v: Any = 1
+a: Function<Number> = \() -> fail(error(3, "x"))
+b: Function<Number> = \() -> cast(v)
+c: Function<Array<Number>> = \() -> []
+d: Function<Map<Number>> = \() -> {a: 1}
+// The callee's signature, instantiated from the expected type or from the
+// other arguments (4.4), gives the lambda passed to it its expected type.
+e(): Number = retry([0], \() -> fail(error(3, "x")))
+f(): Number = recover(\() -> fail(error(3, "x")), \(e: Error) -> 0)
+g(xs: Array<Number>): Array<Number> = map(xs, \(x) -> fail(error(3, "x")))

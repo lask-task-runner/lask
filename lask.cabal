@@ -295,6 +295,7 @@ test-suite lask-e2e
       Support.EmbedTwin.ValuesAndTypes
       Support.FakeVault
       Support.Harness
+      Support.Pending
       Support.SyntaxGen
       Paths_lask
   hs-source-dirs:
@@ -362,6 +363,7 @@ test-suite lask-unit
       Command.Lask.CompleteSpec
       Language.Lask.Builtins.DocSpec
       Language.Lask.Builtins.FormatSpec
+      Language.Lask.Builtins.ImplSpec
       Language.Lask.Builtins.PathSpec
       Language.Lask.Builtins.RegexSpec
       Language.Lask.Builtins.ShellSpec
@@ -401,6 +403,7 @@ test-suite lask-unit
       Support.EmbedTwin.ValuesAndTypes
       Support.FakeVault
       Support.Harness
+      Support.Pending
       Support.SyntaxGen
       Paths_lask
   hs-source-dirs:
