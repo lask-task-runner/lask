@@ -279,6 +279,7 @@ test-suite lask-e2e
       Cli.ConcurrencySpec
       Cli.ConfirmSpec
       Cli.DepsCommandsSpec
+      Cli.DepsSpec
       Cli.EnginesSpec
       Cli.ExitSpec
       Cli.GitPinSpec
@@ -286,10 +287,12 @@ test-suite lask-e2e
       Cli.ImagesSpec
       Cli.InterruptSpec
       Cli.LogsSpec
+      Cli.LspProtocolSpec
       Cli.ModulesSpec
       Cli.SecretsSpec
       Cli.SignalSpec
       ErrorCodeSpec
+      ExampleCommandsSpec
       ExamplesSpec
       GoldenSpec
       SpecExamplesSpec
