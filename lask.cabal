@@ -367,6 +367,7 @@ test-suite lask-unit
       Language.Lask.Builtins.PathSpec
       Language.Lask.Builtins.RegexSpec
       Language.Lask.Builtins.ShellSpec
+      Language.Lask.CommandSchemaSpec
       Language.Lask.ConfirmSpec
       Language.Lask.Core.LintSpec
       Language.Lask.CorpusSpec
