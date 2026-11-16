@@ -1,0 +1,4 @@
+f(x: Number): String = case (x) {
+  else -> "a"  // expect: E-SYNTAX-CASE-ELSE
+  1 -> "b"
+}

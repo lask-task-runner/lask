@@ -1,0 +1,2 @@
+f(--a: Number = 1): Number = a
+g(): Number = f(1)  // expect: E-TYPE-ARITY

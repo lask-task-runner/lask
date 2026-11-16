@@ -1,0 +1,1 @@
+access A = { files: { ".": true } }  // expect: E-TYPE-WITHIN-SPEC

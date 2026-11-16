@@ -1,0 +1,1 @@
+f(): Strin = "a"  // expect: E-NAME-UNDEFINED

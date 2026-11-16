@@ -1,0 +1,5 @@
+f(): Number = do {
+  x = 1
+  x = 2  // expect: E-NAME-DUPLICATE
+  x
+}

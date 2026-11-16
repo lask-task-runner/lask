@@ -1,0 +1,1 @@
+access A = { volumes: { "/tmp/../c": "rw" } }  // expect: E-TYPE-WITHIN-SPEC

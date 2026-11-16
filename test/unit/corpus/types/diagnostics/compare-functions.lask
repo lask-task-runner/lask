@@ -1,0 +1,2 @@
+g(x: Number): Number = x
+f(): Bool = g == g  // expect: E-TYPE-BOUND

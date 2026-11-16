@@ -1,0 +1,1 @@
+f(): String = $[#alpine:3.22.2{egress: ["a.com:443"], network: "none"}] true  // expect: E-TYPE-ENV-CONSTRUCT

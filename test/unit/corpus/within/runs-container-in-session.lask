@@ -1,0 +1,3 @@
+f() within { runs: ["container"] } = with_container(#local, \(box) -> do {  // expect: E-TYPE-WITHIN-EXCEEDED
+  $[box] true  // expect: E-TYPE-WITHIN-EXCEEDED
+})

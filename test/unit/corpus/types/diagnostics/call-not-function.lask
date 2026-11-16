@@ -1,0 +1,2 @@
+x = 1
+g(): Number = x(1)  // expect: E-TYPE-CALL

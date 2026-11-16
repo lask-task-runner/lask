@@ -1,0 +1,3 @@
+access Cache = { volumes: { "/tmp/cache": "rw" } }
+
+t() within Cache = $[#alpine:3.22.2{volumes: ["./cache:/c"], network: "none"}] true  // expect: E-TYPE-WITHIN-EXCEEDED

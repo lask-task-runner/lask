@@ -1,0 +1,1 @@
+access A = { outbound: ["registry.npmjs.org"] }  // expect: E-TYPE-WITHIN-SPEC

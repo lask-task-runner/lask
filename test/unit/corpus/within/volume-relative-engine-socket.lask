@@ -1,0 +1,2 @@
+// pending: a volume source starting with '.' is read as a named volume, but the client makes it a path relative to where it runs, so the engine socket reached through it is not seen as the host (spec 10.11)
+f(): String within { outbound: false } = $[#alpine:3.22.2{network: "none", volumes: ["./../../../../../../../../var/run/docker.sock:/var/run/docker.sock"]}] docker ps  // expect: E-TYPE-WITHIN-EXCEEDED

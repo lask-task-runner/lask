@@ -1,0 +1,2 @@
+p = false
+access A = { outbound: p }  // expect: E-TYPE-WITHIN-SPEC

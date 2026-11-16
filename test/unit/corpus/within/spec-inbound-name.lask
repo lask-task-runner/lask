@@ -1,0 +1,1 @@
+access A = { inbound: ["localhost:8080"] }  // expect: E-TYPE-WITHIN-SPEC

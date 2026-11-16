@@ -1,0 +1,1 @@
+f(): Array<Number> = map([1], \(a: Number, b: Number): Number -> a)  // expect: E-TYPE-MISMATCH
