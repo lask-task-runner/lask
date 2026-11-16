@@ -1,0 +1,2 @@
+loc(x: Number): String = $[#local] uname
+t(): Array<String> within { runs: ["container"] } = map([1], loc)  // expect: E-TYPE-WITHIN-EXCEEDED

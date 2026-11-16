@@ -1,0 +1,4 @@
+// pending: /run/user/<uid> holds a rootless engine's docker.sock, named only by its suffix, so the directory is not seen as the host (spec 10.11)
+access Contained = { runs: ["container"] }
+
+t() within Contained = $[#alpine:3.22.2{volumes: ["/run/user/1000:/r"], network: "none"}] true  // expect: E-TYPE-WITHIN-EXCEEDED

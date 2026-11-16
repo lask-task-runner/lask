@@ -360,6 +360,7 @@ test-suite lask-unit
   main-is: Spec.hs
   other-modules:
       Command.Lask.CompleteSpec
+      Language.Lask.AccessSpec
       Language.Lask.Builtins.DocSpec
       Language.Lask.Builtins.FormatSpec
       Language.Lask.Builtins.PathSpec
@@ -383,6 +384,7 @@ test-suite lask-unit
       Language.Lask.Module.ResolveSpec
       Language.Lask.Obs.CommandLogSpec
       Language.Lask.ReplSpec
+      Language.Lask.Runtime.EgressSpec
       Language.Lask.Runtime.EnvironmentSpec
       Language.Lask.Runtime.EvalSpec
       Language.Lask.Runtime.GlobSpec

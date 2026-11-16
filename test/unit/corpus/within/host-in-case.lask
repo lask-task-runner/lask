@@ -1,0 +1,4 @@
+t(s: String): String within { runs: ["container"] } = case (s) {
+  "a" -> $[#local] uname  // expect: E-TYPE-WITHIN-EXCEEDED
+  else -> "x"
+}

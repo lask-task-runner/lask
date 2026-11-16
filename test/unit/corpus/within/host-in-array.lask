@@ -1,0 +1,2 @@
+envs: Array<Runnable> = [#alpine:3.22.2, #local]
+t(i: Number): String within { runs: ["container"] } = $[envs[i]] uname  // expect: E-TYPE-WITHIN-EXCEEDED

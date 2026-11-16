@@ -1,0 +1,2 @@
+pick(e: Runnable): Runnable = e
+t(): String within { runs: ["container"] } = $[pick(#local)] uname  // expect: E-TYPE-WITHIN-EXCEEDED
