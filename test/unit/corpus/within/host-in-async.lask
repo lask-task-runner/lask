@@ -1,0 +1,4 @@
+t(): String within { runs: ["container"] } = do {
+  a = async $[#local] uname  // expect: E-TYPE-WITHIN-EXCEEDED
+  await a
+}

@@ -1,0 +1,3 @@
+fns: Map<Function<String>> = { "a": \() -> $[#local]{uname} }
+
+t(): String within { runs: ["container"] } = fns["a"]()  // expect: E-TYPE-WITHIN-EXCEEDED

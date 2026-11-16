@@ -1,0 +1,2 @@
+go(n: Number): String = n == 0 ? $[#local]{uname} : go(n - 1)
+t(): String within { runs: ["container"] } = go(3)  // expect: E-TYPE-WITHIN-EXCEEDED

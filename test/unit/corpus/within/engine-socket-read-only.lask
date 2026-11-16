@@ -1,0 +1,1 @@
+c() within { runs: ["container"] } = $[#alpine:3.22.2{volumes: ["/var/run/docker.sock:/s:ro"], network: "none"}] true  // expect: E-TYPE-WITHIN-EXCEEDED

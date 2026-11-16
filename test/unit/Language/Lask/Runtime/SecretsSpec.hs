@@ -7,7 +7,10 @@ import qualified Data.Vector as V
 import Language.Lask.ErrorCode (ErrorCode (ERuntimeCommandNonzero))
 import Language.Lask.Runtime.Secrets
 import Language.Lask.Runtime.Value
+import qualified Data.Text as T
 import Test.Hspec
+import Test.Hspec.QuickCheck (prop)
+import Test.QuickCheck
 
 spec :: Spec
 spec = before_ resetSecretRegistryForTests . after_ resetSecretRegistryForTests $ do
@@ -98,3 +101,43 @@ spec = before_ resetSecretRegistryForTests . after_ resetSecretRegistryForTests 
       let lf = LaskFailure (Just ERuntimeCommandNonzero) (errorValue 1 "denied for tok-123\n") ["deploy (main.lask)"]
       masked <- maskFailure lf
       masked `shouldBe` LaskFailure (Just ERuntimeCommandNonzero) (errorValue 1 "denied for ***\n") ["deploy (main.lask)"]
+
+  -- Laws over generated secrets and text. Each case starts from an empty
+  -- registry, which is global.
+  describe "masking laws (spec 12.8)" $ do
+    prop "a secret of 8 characters or more is gone, whatever surrounds it" $ \(Secret s) (Noise a) (Noise b) -> ioProperty $ do
+      out <- registered [s] (maskSecrets (a <> s <> b))
+      pure (counterexample (T.unpack out) (not (s `T.isInfixOf` out)))
+    prop "no secret survives, however several are interleaved" $ \(Secrets ss) (Noise n) -> ioProperty $ do
+      out <- registered ss (maskSecrets (T.intercalate n (ss <> reverse ss)))
+      pure (counterexample (T.unpack out) (not (any (\s -> s `T.isInfixOf` out) ss)))
+    prop "masking what is masked changes nothing" $ \(Secrets ss) (Noise n) -> ioProperty $ do
+      (once, twice) <- registered ss (do o <- maskSecrets (T.intercalate n ss); t <- maskSecrets o; pure (o, t))
+      pure (once === twice)
+    prop "a value holds no secret once masked, in its strings or its keys" $ \(Secret s) (Noise n) -> ioProperty $ do
+      v <- registered [s] (maskValue (VRecord (Map.fromList [("k", VArray (V.fromList [VString (n <> s)])), ("m", VMap (Map.fromList [(s <> n, VString s)]))])))
+      pure (counterexample (show v) (not (s `T.isInfixOf` T.pack (show v))))
+
+-- | Run with exactly these secrets registered.
+registered :: [T.Text] -> IO a -> IO a
+registered ss act = resetSecretRegistryForTests >> mapM_ registerSecret ss >> act
+
+-- | A secret long enough to be masked wherever it appears, of the
+-- characters credentials are made of and some that quoting touches.
+newtype Secret = Secret T.Text deriving (Show)
+
+instance Arbitrary Secret where
+  arbitrary = Secret . T.pack <$> (chooseInt (8, 24) >>= \n -> vectorOf n (elements (['a' .. 'f'] <> ['0' .. '3'] <> "+/=_-'\"\\$ ")))
+
+newtype Secrets = Secrets [T.Text] deriving (Show)
+
+instance Arbitrary Secrets where
+  arbitrary = Secrets . map (\(Secret s) -> s) <$> resize 3 (listOf1 arbitrary)
+
+-- | Text around a secret, from the same characters, so that it may
+-- run into the secret on either side.
+newtype Noise = Noise T.Text deriving (Show)
+
+instance Arbitrary Noise where
+  arbitrary = Noise . T.pack <$> resize 10 (listOf (elements (['a' .. 'f'] <> ['0' .. '3'] <> "*=\n ")))
+

@@ -1,0 +1,1 @@
+c() within { outbound: ["*.github.com:443"] } = $[#alpine:3.22.2{egress: ["github.com:443"]}] true  // expect: E-TYPE-WITHIN-EXCEEDED
