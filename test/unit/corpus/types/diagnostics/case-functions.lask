@@ -1,0 +1,5 @@
+g(x: Number): Number = x
+f(): Number = case (g) {  // expect: E-TYPE-BOUND
+  g -> 1
+  else -> 2
+}

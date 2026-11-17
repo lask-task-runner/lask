@@ -1,0 +1,2 @@
+f(--a: Number): Number = a
+g(): Number = f()  // expect: E-TYPE-KEYWORD

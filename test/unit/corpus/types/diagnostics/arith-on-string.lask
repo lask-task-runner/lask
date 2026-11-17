@@ -1,0 +1,1 @@
+f(): Number = "a" * 2  // expect: E-TYPE-MISMATCH

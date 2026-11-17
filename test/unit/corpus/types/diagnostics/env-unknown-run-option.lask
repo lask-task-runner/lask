@@ -1,0 +1,1 @@
+f(): String = $[#alpine:3.22.2{netwrok: "none"}] true  // expect: E-TYPE-ENV-CONSTRUCT

@@ -367,6 +367,7 @@ test-suite lask-unit
   main-is: Spec.hs
   other-modules:
       Command.Lask.CompleteSpec
+      Language.Lask.AccessParseSpec
       Language.Lask.AccessSpec
       Language.Lask.Builtins.DocSpec
       Language.Lask.Builtins.FormatSpec
@@ -407,9 +408,11 @@ test-suite lask-unit
       Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
       Language.Lask.Syntax.ParserSpec
+      Language.Lask.Syntax.PrinterCommentsSpec
       Language.Lask.Syntax.PrinterSpec
       Language.Lask.Syntax.PropertiesSpec
       Language.Lask.Syntax.ScopeSpec
+      Language.Lask.Syntax.ShellReadingSpec
       Language.Lask.Syntax.ShellSpec
       Language.Lask.Syntax.TokenStreamSpec
       Language.LaskSpec

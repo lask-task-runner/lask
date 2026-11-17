@@ -1,0 +1,1 @@
+access A = { runs: [] }  // expect: E-TYPE-WITHIN-SPEC

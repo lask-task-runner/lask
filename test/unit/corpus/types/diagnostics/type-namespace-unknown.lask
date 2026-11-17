@@ -1,0 +1,1 @@
+f(): nope.T = 1  // expect: E-NAME-UNDEFINED
