@@ -86,7 +86,8 @@ goldentest(--env: String = "docker", --accept: Bool = false) =
 // @complete env @keys envs
 spectest(--env: String = "docker") = e2etest(env = env, match = "doc/spec.md examples")
 
-// Check every project under example/, synced the way a fresh clone is.
+// Check every project under example/, synced the way a fresh clone is,
+// and run the commands the language examples tell a reader to run.
 // With --offline, the ones that declare dependencies are left pending
 // instead of reaching the network.
 //
