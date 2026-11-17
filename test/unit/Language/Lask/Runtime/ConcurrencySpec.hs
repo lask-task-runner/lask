@@ -13,6 +13,11 @@ import Language.Lask.ErrorCode
 import Support.Eval
 import Test.Hspec
 
+-- A computation that fails at once can fail before the others have
+-- started their commands, leaving nothing to stop and no finally
+-- block entered. The ones that fail here first wait a tenth of a
+-- second, so that what race and all do to the others is seen.
+
 -- | Evaluate @f@ against a fresh scripted runner, returning the result,
 -- what the script recorded once the evaluation returned, and how many
 -- seconds it took.
@@ -55,7 +60,7 @@ spec = do
       seen `shouldContain` ["stop slow"]
       seen `shouldNotContain` ["end slow"]
     it "fails with a failure that comes first, unchanged" $ do
-      (r, seen, _) <- evalF "f() = race([async $[#local]{wait 2 slow}, async $[#local]{exit 5 bad}])"
+      (r, seen, _) <- evalF "f() = race([async $[#local]{wait 2 slow}, async do {\n  w = $[#local]{wait 0.1 settle}\n  $[#local]{exit 5 bad}\n}])"
       codeOf r `shouldBe` Just ERuntimeCommandNonzero
       errorCode r `shouldBe` Just "5"
       seen `shouldContain` ["stop slow"]
@@ -85,7 +90,7 @@ spec = do
       r `shouldBe` Right "[\"a\",\"b\",\"c\"]"
       secs `shouldSatisfy` (< 1.1)
     it "fails at the first failure in time, wherever it stands, and stops the rest" $ do
-      (r, seen, secs) <- evalF "f() = all([async $[#local]{wait 2 slow}, async $[#local]{exit 4 bad}])"
+      (r, seen, secs) <- evalF "f() = all([async $[#local]{wait 2 slow}, async do {\n  w = $[#local]{wait 0.1 settle}\n  $[#local]{exit 4 bad}\n}])"
       errorCode r `shouldBe` Just "4"
       seen `shouldContain` ["stop slow"]
       secs `shouldSatisfy` (< 1.5)
@@ -93,12 +98,12 @@ spec = do
       (r, _, _) <- evalF "f() = all([async do {\n  x = $[#local]{wait 0.2 x}\n  $[#local]{exit 3 late}\n}, async $[#local]{exit 4 early}])"
       errorCode r `shouldBe` Just "4"
     it "returns once the finally blocks of the others have ended" $ do
-      (r, seen, _) <- evalF "f() = all([async try { $[#local]{wait 2 other} } finally { $[#local]{wait 0.2 cleanup} }, async $[#local]{exit 4 bad}])"
+      (r, seen, _) <- evalF "f() = all([async try { $[#local]{wait 2 other} } finally { $[#local]{wait 0.2 cleanup} }, async do {\n  w = $[#local]{wait 0.1 settle}\n  $[#local]{exit 4 bad}\n}])"
       errorCode r `shouldBe` Just "4"
       seen `shouldContain` ["end cleanup"]
     it "stops what the others started with async, leaving none running" $ do
       pendingWith "known bug: all cancels the other computations but not what they started with async, which runs on after all has failed (spec 15.6: none is left running)"
-      (r, seen) <- evalSettled "f() = all([async do {\n  h = async $[#local]{wait 0.4 grand}\n  await h\n}, async $[#local]{exit 4 bad}])"
+      (r, seen) <- evalSettled "f() = all([async do {\n  h = async $[#local]{wait 0.4 grand}\n  await h\n}, async do {\n  w = $[#local]{wait 0.1 settle}\n  $[#local]{exit 4 bad}\n}])"
       errorCode r `shouldBe` Just "4"
       seen `shouldNotContain` ["end grand"]
     it "is the empty array for no handles" $ do
