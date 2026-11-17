@@ -1196,10 +1196,15 @@ Operator precedence, from highest to lowest, is as follows.
 4. Comparison operators `==` `!=` `<` `<=` `>` `>=`
 5. Logical AND `&&`
 6. Logical OR `||`
-7. Pipe and composition operators `|>` `<|` `>>` `<<`
-8. Conditional operator `? :`
+7. Composition operators `>>` `<<`
+8. Application operators `|>` `<|`
+9. Conditional operator `? :`
 
-Operators of the same precedence associate from left to right, except the conditional operator, which associates from right to left.
+Operators of the same precedence associate from left to right, with these exceptions:
+
+- The backward operators `<|` and `<<` associate from right to left, so each of the four reads in the direction its arrow points: `x |> f |> g` is `(x |> f) |> g`, `f <| g <| x` is `f <| (g <| x)`, that is `f(g(x))`, and `f << g << h` is `f << (g << h)`. Composition is associative, so for `<<` this decides only the grouping, not the meaning.
+- `|>` and `<|` cannot be mixed at one level without parentheses, and neither can `>>` and `<<`, since they associate in opposite directions: `x |> f <| y` is a syntax error, and is written `(x |> f) <| y` or `x |> (f <| y)`. A composition inside an application needs none, as composition binds more tightly: `xs |> f >> g` is `xs |> (f >> g)`.
+- The conditional operator associates from right to left.
 
 The conditional operator `c ? a : b`:
 

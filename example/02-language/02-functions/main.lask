@@ -61,8 +61,9 @@ shout(names: Array<String>): Array<String> =
 
 // Turn free text into a slug, left to right.
 //
-// `|>` and `<|` apply, `>>` and `<<` compose. All four are
-// left-associative and sit at the bottom of the precedence table.
+// `|>` and `<|` apply, `>>` and `<<` compose. They sit at the bottom
+// of the precedence table, composition above application, and each
+// associates in the direction its arrow points.
 //
 // @example lask eval pipeline "  Lask Task Runner  "
 pipeline(raw: String): String =

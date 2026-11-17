@@ -451,6 +451,32 @@ spec = do
       pExpr "a && b |> f"
         `shouldBe` Right (EBin OpPipeR (ex (EBin OpAnd (var "a") (var "b"))) (var "f"))
 
+    it "associates |> and >> to the left, <| and << to the right (spec 6.2)" $ do
+      pExpr "x |> f |> g"
+        `shouldBe` Right (EBin OpPipeR (ex (EBin OpPipeR (var "x") (var "f"))) (var "g"))
+      pExpr "f <| g <| x"
+        `shouldBe` Right (EBin OpPipeL (var "f") (ex (EBin OpPipeL (var "g") (var "x"))))
+      pExpr "f >> g >> h"
+        `shouldBe` Right (EBin OpCompR (ex (EBin OpCompR (var "f") (var "g"))) (var "h"))
+      pExpr "f << g << h"
+        `shouldBe` Right (EBin OpCompL (var "f") (ex (EBin OpCompL (var "g") (var "h"))))
+
+    it "binds composition tighter than application (spec 6.2)" $ do
+      pExpr "xs |> f >> g"
+        `shouldBe` Right (EBin OpPipeR (var "xs") (ex (EBin OpCompR (var "f") (var "g"))))
+      pExpr "f << g <| x"
+        `shouldBe` Right (EBin OpPipeL (ex (EBin OpCompL (var "f") (var "g"))) (var "x"))
+      pExpr "a || b >> f"
+        `shouldBe` Right (EBin OpCompR (ex (EBin OpOr (var "a") (var "b"))) (var "f"))
+
+    it "rejects mixing an operator with its twin unparenthesized (spec 6.2)" $ do
+      pExpr "x |> f <| y" `shouldSatisfy` isLeft
+      pExpr "f <| x |> g" `shouldSatisfy` isLeft
+      pExpr "f >> g << h" `shouldSatisfy` isLeft
+      pExpr "(x |> f) <| y" `shouldSatisfy` isRight
+      pExpr "x |> (f <| y)" `shouldSatisfy` isRight
+      pExpr "f >> g |> h << k" `shouldSatisfy` isRight
+
     it "parses the conditional operator below pipes (spec 6.2)" $
       pExpr "a |> f ? b : c"
         `shouldBe` Right (ECond (ex (EBin OpPipeR (var "a") (var "f"))) (var "b") (var "c"))
