@@ -3,7 +3,7 @@ access Sealed = {
   volumes: false, outbound: false, inbound: false, secrets: false
 }
 
-node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: "none"}
+node = #node:24.21.0-alpine3.24{ base_access: { ".": "ro", "dist": "rw" }, network: "none" }
 
 setup() = do {
   $[#node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: get_env("NET")}] npm ci

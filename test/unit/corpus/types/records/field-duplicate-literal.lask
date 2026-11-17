@@ -1,2 +1,2 @@
 // The same holds of object literal keys (4.2).
-r = {name: "a", "name": "b"} // expect: E-TYPE-FIELD-DUPLICATE
+r = { name: "a", "name": "b" } // expect: E-TYPE-FIELD-DUPLICATE

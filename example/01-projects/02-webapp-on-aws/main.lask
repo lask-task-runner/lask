@@ -66,7 +66,7 @@ test_e2e(
   website = tf_output().website_url
 
   // The password reaches the browser as a variable, not on a command line.
-  e2e = playwright({"E2E_BASE_URL": website, "E2E_EMAIL": email, "E2E_PASSWORD": password})
+  e2e = playwright({ "E2E_BASE_URL": website, "E2E_EMAIL": email, "E2E_PASSWORD": password })
   $[e2e] cd e2e && \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && \
     npx playwright test

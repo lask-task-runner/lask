@@ -10,12 +10,12 @@
 models_volume = "lask-ollama-models:/root/.ollama"
 
 // Downloading a model is the one step that needs the network.
-ollama_online = #ollama/ollama:0.12.5{volumes: [models_volume]}
+ollama_online = #ollama/ollama:0.12.5{ volumes: [models_volume] }
 
 // Everything else runs with no network at all, so no prompt can leave
 // the machine, and a model that was never pulled fails rather than
 // downloading quietly.
-ollama_offline = #ollama/ollama:0.12.5{volumes: [models_volume], network: "none"}
+ollama_offline = #ollama/ollama:0.12.5{ volumes: [models_volume], network: "none" }
 
 // Open WebUI's image with Ollama built in: one container, so neither
 // server needs a port of its own. The page is published on 127.0.0.1
