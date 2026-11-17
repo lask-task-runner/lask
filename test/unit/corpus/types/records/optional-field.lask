@@ -1,4 +1,4 @@
 // An optional field may be omitted; null is not absent (4.3).
-r: Record<a: Number, b?: String> = {a: 1}
-s: Record<a: Number, b?: String | Null> = {a: 1, b: null}
-t: Record<a: Number, b?: String> = {a: 1, b: null} // expect: E-TYPE-MISMATCH
+r: Record<a: Number, b?: String> = { a: 1 }
+s: Record<a: Number, b?: String | Null> = { a: 1, b: null }
+t: Record<a: Number, b?: String> = { a: 1, b: null } // expect: E-TYPE-MISMATCH

@@ -1,5 +1,5 @@
 // The bare and the qualified form name one declaration (4.2).
 import * as m from "./lib.lask"
 import { Config } from "./lib.lask"
-a: Config = {name: "a"}
+a: Config = { name: "a" }
 b: m.Config = a

@@ -1,3 +1,3 @@
-envs: Map<Runnable> = { "sealed": #alpine:3.22.2{network: "none"}, "open": #alpine:3.22.2 }
+envs: Map<Runnable> = { "sealed": #alpine:3.22.2{ network: "none" }, "open": #alpine:3.22.2 }
 
 pick(name: String) within { outbound: false } = $[envs[name]] true  // expect: E-TYPE-WITHIN-EXCEEDED

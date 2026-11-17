@@ -1,4 +1,4 @@
 // Map<String> conforms to Map<String | Null>; the reverse does not (4.4).
-m: Map<String> = {a: "x"}
+m: Map<String> = { a: "x" }
 n: Map<String | Null> = m
 o: Map<String> = n // expect: E-TYPE-MISMATCH

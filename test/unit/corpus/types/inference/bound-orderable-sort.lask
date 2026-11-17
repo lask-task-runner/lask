@@ -1,4 +1,4 @@
 // sort's bound becomes the bound of the inferred element type (4.3).
 f(xs) = sort(xs)
 ok: Array<String> = f(["b", "a"])
-bad = f([{a: 1}]) // expect: E-TYPE-BOUND
+bad = f([{ a: 1 }]) // expect: E-TYPE-BOUND

@@ -40,13 +40,13 @@ spec = do
       ["a=-1", "b=- -1", "c=1- -x", "d=-(1+2)"]
         `formatsTo` ["a = -1", "b = - -1", "c = 1 - -x", "d = -(1 + 2)"]
 
-    it "pads the braces of record literals, imports and command words, and not of annotation options" $
+    it "pads the braces of record literals, imports, command words and environment options" $
       [ "import {a,b as c} from \"./lib\"",
         "command {\"go\"} on #golang:1.25{env:{}}",
         "o = {k:1}"
       ]
         `formatsTo` [ "import { a, b as c } from \"./lib\"",
-                      "command { \"go\" } on #golang:1.25{env: {}}",
+                      "command { \"go\" } on #golang:1.25{ env: {} }",
                       "o = { k: 1 }"
                     ]
 

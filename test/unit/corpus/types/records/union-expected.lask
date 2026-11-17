@@ -1,3 +1,3 @@
 // A union with one Record or Map member checks the literal against it (4.3).
-f(): Record<a: Number, b?: String> | Null = {a: 1}
-g(): Record<a: Number> | Map<Number> = {a: 1}
+f(): Record<a: Number, b?: String> | Null = { a: 1 }
+g(): Record<a: Number> | Map<Number> = { a: 1 }

@@ -1,5 +1,5 @@
 // Bindings inside a for body do not leak (7.3).
-f() = for (x : [1]) {
+f() = for (x: [1]) {
   y = x
   y
 }

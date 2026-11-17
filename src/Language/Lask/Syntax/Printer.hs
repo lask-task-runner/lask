@@ -694,7 +694,7 @@ exprBody flat a b f = case f of
       dv <- expr v
       pure (text k <> ": " <> dv)
 
--- | @#head(args){options}@: the lists hug the head, as they must
+-- | @#head(args){ options }@: the lists hug the head, as they must
 -- (spec 6.7).
 envExpr :: Pos -> Text -> Maybe [Arg] -> Maybe [Arg] -> P Doc
 envExpr a h as os = do
@@ -710,7 +710,7 @@ envExpr a h as os = do
     Nothing -> pure mempty
     Just xs -> do
       open <- tokFrom TLBrace argsEnd
-      list "{" "}" False open TRBrace (map option xs)
+      list "{" "}" True open TRBrace (map option xs)
   pure ("#" <> text h <> dargs <> dopts)
   where
     option (Arg sp f) = Item (startOf sp) (endOf sp) $ case f of

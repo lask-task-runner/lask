@@ -30,7 +30,7 @@ pinned = #alpine@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2
 // Run options go in braces after the head: resource limits, for one.
 // The braces make a Runnable — the environment, and how to run it. They
 // are sugar for runnable(#alpine:3.22.2, memory = "256m", cpus = 1).
-small = #alpine:3.22.2{memory: "256m", cpus: 1}
+small = #alpine:3.22.2{ memory: "256m", cpus: 1 }
 
 // It configures the rest of the container the same way: variables, the
 // network, and what the container may write to. These are ordinary
@@ -152,7 +152,7 @@ release_of(e: Environment): String = $[e] sh -c 'cat /etc/alpine-release 2>/dev/
 // options, given once where the container is opened.
 //
 // @return What the second and third commands found the first left.
-kept_in_session(): String = with_container(#alpine:3.22.2{workdir: "/tmp", env: { "STEP": "3" }}, \(box) -> do {
+kept_in_session(): String = with_container(#alpine:3.22.2{ workdir: "/tmp", env: { "STEP": "3" } }, \(box) -> do {
   $[box] echo written-by-step-1 > note
   $[box] sleep 60 > /dev/null 2>&1 &
   found = $[box] echo "$(cat note), $(pgrep sleep | wc -l) background process, step $STEP"

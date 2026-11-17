@@ -1,5 +1,5 @@
 // Field access needs a Record: not a Map, Any or a union (6.8).
-m: Map<Number> = {a: 1}
+m: Map<Number> = { a: 1 }
 v: Any = 1
 u: Record<a: Number> | Null = null
 a = m.a // expect: E-TYPE-ACCESS

@@ -1,2 +1,2 @@
 // An extra key is a type error (4.3).
-r: Record<a: Number> = {a: 1, c: 2} // expect: E-TYPE-MISMATCH
+r: Record<a: Number> = { a: 1, c: 2 } // expect: E-TYPE-MISMATCH
