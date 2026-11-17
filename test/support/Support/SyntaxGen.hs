@@ -676,20 +676,26 @@ level :: ExprF -> Int
 level f = case f of
   ECond {} -> 0
   EBin o _ _ -> opLevel o
-  ENot _ -> 7
-  ENeg _ -> 7
-  EAsync _ -> 7
-  EAwait _ -> 7
-  _ -> 8
+  ENot _ -> 8
+  ENeg _ -> 8
+  EAsync _ -> 8
+  EAwait _ -> 8
+  _ -> 9
 
 opLevel :: Op -> Int
 opLevel o
-  | o `elem` [OpMul, OpDiv] = 6
-  | o `elem` [OpAdd, OpSub] = 5
-  | o `elem` [OpEq, OpNe, OpLt, OpLe, OpGt, OpGe] = 4
-  | o == OpAnd = 3
-  | o == OpOr = 2
+  | o `elem` [OpMul, OpDiv] = 7
+  | o `elem` [OpAdd, OpSub] = 6
+  | o `elem` [OpEq, OpNe, OpLt, OpLe, OpGt, OpGe] = 5
+  | o == OpAnd = 4
+  | o == OpOr = 3
+  | o `elem` [OpCompR, OpCompL] = 2
   | otherwise = 1
+
+-- | The backward application and composition operators associate to
+-- the right; every other binary operator to the left (spec 6.2).
+rightAssoc :: Op -> Bool
+rightAssoc o = o `elem` [OpPipeL, OpCompL]
 
 opText :: Op -> Text
 opText o = case o of
@@ -742,10 +748,19 @@ exprF' m more f = case f of
   ECall g as -> base g <> "(" <> commas (map (arg m) as) <> ")"
   EDot e (Spanned _ n) -> base e <> "." <> n
   EIndex e i -> base e <> "[" <> expr m 0 False i <> "]"
-  EBin o a b -> expr m (opLevel o) True a <> " " <> opText o <> " " <> expr m (opLevel o + 1) more b
+  -- An operand on the side the operator associates to may be another
+  -- application of it at its level, but not of its twin, which
+  -- associates the other way and cannot be mixed in unparenthesized.
+  EBin o a b ->
+    let lvl = opLevel o
+        assocSide c = case c of
+          Expr _ (EBin o' _ _) | opLevel o' == lvl, rightAssoc o' /= rightAssoc o -> lvl + 1
+          _ -> lvl
+        (pa, pb) = if rightAssoc o then (lvl + 1, assocSide b) else (assocSide a, lvl + 1)
+     in expr m pa True a <> " " <> opText o <> " " <> expr m pb more b
   -- @!!@ is the secret marker, and @--@ the keyword-parameter mark.
-  ENot x -> prefix "!" (expr m 7 more x)
-  ENeg x -> prefix "-" (expr m 7 more x)
+  ENot x -> prefix "!" (expr m 8 more x)
+  ENeg x -> prefix "-" (expr m 8 more x)
   EDo b -> "do " <> block m b
   EIf c t me -> "if (" <> expr m 0 False c <> ") " <> block m t <> maybe "" ((" else " <>) . block m) me
   ECond c a b -> expr m 1 True c <> " ? " <> expr m 0 False a <> " : " <> expr m 0 more b
@@ -756,8 +771,8 @@ exprF' m more f = case f of
       <> block m b
       <> maybe "" (\(Spanned _ n, h) -> " catch (" <> n <> ") " <> block m h) c
       <> maybe "" ((" finally " <>) . block m) fin
-  EAsync x -> "async " <> expr m 7 more x
-  EAwait x -> "await " <> expr m 7 more x
+  EAsync x -> "async " <> expr m 8 more x
+  EAwait x -> "await " <> expr m 8 more x
   ECommand s env ps -> command False s env ps
   EEnv h as os ->
     "#"
@@ -769,7 +784,7 @@ exprF' m more f = case f of
     -- An environment head takes in the characters after it, and a
     -- list right after it is its own (spec 6.7).
     base e@(Expr _ EEnv {}) = "(" <> expr m 0 False e <> ")"
-    base e = expr m 8 True e
+    base e = expr m 9 True e
 
 arg :: Mode -> Arg -> Text
 arg m (Arg _ a) = case a of
