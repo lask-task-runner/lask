@@ -1,0 +1,86 @@
+exit: 0
+--- stdout
+{
+    "confirm": null,
+    "description": "Every file under the release directory is uploaded; nothing is removed.",
+    "environments": [
+        {
+            "environment": "#alpine:3.22.2",
+            "kind": "registry"
+        }
+    ],
+    "examples": [
+        "lask run deploy prod a.txt b.txt --token $TOKEN"
+    ],
+    "function": "deploy",
+    "kind": "function-help",
+    "location": {
+        "column": 1,
+        "line": 13
+    },
+    "module": "main.lask",
+    "params": [
+        {
+            "default": null,
+            "doc": "Where it goes.",
+            "kind": "positional",
+            "name": "target",
+            "required": false,
+            "secret": false,
+            "type": "String"
+        },
+        {
+            "default": null,
+            "doc": "The files, relative to the release directory.",
+            "kind": "variadic",
+            "name": "files",
+            "required": false,
+            "secret": false,
+            "type": "Array<String>"
+        },
+        {
+            "default": "<secret>",
+            "doc": "The credential of the target.",
+            "kind": "keyword",
+            "name": "token",
+            "required": false,
+            "secret": true,
+            "type": "String"
+        },
+        {
+            "default": null,
+            "doc": null,
+            "kind": "keyword",
+            "name": "region",
+            "required": true,
+            "secret": false,
+            "type": "String"
+        },
+        {
+            "default": "false",
+            "doc": "Print what would be uploaded.",
+            "kind": "keyword",
+            "name": "dry_run",
+            "required": false,
+            "secret": false,
+            "type": "Bool"
+        },
+        {
+            "default": "null",
+            "doc": null,
+            "kind": "keyword",
+            "name": "retries",
+            "required": false,
+            "secret": false,
+            "type": "Number | Null"
+        }
+    ],
+    "returns": {
+        "doc": "What was uploaded.",
+        "type": "String"
+    },
+    "summary": "Deploy the release to the target."
+}
+
+--- stderr
+

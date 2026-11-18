@@ -281,15 +281,20 @@ test-suite lask-e2e
       Cli.DepsCommandsSpec
       Cli.DepsSpec
       Cli.EnginesSpec
+      Cli.EnvsSpec
       Cli.ExitSpec
+      Cli.FmtSpec
       Cli.GitPinSpec
       Cli.HelpSpec
       Cli.ImagesSpec
       Cli.InterruptSpec
+      Cli.InvocationSpec
       Cli.LogsSpec
       Cli.LspProtocolSpec
       Cli.ModulesSpec
+      Cli.ReplSpec
       Cli.RetrySpec
+      Cli.SecretRefsSpec
       Cli.SecretsSpec
       Cli.SignalSpec
       ErrorCodeSpec
@@ -367,6 +372,8 @@ test-suite lask-unit
   main-is: Spec.hs
   other-modules:
       Command.Lask.CompleteSpec
+      Command.Lask.FmtSpec
+      Command.Lask.TableSpec
       Language.Lask.AccessParseSpec
       Language.Lask.AccessSpec
       Language.Lask.Builtins.DocSpec
