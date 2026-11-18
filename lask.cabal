@@ -292,6 +292,7 @@ test-suite lask-e2e
       Cli.LogsSpec
       Cli.LspProtocolSpec
       Cli.ModulesSpec
+      Cli.ReaperSpec
       Cli.ReplSpec
       Cli.RetrySpec
       Cli.SecretRefsSpec
@@ -304,6 +305,7 @@ test-suite lask-e2e
       SpecExamplesSpec
       Support.EmbedTwin.ValuesAndTypes
       Support.Eval
+      Support.FakeClient
       Support.FakeVault
       Support.Harness
       Support.Pending
@@ -403,6 +405,9 @@ test-suite lask-unit
       Language.Lask.ReplSpec
       Language.Lask.Runtime.CancelScopeSpec
       Language.Lask.Runtime.ConcurrencySpec
+      Language.Lask.Runtime.ContainerRunSpec
+      Language.Lask.Runtime.ContainerSpec
+      Language.Lask.Runtime.EgressPlacementSpec
       Language.Lask.Runtime.EgressSpec
       Language.Lask.Runtime.EnvironmentSpec
       Language.Lask.Runtime.EvalSpec
@@ -411,6 +416,7 @@ test-suite lask-unit
       Language.Lask.Runtime.RecoverySpec
       Language.Lask.Runtime.SecretsSpec
       Language.Lask.SecretStore.ResolveSpec
+      Language.Lask.SecretStore.VaultSpec
       Language.Lask.SoundnessSpec
       Language.Lask.SuggestSpec
       Language.Lask.Syntax.CommandWordsSpec
@@ -426,6 +432,7 @@ test-suite lask-unit
       Language.LSP.LaskSpec
       Support.EmbedTwin.ValuesAndTypes
       Support.Eval
+      Support.FakeClient
       Support.FakeVault
       Support.Harness
       Support.Pending
