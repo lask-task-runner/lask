@@ -1,6 +1,6 @@
 exit: 0
 --- stdout
-main.lask:3:19-3:67: W-SECRET-COMMAND-LINE [static]: the secret 'main.lask: token' is in the command string, from which the programs the command runs are given it as arguments, which the host's process list shows; give it in 'env' to a program that reads the variable itself
+main.lask:3:19-3:69: W-SECRET-COMMAND-LINE [static]: the secret 'main.lask: token' is in the command string, from which the programs the command runs are given it as arguments, which the host's process list shows; give it in 'env' to a program that reads the variable itself
 the module is valid
 
 --- stderr

@@ -196,15 +196,37 @@ spec = do
         `formatsTo` ["x  = // why", "    1", "y = 2"]
 
   describe "commands" $ do
-    it "copies a command expression as written" $
+    it "copies the command string as written" $
       unchanged ["f() = $[#local]   echo  'a  b'   #{1}  // not a comment"]
+
+    it "formats the environment of a command" $
+      ["f() = $*[ #alpine:3.22.2{network:\"none\"} ] echo hi"]
+        `formatsTo` ["f() = $*[#alpine:3.22.2{ network: \"none\" }] echo hi"]
+
+    it "formats the holes of a command, and leaves the text around them" $
+      ["f(xs: Array<String>) = $ echo  #{ xs|>join(\" \") }  #!{xs[0]}"]
+        `formatsTo` ["f(xs: Array<String>) = $ echo  #{xs |> join(\" \")}  #!{xs[0]}"]
+
+    it "copies a hole whose formatting would break its line" $
+      unchanged ["x = $ echo #{try { 1 } finally { null; null }}"]
 
     it "keeps a command's line to itself" $
       unchanged ["xs = [", "  $ ls", "]"]
 
-    it "lets a braced command share its line" $ do
-      unchanged ["xs = [${ls}, $[#local] { pwd } |> trim]"]
-      ["xs = [  ${ls}  ,${pwd}]"] `formatsTo` ["xs = [${ls}, ${pwd}]"]
+    it "lets a braced command share its line, with one space inside its braces" $ do
+      unchanged ["xs = [${ ls }, $[#local] { pwd } |> trim]"]
+      ["xs = [  ${ls}  ,${  pwd   }]"] `formatsTo` ["xs = [${ ls }, ${ pwd }]"]
+
+    it "pads a braced command that starts or ends with a hole" $
+      ["f(c: String) = ${#{c}}", "g(c: String) = ${echo #{${echo #{c}}}}"]
+        `formatsTo` ["f(c: String) = ${ #{c} }", "g(c: String) = ${ echo #{${ echo #{c} }} }"]
+
+    it "counts the braces in a braced command and pads only its own" $
+      ["f() = ${awk '{print $1}' f}", "g() = ${echo \\}}"]
+        `formatsTo` ["f() = ${ awk '{print $1}' f }", "g() = ${ echo \\} }"]
+
+    it "leaves the braces of a braced command that ends in an escaped space" $
+      unchanged ["f() = ${echo a\\ }"]
 
     it "copies the lines of a braced command as written" $
       unchanged ["f() = ${", "  ls |", "    sort", "} |> trim"]

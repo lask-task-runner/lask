@@ -1,2 +1,2 @@
 pick(fast: Bool) within { outbound: false } =
-  $[fast ? #alpine:3.22.2{network: "none"} : #alpine:3.22.2] true  // expect: E-TYPE-WITHIN-EXCEEDED
+  $[fast ? #alpine:3.22.2{ network: "none" } : #alpine:3.22.2] true  // expect: E-TYPE-WITHIN-EXCEEDED

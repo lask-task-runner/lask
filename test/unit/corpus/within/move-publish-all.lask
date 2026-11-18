@@ -6,7 +6,7 @@ access Sealed = {
 node = #node:24.21.0-alpine3.24{ base_access: { ".": "ro", "dist": "rw" }, network: "none" }
 
 setup() = do {
-  $[#node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, publish: ["9229:9229"], network: "none"}] node --inspect=0.0.0.0 t.js
+  $[#node:24.21.0-alpine3.24{ base_access: { ".": "ro", "dist": "rw" }, publish: ["9229:9229"], network: "none" }] node --inspect=0.0.0.0 t.js
 }
 
 test() within Sealed = do {

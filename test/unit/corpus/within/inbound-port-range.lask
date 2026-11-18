@@ -1,4 +1,4 @@
 access Ports = { inbound: ["127.0.0.1:8000-8010"] }
 
-ok() within Ports = $[#nginx:1.27{publish: ["127.0.0.1:8005:80"], network: "none"}] nginx
-bad() within Ports = $[#nginx:1.27{publish: ["127.0.0.1:8011:80"], network: "none"}] nginx  // expect: E-TYPE-WITHIN-EXCEEDED
+ok() within Ports = $[#nginx:1.27{ publish: ["127.0.0.1:8005:80"], network: "none" }] nginx
+bad() within Ports = $[#nginx:1.27{ publish: ["127.0.0.1:8011:80"], network: "none" }] nginx  // expect: E-TYPE-WITHIN-EXCEEDED

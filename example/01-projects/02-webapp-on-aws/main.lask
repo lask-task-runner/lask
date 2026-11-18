@@ -170,7 +170,7 @@ create_user(
     cognito-idp admin-create-user --user-pool-id "#{pool}" --username "#{email}" \
     --user-attributes Name=email,Value="#{email}" Name=email_verified,Value=true \
     --message-action SUPPRESS
-  $[aws_with({"NEW_PASSWORD": password})] aws \
+  $[aws_with({ "NEW_PASSWORD": password })] aws \
     cognito-idp admin-set-user-password --user-pool-id "#{pool}" --username "#{email}" \
     --password "$NEW_PASSWORD" --permanent
 }

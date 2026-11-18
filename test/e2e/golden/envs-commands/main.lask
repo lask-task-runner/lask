@@ -1,6 +1,6 @@
 alpine = #alpine:3.22.2
 
-images: Map<Environment> = {a: #alpine:3.22.2, d: #debian:13}
+images: Map<Environment> = { a: #alpine:3.22.2, d: #debian:13 }
 
 clean(): String = $[#local] rm -rf dist
 

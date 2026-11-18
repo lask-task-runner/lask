@@ -1,1 +1,1 @@
-c() within { outbound: ["*.github.com:443"] } = $[#alpine:3.22.2{egress: ["a.b.github.com:443"]}] true
+c() within { outbound: ["*.github.com:443"] } = $[#alpine:3.22.2{ egress: ["a.b.github.com:443"] }] true
