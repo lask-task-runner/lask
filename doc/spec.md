@@ -565,7 +565,7 @@ Type annotations are optional, and the following type inference rules apply wher
   - A `T` that already admits `Null`, or is `Any`, is unchanged by the join.
   - So `if (c) { "x" } else { null }` and `c ? "x" : null` are `String | Null`, and `case (s) { "a" -> 1; else -> null }` is `Number | Null`, which is also what an `if` without `else` is (6.4). Any other difference between the types of branches is a type error, as before: `if (c) { 1 } else { "a" }` is not `Number | String`.
   - With an expected type, each branch is checked against it (below), and the join plays no part.
-- Branches of conforming types: when the branches of one expression (above) are checked with no expected type, and the types of the branches that are not `Null` differ, but one of them is a type every other conforms to (4.4), the type is that one, joined with `Null` by the rule above where a branch is `Null`. So `c ? names : maybe_names` and `c ? maybe_names : names`, with `names: Array<String>` and `maybe_names: Array<String | Null>`, are both `Array<String | Null>`, and `if (c) { #alpine:3.20 } else { #alpine:3.20{memory: "1g"} }` is `Runnable`. This builds no type of its own, unlike a union of the branches, so the order of the branches never decides the type.
+- Branches of conforming types: when the branches of one expression (above) are checked with no expected type, and the types of the branches that are not `Null` differ, but one of them is a type every other conforms to (4.4), the type is that one, joined with `Null` by the rule above where a branch is `Null`. So `c ? names : maybe_names` and `c ? maybe_names : names`, with `names: Array<String>` and `maybe_names: Array<String | Null>`, are both `Array<String | Null>`, and `if (c) { #alpine:3.20 } else { #alpine:3.20{ memory: "1g" } }` is `Runnable`. This builds no type of its own, unlike a union of the branches, so the order of the branches never decides the type.
 - For an array literal `[e1, e2, ...]` with no expected type, the type of each element is inferred; if all are the same type `T`, the literal is `Array<T>`, and if heterogeneous, it is `Array<Any>`.
 - When the expected type is `Array<T>`, if every element expression conforms to `T`, the literal's type is `Array<T>`. If any element does not conform, it is a type error.
 - The empty array `[]` follows the expected type if one exists; with no expected type it is `Array<Any>`.
@@ -810,7 +810,7 @@ Command declarations:
 
 ```lask
 node = #node:20.20.2-alpine3.23
-go(--proxy: String = ""): Runnable = #golang:1.25{env: { "GOPROXY": proxy }}
+go(--proxy: String = ""): Runnable = #golang:1.25{ env: { "GOPROXY": proxy } }
 
 command { "go", "gofmt" } on go(proxy = "direct")
 command { "node", "npm", "npx" } on node
@@ -835,8 +835,8 @@ Command imports and exports:
 
 ```lask fragment
 // tools/main.lask
-go(--proxy: String = ""): Runnable = #golang:1.25{env: {"GOPROXY": proxy}}
-aws(--profile: String = ""): Runnable = #amazon/aws-cli:2.36.41{env: {"AWS_PROFILE": profile}}
+go(--proxy: String = ""): Runnable = #golang:1.25{ env: { "GOPROXY": proxy } }
+aws(--profile: String = ""): Runnable = #amazon/aws-cli:2.36.41{ env: { "AWS_PROFILE": profile } }
 command { "go", "gofmt" } on go()
 export command { "node", "npm" } on #node:20.20.2-alpine3.23
 internal command { "helper" } on #local
@@ -1696,7 +1696,7 @@ Shell syntax:
 Environment specification rules:
 
 - `Environment` is a basic type defined in 4.1, and the responsibilities of execution environments are defined in Chapter 10.
-- `env` is an expression of type `Runnable`: an `Environment`, which conforms to it (4.4), or a runnable. It is usually written as an environment expression (6.7) — `#local`, an image reference such as `#alpine:3.20`, a recipe such as `#./images/build/Dockerfile`, or any of these with run options, `#alpine:3.20{memory: "4g"}` — but any expression of either type (a variable reference, a call, etc.) can be placed there.
+- `env` is an expression of type `Runnable`: an `Environment`, which conforms to it (4.4), or a runnable. It is usually written as an environment expression (6.7) — `#local`, an image reference such as `#alpine:3.20`, a recipe such as `#./images/build/Dockerfile`, or any of these with run options, `#alpine:3.20{ memory: "4g" }` — but any expression of either type (a variable reference, a call, etc.) can be placed there.
 - If resolution of `env` fails, it is a pre-execution error.
 - When an environment specification is present it is the environment, and dispatch is not performed whatever the command string contains. When it is absent the environment is the one dispatch selects (10.9), and its absence is a static error when dispatch selects none. There is no default execution environment (10.1).
 - Whitespace after `$` is not significant. The command string begins immediately after `$`, after the stream specifier, or after the closing `]`, and its leading whitespace is removed, so `$go test` and `$ go test` are the same expression, and `${go test}` and `$ { go test }` are too. Only a stream specifier and an environment specification may follow `$` without intervening whitespace.
@@ -1795,7 +1795,7 @@ Syntax rules:
 
 Desugaring rules:
 
-- `#head(image options){k1: e1, ..., kn: en}` is syntactic sugar for `runnable(#head(image options), k1 = e1, ..., kn = en)` (15.5). It refers to the built-in `runnable` whatever the name `runnable` is bound to in scope (7.6).
+- `#head(image options){ k1: e1, ..., kn: en }` is syntactic sugar for `runnable(#head(image options), k1 = e1, ..., kn = en)` (15.5). It refers to the built-in `runnable` whatever the name `runnable` is bound to in scope (7.6).
 - The sugar is available on a head only. Run options for an environment held in a variable are given with `runnable(e, ...)`.
 
 Typing rules:
@@ -1814,10 +1814,10 @@ Examples:
 ```lask
 e1 = #local
 e2 = #alpine:3.20
-e3 = #alpine:3.20{memory: "4g", env: { "TOKEN": get_env("TOKEN") }}
+e3 = #alpine:3.20{ memory: "4g", env: { "TOKEN": get_env("TOKEN") } }
 e4 = #ubuntu@sha256:9cee2b382fe2412cd77d5d437d15a93da8de373813621f2e4d406e3df0cf0e7c
 e5 = #./infra/Dockerfile(context = ".", build_args = { "GO_VERSION": "1.25" })
-e6 = #node:24.21.0-alpine3.24(platform = "linux/amd64"){memory: "2g"}
+e6 = #node:24.21.0-alpine3.24(platform = "linux/amd64"){ memory: "2g" }
 
 // A function that lets its caller choose the image, and says how to run it.
 python(--image: Environment = #python:3.12.14-alpine3.24, --index_url: String | Null = null): Runnable =
@@ -2003,7 +2003,7 @@ deploy(
   // It is given to the container as the variable the CLI reads itself:
   // written into the command, it would be an argument of the program the
   // command runs, which the host's process list shows (W-SECRET-COMMAND-LINE).
-  aws = #amazon/aws-cli:2.31.9{env: {"AWS_SECRET_ACCESS_KEY": secret_key}}
+  aws = #amazon/aws-cli:2.31.9{ env: { "AWS_SECRET_ACCESS_KEY": secret_key } }
   $[aws] aws sts get-caller-identity --region #{region}
 }
 ```
@@ -2344,7 +2344,7 @@ Resolution of an environment or runnable value to an execution environment (10.4
 
 Equality comparison:
 
-- `==` / `!=` (6.2) on `Environment` and `Runnable` values is determined by structural equality of the profile, the image with its image options, and the set of run options that are set. An `Environment` and a `Runnable` with no run option set are equal: `#alpine:3.20 == runnable(#alpine:3.20)`, and `#alpine:3.20{memory: null} == #alpine:3.20`. The order run options are written in is not part of the value (10.2), so it plays no part.
+- `==` / `!=` (6.2) on `Environment` and `Runnable` values is determined by structural equality of the profile, the image with its image options, and the set of run options that are set. An `Environment` and a `Runnable` with no run option set are equal: `#alpine:3.20 == runnable(#alpine:3.20)`, and `#alpine:3.20{ memory: null } == #alpine:3.20`. The order run options are written in is not part of the value (10.2), so it plays no part.
 - The session a `with_container` call that starts a container gives its body (15.5) is equal only to itself: not to the environment it was opened on, nor to the session of another call. A call given `#local`, or a session that is open, gives the body that value itself, which compares as it does anywhere else.
 
 ### 8.9 Evaluation of Accessor Expressions (Core Expression)
@@ -2550,7 +2550,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 
 ```lask
 aws(key_id: String, secret: String) =
-  #amazon/aws-cli:2.31.9{env: { "AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret }}
+  #amazon/aws-cli:2.31.9{ env: { "AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret } }
 
 deploy(
   --key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
@@ -2584,7 +2584,7 @@ Reading:
 - A value resolved from a reference is registered for masking (12.8). This is the one case in which a value is registered because of where it came from: writing a reference is how the environment declares the value secret. Binding it to a `!!`-marked name (6.10) remains good practice and changes nothing.
 - A run reads each secret at most once. Two references that name the same secret (the same path and version, differing in their field at most) are answered by the same read, also when they are read concurrently (6.3). For a store that issues a new credential on every read, this is what makes the fields of one credential agree.
 - A resolved value is kept in memory for the rest of the run only. Nothing is written to disk.
-- Resolution never changes the process environment. A command reads the variables of its execution environment (10.6), and a `local` command that reads the variable itself sees the reference, not the secret; a value reaches a command only as the program passes it on, for instance as `#alpine:3.20{env: {"TOKEN": get_env("TOKEN")}}`.
+- Resolution never changes the process environment. A command reads the variables of its execution environment (10.6), and a `local` command that reads the variable itself sees the reference, not the secret; a value reaches a command only as the program passes it on, for instance as `#alpine:3.20{ env: { "TOKEN": get_env("TOKEN") } }`.
 - Nothing that does not evaluate a program resolves a reference: `check`, `serve`, completion and help never reach a store. `cmd --help` (11.8) reports a command whose environment reads a reference without resolving it.
 
 The `vault` scheme (HashiCorp Vault, and stores serving the same HTTP API, such as OpenBao):
@@ -2661,7 +2661,7 @@ The host running Lask is a POSIX system, such as Linux or macOS. Windows is not 
   - A run option takes any expression of its type, like an argument anywhere else. It is resolved when a command runs.
   - The order options are written in is not part of the value. Two runnables with the same image and the same options set are structurally equal (8.8), so dispatch does not see them as two environments (10.9).
   - A run option must not be able to unsettle what this chapter fixes elsewhere: the image, the process launch method, the mount of the base directory beyond moving it and narrowing what it permits (10.5), the streams (9.1, 11.8), or the rule that images are materialized only by `sync` (10.3). An option that would override one of those is outside what may be provided.
-  - Notation examples: `#alpine:3.12`, `#./infra/Dockerfile(context = ".")`, `#node:24.21.0-alpine3.24(platform = "linux/amd64")`; with run options, `#alpine:3.12{memory: "4g"}`, `runnable(e, memory = "4g")`
+  - Notation examples: `#alpine:3.12`, `#./infra/Dockerfile(context = ".")`, `#node:24.21.0-alpine3.24(platform = "linux/amd64")`; with run options, `#alpine:3.12{ memory: "4g" }`, `runnable(e, memory = "4g")`
 
 The run options this implementation provides:
 
@@ -2936,7 +2936,7 @@ An access constraint bounds the host files and the networks that the commands of
 ```lask
 within { outbound: false, volumes: false }
 
-node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: "none"}
+node = #node:24.21.0-alpine3.24{ base_access: { ".": "ro", "dist": "rw" }, network: "none" }
 
 // Builds into dist; nothing else under the base directory is written.
 build(): String within { files: { ".": "ro", "dist": "rw" } } = do {
@@ -3032,7 +3032,7 @@ Checking:
 
 ```lask fragment
 alpine = #alpine:3.22.2
-sealed = #alpine:3.22.2{network: "none"}
+sealed = #alpine:3.22.2{ network: "none" }
 
 release_of(e: Runnable): String within { outbound: false } =
   $[e] cat /etc/alpine-release
@@ -3067,7 +3067,7 @@ open_to_all(): String within Loopback =
 token!!: String = get_env("TOKEN")
 other!!: String = get_env("OTHER")
 
-aws(key: String) = #amazon/aws-cli:2.31.9{env: {"AWS_SECRET_ACCESS_KEY": key}}
+aws(key: String) = #amazon/aws-cli:2.31.9{ env: { "AWS_SECRET_ACCESS_KEY": key } }
 
 whoami(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secrets: [key] } =
   $[aws(key)] aws sts get-caller-identity
@@ -3094,7 +3094,7 @@ leak(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secret
 `egress` lets the commands of a container reach the destinations it lists, and nothing else. It is enforced by where the container is placed, not by what its programs choose to do: the container is on a network with no route out, and the only way out is a proxy Lask runs, which forwards a connection only to a listed destination.
 
 ```lask
-npm = #node:24.21.0-alpine3.24{egress: ["registry.npmjs.org:443"]}
+npm = #node:24.21.0-alpine3.24{ egress: ["registry.npmjs.org:443"] }
 
 fetch(): String within { outbound: ["registry.npmjs.org:443", "*.github.com:443"] } =
   $[npm] npm ci
@@ -4073,7 +4073,7 @@ Targets:
 
 What changes, and what does not:
 
-- Spacing is normalized: one space around binary operators, `=` and `->`, after `,` and `:`, and none inside brackets, except the braces of a record literal, an import list or a command word list, which take one space inside unless they are empty (`{ "a": 1 }`, `import { a, b } from "lib"`, `command { "go" } on #golang:1.25`).
+- Spacing is normalized: one space around binary operators, `=` and `->`, after `,` and `:`, and none inside brackets, except the braces of a record literal, an import list, a command word list or the run options of an environment expression, which take one space inside unless they are empty (`{ "a": 1 }`, `import { a, b } from "lib"`, `command { "go" } on #golang:1.25`, `#alpine:3.22.2{ network: "none" }`).
 - Indentation is two spaces per level. `else`, `catch` and `finally` follow the closing brace of the block before them on its line.
 - Each statement, declaration and `case` arm is on a line of its own. A block or a `case` whose content the source writes on the line of its braces keeps it there.
 - Line breaks inside an expression stay where the source has them, and only there: between the items of a bracketed list, before its closing bracket, and around a binary operator, `?`, `:`, `=` and `->`. No line is broken or joined for its length. A continuation line that begins with an operator is indented one level, unless the expression starts a line of its own, whose indentation it then keeps:
@@ -4968,7 +4968,7 @@ Contract:
 Runnables:
 
 - `runnable(env, k1 = v1, ...)` returns `env` with the run options given (10.2): how the image runs, never which image it is. Each run option is a keyword parameter defaulting to `null`, and an option given `null` is not set.
-- `#head{k1: v1, ...}` is its sugar (6.7).
+- `#head{ k1: v1, ... }` is its sugar (6.7).
 - It takes an `Environment` only. A `Runnable` is not one (4.4), so the options of a runnable are given once, where it is made (8.8).
 - An image option given to it is a static error (`E-TYPE-ENV-CONSTRUCT`): the image is named by a head, with its image options (6.7).
 - A run option for a `local` environment is `E-TYPE-ENV-CONSTRUCT` when the environment is `#local` written as the argument, and `E-RUNTIME-VALUE` when it is reached as a value. `runnable(e)` with no run option is a runnable for any environment.
@@ -5008,7 +5008,7 @@ Container sessions:
 ```lask
 // Install a tool outside /work, start a server in the background, and
 // test against it: three steps, each on a line of its own.
-test_api(): String = with_container(#node:24.21.0-alpine3.24{workdir: "/work/api"}, \(box) -> do {
+test_api(): String = with_container(#node:24.21.0-alpine3.24{ workdir: "/work/api" }, \(box) -> do {
   $[box] apk add --no-cache curl
   $[box] npm ci
   $[box] npm start > /tmp/server.log 2>&1 &
