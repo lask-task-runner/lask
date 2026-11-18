@@ -359,7 +359,7 @@ Escape sequences:
 
 - Escape sequences are valid only in interpreted strings.
 - The minimum supported escapes are `\\`, `\"`, `\n`, `\r`, `\t`.
-- Unicode escapes are supported in the `\u{HEX}` form (`HEX` is one or more hexadecimal digits).
+- Unicode escapes are supported in the `\u{HEX}` form (`HEX` is one or more hexadecimal digits). `HEX` names a Unicode scalar value: one greater than `10FFFF`, or a surrogate (`D800` to `DFFF`), which is not a character, is a syntax error.
 - Raw strings perform no escape processing.
 
 ## 4. Type System

@@ -172,10 +172,15 @@ pEscape = do
       _ <- char '{'
       hexDigits <- takeWhile1P (Just "hex digit") isHexDigit
       _ <- char '}'
-      let n = T.foldl' (\acc d -> acc * 16 + Char.digitToInt d) 0 hexDigits
+      -- Summed in an Integer, so that no number of digits wraps
+      -- around into range.
+      let n = T.foldl' (\acc d -> acc * 16 + toInteger (Char.digitToInt d)) 0 hexDigits :: Integer
       if n > 0x10FFFF
         then fail "unicode escape out of range"
-        else pure (T.singleton (chr n))
+        else
+          if n >= 0xD800 && n <= 0xDFFF
+            then fail "unicode escape names a surrogate, which is not a character"
+            else pure (T.singleton (chr (fromInteger n)))
     _ -> fail ("invalid escape sequence: \\" <> [c])
 
 -- Environment heads -----------------------------------------------------

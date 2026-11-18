@@ -72,6 +72,19 @@ spec = do
     prop "is answered by the lexer, the parser and the formatter: a generated module with tokens deleted, duplicated, swapped or put in" $
       forAll (genModule >>= genMutation . renderModule) answers
 
+  describe "a unicode escape (spec 3)" $ do
+    let rejected src = parseModule "t.lask" src `shouldSatisfy` either (const True) (const False)
+    it "answers one whose code point is past any machine integer" $
+      answers "x = \"\\u{8000000000000000}\""
+    it "rejects one whose code point would wrap around an Int back into range" $
+      rejected "x = \"\\u{10000000000000041}\""
+    it "rejects one past 10FFFF, and a surrogate" $ do
+      rejected "x = \"\\u{110000}\""
+      rejected "x = \"\\u{D800}\""
+      rejected "x = \"\\u{DFFF}\""
+    it "reads the last character before the surrogates and the first after" $ do
+      parseModule "t.lask" "x = \"\\u{D7FF}\\u{E000}\\u{10FFFF}\"" `shouldSatisfy` either (const False) (const True)
+
   -- What the properties found, each with its smallest counterexample.
   -- Pending until fixed; drop the knownBug to run one.
   describe "known bugs" $ do
@@ -85,12 +98,5 @@ spec = do
       it "formats a wide character in a literal that more of the line follows" $
         formatSource "t.lask" "x = ['日']\n" `shouldBe` Right "x = ['日']\n"
 
-    -- Lexer.pEscape adds up the hex digits of \u{...} in an Int.
-    knownBug "the code point of \\u{...} overflows an Int" $ do
-      it "answers an escape whose code point overflows to a negative Int (Prelude.chr: bad argument)" $
-        answers "x = \"\\u{8000000000000000}\""
-
-      it "rejects an escape whose code point overflows back into range" $
-        parseModule "t.lask" "x = \"\\u{10000000000000041}\"" `shouldSatisfy` either (const True) (const False)
   where
     knownBug = before_ . pendingWith
