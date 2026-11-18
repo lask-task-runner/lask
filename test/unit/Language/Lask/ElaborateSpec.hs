@@ -14,7 +14,6 @@ import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Types (renderType)
-import Support.Pending (knownBug)
 import Test.Hspec
 
 -- | Full front-end pipeline over in-memory sources.
@@ -1491,12 +1490,8 @@ spec = do
       messagesOf "f<T: orderable>(a: T, b: T) = a < b\ng = f([1], [2])"
         >>= (`shouldSatisfy` any ("requires T to be orderable" `T.isInfixOf`))
     it "names an inferred type parameter T, as help shows it" $
-      -- The message reads "'show' requires T% to be stringifiable": the
-      -- bound message drops only the '@' suffix of a variable, where
-      -- varDisplay drops '%' as well.
-      knownBug "an inferred type parameter is named T% in the E-TYPE-BOUND message, the elaborator's name for it" $
-        messagesOf "show(x) = \"#{x}\"\ny = show(null)"
-          >>= (`shouldSatisfy` all (\m -> "requires T to be" `T.isInfixOf` m && not ("%" `T.isInfixOf` m)))
+      messagesOf "show(x) = \"#{x}\"\ny = show(null)"
+        >>= (`shouldSatisfy` all (\m -> "requires T to be" `T.isInfixOf` m && not ("%" `T.isInfixOf` m)))
     it "writes a union in canonical form (4.2)" $
       diagnosticsOf "x: Null | String = 1" >>= (`shouldBe` [Just "String | Null"]) . map diagExpected
 

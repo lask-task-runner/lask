@@ -248,7 +248,7 @@ holds ctx = satisfiesNamed (boundOf ctx)
 boundViolation :: Ctx -> Span -> Text -> Text -> Bound -> Type -> Diagnostic
 boundViolation ctx sp callee v b t =
   diag ETypeBound sp $
-    "'" <> callee <> "' requires " <> T.takeWhile (/= '@') v <> " to " <> wanted <> ", but here it is " <> renderType t <> hint
+    "'" <> callee <> "' requires " <> varDisplay v <> " to " <> wanted <> ", but here it is " <> renderType t <> hint
   where
     wanted = case b of
       BoundNamed nb -> "be " <> renderNamedBound nb
