@@ -1,1 +1,1 @@
-c() within { files: { ".": "ro" } } = $[#alpine:3.22.2{base_access: { ".": "ro", "../": "rw" }, network: "none"}] true  // expect: E-TYPE-ENV-CONSTRUCT
+c() within { files: { ".": "ro" } } = $[#alpine:3.22.2{ base_access: { ".": "ro", "../": "rw" }, network: "none" }] true  // expect: E-TYPE-ENV-CONSTRUCT

@@ -1,1 +1,1 @@
-f(): String = $[#alpine:3.22.2{base_mount: "/proc/x"}] true  // expect: E-TYPE-ENV-CONSTRUCT
+f(): String = $[#alpine:3.22.2{ base_mount: "/proc/x" }] true  // expect: E-TYPE-ENV-CONSTRUCT

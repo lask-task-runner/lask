@@ -1,2 +1,2 @@
 type Port = Number
-f() within Port = $[#alpine:3.22.2{network: "none"}] true  // expect: E-TYPE-WITHIN-SPEC
+f() within Port = $[#alpine:3.22.2{ network: "none" }] true  // expect: E-TYPE-WITHIN-SPEC

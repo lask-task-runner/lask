@@ -1,1 +1,1 @@
-f() within { runs: false } = $[#alpine:3.22.2{network: "none"}] true  // expect: E-TYPE-WITHIN-EXCEEDED
+f() within { runs: false } = $[#alpine:3.22.2{ network: "none" }] true  // expect: E-TYPE-WITHIN-EXCEEDED

@@ -1,3 +1,3 @@
 access Api = { outbound: ["api.github.com:443"] }
 
-bad() within Api = $[#alpine:3.22.2{egress: ["*.github.com:443"]}] true  // expect: E-TYPE-WITHIN-EXCEEDED
+bad() within Api = $[#alpine:3.22.2{ egress: ["*.github.com:443"] }] true  // expect: E-TYPE-WITHIN-EXCEEDED

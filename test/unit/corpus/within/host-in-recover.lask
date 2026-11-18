@@ -1,1 +1,1 @@
-t(): String within { runs: ["container"] } = recover(\() -> $[#local]{uname}, \(e: Error) -> "x")  // expect: E-TYPE-WITHIN-EXCEEDED
+t(): String within { runs: ["container"] } = recover(\() -> $[#local]{ uname }, \(e: Error) -> "x")  // expect: E-TYPE-WITHIN-EXCEEDED

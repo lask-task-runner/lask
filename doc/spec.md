@@ -1750,9 +1750,9 @@ lint(): String = do {
 // A braced command ends at its closing brace, so the expression goes on
 // after it on the same line, and its command string may span lines
 // where the shell continues the command.
-kernel(): String = $[#local]{uname -s} |> trim
+kernel(): String = $[#local]{ uname -s } |> trim
 
-versions(): Array<String> = map(["go", "node"], \(t: String) -> $[#local]{#{t} --version} |> trim)
+versions(): Array<String> = map(["go", "node"], \(t: String) -> $[#local]{ #{t} --version } |> trim)
 
 largest(--dir = "."): String = $[#local]{
   du -s #{dir}/* |
@@ -4087,7 +4087,7 @@ What changes, and what does not:
 - The `->` of `case` arms that the source writes in one column stay in one column.
 - Comments are kept, each with the declaration, statement, `case` arm or list item it stands above or beside, so a documentation comment (3.1) stays directly above its declaration. A comment that ends a line keeps the space the source puts before it, so a column of such comments stays aligned. An item with a comment in any other place is kept exactly as written.
 - Runs of blank lines become one blank line; a blank line is never added.
-- Literals keep their spelling (raw or interpreted strings, escapes, number digits). Command expressions (6.6) are kept exactly as written, since their text is the command. Parentheses are kept.
+- Literals keep their spelling (raw or interpreted strings, escapes, number digits). The command string of a command expression (6.6) is kept exactly as written, since its text is the command; its environment in `[...]` and the expressions of its holes are formatted as any other expression, with no space inside their brackets (`$[#alpine:3.22.2{ network: "none" }] echo #{name}`). A braced command written on one line takes one space inside its braces (`${ uname -s }`), which leaves its command string as it was, since that string is trimmed (6.6); one that spans lines, or whose string ends in an escaped space (`\ `), is kept as written. An environment or a hole that spans lines, and a command expression with a comment in it, are kept as written. Parentheses are kept.
 - Formatting is idempotent: formatting a formatted file changes nothing.
 
 Rules:

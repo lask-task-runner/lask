@@ -21,8 +21,8 @@ go_schema: CommandSchema = {
 command { "go", "gofmt" } on #golang:1.25 schema { "go": go_schema }
 
 ok() = $ go test -v -run TestParse ./...
-typo() = ${go tset ./...} // expect: E-TYPE-COMMAND-OPTION
-no_value() = ${go test -run} // expect: E-TYPE-COMMAND-OPTION
-not_listed() = ${go test -covermode x} // expect: E-TYPE-COMMAND-OPTION
+typo() = ${ go tset ./... } // expect: E-TYPE-COMMAND-OPTION
+no_value() = ${ go test -run } // expect: E-TYPE-COMMAND-OPTION
+not_listed() = ${ go test -covermode x } // expect: E-TYPE-COMMAND-OPTION
 other_word() = $ gofmt -anything
 explicit() = $[#golang:1.25] go tset

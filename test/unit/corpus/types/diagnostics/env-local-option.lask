@@ -1,1 +1,1 @@
-f(): String = $[#local{network: "none"}] true  // expect: E-TYPE-ENV-CONSTRUCT
+f(): String = $[#local{ network: "none" }] true  // expect: E-TYPE-ENV-CONSTRUCT

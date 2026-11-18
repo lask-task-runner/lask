@@ -116,7 +116,7 @@ flaky_with_retry(): String = retry_if(
   \(e: Error) -> e.code == 75,
   // Succeeds one time in two. Braced, the command ends before the
   // closing parenthesis of the call.
-  \() -> ${sh -c '[ $((RANDOM % 2)) -eq 0 ] || exit 75; echo done'}
+  \() -> ${ sh -c '[ $((RANDOM % 2)) -eq 0 ] || exit 75; echo done' }
 )
 
 // Wait for a state rather than for a failure to go away.
