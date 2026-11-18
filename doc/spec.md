@@ -3181,7 +3181,7 @@ Develop:
 
 - `check`: returns static validation results.
 - `fmt`: formats the project's `.lask` files in a single style, or checks that they are formatted (11.11).
-- `serve`: provides editor integration (Language Server Protocol) functionality.
+- `serve`: provides editor integration (Language Server Protocol) functionality. It ends on the `exit` notification with the exit code the Language Server Protocol gives: `0` after a `shutdown` request, and `1` without one.
 - `completion`: prints the shell completion script.
 - `version`: prints the version.
 
