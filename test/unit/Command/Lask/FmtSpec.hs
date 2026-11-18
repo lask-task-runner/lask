@@ -15,7 +15,6 @@ import qualified Data.Text.IO as TIO
 import Language.Lask.Syntax.Printer (FormatError (..), formatSource)
 import System.Directory (createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, listDirectory)
 import System.FilePath ((</>))
-import Support.Pending (knownBug)
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
@@ -63,8 +62,7 @@ spec = do
       withSystemTempDirectory "fmt-files" $ \dir -> do
         writeFile (dir </> ".dot.lask") "x = 1\n"
         files <- laskFilesUnder dir
-        knownBug "laskFilesUnder skips every name that begins with a dot, files included: a file .dot.lask is not formatted, where 11.11 leaves out only directories whose name begins with a dot" $
-          map (drop (length dir + 1)) files `shouldBe` [".dot.lask"]
+        map (drop (length dir + 1)) files `shouldBe` [".dot.lask"]
 
   describe "formatting to a fixed point (spec 11.11)" $ do
     corpus <- runIO (filter (".lask" `isSuffixOf`) <$> ((<>) <$> filesUnder "test/unit/corpus" <*> filesUnder "test/e2e/golden"))
