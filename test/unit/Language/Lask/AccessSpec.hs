@@ -49,8 +49,6 @@ spec = modifyMaxSuccess (const 500) $ do
     prop "a path ending in an engine's socket is the host, wherever it is" $ \(P p) ->
       conjoin [hostEquivalent (VolumeHost (p <> s)) | s <- ["/docker.sock", "/podman.sock", "/containerd.sock", "/buildkitd.sock"]]
     it "is the host for the directory a rootless engine keeps its socket in" $ do
-      pendingWith
-        "known gap: /run/user/<uid> holds a rootless engine's docker.sock, which only a suffix names, so 'any directory that holds one of those' cannot see it; volumes: [\"/run/user/1000:/r\"] passes runs: [\"container\"]"
       hostEquivalent (VolumeHost "/run/user/1000") `shouldBe` True
 
   describe "checking a use against a constraint (spec 10.11, Constraints)" $ do
@@ -72,8 +70,6 @@ spec = modifyMaxSuccess (const 500) $ do
       let found = checkAccess noConstraint {conOutbound = Just (BoundEgress bs)} (onlyNet (NetEgress us))
        in null found === all (\u -> any (`egressCovers` u) bs) us
     it "judges a volume by the path it resolves to, not by how it is written" $ do
-      pendingWith
-        "known bug: volumes are compared as written, so { \"/tmp/cache\": \"rw\" } admits \"/tmp/cache/../../home/me/.ssh\", which the engine mounts as /home/me/.ssh"
       let bound = noConstraint {conVolumes = Just (VolumesListed [(VolumeHost "/tmp/cache", ModeRw)])}
           use = AccessSet Nothing (Just [Volume (VolumeHost "/tmp/cache/../../home/me/.ssh") "/k" ModeRw]) Nothing Nothing
       map findingField (checkAccess bound use) `shouldBe` ["volumes"]

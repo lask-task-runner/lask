@@ -858,13 +858,10 @@ targetAccess t = case tHead t of
   _
     | Just vs <- volumes,
       v : _ <- filter (hostEquivalent . volSource) vs ->
-        HostAccess ("the volume " <> q (sourceOf (volSource v)) <> " gives what the host has")
+        HostAccess ("the volume " <> q (volumeSourceText (volSource v)) <> " gives what the host has")
     | otherwise -> AccessSet files volumes network publish
   where
     q x = "\"" <> x <> "\""
-    sourceOf s' = case s' of
-      VolumeHost h -> h
-      VolumeNamed n -> n
     opt k = case Map.lookup k (tOpts t) of
       Just (Known SNull) -> Nothing
       Nothing -> Nothing

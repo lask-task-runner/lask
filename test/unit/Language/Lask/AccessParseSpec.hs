@@ -87,11 +87,11 @@ spec = do
       parseVolume "/x:/y:rw" `shouldBe` Just (Volume (VolumeHost "/x") "/y" ModeRw)
     it "reads an anonymous volume as holding nothing of the host" $
       parseVolume "/only-a-target" `shouldBe` Nothing
-    it "reads a relative host path, which the client makes absolute, as a host path" $ do
-      pendingWith "known bug: './x:/y' is read as the named volume './x', but docker's client (23+) makes a source starting with '.' absolute, so './../../var/run/docker.sock:/s' mounts the engine socket and is not seen as the host (spec 10.11)"
-      fmap volSource (parseVolume "./data:/d") `shouldSatisfy` \s -> case s of
-        Just (VolumeHost _) -> True
-        _ -> False
+    it "reads a source beginning with '.' as a host path relative to the base directory, normalized" $ do
+      fmap volSource (parseVolume "./data:/d") `shouldBe` Just (VolumeBase "data")
+      fmap volSource (parseVolume "./../../var/run/docker.sock:/s") `shouldBe` Just (VolumeBase "../../var/run/docker.sock")
+    it "reads a host path normalized" $
+      fmap volSource (parseVolume "/tmp/cache/../../home/me/.ssh:/k") `shouldBe` Just (VolumeHost "/home/me/.ssh")
 
   describe "the network's class (spec 10.11)" $ do
     it "reads none, the default, a named network and the host" $

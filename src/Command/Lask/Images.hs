@@ -39,7 +39,7 @@ import Language.Lask.Builtins.Impl (RtHooks (..))
 import Language.Lask.Core.AST (Core (..), CoreF (..), coreChildren)
 import Language.Lask.Runtime.EgressProxy (embeddedProxyImage)
 import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
-import Language.Lask.Runtime.Container (ContainerBackend (..), MountError (..), RunSpec (..), resolveBaseMounts)
+import Language.Lask.Runtime.Container (ContainerBackend (..), MountError (..), RunSpec (..), resolveBaseMounts, resolveVolumes)
 import Language.Lask.Runtime.Environment (ResolvedEnv (..), resolveEnv)
 import Language.Lask.Runtime.Eval (evalCore, mkRtCtx)
 import Language.Lask.Runtime.Image
@@ -364,12 +364,12 @@ probeCommands backend core mats prior images = do
 
     -- Left (Left why): the probe could not run. Left (Right (words, why)):
     -- the image's shell could not start.
-    probeWith baseDir image opts ws = do
-      mounts <- resolveBaseMounts baseDir opts
+    probeWith baseDir image written ws = do
+      mounts <- resolveVolumes baseDir written >>= either (pure . Left) (\opts -> fmap (\ms -> (opts, ms)) <$> resolveBaseMounts baseDir opts)
       case mounts of
         Left (MountInvalid why) -> pure (Left (Left why))
         Left (MountUnresolved why) -> pure (Left (Left why))
-        Right ms -> probeMounted baseDir image opts ws ms
+        Right (opts, ms) -> probeMounted baseDir image opts ws ms
 
     probeMounted baseDir image opts ws mounts = do
       (cp, cleanup) <-

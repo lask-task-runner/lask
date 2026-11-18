@@ -224,6 +224,45 @@ spec = do
         hidden <- resolveBaseMounts (tmp </> "base") (table [(".", "ro"), ("escape", "none")])
         hidden `shouldSatisfy` isRight
 
+    describe "volumes, as the client is given them (spec 10.2)" $ do
+      let vols xs = Map.fromList [("volumes", VArray (V.fromList (map VString xs)))]
+          given r = case r of
+            Right m | Just (VArray xs) <- Map.lookup "volumes" m -> [t | VString t <- V.toList xs]
+            _ -> []
+          refused r = case r of
+            Left (MountUnresolved _) -> True
+            _ -> False
+      it "gives a host path normalized, and a path relative to the base directory made absolute there (real filesystem)" $
+        withSystemTempDirectory "lask-volumes" $ \tmp0 -> do
+          tmp <- canonicalizePath tmp0
+          createDirectoryIfMissing True (tmp </> "base" </> "data")
+          r <- resolveVolumesWith [] (tmp </> "base") (vols ["/tmp/cache/../other:/c:ro", "./data/../data:/d", ".:/b", "cache:/k"])
+          given r `shouldBe` ["/tmp/other:/c:ro", T.pack (tmp </> "base" </> "data") <> ":/d", T.pack (tmp </> "base") <> ":/b", "cache:/k"]
+      it "leaves the options alone when there are no volumes" $
+        resolveVolumesWith [] "/" (Map.fromList [("cpus", VNumber 2)]) `shouldReturn` Right (Map.fromList [("cpus", VNumber 2)])
+      it "refuses a relative path that leads out of the base directory, by .. or by a link (real filesystem)" $
+        withSystemTempDirectory "lask-volumes" $ \tmp -> do
+          createDirectoryIfMissing True (tmp </> "base")
+          createDirectoryIfMissing True (tmp </> "outside")
+          createDirectoryLink (tmp </> "outside") (tmp </> "base" </> "escape")
+          resolveVolumesWith [] (tmp </> "base") (vols ["./../outside:/o"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith [] (tmp </> "base") (vols ["./escape:/o"]) >>= (`shouldSatisfy` refused)
+      it "refuses a link to what gives the host, and allows what was written as the host (real filesystem)" $
+        withSystemTempDirectory "lask-volumes" $ \tmp0 -> do
+          tmp <- canonicalizePath tmp0
+          createDirectoryLink "/etc" (tmp </> "cfg")
+          resolveVolumesWith [] tmp (vols [T.pack (tmp </> "cfg") <> ":/c"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith [] tmp (vols ["/etc:/c:ro"]) >>= (`shouldSatisfy` isRight)
+      it "refuses a path that is or holds a path only the run knows gives the host (real filesystem)" $
+        withSystemTempDirectory "lask-volumes" $ \tmp0 -> do
+          tmp <- canonicalizePath tmp0
+          createDirectoryIfMissing True (tmp </> "xdg" </> "inner")
+          let extra = [tmp </> "xdg"]
+          resolveVolumesWith extra tmp (vols [T.pack (tmp </> "xdg") <> ":/r"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith extra tmp (vols [T.pack tmp <> ":/r"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith extra tmp (vols ["./xdg:/r"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith extra tmp (vols [T.pack (tmp </> "other") <> ":/r"]) >>= (`shouldSatisfy` isRight)
+
     it "refuses a value no option takes, which the elaborator could not see (spec 10.2)" $
       withSystemTempDirectory "lask-mounts" $ \tmp -> do
         let invalid r = case r of

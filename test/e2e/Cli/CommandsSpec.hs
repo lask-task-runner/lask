@@ -568,7 +568,7 @@ spec = beforeAll findLask $ do
           -- resolved; an ordinary directory is what it says.
           length withinLines `shouldBe` 2
           resOut r `shouldSatisfy` isInfixOf "the volume \"/var/run/docker.sock\" gives what the host has"
-          resOut r `shouldSatisfy` isInfixOf "the volume \"/var/run/../lib/docker\" gives what the host has"
+          resOut r `shouldSatisfy` isInfixOf "the volume \"/var/lib/docker\" gives what the host has"
           files <- runLask lask dir ["envs", "files"] ""
           resOut files `shouldSatisfy` isInfixOf "rw ! (host)"
           resOut files `shouldSatisfy` isInfixOf "ro !\n"
