@@ -1,4 +1,3 @@
-// pending: volumes are compared as written, so a path that climbs out of an admitted directory with .. is admitted; the engine mounts the path it resolves to (spec 10.11)
 access Cache = { volumes: { "/tmp/cache": "rw" } }
 
 t() within Cache = $[#alpine:3.22.2{ volumes: ["/tmp/cache/../../home/me/.ssh:/k"], network: "none" }] true  // expect: E-TYPE-WITHIN-EXCEEDED

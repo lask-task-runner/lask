@@ -23,6 +23,8 @@ module Language.Lask.Access
     Volume (..),
     VolumeSource (..),
     parseVolume,
+    normalizePath,
+    volumeSourceText,
     hostEquivalent,
 
     -- * The network
@@ -71,7 +73,7 @@ module Language.Lask.Access
   )
 where
 
-import Data.Char (isAlphaNum)
+import Data.Char (isAlphaNum, isDigit)
 import Language.Lask.Span (Span (..))
 import Data.List (nub, sortOn)
 import Data.Text (Text)
@@ -190,7 +192,11 @@ modeAt table path =
 
 -- Volumes ---------------------------------------------------------------
 
-data VolumeSource = VolumeHost Text | VolumeNamed Text
+-- | Where a volume comes from: a host path, absolute and normalized; a
+-- host path relative to the base directory, normalized, @.@ for the
+-- base directory itself and beginning with @..@ when it climbs out of
+-- it; or a named volume.
+data VolumeSource = VolumeHost Text | VolumeBase Text | VolumeNamed Text
   deriving (Show, Eq, Ord)
 
 -- | A volume that holds something of the host: its source, where it is
@@ -203,13 +209,18 @@ data Volume = Volume
   deriving (Show, Eq, Ord)
 
 -- | Read an entry of @volumes@ as the client's @--volume@ does,
--- @[<source>:]<target>[:<options>]@. An anonymous volume holds nothing
--- of the host, and is 'Nothing'.
+-- @[<source>:]<target>[:<options>]@ (spec 10.11): a source beginning
+-- with @/@ is a host path, one beginning with @.@ a host path relative
+-- to the base directory, any other a named volume. Paths are read
+-- normalized. An anonymous volume holds nothing of the host, and is
+-- 'Nothing'.
 --
 -- >>> parseVolume "/var/run/docker.sock:/var/run/docker.sock"
 -- Just (Volume {volSource = VolumeHost "/var/run/docker.sock", volTarget = "/var/run/docker.sock", volMode = ModeRw})
 -- >>> parseVolume "cache:/root/.cache:ro,z"
 -- Just (Volume {volSource = VolumeNamed "cache", volTarget = "/root/.cache", volMode = ModeRo})
+-- >>> map (fmap volSource . parseVolume) ["/tmp/cache/../../home/me/.ssh:/k", "./data/../src:/s", ".:/b", "./../x:/x"]
+-- [Just (VolumeHost "/home/me/.ssh"),Just (VolumeBase "src"),Just (VolumeBase "."),Just (VolumeBase "../x")]
 -- >>> parseVolume "/data"
 -- Nothing
 parseVolume :: Text -> Maybe Volume
@@ -217,38 +228,90 @@ parseVolume t = case T.splitOn ":" t of
   src : target : rest ->
     let opts = concatMap (T.splitOn ",") rest
         mode = if any (`elem` ["ro", "readonly"]) opts then ModeRo else ModeRw
-        source = if "/" `T.isPrefixOf` src then VolumeHost src else VolumeNamed src
-     in Just (Volume source target mode)
+     in Just (Volume (volumeSource src) target mode)
   _ -> Nothing
+
+volumeSource :: Text -> VolumeSource
+volumeSource src
+  | "/" `T.isPrefixOf` src = VolumeHost (normalizePath src)
+  | "." `T.isPrefixOf` src = VolumeBase (normalizePath src)
+  | otherwise = VolumeNamed src
+
+-- | A path with its empty and @.@ components dropped and each @..@
+-- resolved against the component before it, as written, following no
+-- link. An absolute path stays absolute, and @..@ at the root is the
+-- root; a relative path that climbs out of where it starts keeps its
+-- leading @..@, and one that stays there is @.@.
+--
+-- >>> map normalizePath ["/a/./b//c/", "/a/../..", "/", "./a/../b", "./x/../..", "."]
+-- ["/a/b/c","/","/","b","..","."]
+normalizePath :: Text -> Text
+normalizePath p
+  | "/" `T.isPrefixOf` p = "/" <> T.intercalate "/" (go True)
+  | otherwise = case go False of
+      [] -> "."
+      cs -> T.intercalate "/" cs
+  where
+    go absolute = reverse (foldl (step absolute) [] (T.splitOn "/" p))
+    step absolute acc c = case c of
+      "" -> acc
+      "." -> acc
+      ".." -> case acc of
+        x : xs | x /= ".." -> xs
+        _ | absolute -> acc
+          | otherwise -> ".." : acc
+      _ -> c : acc
+
+-- | A volume's source as it is shown: a path relative to the base
+-- directory with a leading @./@.
+volumeSourceText :: VolumeSource -> Text
+volumeSourceText s = case s of
+  VolumeHost p -> p
+  VolumeBase "." -> "."
+  VolumeBase p
+    | ".." `elem` T.splitOn "/" p -> p
+    | otherwise -> "./" <> p
+  VolumeNamed n -> n
 
 -- | Whether a host path, mounted, gives the container what the host has
 -- (spec 10.11): the root; the kernel's interfaces, @/proc@, @/sys@ and
 -- @/dev@; the socket or the state of a container engine, which starts
--- any container with any option; the host's configuration and root's
--- home; and any directory that holds one of those. The path is read
--- with @.@ and @..@ resolved as written, without following a link.
+-- any container with any option, a rootless engine's @/run/user/<uid>@
+-- included; the host's configuration and root's home; and any directory
+-- that holds one of those. The path is read normalized, without
+-- following a link. A path relative to the base directory does when it
+-- climbs out of it, since where it then lands depends on where the base
+-- directory is, or when it ends in an engine's socket.
 --
 -- >>> map (hostEquivalent . VolumeHost) ["/", "/var/run/docker.sock", "/var/run", "/run/user/1000/podman/podman.sock", "/proc/1", "/etc", "/var/run/../lib/docker", "/home/me/.cfg", "/tmp/cache", "/var/lib/app"]
 -- [True,True,True,True,True,True,True,False,False,False]
+-- >>> map (hostEquivalent . VolumeHost) ["/run/user/1000", "/run/user", "/run/user/1000/app", "/run/user/me"]
+-- [True,True,True,False]
+-- >>> map (hostEquivalent . VolumeBase) ["src", "../x", "run/docker.sock"]
+-- [False,True,True]
 hostEquivalent :: VolumeSource -> Bool
 hostEquivalent src = case src of
   VolumeNamed _ -> False
+  VolumeBase p ->
+    let parts = T.splitOn "/" (normalizePath p)
+     in take 1 parts == [".."] || socket ("/" <> T.intercalate "/" parts)
   VolumeHost p ->
-    let parts = resolveDots (T.splitOn "/" p)
-        path = "/" <> T.intercalate "/" parts
+    let path = normalizePath ("/" <> p)
+        parts = filter (not . T.null) (T.splitOn "/" path)
         under a = path == a || (a <> "/") `T.isPrefixOf` path
         holds a = (path <> "/") `T.isPrefixOf` a
      in null parts
           || any under ["/proc", "/sys", "/dev"]
           || any (\a -> under a || holds a) sensitive
-          || any (`T.isSuffixOf` path) ["/docker.sock", "/podman.sock", "/containerd.sock", "/buildkitd.sock"]
+          || rootless parts
+          || socket path
   where
-    resolveDots = reverse . foldl step []
-    step acc c = case c of
-      "" -> acc
-      "." -> acc
-      ".." -> drop 1 acc
-      _ -> c : acc
+    socket path = any (`T.isSuffixOf` path) ["/docker.sock", "/podman.sock", "/containerd.sock", "/buildkitd.sock"]
+    -- @/run/user/<uid>@, what is under it, and what holds it.
+    rootless parts = case (case parts of "var" : rest -> rest; _ -> parts) of
+      ["run", "user"] -> True
+      "run" : "user" : uid : _ -> not (T.null uid) && T.all isDigit uid
+      _ -> False
     sensitive =
       [ "/var/run/docker.sock",
         "/run/docker.sock",
@@ -686,7 +749,7 @@ renderConstraint c =
     volumes v = case v of
       VolumesAny -> "true"
       VolumesListed [] -> "false"
-      VolumesListed vs -> "{ " <> T.intercalate ", " [quote (sourceText src) <> ": " <> quote (modeText m) | (src, m) <- vs] <> " }"
+      VolumesListed vs -> "{ " <> T.intercalate ", " [quote (volumeSourceText src) <> ": " <> quote (modeText m) | (src, m) <- vs] <> " }"
     outbound b = case b of
       BoundClass NetNone -> "false"
       BoundClass _ -> "true"
@@ -698,11 +761,6 @@ renderConstraint c =
     -- @false@ admits nothing, as an empty list would.
     list xs = if null xs then "false" else "[" <> T.intercalate ", " xs <> "]"
     quote t = "\"" <> t <> "\""
-
-sourceText :: VolumeSource -> Text
-sourceText s = case s of
-  VolumeHost p -> p
-  VolumeNamed n -> n
 
 -- | What a use reaches past its container (spec 10.11): each component
 -- as its run options give it, 'Nothing' where an option is computed;
@@ -779,13 +837,15 @@ checkAccess c a = case a of
       VolumesAny -> []
       VolumesListed listed ->
         take 1
-          [ Exceeds "volumes" (q (sourceText (volSource v)) <> " is mounted " <> q (modeText (volMode v)))
+          [ Exceeds "volumes" (q (volumeSourceText (volSource v)) <> " is mounted " <> q (modeText (volMode v)))
           | v <- vs,
             not (any (>= volMode v) [m | (k, m) <- listed, covers k (volSource v)])
           ]
 
     covers k src = case (k, src) of
-      (VolumeHost kp, VolumeHost p) -> kp == p || (kp <> "/") `T.isPrefixOf` p || kp == "/"
+      (VolumeHost kp, VolumeHost p) ->
+        let (k', p') = (normalizePath kp, normalizePath p)
+         in k' == p' || (k' <> "/") `T.isPrefixOf` p' || k' == "/"
       (VolumeNamed kn, VolumeNamed n) -> kn == n
       _ -> False
 

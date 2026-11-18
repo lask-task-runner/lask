@@ -3542,7 +3542,7 @@ Columns (`envs files`):
 
 - One line for each mount of the row, after the row's first: the base directory, by each key of its `files` table, then each volume, then the root filesystem of the image and each `tmpfs`, which hold nothing of the host and are shown for what a command may write.
 - `TARGET`: where the mount is in the container (`/work`, `/work/dist`, `/var/run/docker.sock`); `/` for `#local`.
-- `SOURCE`: the path relative to the base directory for a mount of it; for a volume, its host path, normalized and written with a leading `./` when it is relative to the base directory, or `volume:<name>`; `(image)`, `(tmpfs)`, or `(host)` for `#local`.
+- `SOURCE`: the path relative to the base directory for a mount of it; for a volume, its host path, normalized, and written with a leading `./` when it is relative to the base directory and stays inside it, or `volume:<name>`; `(image)`, `(tmpfs)`, or `(host)` for `#local`.
 - `ACCESS`: `rw`, `ro` or `none`.
 - With `--verbose`, each row is followed by one line for each call of a filesystem function (15.11) among its uses whose path is a string literal: where it is written, the declaration, the function and the path.
 
