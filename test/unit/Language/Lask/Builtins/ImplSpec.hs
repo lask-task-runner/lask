@@ -361,8 +361,8 @@ examples =
     is "dirname" "dirname(\"abc\")" "\".\"",
     is "dirname" "dirname(\"/a\")" "\"/\"",
     is "dirname" "dirname(\"a/\")" "\".\"",
-    pendingBecause "dirname(\"/\") is \".\", a relative path, where the root's parent is the root (POSIX dirname, 15.10)" $
-      is "dirname" "dirname(\"/\")" "\"/\"",
+    is "dirname" "dirname(\"/\")" "\"/\"",
+    is "dirname" "dirname(\"//\")" "\"/\"",
     is "basename" "basename(\"a/b/c.txt\")" "\"c.txt\"",
     is "basename" "basename(\"a/b/\")" "\"b\"",
     is "basename" "basename(\"/\")" "\"/\"",
@@ -370,8 +370,8 @@ examples =
     is "extname" "extname(\".env\")" "\"\"",
     is "extname" "extname(\"a.b/c\")" "\"\"",
     is "extname" "extname(\"a/.b.c\")" "\".c\"",
-    pendingBecause "extname(\"a.\") is \"\": a trailing dot is treated as no extension, which 15.10 does not list among the cases that give \"\"" $
-      is "extname" "extname(\"a.\")" "\".\"",
+    is "extname" "extname(\"a.\")" "\".\"",
+    is "extname" "extname(\"a/..\")" "\"\"",
     is "normalize_path" "normalize_path(\"/../a/./b//c/..\")" "\"/a/b\"",
     is "normalize_path" "normalize_path(\"../a/..\")" "\"..\"",
     is "normalize_path" "normalize_path(\"a/../..\")" "\"..\"",

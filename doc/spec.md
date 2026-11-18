@@ -5248,9 +5248,9 @@ Semantics:
 - These are pure, lexical operations on strings. They never consult the filesystem, and therefore take no `Environment`: `dirname` of a path that does not exist is still its parent, and `normalize_path` never resolves a symbolic link.
 - Paths are POSIX paths, as the host's are (10.2): `/` is the only separator, and no drive letter or backslash is recognized. A path computed on the host therefore still means the same thing inside a container, which is the case these functions exist for (10.8).
 - `path_join(parts)` joins the parts with a single `/`, dropping empty parts, and normalizes the result. A part that is absolute discards everything before it. An empty array yields the empty string.
-- `dirname(p)` returns everything before the final component: `"a/b/c"` gives `"a/b"`, a path with no separator gives `"."`, and a child of the root gives `"/"`.
+- `dirname(p)` returns everything before the final component: `"a/b/c"` gives `"a/b"`, a path with no separator gives `"."`, and a child of the root, or the root itself, gives `"/"`.
 - `basename(p)` returns the final component, ignoring trailing separators: `"a/b/c.txt"` gives `"c.txt"` and `"a/b/"` gives `"b"`.
-- `extname(p)` returns the final extension of the final component, including the dot: `"a/b/c.tar.gz"` gives `".gz"`. A final component with no dot, or one whose only dot is its first character, gives the empty string, so `".env"` gives `""`.
+- `extname(p)` returns the final extension of the final component, including the dot: `"a/b/c.tar.gz"` gives `".gz"`. A final component with no dot, one whose only dot is its first character, or `..`, gives the empty string, so `".env"` gives `""`; one ending in a dot gives `"."`, so `"a."` gives `"."`.
 - `normalize_path(p)` collapses repeated separators and resolves `.` and `..` lexically. A leading `/` is preserved, a `..` that would ascend past the root of an absolute path is dropped, and a leading `..` in a relative path is preserved because there is no way to resolve it without touching the filesystem.
 - `is_absolute_path(p)` is true when `p` begins with `/`.
 - The name `path_join` carries its prefix because `join` is already the string operation of 15.3 and the library has no overloading (15.1).

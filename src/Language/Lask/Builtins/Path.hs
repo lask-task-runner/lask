@@ -37,6 +37,7 @@ pathJoin = normalizePath . foldl step ""
 -- the root gives @\"\/\"@.
 dirname :: Text -> Text
 dirname p = case splitLast (dropTrailing p) of
+  (_, "") | isAbsolutePath p -> "/" -- the root, whose parent is itself
   (_, "") -> "."
   ("", _) | isAbsolutePath p -> "/"
   ("", _) -> "."
@@ -60,8 +61,8 @@ extname p =
         (before, after)
           | T.null before -> "" -- no dot at all
           | before == "." -> "" -- a dotfile such as ".env"
-          | T.null after -> "" -- a trailing dot
-          | otherwise -> "." <> after
+          | name == ".." -> "" -- the parent, which names no file
+          | otherwise -> "." <> after -- "." for a trailing dot
 
 -- | Collapse repeated separators and resolve @.@ and @..@ lexically.
 -- A leading @..@ of a relative path is kept: resolving it would need
