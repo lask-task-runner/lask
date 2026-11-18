@@ -835,8 +835,12 @@ spec = do
       rejects "u = {name: \"a\"}\nk = \"name\"\nv = u[k]" ETypeAccess
     it "types array indexing" $
       hasType "xs = [1, 2]\nv = xs[0]" "v" "Number"
-    it "requires Number indexes for arrays" $
-      rejects "xs = [1, 2]\nv = xs[\"0\"]" ETypeMismatch
+    it "requires Number indexes for arrays (spec 6.8)" $
+      rejects "xs = [1, 2]\nv = xs[\"0\"]" ETypeAccess
+    it "requires String indexes for maps (spec 6.8)" $
+      rejects "m: Map<Number> = {\"a\": 1}\nv = m[0]" ETypeAccess
+    it "keeps a mismatch inside an index expression a mismatch" $
+      rejects "xs = [1, 2]\nv = xs[1 + \"a\"]" ETypeMismatch
     it "types map indexing" $
       hasType "m: Map<Number> = {\"a\": 1}\nv = m[\"a\"]" "v" "Number"
 
