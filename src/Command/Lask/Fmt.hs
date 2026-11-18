@@ -71,12 +71,12 @@ cmdFmt o
 laskFilesUnder :: FilePath -> IO [FilePath]
 laskFilesUnder dir = do
   names <- sort <$> listDirectory dir
-  fmap concat . forM [n | n <- names, take 1 n /= "."] $ \n -> do
+  fmap concat . forM names $ \n -> do
     let p = normalise (dir </> n)
     isDir <- doesDirectoryExist p
     link <- pathIsSymbolicLink p
     if
-      | isDir && link -> pure []
+      | isDir && (link || take 1 n == ".") -> pure []
       | isDir -> laskFilesUnder p
       | takeExtension n == ".lask" -> pure [p]
       | otherwise -> pure []
