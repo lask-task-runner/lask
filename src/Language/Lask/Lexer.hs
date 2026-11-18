@@ -304,7 +304,7 @@ trimBracedEnd :: [StrPart] -> [StrPart]
 trimBracedEnd = reverse . go . reverse
   where
     go (Chunk sp c : rest) =
-      let c' = T.dropWhileEnd (\x -> x == ' ' || x == '\t' || x == '\n') c
+      let c' = dropTrailingSpace (\x -> x == ' ' || x == '\t' || x == '\n') c
        in if T.null c' then go rest else Chunk sp c' : rest
     go ps = ps
 
@@ -353,9 +353,18 @@ mergeChunks = filter notEmpty . foldr step []
 trimTrailing :: [StrPart] -> [StrPart]
 trimTrailing ps = case reverse ps of
   (Chunk sp c : rest) ->
-    let c' = T.dropWhileEnd (\x -> x == ' ' || x == '\t') c
+    let c' = dropTrailingSpace (\x -> x == ' ' || x == '\t') c
      in reverse (if T.null c' then rest else Chunk sp c' : rest)
   _ -> ps
+
+-- | Drop the whitespace that ends a command string, but not a space or
+-- tab written after @\\@: the shell reads that one as part of a word
+-- (spec 6.6). The backslash itself may be escaped, as in @\\\\ @.
+dropTrailingSpace :: (Char -> Bool) -> Text -> Text
+dropTrailingSpace isSpace' t = case T.unsnoc t of
+  Just (rest, c)
+    | isSpace' c && even (T.length (T.takeWhileEnd (== '\\') rest)) -> dropTrailingSpace isSpace' rest
+  _ -> t
 
 -- Punctuation and operators ----------------------------------------------
 

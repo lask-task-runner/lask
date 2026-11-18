@@ -194,6 +194,11 @@ spec = do
     it "trims outer whitespace but keeps inner whitespace" $
       lexed "$   echo   a   " `shouldBe` Right [TCommand StreamOut Nothing (chunk1 "echo   a")]
 
+    it "keeps a trailing space written after a backslash" $ do
+      lexed "$ echo a\\ " `shouldBe` Right [TCommand StreamOut Nothing (chunk1 "echo a\\ ")]
+      lexed "$ echo a\\   " `shouldBe` Right [TCommand StreamOut Nothing (chunk1 "echo a\\ ")]
+      lexed "$ echo a\\\\ " `shouldBe` Right [TCommand StreamOut Nothing (chunk1 "echo a\\\\")]
+
     it "terminates the command string at the newline" $
       laid "v = $ ls\nv"
         `shouldBe` Right
@@ -235,6 +240,11 @@ spec = do
     it "keeps newlines inside and trims whitespace at both ends" $
       lexed "${\n  a |\n    b\n}"
         `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "a |\n    b")]
+
+    it "keeps a trailing space written after a backslash" $ do
+      lexed "${echo a\\ }" `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "echo a\\ ")]
+      lexed "${ echo a\\  \n}" `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "echo a\\ ")]
+      lexed "${echo a\\\\ }" `shouldBe` Right [TBracedCommand StreamOut Nothing (chunk1 "echo a\\\\")]
 
     it "reads CRLF line ends as newlines" $
       lexed "${a |\r\n b}"
