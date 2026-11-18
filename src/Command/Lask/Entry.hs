@@ -28,7 +28,7 @@ import Data.List (nub, sortOn)
 import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
-import Data.Scientific (FPFormat (Generic), formatScientific, toRealFloat)
+import Data.Scientific (FPFormat (Generic), formatScientific, toBoundedInteger)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -520,10 +520,12 @@ failureExit opts traceId uncaught = do
 exitCodeOf :: Value -> Int
 exitCodeOf v = case v of
   VRecord m
-    | Just (VNumber n) <- Map.lookup "code" m ->
-        let d = toRealFloat n :: Double
-            i = round d :: Int
-         in if fromIntegral i == d && i >= 1 && i <= 255 then i else 1
+    -- Read exactly, as the Scientific it is: through a Double, a code
+    -- such as 7.0000000000000001 would round to the integer 7.
+    | Just (VNumber n) <- Map.lookup "code" m,
+      Just i <- (toBoundedInteger n :: Maybe Int),
+      i >= 1 && i <= 255 ->
+        i
   _ -> 1
 
 -- repl -----------------------------------------------------------------------
