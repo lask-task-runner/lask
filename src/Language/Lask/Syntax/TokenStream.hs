@@ -11,6 +11,7 @@ where
 
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Text as T
+import Data.Scientific (FPFormat (Fixed), formatScientific, isInteger)
 import Language.Lask.Lexer.Token
 import Language.Lask.Span (Span (..), toSourcePos)
 import qualified Text.Megaparsec as MP
@@ -57,7 +58,11 @@ instance MP.TraversableStream TokStream where
 
 renderToken :: Token -> String
 renderToken t = case t of
-  TNumber n -> show n
+  -- A literal has no exponent (3.3), so it is written out in full:
+  -- @42@, not the @42.0@ of 'show'.
+  TNumber n
+    | isInteger n -> formatScientific Fixed (Just 0) n
+    | otherwise -> formatScientific Fixed Nothing n
   TRawString s -> "'" <> T.unpack s <> "'"
   TString _ -> "string"
   TBool True -> "true"
