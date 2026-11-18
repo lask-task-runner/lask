@@ -243,8 +243,7 @@ spec = beforeAll findLask $ do
     it "is not offered by completion as --help, which shows the help" $ \lask -> do
       r <- lask' lask ["__complete", "--", "run", "with-help", "--"] ""
       let candidates = [takeWhile (/= '\t') l | l <- lines (resOut r), not (":" `isPrefixOf` l)]
-      knownBug "completion offers --help twice after a function with a keyword parameter help: once for the parameter, which --help cannot bind (11.6), and once for the help" $
-        length (filter (== "--help") candidates) `shouldBe` 1
+      length (filter (== "--help") candidates) `shouldBe` 1
 
   describe "the argument vector of cmd (spec 11.8)" $ do
     let words' = [("main.lask", "command { \"echo\", \"my_tool\" } on #local\ninternal command { \"printf\" } on #local\n")]
