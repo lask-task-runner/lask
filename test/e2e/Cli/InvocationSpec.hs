@@ -266,8 +266,8 @@ spec = beforeAll findLask $ do
         one <- runLask lask dir ["cmd", "echo", "a b"] ""
         two <- runLask lask dir ["cmd", "echo", "a", "b"] ""
         let start r = [dropWhile (/= '$') l | l <- lines (resErr r), "] $ " `isInfixOf` l]
-        knownBug "the start line of cmd joins the argument vector with spaces, unquoted: `lask cmd echo 'a b'` and `lask cmd echo a b` both log `$ echo a b`, so the log does not record the vector 11.8 says it records" $
-          start one `shouldNotBe` start two
+        start one `shouldBe` ["$ echo 'a b'"]
+        start two `shouldBe` ["$ echo a b"]
   where
     forM' xs f = mapM_ f xs
     paramOf v = case v of

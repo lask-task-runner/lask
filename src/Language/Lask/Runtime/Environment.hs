@@ -63,6 +63,7 @@ import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.IO as TIO
 import Data.Time.Clock (getCurrentTime)
 import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner, SessionOpener)
+import Language.Lask.Builtins.Shell (shellWords)
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
 import Language.Lask.Runtime.Container (BaseMount, ContainerBackend (..), ExecSpec (..), MountError (..), RunSpec (..), engineName, resolveBaseMounts, resolveVolumes)
@@ -199,7 +200,7 @@ runDeclaredCommand backend pins baseDir0 sink forceRelay envValue prog argv = do
     Left failure -> pure (Left failure)
     Right resolved -> do
       let (sm, ej) = envLogInfo envValue resolved
-          rendered = T.unwords (prog : argv)
+          rendered = shellWords (prog : argv)
           launch cp = launchWith (pure (cp, pure ()))
           launchWith acquire = do
             r <- try (bracket acquire snd (runAttachedProcess sink sm ej rendered interactive . fst))
