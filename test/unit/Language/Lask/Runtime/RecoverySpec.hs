@@ -30,7 +30,6 @@ import Language.Lask.Runtime.AsyncTrack (noAsyncTracker)
 import Language.Lask.Runtime.Eval (applyValue, mkRtCtx, topValue)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue)
-import Support.Pending (knownBug)
 import Test.Hspec
 
 -- | What a run of @f@ came to: its value as canonical JSON, or the code
@@ -275,14 +274,17 @@ spec = do
       $ \e ->
         it ("rejects " <> T.unpack e) $ failsWithCode ("to_json(" <> e <> ")") ERuntimeValue
     it "rejects a linear strategy growing past a representable delay" $
-      knownBug "backoff_linear(pow(10, 308), pow(10, 308), 2) is [1e308, 1.7976931348623157e308]: the second delay, 2e308, overflows a Double, and the infinity is written as the largest finite Double instead of being rejected as backoff_exponential's is" $
-        failsWithCode "to_json(backoff_linear(pow(10, 308), pow(10, 308), 2))" ERuntimeValue
+      failsWithCode "to_json(backoff_linear(pow(10, 308), pow(10, 308), 2))" ERuntimeValue
     it "accepts an exponential strategy of zeros, which grows past nothing" $
-      knownBug "backoff_exponential(0, pow(10, 300), 3) is E-RUNTIME-VALUE: factor ^ 2 overflows to infinity before it is multiplied by the initial delay 0, and 0 * infinity is NaN, so a strategy [0, 0, 0] is rejected as growing past a representable delay" $
-        evalsTo "backoff_exponential(0, pow(10, 300), 3)" "[0,0,0]"
-    it "accepts any count that is a non-negative integer" $
-      knownBug "backoff_fixed(0, 1000001) is E-RUNTIME-VALUE 'backoff_fixed takes a count that is a non-negative integer, not 1000001': counts above 1000000 are rejected with a message that says they are not what they are, and 15.7 sets no such bound" $
-        evalsTo "size(backoff_fixed(0, 1000001))" "1000001"
+      evalsTo "backoff_exponential(0, pow(10, 300), 3)" "[0,0,0]"
+    it "accepts an exponential strategy whose delays are representable, though a power of its factor is not" $
+      evalsTo "size(backoff_exponential(pow(10, 0 - 300), pow(10, 200), 3))" "3"
+    it "accepts a count of up to 1000000" $
+      evalsTo "size(backoff_fixed(0, 1000000))" "1000000"
+    it "rejects a count above 1000000, saying so" $ do
+      r <- runE "backoff_fixed(0, 1000001)"
+      codeOf r `shouldBe` Just (Just ERuntimeValue)
+      either snd (const "") (outcome r) `shouldSatisfy` T.isInfixOf "takes a count of at most 1000000, not 1000001"
 
   describe "the number of attempts (spec 15.7)" $ do
     forM_ [0 .. 3 :: Int] $ \n -> do

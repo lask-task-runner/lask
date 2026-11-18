@@ -395,15 +395,16 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     count <- countOf "backoff_linear" n
     initial <- nonNegative "backoff_linear" "initial delay" d
     by <- nonNegative "backoff_linear" "step" step
-    numbers [initial + by * fromIntegral i | i <- [0 .. count - 1]]
+    representable "backoff_linear" [initial + by * fromIntegral i | i <- [0 .. count - 1]]
   ("backoff_exponential", [VNumber d, VNumber factor, VNumber n]) -> do
     count <- countOf "backoff_exponential" n
     initial <- nonNegative "backoff_exponential" "initial delay" d
     f <- nonNegative "backoff_exponential" "factor" factor
-    let ds = [initial * f ^ i | i <- [0 .. count - 1]]
-    if any (\x -> isInfinite x || isNaN x) ds
-      then throwIO (domainError "backoff_exponential grows beyond a representable delay; cap it with a smaller count")
-      else numbers ds
+    -- Each delay is the one before times the factor, so that no power
+    -- of the factor is formed on its own: one that overflows would
+    -- make a delay of 0 NaN, and a small delay infinite, where the
+    -- delay itself is representable.
+    representable "backoff_exponential" (take count (iterate (* f) initial))
   -- 15.8 serialization ------------------------------------------------------------
   ("to_json", [v]) -> either throwIO (pure . VString) (encodeFormat "json" v)
   ("from_json", [VString s]) -> either throwIO pure (decodeFormat "json" s)
@@ -614,10 +615,21 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
       | finiteNumber x && x >= 0 = pure (toRealTo x)
       | otherwise = throwIO (domainError (fn <> " takes a finite, non-negative " <> what <> ", not " <> formatNumber x))
 
+    -- The count is bounded (15.7), so that a strategy is never longer
+    -- than an array can be built in reasonable time and memory.
     countOf :: Text -> Scientific -> IO Int
     countOf fn x
-      | isInteger x && x >= 0 && x <= 1000000 = pure (floor (toRealTo x))
+      | isInteger x && x >= 0 && x <= maxBackoffCount = pure (floor (toRealTo x :: Double))
+      | isInteger x && x > maxBackoffCount = throwIO (domainError (fn <> " takes a count of at most " <> formatNumber maxBackoffCount <> ", not " <> formatNumber x))
       | otherwise = throwIO (domainError (fn <> " takes a count that is a non-negative integer, not " <> formatNumber x))
+    maxBackoffCount = 1000000
+
+    -- A strategy whose delays all fit in a Double; one that grows past
+    -- them is refused rather than written as the largest one.
+    representable :: Text -> [Double] -> IO Value
+    representable fn ds
+      | any (\x -> isInfinite x || isNaN x) ds = throwIO (domainError (fn <> " grows beyond a representable delay; cap it with a smaller count"))
+      | otherwise = numbers ds
 
     numbers :: [Double] -> IO Value
     numbers = pure . VArray . V.fromList . map (VNumber . fromFloatDigits)

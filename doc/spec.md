@@ -5101,7 +5101,8 @@ Interval strategies:
 - `backoff_linear(initial, step, count)` is `[initial, initial + step, ...]`, `count` long: `backoff_linear(1, 2, 3)` is `[1, 3, 5]`.
 - `backoff_exponential(initial, factor, count)` is `[initial, initial * factor, ...]`, `count` long: `backoff_exponential(1, 2, 4)` is `[1, 2, 4, 8]`.
 - A cap is a composition rather than a function: `map(backoff_exponential(1, 2, 8), \(d) -> min(d, 30))`. Jitter, being nondeterministic, is `backoff_jitter` (15.13).
-- `delay`, `initial`, `step` and `factor` must be finite and non-negative, and `count` a non-negative integer. Anything else, or a strategy growing past a representable delay, is `E-RUNTIME-VALUE`.
+- `delay`, `initial`, `step` and `factor` must be finite and non-negative, and `count` a non-negative integer of at most 1000000. Anything else, or a strategy growing past a representable delay, is `E-RUNTIME-VALUE`. The bound keeps a strategy an array that can be built: a million delays of even one second is more than eleven days of retrying.
+- Each delay of `backoff_exponential` is the one before it multiplied by `factor`. A strategy grows past a representable delay only when one of its delays does: `backoff_exponential(0, f, n)` is `n` zeros whatever `f` is.
 
 Evaluation of `retry(delays, body)` and `retry_if(delays, when, body)`:
 
