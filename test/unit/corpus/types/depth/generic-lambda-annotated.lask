@@ -1,0 +1,4 @@
+f(): Number = do {
+  g: Function<Number, Number> = \<T>(x: T): T -> x  // expect: E-TYPE-ILLFORMED
+  g(1)
+}

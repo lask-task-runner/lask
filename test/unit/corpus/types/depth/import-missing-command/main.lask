@@ -1,0 +1,1 @@
+import command { "nope" } from "./lib.lask"  // expect: E-NAME-UNDEFINED
