@@ -19,7 +19,6 @@ import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
 import GHC.Clock (getMonotonicTime)
 import Support.Harness
-import Support.Pending (knownBug)
 import Test.Hspec
 
 program :: String
@@ -119,8 +118,8 @@ spec = beforeAll findLask $ do
           retries = [o | o <- objects, Just (A.String m) <- [KM.lookup "message" o], "retry:" `T.isPrefixOf` m]
       length retries `shouldBe` 2
       mapM_ (\o -> KM.lookup "level" o `shouldBe` Just "info") retries
-      knownBug "an execution log line in JSON names its time ts, not timestamp, and has no context (12.2 requires timestamp, level, traceId, message and context); Obs.ExecLog.renderLogJson writes ts, level, message and traceId" $
-        mapM_ (\o -> filter (not . (`KM.member` o)) ["timestamp", "level", "traceId", "message", "context"] `shouldBe` []) retries
+      mapM_ (\o -> filter (not . (`KM.member` o)) ["timestamp", "level", "traceId", "message", "context"] `shouldBe` []) retries
+      mapM_ (\o -> (KM.lookup "context" o >>= \c -> case c of A.Object c' -> KM.lookup "function" c'; _ -> Nothing) `shouldBe` Just "retried") retries
 
   describe "timeout with real commands (spec 15.7, 8.7)" $ do
     it "stops the command at the limit and exits 124" $ \lask -> do

@@ -222,7 +222,7 @@ cmdRunEval printResult runOpts = do
   let -- `log` (spec 15.12) writes execution log lines to stderr,
       -- through the same serialized writer as the command logs.
       logSink
-        | optLogJson opts = jsonLogSink traceId writeErr
+        | optLogJson opts = jsonLogSink traceId (A.object [("module", A.String (T.pack (fst key))), ("function", A.String (snd key))]) writeErr
         | otherwise = textLogSink writeErr
   tracker <- newAsyncTracker
   secrets <- newSecretResolver

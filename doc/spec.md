@@ -4171,6 +4171,12 @@ The execution log is time-series diagnostic information and must contain at leas
 - `message`: human-readable message
 - `context`: arbitrary auxiliary information (function name, module name, environment kind, etc.)
 
+In JSON (`--log-format json`), a line is one object with these five fields under these names. `context` is an object; for `run` and `eval` it holds at least `module` and `function`, the module and the name of the function the command line called:
+
+```json
+{"timestamp":"2026-07-23T10:15:04.123Z","level":"info","traceId":"...","message":"retry: attempt 1 of 3 failed with code 7; retrying in 2s","context":{"module":"main.lask","function":"deploy"}}
+```
+
 Output rules:
 
 - `info` and below are classified as operational logs, and `warn` / `error` as diagnostic logs.
