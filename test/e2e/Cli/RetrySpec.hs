@@ -67,7 +67,7 @@ spec = beforeAll findLask $ do
     exitsWith "256" 1
     exitsWith "18446744073709551623" 1
     it "exits 1 for a code that is not an integer, however close to one" $ \lask ->
-      knownBug "the code 7.0000000000000001 exits 7: exitCodeOf rounds the code through a Double, where it is 7, although the code is not an integer (7.0000000000000001 == 7 is false)" $ do
+      do
         r <- runIt lask ["run", "code", "7.0000000000000001"]
         resExit r `shouldBe` 1
     it "exits 2 for a runtime error and 3 for an external I/O error" $ \lask -> do
