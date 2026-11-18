@@ -604,25 +604,29 @@ confirmOrExit opts approved compiled fnName key cd posVals kwVals = do
         else TIO.hPutStrLn stderr (codeText ECliNotConfirmed <> ": " <> msg)
       exitWith (ExitFailure 4)
 
+-- | Read standard input whole (spec 9.2). A read that fails is
+-- @E-IO-STDIN-READ@; bytes that are not UTF-8 are a decoding error,
+-- @E-IO-DATA-DECODE@ (9.4). Either is exit 3.
 readStdinOrExit :: CommonOpts -> IO Text
 readStdinOrExit opts = do
   isTty <- hIsTerminalDevice stdin
   if isTty
     then pure ""
     else do
-      bytes <- BS.getContents
-      case TE.decodeUtf8' bytes of
-        Right t -> pure t
-        Left e -> do
-          if optLogJson opts
-            then
-              TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
-                A.object
-                  [ ("code", A.String (codeText EIoStdinRead)),
-                    ("message", A.String (T.pack (show e)))
-                  ]
-            else TIO.hPutStrLn stderr (codeText EIoStdinRead <> ": " <> T.pack (show e))
-          exitWith (ExitFailure 3)
+      read' <- try BS.getContents :: IO (Either IOException BS.ByteString)
+      case read' of
+        Left e -> failWith EIoStdinRead ("cannot read stdin: " <> T.pack (show e))
+        Right bytes -> case TE.decodeUtf8' bytes of
+          Right t -> pure t
+          Left _ -> failWith EIoDataDecode "stdin is not valid UTF-8"
+  where
+    failWith code msg = do
+      if optLogJson opts
+        then
+          TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
+            A.object [("code", A.String (codeText code)), ("message", A.String msg)]
+        else TIO.hPutStrLn stderr (codeText code <> ": " <> msg)
+      exitWith (ExitFailure 3)
 
 -- | An advisory in the JSON form of 14.3, marked by @severity@ (14.2).
 advisoryJson :: Advisory -> A.Value

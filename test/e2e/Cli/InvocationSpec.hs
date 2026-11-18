@@ -169,8 +169,7 @@ spec = beforeAll findLask $ do
         -- The harness writes text, so the bytes are written by printf.
         (code, _, err) <- readCreateProcessWithExitCode ((shell ("printf '\\377\\376' | '" <> lask <> "' eval echo-stdin")) {cwd = Just dir}) ""
         code `shouldBe` ExitFailure 3
-        knownBug "stdin that is not UTF-8 is reported as E-IO-STDIN-READ, with the message of Data.Text.Encoding; 9.4 maps a decoding error to E-IO-DATA-DECODE" $
-          err `shouldSatisfy` isInfixOf "E-IO-DATA-DECODE"
+        err `shouldSatisfy` isInfixOf "E-IO-DATA-DECODE"
 
   describe "standard output (spec 11.3)" $ do
     it "writes the result of eval as compact JSON, pretty JSON or text" $ \lask -> do

@@ -126,10 +126,11 @@ trigger c = case c of
   -- External I/O errors (spec 14.6) default to exit 3.
   EIoStdinRead -> Scripted 3 $ \lask ->
     withProject [("main.lask", "f(): String = stdin\n")] $ \dir -> do
-      -- Bytes that are not UTF-8, which a String input cannot carry.
+      -- A directory as stdin: it opens, and the read fails. Bytes that
+      -- are not UTF-8 read, and are E-IO-DATA-DECODE (9.4).
       (code, out, err) <-
         readCreateProcessWithExitCode
-          ((proc "sh" ["-c", "printf '\\377\\376' | \"$0\" eval f", lask]) {cwd = Just dir})
+          ((proc "sh" ["-c", "\"$0\" eval f < /", lask]) {cwd = Just dir})
           ""
       pure (Result (exitOf code) out err)
   EIoEnvResolve -> Scripted 3 $ \lask ->
