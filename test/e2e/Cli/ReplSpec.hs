@@ -89,10 +89,16 @@ spec = beforeAll findLask $ describe "repl (spec 11.9)" $ do
       let r = Result 0 out err
       out `shouldSatisfy` isInfixOf "1 REPL declaration re-applied"
       printed r `shouldSatisfy` (\ps -> "6" `elem` ps && "10" `elem` ps)
-  it "gives no stdin, whose reference is an undefined name (spec 9.3)" $ \lask -> do
-    r <- session lask ["length(stdin)"]
-    knownBug "stdin is bound in the repl, to \"\": length(stdin) prints 0; 9.2 and 9.3 say the repl binds no stdin, and a reference to it is E-NAME-UNDEFINED" $
-      said r `shouldSatisfy` isInfixOf "E-NAME-UNDEFINED"
+  it "gives no stdin: a reference typed at the prompt is an undefined name (spec 9.3)" $ \lask -> do
+    r <- session lask ["length(stdin)", "echo(): String = stdin", "echo()", "size()"]
+    said r `shouldSatisfy` isInfixOf "E-NAME-UNDEFINED"
+    printed r `shouldSatisfy` notElem "0"
+    printed r `shouldSatisfy` elem "3"
+  it "loads a module that names stdin, which reads the empty string there (spec 9.3)" $ \lask ->
+    withProject [("main.lask", "lines(): Number = length(stdin)\n")] $ \dir -> do
+      r <- runLask lask dir ["repl"] (unlines ["lines() + 1"])
+      said r `shouldNotSatisfy` isInfixOf "E-NAME-UNDEFINED"
+      printed r `shouldBe` ["1"]
   it "names a number it did not expect as it was typed" $ \lask -> do
     r <- session lask ["42 +"]
     said r `shouldSatisfy` isInfixOf "E-SYNTAX-UNEXPECTED-TOKEN"

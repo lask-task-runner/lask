@@ -358,6 +358,19 @@ spec = do
             Just (Hover (InL (MarkupContent _ x)) _) -> Just x
             _ -> Nothing
       t `shouldBe` Just "```lask\nsize: Number\n```"
+    describe "a word sharing a top-level declaration's name" $ do
+      let shadowSrc = "a() = 123\n\nb() = do {\n  c = { a: 1 }\n  c.a\n}\n\nexport d = 1\n"
+          shadowHover l c = do
+            h <- hoverAt "test.lask" shadowSrc (Position l c)
+            pure $ case h of
+              Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+              _ -> Nothing
+      it "shows the field's type on a field access" $
+        shadowHover 4 4 >>= (`shouldBe` Just "```lask\na: Number\n```")
+      it "is not the declaration on an object literal key" $
+        shadowHover 3 8 >>= (`shouldBe` Nothing)
+      it "still shows the declaration after `export`" $
+        shadowHover 7 7 >>= (`shouldSatisfy` maybe False (T.isInfixOf "d: Number"))
     it "returns nothing on blank positions" $ do
       t <- hoverText 3 1 -- whitespace after `y`
       t `shouldBe` Nothing

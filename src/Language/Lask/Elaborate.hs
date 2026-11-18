@@ -2241,7 +2241,11 @@ elabDot ctx path locals sp inner fsp fld = case namespaceExpr ctx path locals in
     cannotTell ETypeAccess fsp "a field access" t
     case t of
       TyRecord fields -> case Map.lookup fld fields of
-        Just f -> pure (Core sp (CDot c fld), readFieldType f)
+        Just f -> do
+          -- Recorded so hovering the field shows its own type rather
+          -- than a top-level declaration that shares its name.
+          recordVar fsp fld (readFieldType f) Nothing
+          pure (Core sp (CDot c fld), readFieldType f)
         Nothing ->
           abort . suggesting fld (Map.keys fields) $
             diag ETypeAccess fsp ("record has no field '" <> fld <> "': " <> renderType t)
