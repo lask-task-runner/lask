@@ -112,8 +112,8 @@ spec = before_ resetSecretRegistryForTests . after_ resetSecretRegistryForTests 
       out <- registered ss (maskSecrets (T.intercalate n (ss <> reverse ss)))
       pure (counterexample (T.unpack out) (not (any (\s -> s `T.isInfixOf` out) ss)))
     prop "masking what is masked changes nothing" $ \(Secrets ss) (Noise n) -> ioProperty $ do
-      (once, twice) <- registered ss (do o <- maskSecrets (T.intercalate n ss); t <- maskSecrets o; pure (o, t))
-      pure (once === twice)
+      (masked, remasked) <- registered ss (do o <- maskSecrets (T.intercalate n ss); t <- maskSecrets o; pure (o, t))
+      pure (masked === remasked)
     prop "a value holds no secret once masked, in its strings or its keys" $ \(Secret s) (Noise n) -> ioProperty $ do
       v <- registered [s] (maskValue (VRecord (Map.fromList [("k", VArray (V.fromList [VString (n <> s)])), ("m", VMap (Map.fromList [(s <> n, VString s)]))])))
       pure (counterexample (show v) (not (s `T.isInfixOf` T.pack (show v))))
