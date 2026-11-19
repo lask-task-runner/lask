@@ -1,16 +1,19 @@
 name: CI
 
+# A pull request runs CI once, on its pull_request event: a push
+# trigger on every branch started the same jobs a second time for it.
+# dev and main are still tested on push, so a merge is checked as it
+# landed, and any other branch can be tested with workflow_dispatch.
 on:
   push:
-    # Every branch, so flaky or environment-dependent failures surface
-    # on the branch that introduced them rather than at merge time.
-    # '**' (not '*') is needed to match slashes, e.g. feature/foo.
     branches:
-      - "**"
+      - dev
+      - main
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
+  test-linux:
     # Pinned: on ubuntu-26.04, which ubuntu-latest became in November
     # 2026, GHC cannot find the linker (collect2: cannot find 'ld').
     runs-on: ubuntu-24.04
@@ -103,7 +106,7 @@ jobs:
   # the process handling and the shells there differ from Linux. The
   # runner has no container engine, and the tests that need one drive a
   # fake; the examples that would sync their dependencies, which pulls
-  # images, are left pending, as they are run on Linux above.
+  # images, are left pending, as they are run by test-linux above.
   test-macos:
     runs-on: macos-latest
 
