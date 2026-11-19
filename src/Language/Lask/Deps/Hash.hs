@@ -13,6 +13,7 @@ module Language.Lask.Deps.Hash
     hashFile,
     hashTree,
     symlinksUnder,
+    treeStamp,
   )
 where
 
@@ -23,7 +24,8 @@ import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import System.Directory (doesDirectoryExist, getSymbolicLinkTarget, listDirectory, pathIsSymbolicLink)
+import Data.Time.Clock (UTCTime)
+import System.Directory (doesDirectoryExist, getFileSize, getModificationTime, getSymbolicLinkTarget, listDirectory, pathIsSymbolicLink)
 import System.FilePath ((</>))
 
 hashBytes :: BS.ByteString -> Text
@@ -54,6 +56,17 @@ hashTree dir = do
           else BS.readFile (dir </> rel)
       let pathBytes = TE.encodeUtf8 (T.replace "\\" "/" (T.pack rel))
       pure (SHA256.update (SHA256.update ctx (SHA256.hash pathBytes)) (SHA256.hash content))
+
+-- | What 'hashTree' of a directory would read, by the size and
+-- modification time of each file and the target of each link: while
+-- it stays the same, so does the hash, without reading a byte.
+treeStamp :: FilePath -> IO [(FilePath, Either FilePath (Integer, UTCTime))]
+treeStamp dir = do
+  entries <- sort <$> walkTree dir
+  mapM stamp entries
+  where
+    stamp (rel, True) = (,) rel . Left <$> getSymbolicLinkTarget (dir </> rel)
+    stamp (rel, False) = (,) rel . Right <$> ((,) <$> getFileSize (dir </> rel) <*> getModificationTime (dir </> rel))
 
 -- | The symbolic links in a tree, relative to its root.
 symlinksUnder :: FilePath -> IO [FilePath]

@@ -10,7 +10,7 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Language.LSP.Lask (completionAt, documentDiagnostics, formattingEdits, hoverAt, inlayHintsIn, lexSemanticTokens, quickFixes, semanticTokens, uriPath)
+import Language.LSP.Lask (completionAt, completionTriggered, documentDiagnostics, formattingEdits, hoverAt, inlayHintsIn, lexSemanticTokens, quickFixes, semanticTokens, uriPath)
 import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.Lask (checkText)
@@ -304,6 +304,15 @@ spec = do
       items <- completionAt "test.lask" src (Position 1 19)
       [r | i <- items, i ^. L.label == "-covermode", Just (InL (TextEdit r _)) <- [i ^. L.textEdit]]
         `shouldBe` [Range (Position 1 16) (Position 1 19)]
+
+    it "offers the subcommands when a space is typed after the command word" $ do
+      let src = decl <> "v() = $ go \n"
+      items <- completionTriggered (Just " ") "test.lask" src (Position 1 11)
+      map (^. L.label) items `shouldMatchList` ["test", "mod"]
+
+    it "offers nothing when a space is typed outside a command string" $ do
+      let src = decl <> "v() = 1 \n"
+      completionTriggered (Just " ") "test.lask" src (Position 1 8) >>= (`shouldBe` [])
 
     it "leaves an explicit environment to the language's completion" $
       at "v() = $[#golang:1.25] go test -" >>= (`shouldSatisfy` notElem "-v")

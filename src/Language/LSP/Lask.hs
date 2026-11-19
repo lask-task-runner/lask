@@ -20,6 +20,7 @@ module Language.LSP.Lask
     semanticTokens,
     hoverMarkdown,
     completionAt,
+    completionTriggered,
     documentDiagnostics,
     quickFixes,
     formattingEdits,
@@ -146,7 +147,10 @@ lspOptions :: Options
 lspOptions =
   defaultOptions
     { optTextDocumentSync = Just syncOptions,
-      optCompletionTriggerCharacters = Just ['.', '-', '=']
+      -- A space only brings what a command string offers next
+      -- ('completionTriggered'); the rest open a list wherever they
+      -- are typed.
+      optCompletionTriggerCharacters = Just ['.', '-', '=', '(', ',', ' ']
     }
 
 syncOptions :: LSP.TextDocumentSyncOptions
@@ -207,11 +211,12 @@ handle logger =
             doc = LSP.toNormalizedUri uri
             path = uriPath uri
             pos = req ^. LSP.params . LSP.position
+            trigger = req ^. LSP.params . LSP.context >>= (^. LSP.triggerCharacter)
         mdoc <- getVirtualFile doc
         case mdoc of
           Nothing -> responder $ Right $ LSP.InL []
           Just file -> do
-            items <- liftIO $ completionAt path (virtualFileText file) pos
+            items <- liftIO $ completionTriggered trigger path (virtualFileText file) pos
             responder $ Right $ LSP.InL items,
       requestHandler LSP.SMethod_TextDocumentCodeAction $ \req responder -> do
         let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
@@ -940,6 +945,14 @@ completionAt path src pos0 = do
     pos = fromUtf16 ls pos0
     editInUtf16 (LSP.InL e) = LSP.InL (e & LSP.range %~ rangeToUtf16 ls)
     editInUtf16 (LSP.InR e) = LSP.InR (e & LSP.insert %~ rangeToUtf16 ls & LSP.replace %~ rangeToUtf16 ls)
+
+-- | 'completionAt' for a request the client made on its own, as the
+-- given trigger character was typed. A space is typed everywhere, so
+-- it brings only the options, subcommands and values of a command
+-- string: a list of every name after each space would be in the way.
+completionTriggered :: Maybe Text -> FilePath -> Text -> Position -> IO [CompletionItem]
+completionTriggered (Just " ") path src pos = fromMaybe [] <$> commandCompletion path src pos
+completionTriggered _ path src pos = completionAt path src pos
 
 -- | Completion inside a dispatched command string whose command word
 -- has a command schema (spec appendix A): the options and subcommands that
