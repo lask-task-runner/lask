@@ -711,8 +711,8 @@ hoverAt path src (Position pl pc) = do
 
     declPosition prev sp = case (prev, sp) of
       (_, S.Span (S.Position _ _ 1) _) -> True
-      (Just (Tok.Spanned (S.Span (S.Position _ pl pc) _) (Tok.TKw k)), S.Span (S.Position _ l _) _) ->
-        k `elem` [Tok.KExport, Tok.KInternal] && pl == l && pc == 1
+      (Just (Tok.Spanned (S.Span (S.Position _ kl kc) _) (Tok.TKw k)), S.Span (S.Position _ l _) _) ->
+        k `elem` [Tok.KExport, Tok.KInternal] && kl == l && kc == 1
       _ -> False
 
 -- | A declaration's hover documentation, with the confirmation the
