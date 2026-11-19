@@ -102,5 +102,4 @@ spec = beforeAll findLask $ describe "repl (spec 11.9)" $ do
   it "names a number it did not expect as it was typed" $ \lask -> do
     r <- session lask ["42 +"]
     said r `shouldSatisfy` isInfixOf "E-SYNTAX-UNEXPECTED-TOKEN"
-    knownBug "a syntax error names an unexpected number by its Double: `42 +` and a module line `42` give \"unexpected 42.0\", which is not what was written (14.3)" $
-      said r `shouldNotSatisfy` isInfixOf "42.0"
+    said r `shouldNotSatisfy` isInfixOf "42.0"
