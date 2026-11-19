@@ -120,9 +120,12 @@ spec = beforeAll findLask $ do
       usage lask ["eval", "greet", "bob", "--prefix", "a", "--prefix", "b"] "duplicate keyword argument: '--prefix'"
     it "reports an unknown keyword argument before evaluation" $ \lask ->
       usage lask ["eval", "greet", "bob", "--nope", "1"] "unknown keyword argument: '--nope'"
-    it "reports an unknown keyword argument as unknown when it ends the line" $ \lask ->
-      knownBug "an unknown --name or -x with no word after it is reported as \"keyword argument '--x' needs a value\": parseCliArgs asks for a value before bindCliArgs looks the name up" $
-        usage lask ["eval", "greet", "bob", "-x"] "unknown keyword argument"
+    it "reports an unknown keyword argument as unknown when it ends the line" $ \lask -> do
+      usage lask ["eval", "greet", "bob", "-x"] "unknown keyword argument: '--x'"
+      usage lask ["eval", "greet", "bob", "--prefx"] "unknown keyword argument: '--prefx'"
+    it "reports a keyword argument that is not a flag as needing a value when it ends the line" $ \lask -> do
+      usage lask ["eval", "greet", "bob", "--prefix"] "keyword argument '--prefix' needs a value"
+      usage lask ["eval", "short", "-n"] "keyword argument '--n' needs a value"
     it "binds a flag of type Bool | Null to true written alone, and to null by --flag=null" $ \lask -> do
       evals lask ["opt"] "\"null\""
       evals lask ["opt", "--v"] "\"t\""

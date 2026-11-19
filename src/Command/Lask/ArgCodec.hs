@@ -91,6 +91,8 @@ flagNames ps = [n | (n, t) <- spKeywords ps, isFlagType t]
 -- digit (3.2), so @-1@ is a negative number rather than a short form.
 -- A flag (the parameter names given) takes the next token as its
 -- value only when it is @true@ or @false@, and is otherwise @true@.
+-- Any other name that ends the line is a 'CliFlag' too: whether the
+-- declaration takes it, and as a flag, is for 'bindCliArgs' to say.
 parseCliArgs :: [Text] -> [Text] -> Either Text [CliArg]
 parseCliArgs flags = go
   where
@@ -110,9 +112,12 @@ parseCliArgs flags = go
             (v : rest')
               | v `elem` ["true", "false"] -> (CliKw (kebabToSnake name) v :) <$> go rest'
             _ -> (CliFlag (kebabToSnake name) :) <$> go rest
+      -- With nothing after it, a name is left to 'bindCliArgs', which
+      -- reports one the declaration does not take as unknown, and
+      -- one that is not a flag as needing a value.
       (name, "") -> case rest of
         (v : rest') -> (CliKw (kebabToSnake name) v :) <$> go rest'
-        [] -> Left ("keyword argument '--" <> name <> "' needs a value")
+        [] -> Right [CliFlag (kebabToSnake name)]
       _ -> Left ("malformed keyword argument: '" <> body <> "'")
 
 -- | Decode one raw argument (spec 11.2): @text@ = always String;
@@ -204,7 +209,9 @@ bindCliArgs params mode cliArgs =
                   CliKw _ raw -> plain (decodeAndCheck ("keyword argument '" <> flag n <> "'") (raw, t))
                   -- Only a flag parses without a value, whatever the
                   -- decoding mode.
-                  _ -> Right (VBool True)
+                  _
+                    | isFlagType t -> Right (VBool True)
+                    | otherwise -> plain (Left ("keyword argument '" <> flag n <> "' needs a value"))
                 bindKw ((n, v) : acc) rest
 
     decodeAndCheck what (raw, ty) = do
