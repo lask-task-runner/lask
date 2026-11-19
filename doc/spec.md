@@ -333,6 +333,7 @@ Lexical rules:
 - Comments are treated the same as whitespace for the purposes of lexical analysis.
 - A line comment ends at a newline, and a block comment is enclosed by `/*` and `*/`.
 - Number literals do not include a sign. A negative number is written with unary minus (6.2), `-1`, which is the expression `0 - 1` and not a literal. `+` is always a binary operator.
+- A number literal beyond the range of `Number` (4.1) is a syntax error, reported where the literal starts. One too small to tell from zero is `0`.
 - `env_head` is the leading token of an environment expression (6.7) and is read with longest match. It terminates at the position where a character that is not an `env_char` (whitespace, `]`, `,`, `)`, `}`, etc.) appears.
 - A `#` not followed by at least one `env_char` is a lexical error (except for the interpolation opener `#{` inside interpreted strings and command strings).
 - The character set of `env_char` is defined so that any Docker image reference including registry, repository, tag, and digest can be written. `@` is included for digest specification (e.g. `#alpine@sha256:...`). It also covers a relative path to a Dockerfile (`#./images/build/Dockerfile`, 6.7).
@@ -370,7 +371,7 @@ This chapter defines the types of values that Lask handles, type annotations, ty
 
 - Base types
   - `Any`: A general-purpose type that accepts any value
-  - `Number`: Integers and floating-point numbers
+  - `Number`: Integers and floating-point numbers, within the range of a finite IEEE 754 double (below)
   - `String`: UTF-8 strings
   - `Bool`: Boolean values
   - `Null`: Absence of a value
@@ -385,6 +386,13 @@ This chapter defines the types of values that Lask handles, type annotations, ty
   - `Function<T1, T2, ..., R>`: A function type consisting of positional parameters only. The last type argument is the return type.
 - Union types
   - `T1 | T2 | ...`: A type whose values are the values of any one of its members. It is how a value that may be absent is typed (`String | Null`), and it is the only type former whose members are types of the program's own choosing rather than a fixed shape.
+
+The range of `Number`:
+
+- A `Number` is a decimal of magnitude at most `1.7976931348623157e308`, the largest finite double to its shortest decimal. There is no infinity and no NaN.
+- A number beyond the range is refused where it would become a value: a number literal is a syntax error (3.3); a number decoded from text, by `to_number` (15.3), `from_json` or `decode` (15.8), is `E-IO-DATA-DECODE`; a command-line argument is `E-CLI-USAGE` (11.2); and the result of an arithmetic operation (6.2, 15.2) is `E-RUNTIME-VALUE`.
+- A nonzero number of magnitude below `5e-324`, the smallest positive double to its shortest decimal, is `0` wherever it enters: such a number is read as `0`, and an arithmetic result that small is `0`, as a double would round it.
+- The range keeps every number one with a double, and one whose decimal text (13.1) has a bounded length: an exact decimal of `1e1000000000` would take a billion digits to write.
 
 ### 4.2 Type Syntax
 
@@ -1254,7 +1262,7 @@ The types of the operators are as follows.
 
 The pipe and composition operators are syntactic sugar for making the passing of functions readable from left to right, and parentheses can be used to make the association order explicit.
 
-The result of comparison operators and logical operators is `Bool`. The result of arithmetic operators is `Number`, and they must be evaluable as numeric operations. The arithmetic operators, including `+`, are exclusively for `Number`; applying them to `String` is a type error. String concatenation is not done with an operator; use the built-in library function `concat` (15.3).
+The result of comparison operators and logical operators is `Bool`. The result of arithmetic operators is `Number`, and they must be evaluable as numeric operations. `+`, `-` and `*` are exact; `/` divides the doubles of its operands and yields the shortest decimal that reads back as the double quotient (`10 / 3` is `3.3333333333333335`), since an exact quotient need not end. A divisor of `0` is `E-RUNTIME-DIV-BY-ZERO`, and a result beyond the range of `Number` (4.1) is `E-RUNTIME-VALUE`. The arithmetic operators, including `+`, are exclusively for `Number`; applying them to `String` is a type error. String concatenation is not done with an operator; use the built-in library function `concat` (15.3).
 
 ### 6.3 Asynchronous Invocation and Awaiting
 
@@ -3295,6 +3303,7 @@ Argument decoding modes:
 - `--arg-decode auto`: JSON if interpretable as JSON, otherwise `String`.
 - The default when unspecified is `auto`.
 - Decoding applies to the values of both positional and keyword arguments.
+- JSON with a number beyond the range of `Number` (4.1), such as `1e400`, is `E-CLI-USAGE` under `json` and under `auto` alike: it is JSON, and `auto` does not take it as the `String` it is spelled as.
 
 Type conformance rules:
 
@@ -4561,7 +4570,7 @@ The table below is the complete list of codes. An implementation reports every o
 | `E-RUNTIME-COMMAND-NONZERO` | runtime | `2`¹ | failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6) |
 | `E-RUNTIME-ACCESS` | runtime | `2`¹ | index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9) |
 | `E-RUNTIME-CAST` | runtime | `2`¹ | failure of the runtime type check of `cast` (15.8) |
-| `E-RUNTIME-VALUE` | runtime | `2`¹ | a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13); or `runnable` was given a run option for a `local` environment (8.8, 15.5) |
+| `E-RUNTIME-VALUE` | runtime | `2`¹ | a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13); an arithmetic result is beyond the range of `Number` (4.1, 6.2); or `runnable` was given a run option for a `local` environment (8.8, 15.5) |
 | `E-RUNTIME-REGEX` | runtime | `2`¹ | a malformed regular expression pattern (15.3) |
 | `E-RUNTIME-TIMEOUT` | runtime | `2`¹ | the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10). |
 | `E-RUNTIME-UNTIL-EXHAUSTED` | runtime | `2`¹ | the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10). |
@@ -4794,7 +4803,7 @@ Semantics:
 - If the divisor of `div` is 0, it is `E-RUNTIME-DIV-BY-ZERO`.
 - If the right-hand side of `mod` is 0, it is also `E-RUNTIME-DIV-BY-ZERO`.
 - `min`/`max` return the smaller and the larger of the two arguments respectively, and return the left argument when they are equal.
-- `sum(xs)` adds the elements from left to right. The sum of an empty array is `0`.
+- `sum(xs)` adds the elements from left to right. The sum of an empty array is `0`. A partial sum beyond the range of `Number` (4.1) is `E-RUNTIME-VALUE`, as for `add`.
 - `pow(base, exponent)` raises `base` to `exponent`. The exponent need not be an integer, and `pow(0, 0)` is `1`. A result that is not a real number (for example a negative base with a fractional exponent) is `E-RUNTIME-VALUE`.
 - `sqrt(x)` for a negative `x` is `E-RUNTIME-VALUE`.
 - `clamp(value, low, high)` returns `low` when `value < low`, `high` when `value > high`, and `value` otherwise. `low > high` is `E-RUNTIME-VALUE`.
@@ -4842,7 +4851,7 @@ Semantics:
 - `lines(s)` splits `s` on `\n` and removes one trailing `\r` from each line, so both LF and CRLF text split identically. A trailing newline does not produce a final empty element, and the empty string yields the empty array. This is the form to use on the `stdout` of a `CommandResult` (6.6).
 - `to_string(v)` produces the same text that interpolating `v` into a string would (6.6): a `String` unchanged, a `Number` in the canonical form of 13.1, and a `Bool` as `true` or `false`. A runtime value of any other kind, `Null` included, is `E-RUNTIME-VALUE`; use `to_json` (15.8) for structured values.
 - The type of `v` must be stringifiable (6.6), which is the bound of `T`. `to_string` of a `String | Null` is therefore a static error (`E-TYPE-BOUND`), and the union is narrowed with `case` (6.4) first. `Any` is stringifiable and remains accepted, with the runtime check above as its guard.
-- `to_number(s)` decodes `s`, ignoring surrounding whitespace, as a number in the JSON number grammar (13.1). Any other text is `E-IO-DATA-DECODE`. This is the form to use on a number read out of command output, and it replaces going through `from_json` and `cast`.
+- `to_number(s)` decodes `s`, ignoring surrounding whitespace, as a number in the JSON number grammar (13.1). Any other text, and a number beyond the range of `Number` (4.1), is `E-IO-DATA-DECODE`. This is the form to use on a number read out of command output, and it replaces going through `from_json` and `cast`.
 
 Regular expressions:
 
@@ -5171,7 +5180,7 @@ Format arguments:
 
 - The 2nd argument of `encode`/`decode` is a format specification string, and at least `json`, `pretty-json`, `yaml`, `toml`, `csv`, and `dotenv` are accepted.
 - `yaml` follows the YAML 1.2 core schema. Decoding maps scalars to values by the same rules the JSON list below gives, and encoding emits a block-style document.
-- `toml` decodes a table to an object under the same rule as a JSON object, and decodes a date or time as a `String`, since the language has no date type. Encoding is defined only when the top-level value is an object.
+- `toml` decodes a table to an object under the same rule as a JSON object, and decodes a date or time as a `String`, since the language has no date type. A float `inf` or `nan` has no `Number` (4.1), and is `E-IO-DATA-DECODE`. Encoding is defined only when the top-level value is an object.
 - `csv` follows RFC 4180 with a header row. Decoding yields an array of objects keyed by the header, in which every value is a `String`; no type is inferred from the text. Encoding takes an array of objects, uses the field set of the first element as the header, and requires every element to carry that same field set with only `String`, `Number`, or `Bool` values.
 - `dotenv` decodes `NAME=value` lines to an object whose values are all `String`, ignoring blank lines and lines whose first non-space character is `#`, and stripping one layer of surrounding quotation from a value. Only the first `=` of a line separates the name from the value, so a value may contain further ones. Encoding emits one `NAME=value` line per entry, quoting a value that needs it, and is defined only for string-valued objects.
 - A value that the requested format cannot represent is `E-RUNTIME-VALUE`; input that is not well-formed in the requested format is `E-IO-DATA-DECODE`.
@@ -5180,7 +5189,7 @@ Format arguments:
 
 JSON conversion rules of `from_json` / `decode`:
 
-- JSON number -> `Number`
+- JSON number -> `Number`. A number beyond the range of `Number` (4.1) is `E-IO-DATA-DECODE`, as is one in YAML or TOML.
 - JSON string -> `String`
 - JSON boolean -> `Bool`
 - JSON null -> `Null`

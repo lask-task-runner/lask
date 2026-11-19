@@ -4,9 +4,11 @@ module Language.Lask.LexerSpec (spec) where
 
 import Data.Either (isLeft)
 import Data.Text (Text)
+import qualified Data.Text as T
+import Language.Lask.Diagnostic (diagSpan)
 import Language.Lask.Lexer (lexLayout, lexTokens)
 import Language.Lask.Lexer.Token
-import Language.Lask.Span (Span (NoSpan))
+import Language.Lask.Span (Position (..), Span (..))
 import Test.Hspec
 
 -- | Tokenize (no layout) and strip spans.
@@ -42,6 +44,17 @@ spec = do
 
     it "does not take an accessor dot into a number" $
       lexed "1.foo" `shouldBe` Right [num 1, TDot, lid "foo"]
+
+    it "refuses a number literal beyond the range of Number (spec 3.3, 4.1)" $ do
+      lexed (T.replicate 309 "9") `shouldSatisfy` isLeft
+      lexed (T.replicate 308 "9") `shouldBe` Right [TNumber (read (replicate 308 '9'))]
+
+    it "reports a literal beyond the range where it starts" $
+      either (Just . diagSpan) (const Nothing) (lexTokens "test.lask" ("x = " <> T.replicate 400 "1"))
+        `shouldBe` Just (Span (Position "test.lask" 1 5) (Position "test.lask" 1 5))
+
+    it "reads a literal too small to tell from zero as 0" $
+      lexed ("0." <> T.replicate 400 "0" <> "1") `shouldBe` Right [num 0]
 
     it "has no signed numbers: leading minus is an operator" $
       lexed "-1" `shouldBe` Right [TOp OpSub, num 1]
