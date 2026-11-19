@@ -18,7 +18,6 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Support.Harness
-import Support.Pending (knownBug)
 import System.Exit (ExitCode (..))
 import System.Process (CreateProcess (..), readCreateProcessWithExitCode, shell)
 import Test.Hspec
