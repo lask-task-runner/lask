@@ -1,0 +1,11 @@
+// A use outside the case at a union keeps it one to dispatch on (4.3).
+g(v: String | Number) = 1
+f(x) = do {
+  k = case (x) {
+    Number -> x + 3
+    else -> 0
+  }
+  g(x) + k
+}
+a = f("s")
+b = f(true) // expect: E-TYPE-MISMATCH
