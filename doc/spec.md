@@ -5062,6 +5062,7 @@ Failure rules:
 - `await` on a handle whose computation failed re-raises that failure unchanged (6.3, 8.6): the same `Error` value, with its code and message, and therefore the same exit code if it goes uncaught (11.3). `all` and `race` do the same with the failure they receive.
 - `all` fails as soon as any one of them fails, whichever position it holds in the array, with that failure. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7), so none is left running after the failure is reported. Their `finally` blocks run before it is (8.10).
 - `race` on an empty array is `E-RUNTIME-VALUE`: there is no result to return.
+- A computation that is cancelled, by `race`, `all`, `timeout` (15.7) or an interruption (8.7), takes with it every computation it started with `async`, and every one those started, so that none outlives it; their `finally` blocks run before it ends. They are consumed, and none is reported as never awaited (6.3). A computation that ends in any other way, by returning or failing, leaves what it started running.
 
 ### 15.7 Error Handling Functions
 

@@ -76,7 +76,6 @@ spec = do
       r `shouldBe` Right "\"fast\""
       seen `shouldNotContain` ["after"]
     it "stops what a loser started with async" $ do
-      pendingWith "known bug: race cancels a losing computation but not what it started with async, which runs on after race returns, unawaited and unreported (spec 15.6, 8.7)"
       (r, seen) <- evalSettled "f() = race([async do {\n  h = async $[#local]{wait 0.4 grand}\n  await h\n}, async $[#local]{wait 0.05 fast}])"
       r `shouldBe` Right "\"fast\""
       seen `shouldNotContain` ["end grand"]
@@ -102,7 +101,6 @@ spec = do
       errorCode r `shouldBe` Just "4"
       seen `shouldContain` ["end cleanup"]
     it "stops what the others started with async, leaving none running" $ do
-      pendingWith "known bug: all cancels the other computations but not what they started with async, which runs on after all has failed (spec 15.6: none is left running)"
       (r, seen) <- evalSettled "f() = all([async do {\n  h = async $[#local]{wait 0.4 grand}\n  await h\n}, async do {\n  w = $[#local]{wait 0.1 settle}\n  $[#local]{exit 4 bad}\n}])"
       errorCode r `shouldBe` Just "4"
       seen `shouldNotContain` ["end grand"]
