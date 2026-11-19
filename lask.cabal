@@ -73,6 +73,7 @@ library
       Language.Lask.Lexer.Token
       Language.Lask.Module.Loader
       Language.Lask.Module.Resolve
+      Language.Lask.Number
       Language.Lask.Obs.CommandLog
       Language.Lask.Obs.Events
       Language.Lask.Obs.ExecLog

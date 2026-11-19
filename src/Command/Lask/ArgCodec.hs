@@ -32,6 +32,7 @@ import qualified Data.Text.Encoding as TE
 import Language.Lask.Elaborate (StaticParams (..))
 import Language.Lask.Runtime.Eval (castValueEither, renderCastMismatch)
 import Language.Lask.Runtime.Value (Value (..))
+import Language.Lask.Number (numberText)
 import Language.Lask.Serialize (valueFromJson)
 import Language.Lask.Types
   ( Bound (..),
@@ -126,11 +127,14 @@ decodeArgValue :: ArgDecodeMode -> Text -> Either Text Value
 decodeArgValue mode raw = case mode of
   DecodeText -> Right (VString raw)
   DecodeJson -> case decodeJson raw of
-    Just v -> Right v
+    Just v -> fitted v
     Nothing -> Left ("argument is not valid JSON: '" <> raw <> "'")
-  DecodeAuto -> Right (maybe (VString raw) id (decodeJson raw))
+  DecodeAuto -> maybe (Right (VString raw)) fitted (decodeJson raw)
   where
     decodeJson t = valueFromJson <$> A.decode (BL.fromStrict (TE.encodeUtf8 t))
+    -- JSON with a number beyond the range of Number (spec 4.1) is
+    -- refused, not read as the String it is spelled as.
+    fitted = either (\n -> Left ("argument '" <> raw <> "' has the number " <> numberText n <> ", outside the range of Number (about 1.8e308)")) Right
 
 -- | Bind decoded CLI arguments against the declaration parameter info
 -- (spec 11.2): positionals in order (excess collected by a variadic

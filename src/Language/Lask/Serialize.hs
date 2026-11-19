@@ -23,12 +23,14 @@ import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Map.Strict as Map
+import Data.Scientific (Scientific)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Language.Lask.Core.AST (Lam (..))
 import Language.Lask.ErrorCode (ErrorCode (ERuntimeCommandNonzero))
+import Language.Lask.Number (fitNumber)
 import Language.Lask.Runtime.Value
 import Language.Lask.Types (renderType)
 
@@ -80,16 +82,18 @@ functionRefJson lam =
     variadic = maybe False (const True) (lamVariadic lam)
 
 -- | Read plain JSON data as a value: objects become records
--- (consistently, spec 15.8); tagged metadata is not special-cased.
-valueFromJson :: A.Value -> Value
+-- (consistently, spec 15.8); tagged metadata is not special-cased. A
+-- number beyond the range of Number (4.1) is not read: the result is
+-- the first such number.
+valueFromJson :: A.Value -> Either Scientific Value
 valueFromJson v = case v of
-  A.Number n -> VNumber n
-  A.String t -> VString t
-  A.Bool b -> VBool b
-  A.Null -> VNull
-  A.Array xs -> VArray (V.map valueFromJson xs)
+  A.Number n -> maybe (Left n) (Right . VNumber) (fitNumber n)
+  A.String t -> Right (VString t)
+  A.Bool b -> Right (VBool b)
+  A.Null -> Right VNull
+  A.Array xs -> VArray <$> traverse valueFromJson xs
   A.Object o ->
-    VRecord (Map.fromList [(AK.toText k, valueFromJson x) | (k, x) <- KM.toList o])
+    VRecord . Map.fromList <$> traverse (\(k, x) -> (,) (AK.toText k) <$> valueFromJson x) (KM.toList o)
 
 encodeValue :: Value -> Text
 encodeValue = TE.decodeUtf8 . BL.toStrict . A.encode . valueToJson

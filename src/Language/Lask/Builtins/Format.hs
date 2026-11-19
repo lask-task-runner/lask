@@ -13,17 +13,16 @@ module Language.Lask.Builtins.Format
 where
 
 import qualified Data.Aeson as A
-import qualified Data.Aeson.Key as AK
-import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Map.Strict as Map
-import Data.Scientific (isInteger, toRealFloat)
+import Data.Scientific (Scientific, fromFloatDigits, isInteger, toRealFloat)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import qualified Data.Yaml as Y
 import Language.Lask.ErrorCode
+import Language.Lask.Number (fitNumber, numberText)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, valueFromJson, valueToJson)
 import qualified Toml
@@ -53,7 +52,7 @@ decodeFormat fmt s = case fmt of
   "pretty-json" -> decodeJson s
   "yaml" -> case Y.decodeEither' (TE.encodeUtf8 s) of
     Left e -> Left (dataError ("invalid YAML: " <> T.pack (Y.prettyPrintParseException e)))
-    Right j -> Right (valueFromJson j)
+    Right j -> fitted "YAML" (valueFromJson j)
   "toml" -> decodeToml s
   "csv" -> decodeCsv s
   "dotenv" -> decodeDotenv s
@@ -61,8 +60,16 @@ decodeFormat fmt s = case fmt of
 
 decodeJson :: Text -> Either LaskFailure Value
 decodeJson s = case A.eitherDecode (BL.fromStrict (TE.encodeUtf8 s)) of
-  Right j -> Right (valueFromJson j)
+  Right j -> fitted "JSON" (valueFromJson j)
   Left e -> Left (dataError ("invalid JSON: " <> T.pack e))
+
+-- | A decoded value, or the failure for a number in it beyond the
+-- range of Number (spec 4.1).
+fitted :: Text -> Either Scientific Value -> Either LaskFailure Value
+fitted fmt = either (Left . outOfRange fmt) Right
+
+outOfRange :: Text -> Scientific -> LaskFailure
+outOfRange fmt n = dataError (fmt <> " number " <> numberText n <> " is outside the range of Number (about 1.8e308)")
 
 unsupported :: Text -> LaskFailure
 unsupported fmt =
@@ -109,25 +116,30 @@ tomlValue v = case v of
 decodeToml :: Text -> Either LaskFailure Value
 decodeToml s = case Toml.parse s of
   Left e -> Left (dataError ("invalid TOML: " <> T.strip (T.pack e)))
-  Right tbl -> Right (fromTomlTable tbl)
+  Right tbl -> fromTomlTable tbl
 
-fromTomlTable :: TomlV.Table' a -> Value
-fromTomlTable (TomlV.MkTable m) = objectValue [(k, fromTomlValue v) | (k, (_, v)) <- Map.toList m]
+fromTomlTable :: TomlV.Table' a -> Either LaskFailure Value
+fromTomlTable (TomlV.MkTable m) = objectValue <$> traverse (\(k, (_, v)) -> (,) k <$> fromTomlValue v) (Map.toList m)
 
 -- | A date or a time decodes as a String: the language has no date
--- type (spec 15.8).
-fromTomlValue :: TomlV.Value' a -> Value
+-- type (spec 15.8). TOML's @inf@ and @nan@ are not numbers of the
+-- language (4.1), and decode as no value.
+fromTomlValue :: TomlV.Value' a -> Either LaskFailure Value
 fromTomlValue v = case v of
-  TomlV.Integer' _ n -> VNumber (fromInteger n)
-  TomlV.Double' _ d -> VNumber (realToFrac d)
-  TomlV.Bool' _ b -> VBool b
-  TomlV.Text' _ t -> VString t
-  TomlV.List' _ xs -> VArray (V.fromList (map fromTomlValue xs))
+  TomlV.Integer' _ n -> number (fromInteger n)
+  TomlV.Double' _ d
+    | isNaN d || isInfinite d -> Left (dataError ("TOML float " <> T.pack (show d) <> " is not a Number"))
+    | otherwise -> number (fromFloatDigits d)
+  TomlV.Bool' _ b -> Right (VBool b)
+  TomlV.Text' _ t -> Right (VString t)
+  TomlV.List' _ xs -> VArray . V.fromList <$> traverse fromTomlValue xs
   TomlV.Table' _ t -> fromTomlTable t
-  TomlV.TimeOfDay' _ t -> VString (T.pack (show t))
-  TomlV.ZonedTime' _ t -> VString (T.pack (show t))
-  TomlV.LocalTime' _ t -> VString (T.pack (show t))
-  TomlV.Day' _ d -> VString (T.pack (show d))
+  TomlV.TimeOfDay' _ t -> Right (VString (T.pack (show t)))
+  TomlV.ZonedTime' _ t -> Right (VString (T.pack (show t)))
+  TomlV.LocalTime' _ t -> Right (VString (T.pack (show t)))
+  TomlV.Day' _ d -> Right (VString (T.pack (show d)))
+  where
+    number n = maybe (Left (outOfRange "TOML" n)) (Right . VNumber) (fitNumber n)
 
 -- CSV (RFC 4180) --------------------------------------------------------------
 
@@ -243,11 +255,11 @@ encodeDotenv v = case entriesOf v of
 -- Shared ----------------------------------------------------------------------
 
 -- | Build a decoded object. Every format uses the one representation
--- 'valueFromJson' picks for a JSON object, because spec 15.8 leaves
--- the choice to the implementation but requires it to be the same
--- throughout.
+-- 'valueFromJson' picks for a JSON object, a record, because spec 15.8
+-- leaves the choice to the implementation but requires it to be the
+-- same throughout.
 objectValue :: [(Text, Value)] -> Value
-objectValue = valueFromJson . A.Object . KM.fromList . map (\(k, v) -> (AK.fromText k, valueToJson v))
+objectValue = VRecord . Map.fromList
 
 -- | The key-value pairs of a record or a map, in key order. Both
 -- represent an object (spec 15.8 follows @from_json@ here).
