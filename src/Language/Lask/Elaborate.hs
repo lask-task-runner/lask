@@ -18,6 +18,9 @@ module Language.Lask.Elaborate
     HoverInfo (..),
     elaborateProgram,
     elaborateRecovering,
+    Elaborated,
+    elaborateModules,
+    elaborateRecoveringFrom,
   )
 where
 
@@ -486,8 +489,41 @@ elaborateProgram prog scopes = case elaborateRecovering prog scopes [] of
 -- them. Returns the errors found, first in source order within each
 -- unit, and the core program of what did elaborate.
 elaborateRecovering :: Program -> Map FilePath GlobalScope -> [Diagnostic] -> ([Diagnostic], CoreProgram)
-elaborateRecovering prog scopes nameErrors =
-  case runStateT elabAll st0 of
+elaborateRecovering = elaborateRecoveringFrom Nothing
+
+-- | The elaboration of some of a program's modules, which the rest of
+-- it can resume from ('elaborateRecoveringFrom'): the language server
+-- keeps the one of a project's dependencies, which do not change while
+-- the project is edited.
+data Elaborated = Elaborated (Set FilePath) St
+
+-- | Elaborate the units of the given modules alone. They must import
+-- no module outside them, so that everything elaborating them reaches
+-- is among them: the result then depends on nothing but their sources
+-- and the program's directories ('recipePath'). The diagnostics are
+-- those name resolution reported in these modules. 'Nothing' for an
+-- internal error.
+elaborateModules :: Program -> Map FilePath GlobalScope -> [Diagnostic] -> [FilePath] -> Maybe Elaborated
+elaborateModules prog scopes nameErrors paths =
+  case runStateT (elabUnits ctx inBase) (initialSt (restrict (unitsHolding prog nameErrors))) of
+    Left _ -> Nothing
+    Right ((), st) -> Just (Elaborated base st)
+  where
+    base = Set.fromList paths
+    inBase p = p `Set.member` base
+    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty
+    -- The units holding an error elsewhere are not these modules' to
+    -- record: the result must not depend on the rest of the program.
+    restrict (ds, as, ws) =
+      (Set.filter (inBase . fst) ds, Set.filter (inBase . fst) as, Set.filter (inBase . fst) ws)
+
+-- | 'elaborateRecovering', resuming from the elaboration of some of the
+-- program's modules when one is given: only the other modules' units
+-- are elaborated, and what they reach in the given ones is already
+-- there.
+elaborateRecoveringFrom :: Maybe Elaborated -> Program -> Map FilePath GlobalScope -> [Diagnostic] -> ([Diagnostic], CoreProgram)
+elaborateRecoveringFrom resumed prog scopes nameErrors =
+  case runStateT (elabUnits ctx (`Set.notMember` done)) start of
     -- Every unit recovers on its own, so only an internal error in
     -- the recovery itself can get here.
     Left (f, fs) -> (reverse (fsErrors fs) <> [d | Failed d <- [f]], emptyCore)
@@ -511,49 +547,72 @@ elaborateRecovering prog scopes nameErrors =
       )
   where
     ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty
-    (failedDecls, failedAliases, failedWords) = unitsHolding prog nameErrors
-    st0 =
-      St
-        { stDecls = Map.empty,
-          stAliases = Map.empty,
-          stActive = Set.empty,
-          stHover = [],
-          stCommandUses = [],
-          stCommands = Map.empty,
-          stCommandsBuilding = Set.empty,
-          stAdvisories = [],
-          stCurrent = [],
-          stDispatched = Map.empty,
-          stSchemaUses = [],
-          stLocalBounds = Map.empty,
-          stInfer = Map.empty,
-          stInferNext = 0,
-          stQuiet = False,
-          stFailures = Failures [] failedDecls failedAliases failedWords
-        }
+    failedUnits@(failedDecls, failedAliases, failedWords) = unitsHolding prog nameErrors
+    (done, start) = case resumed of
+      Nothing -> (Set.empty, initialSt failedUnits)
+      Just (Elaborated base st) ->
+        let fs = stFailures st
+         in ( base,
+              st
+                { stFailures =
+                    fs
+                      { fsDecls = Set.union failedDecls (fsDecls fs),
+                        fsAliases = Set.union failedAliases (fsAliases fs),
+                        fsWords = Set.union failedWords (fsWords fs)
+                      }
+                }
+            )
     internal =
       maybe Set.empty (moduleInternal . lmModule) $
         Map.lookup (progEntry prog) (progModules prog)
     emptyCore =
       CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] [] Map.empty Map.empty []
-    -- Every module's command declarations are checked, whether or not
-    -- a command string uses them (spec ch. 5), and so is every type
-    -- alias, whether or not a type refers to it (spec 4.2).
-    elabAll = do
-      mapM_ (commandTable ctx . lmPath) (Map.elems (progModules prog))
-      mapM_
-        (tryAliasBody ctx)
-        [ (lmPath lm, a)
-        | lm <- Map.elems (progModules prog),
-          Decl _ (DTypeAlias a _ _) <- moduleDecls (lmModule lm)
-        ]
-      mapM_
-        (tryDemandDecl ctx)
-        [ (lmPath lm, n)
-        | lm <- Map.elems (progModules prog),
-          Decl _ f <- moduleDecls (lmModule lm),
-          n <- declValueName f
-        ]
+
+-- | The state no unit has been elaborated in, given the units that
+-- hold an error of name resolution.
+initialSt :: (Set Key, Set Key, Set (FilePath, Text)) -> St
+initialSt (failedDecls, failedAliases, failedWords) =
+  St
+    { stDecls = Map.empty,
+      stAliases = Map.empty,
+      stActive = Set.empty,
+      stHover = [],
+      stCommandUses = [],
+      stCommands = Map.empty,
+      stCommandsBuilding = Set.empty,
+      stAdvisories = [],
+      stCurrent = [],
+      stDispatched = Map.empty,
+      stSchemaUses = [],
+      stLocalBounds = Map.empty,
+      stInfer = Map.empty,
+      stInferNext = 0,
+      stQuiet = False,
+      stFailures = Failures [] failedDecls failedAliases failedWords
+    }
+
+-- | Elaborate every unit of the modules the predicate selects.
+-- Every module's command declarations are checked, whether or not a
+-- command string uses them (spec ch. 5), and so is every type alias,
+-- whether or not a type refers to it (spec 4.2).
+elabUnits :: Ctx -> (FilePath -> Bool) -> TC ()
+elabUnits ctx selected = do
+  mapM_ (commandTable ctx . lmPath) modules
+  mapM_
+    (tryAliasBody ctx)
+    [ (lmPath lm, a)
+    | lm <- modules,
+      Decl _ (DTypeAlias a _ _) <- moduleDecls (lmModule lm)
+    ]
+  mapM_
+    (tryDemandDecl ctx)
+    [ (lmPath lm, n)
+    | lm <- modules,
+      Decl _ f <- moduleDecls (lmModule lm),
+      n <- declValueName f
+    ]
+  where
+    modules = filter (selected . lmPath) (Map.elems (progModules (ctxProg ctx)))
     declValueName (DValue n _ _ _) = [n]
     declValueName (DFunction n _ _ _ _ _) = [n]
     declValueName _ = []

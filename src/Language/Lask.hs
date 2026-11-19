@@ -17,7 +17,7 @@ where
 
 import Control.Exception (IOException, try)
 import qualified Data.ByteString as BS
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -25,11 +25,11 @@ import Language.Lask.Deps.File (defaultDepsFileName)
 import Language.Lask.Deps.Lock (defaultLockFileName)
 import Language.Lask.Confirm (validateConfirm)
 import Language.Lask.Core.Access (checkWithin, secretAdvisories, withinConstraints)
-import Data.List (sortOn)
-import Language.Lask.Diagnostic (Advisory (..), Diagnostic, settleDiagnostics)
-import Language.Lask.Elaborate (CoreProgram (..), elaborateRecovering)
+import Data.List (isPrefixOf, sortOn)
+import Language.Lask.Diagnostic (Advisory (..), Diagnostic, diagSpan, settleDiagnostics)
+import Language.Lask.Elaborate (CoreProgram (..), Elaborated, elaborateModules, elaborateRecovering, elaborateRecoveringFrom)
 import Language.Lask.Module.Loader (LoadedModule (..), LoaderEnv (..), ModuleReader, Program (..), collapseDots, defaultLoaderEnv, fileReader, loadProgramEnv, loadProgramWith)
-import Language.Lask.Module.Resolve (GlobalScope, resolveProgram)
+import Language.Lask.Module.Resolve (GlobalScope, ResolvedModule, resolveModules, resolveProgram, resolveProgramFrom)
 import Language.Lask.Syntax.AST (Module)
 import qualified Language.Lask.Syntax.AST as AST
 import qualified Data.Set as Set
@@ -40,8 +40,12 @@ import Language.Lask.Lexer (lexTokensWithComments)
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Utils (kebabToSnake)
 import Language.Lask.Syntax.Parser (parseModule)
-import System.FilePath (normalise, takeDirectory, (</>))
+import System.FilePath (normalise, splitDirectories, takeDirectory, (</>))
 import System.IO.Unsafe (unsafePerformIO)
+import System.Directory (getFileSize, getModificationTime, pathIsSymbolicLink)
+import Language.Lask.Deps.Hash (treeStamp)
+import Language.Lask.Deps.Cache (cacheDirFor)
+import Data.Time.Clock (UTCTime)
 
 data Compiled = Compiled
   { compiledProgram :: Program,
@@ -100,7 +104,19 @@ checkProgram = checkProgramWith True
 checkProgramWith :: Bool -> Program -> ([Diagnostic], Map FilePath GlobalScope, CoreProgram)
 checkProgramWith constrained prog =
   let (nameDs, scopes) = resolveProgram prog
-      (typeDs, core) = elaborateRecovering prog scopes nameDs
+   in checkResolved constrained elaborateRecovering prog nameDs scopes
+
+-- | 'checkProgramWith' once names are resolved, elaborating with the
+-- given elaborator.
+checkResolved ::
+  Bool ->
+  (Program -> Map FilePath GlobalScope -> [Diagnostic] -> ([Diagnostic], CoreProgram)) ->
+  Program ->
+  [Diagnostic] ->
+  Map FilePath GlobalScope ->
+  ([Diagnostic], Map FilePath GlobalScope, CoreProgram)
+checkResolved constrained elaborate prog nameDs scopes =
+  let (typeDs, core) = elaborate prog scopes nameDs
       -- The access constraints are checked over the whole program
       -- (spec 10.11), which only a program that elaborated is.
       (specDs, cons) = withinConstraints prog
@@ -251,10 +267,68 @@ compileFilePartial path = do
 -- | The loader keys modules by their collapsed, normalised path, so
 -- the buffer has to be matched the same way; otherwise a path such as
 -- @./main.lask@ misses and the stale file on disk is read instead.
-textReader :: FilePath -> Text -> ModuleReader
-textReader path txt p
+textReader :: FilePath -> FilePath -> Text -> ModuleReader
+textReader cacheDir path txt p
   | collapseDots (normalise p) == collapseDots (normalise path) = pure (Right txt)
+  | otherwise = readerFor cacheDir p
+
+-- | 'fileReader', except that a module in the dependency cache is
+-- read through 'stampedReader': every compile reads every module the
+-- buffer imports, most of them a dependency's, which never change. The
+-- project's own modules are read afresh, since a modification time may
+-- not tell two writes apart.
+readerFor :: FilePath -> ModuleReader
+readerFor cacheDir p
+  | cacheParts `isPrefixOf` splitDirectories (collapseDots (normalise p)) = stampedReader p
   | otherwise = fileReader p
+  where
+    cacheParts = splitDirectories (collapseDots (normalise cacheDir))
+
+-- | 'fileReader', keeping what a file held for as long as its size and
+-- modification time stay the same: for the dependency cache, whose
+-- entries are named by the hash of what they hold.
+stampedReader :: ModuleReader
+stampedReader p = do
+  stamp <- try ((,) <$> getFileSize p <*> getModificationTime p)
+  case stamp of
+    Left e -> const (fileReader p) (e :: IOException)
+    Right now -> do
+      known <- Map.lookup p <$> readIORef readCache
+      case known of
+        Just (before, src) | before == now -> pure src
+        _ -> do
+          src <- fileReader p
+          atomicModifyIORef' readCache (\m -> (Map.insert p (now, src) m, ()))
+          pure src
+
+-- | 'leHolds', keeping a cache entry's verdict for as long as what its
+-- hash is computed from looks the same ('treeStamp'): hashing a
+-- dependency is most of what loading a program takes once its modules
+-- are parsed.
+stampedHolds :: (FilePath -> Text -> Bool -> IO Bool) -> FilePath -> Text -> Bool -> IO Bool
+stampedHolds holds p hash single = do
+  stamp <- try $ do
+    isLink <- pathIsSymbolicLink p
+    files <- if single then (\s -> [("", Right s)]) <$> ((,) <$> getFileSize p <*> getModificationTime p) else treeStamp p
+    pure (isLink, files)
+  case stamp of
+    Left e -> const (holds p hash single) (e :: IOException)
+    Right now -> do
+      known <- Map.lookup (p, hash, single) <$> readIORef holdsCache
+      case known of
+        Just (before, ok) | before == now -> pure ok
+        _ -> do
+          ok <- holds p hash single
+          atomicModifyIORef' holdsCache (\m -> (Map.insert (p, hash, single) (now, ok) m, ()))
+          pure ok
+
+{-# NOINLINE holdsCache #-}
+holdsCache :: IORef (Map (FilePath, Text, Bool) ((Bool, [(FilePath, Either FilePath (Integer, UTCTime))]), Bool))
+holdsCache = unsafePerformIO (newIORef Map.empty)
+
+{-# NOINLINE readCache #-}
+readCache :: IORef (Map FilePath ((Integer, UTCTime), Either Text Text))
+readCache = unsafePerformIO (newIORef Map.empty)
 
 -- | Diagnostics for an in-editor document.
 checkText :: FilePath -> Text -> IO [Diagnostic]
@@ -296,7 +370,74 @@ compileMemo = unsafePerformIO (newIORef Map.empty)
 -- | A buffer loaded with what it imports, and checked; the check is
 -- done when a caller first looks at it.
 editorCompile :: FilePath -> Text -> IO (Either [Diagnostic] (Program, ([Diagnostic], Map FilePath GlobalScope, CoreProgram)))
-editorCompile path txt = remembered compileMemo path txt $ \load -> fmap (\prog -> (prog, checkProgram prog)) <$> load
+editorCompile path txt = remembered compileMemo path txt $ \load -> do
+  loaded <- load
+  case loaded of
+    Left ds -> pure (Left ds)
+    Right prog -> do
+      checked <- editorCheck prog
+      pure (Right (prog, checked))
+
+-- | What a dependency resolution and elaboration were made from: the
+-- dependency modules' sources, and the directories a recipe path is
+-- written against.
+data DepKey = DepKey FilePath FilePath [(FilePath, Text)]
+  deriving (Eq)
+
+-- | The resolution and elaboration of the last program's dependencies.
+-- They do not change while the project is edited, yet are most of what
+-- a project checks, so each edit checks the project's own modules only.
+{-# NOINLINE dependencyMemo #-}
+dependencyMemo :: IORef (Maybe (DepKey, Map FilePath ResolvedModule, Maybe Elaborated))
+dependencyMemo = unsafePerformIO (newIORef Nothing)
+
+-- | 'checkProgram', resuming from the resolution and elaboration of the
+-- program's dependencies when those of the same dependencies are kept.
+editorCheck :: Program -> IO ([Diagnostic], Map FilePath GlobalScope, CoreProgram)
+editorCheck prog = do
+  let deps = dependencyModules prog
+      depSet = Set.fromList deps
+      key =
+        DepKey
+          (progBaseDir prog)
+          (progCacheDir prog)
+          [(p, lmSource lm) | p <- deps, Just lm <- [Map.lookup p (progModules prog)]]
+  known <- readIORef dependencyMemo
+  (depResolved, resumed) <- case known of
+    Just (k, r, e) | k == key -> pure (r, e)
+    _ -> do
+      let r = resolveModules prog deps
+          (nameDs, scopes) = resolveProgramFrom r prog
+          -- What resolution reports in the dependencies is all their
+          -- elaboration sees of it.
+          e
+            | null deps = Nothing
+            | otherwise = elaborateModules prog (Map.restrictKeys scopes depSet) (filter (inFiles depSet) nameDs) deps
+      writeIORef dependencyMemo (Just (key, r, e))
+      pure (r, e)
+  let (nameDs, scopes) = resolveProgramFrom depResolved prog
+  pure (checkResolved True (elaborateRecoveringFrom resumed) prog nameDs scopes)
+
+-- | Whether a diagnostic is reported in one of the files.
+inFiles :: Set.Set FilePath -> Diagnostic -> Bool
+inFiles files d = case diagSpan d of
+  Span (Position f _ _) _ -> f `Set.member` files
+  NoSpan -> False
+
+-- | The modules of the program in its dependency cache that import
+-- nothing outside it: a dependency never imports the project.
+dependencyModules :: Program -> [FilePath]
+dependencyModules prog = Set.toList (settle cached)
+  where
+    cacheParts = splitDirectories (collapseDots (normalise (progCacheDir prog)))
+    underCache p = cacheParts `isPrefixOf` splitDirectories (collapseDots (normalise p))
+    cached = Set.fromList [p | p <- Map.keys (progModules prog), underCache p]
+    settle s =
+      let s' = Set.filter (closedIn s) s
+       in if Set.size s' == Set.size s then s else settle s'
+    closedIn s p = case Map.lookup p (progModules prog) of
+      Just lm -> all (`Set.member` s) (Map.elems (lmImportKeys lm))
+      Nothing -> False
 
 cachedParse :: FilePath -> Text -> IO (Either [Diagnostic] Module)
 cachedParse path src = do
@@ -314,6 +455,9 @@ cachedParse path src = do
 -- reads.
 remembered :: IORef (Map FilePath (Memo a)) -> FilePath -> Text -> (IO (Either [Diagnostic] Program) -> IO a) -> IO a
 remembered memo path txt compile = do
+  cacheDir <- cacheDirFor (takeDirectory path)
+  let unchanged (ModuleInput p before) = (== before) <$> readerFor cacheDir p
+      unchanged (FileInput p before) = (== before) <$> readMaybe p
   known <- Map.lookup path <$> readIORef memo
   fresh <- case known of
     Just (Memo before inputs result) | before == txt -> do
@@ -327,7 +471,7 @@ remembered memo path txt compile = do
       let note i = atomicModifyIORef' readsRef (\is -> (i : is, ()))
           entry = collapseDots (normalise path)
           reader p = do
-            r <- textReader path txt p
+            r <- textReader cacheDir path txt p
             -- The buffer is the memo's key, not one of its inputs.
             if collapseDots (normalise p) == entry then pure () else note (ModuleInput p r)
             pure r
@@ -336,6 +480,7 @@ remembered memo path txt compile = do
       let env =
             env0
               { leParse = cachedParse,
+                leHolds = stampedHolds (leHolds env0),
                 leLoadDeps = \dir -> project dir >> leLoadDeps env0 dir,
                 leLoadLock = \dir -> project dir >> leLoadLock env0 dir
               }
@@ -347,8 +492,6 @@ remembered memo path txt compile = do
       atomicModifyIORef' memo (\m -> (Map.insert path (Memo txt inputs result) m, ()))
       pure result
   where
-    unchanged (ModuleInput p before) = (== before) <$> fileReader p
-    unchanged (FileInput p before) = (== before) <$> readMaybe p
     readMaybe p = either absent Just <$> try (BS.readFile p)
     absent :: IOException -> Maybe BS.ByteString
     absent _ = Nothing

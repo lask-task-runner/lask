@@ -17,13 +17,16 @@ module Language.Lask.Module.Resolve
     entryPublicValues,
     buildScopes,
     resolveProgram,
+    ResolvedModule,
+    resolveModules,
+    resolveProgramFrom,
     validateProgram,
   )
 where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (mapMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -68,18 +71,45 @@ validateProgram prog = case resolveProgram prog of
 -- elaboration still checks the declarations that hold none (spec
 -- 14.3).
 resolveProgram :: Program -> ([Diagnostic], Map FilePath GlobalScope)
-resolveProgram prog =
+resolveProgram = resolveProgramFrom Map.empty
+
+-- | One module resolved: its scope, the collisions building it found,
+-- and the references of its declarations that do not resolve.
+data ResolvedModule = ResolvedModule GlobalScope [Diagnostic] [Diagnostic]
+
+-- | Resolve the given modules alone. They must import no module outside
+-- them, so that what they find depends on their sources only: the
+-- language server keeps the resolution of a project's dependencies
+-- ('resolveProgramFrom').
+resolveModules :: Program -> [FilePath] -> Map FilePath ResolvedModule
+resolveModules prog paths =
+  Map.fromList
+    [ (p, resolveModule publics lm)
+    | p <- paths,
+      Just lm <- [Map.lookup p (progModules prog)]
+    ]
+  where
+    publics = Map.map modulePublics (progModules prog)
+
+-- | 'resolveProgram', with the modules already resolved taken as they
+-- are.
+resolveProgramFrom :: Map FilePath ResolvedModule -> Program -> ([Diagnostic], Map FilePath GlobalScope)
+resolveProgramFrom known prog =
   let publics = Map.map modulePublics (progModules prog)
-      scoped = scopedModules prog
-      scopes = Map.fromList [(p, gs) | (p, (gs, _)) <- scoped]
-      buildDiags = concat [ds | (_, (_, ds)) <- scoped]
-      refDiags =
-        concat
-          [ checkModule publics (scopes Map.! lmPath lm) lm
-          | lm <- Map.elems (progModules prog)
-          ]
+      resolved =
+        [ (lmPath lm, fromMaybe (resolveModule publics lm) (Map.lookup (lmPath lm) known))
+        | lm <- Map.elems (progModules prog)
+        ]
+      scopes = Map.fromList [(p, gs) | (p, ResolvedModule gs _ _) <- resolved]
+      buildDiags = concat [ds | (_, ResolvedModule _ ds _) <- resolved]
+      refDiags = concat [ds | (_, ResolvedModule _ _ ds) <- resolved]
       cycleDiags = aliasCycleDiags prog scopes
    in (buildDiags <> refDiags <> cycleDiags, scopes)
+
+resolveModule :: Map FilePath Publics -> LoadedModule -> ResolvedModule
+resolveModule publics lm =
+  let (gs, ds) = buildScope publics lm
+   in ResolvedModule gs ds (checkModule publics gs lm)
 
 -- | Per-module scopes with the collision diagnostics discarded, so
 -- that editor tooling can still resolve names in a program that does
@@ -89,7 +119,7 @@ buildScopes prog = Map.fromList [(p, gs) | (p, (gs, _)) <- scopedModules prog]
 
 scopedModules :: Program -> [(FilePath, (GlobalScope, [Diagnostic]))]
 scopedModules prog =
-  [ (lmPath lm, buildScope prog publics lm)
+  [ (lmPath lm, buildScope publics lm)
   | lm <- Map.elems (progModules prog)
   ]
   where
@@ -198,8 +228,8 @@ entryPublicValues prog scopes = publicValuesOf (0 :: Int) "" (progEntry prog)
 
 -- Scope construction ---------------------------------------------------------
 
-buildScope :: Program -> Map FilePath Publics -> LoadedModule -> (GlobalScope, [Diagnostic])
-buildScope _prog publics lm = go base [] (moduleDecls (lmModule lm))
+buildScope :: Map FilePath Publics -> LoadedModule -> (GlobalScope, [Diagnostic])
+buildScope publics lm = go base [] (moduleDecls (lmModule lm))
   where
     base =
       GlobalScope
