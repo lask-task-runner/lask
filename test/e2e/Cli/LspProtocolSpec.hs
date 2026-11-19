@@ -142,7 +142,7 @@ spec = beforeAll findLask $ describe "the language server over its protocol" $ d
       (\k -> cap k `shouldSatisfy` maybe False (/= A.Null))
       ["textDocumentSync", "hoverProvider", "completionProvider", "documentFormattingProvider", "codeActionProvider", "semanticTokensProvider", "inlayHintProvider"]
     path ["result", "capabilities", "textDocumentSync", "change"] r `shouldBe` Just (A.Number 2)
-    path ["result", "capabilities", "completionProvider", "triggerCharacters"] r `shouldBe` Just (A.toJSON ([".", "-", "=", "(", ",", " "] :: [Text]))
+    path ["result", "capabilities", "completionProvider", "triggerCharacters"] r `shouldBe` Just (A.toJSON ([".", "-", "="] :: [Text]))
 
   it "publishes the errors of a document it opens, with their code" $ \lask -> withServer lask $ \s -> do
     _ <- initialize s
