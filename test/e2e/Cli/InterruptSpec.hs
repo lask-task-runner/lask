@@ -176,7 +176,6 @@ spec = beforeAll findLask $ do
 
   describe "what all and race cancel (spec 15.6)" $
     it "leaves nothing running that a cancelled computation started with async" $ \lask -> do
-      pendingWith "known bug: all and race cancel the other computations but not what those started with async, which runs on after the run has ended (spec 15.6, 8.7)"
       withProject
         [ ( "main.lask",
             unlines
