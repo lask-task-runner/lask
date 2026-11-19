@@ -1,15 +1,15 @@
 name: CI
 
-# A pull request runs CI once, on its pull_request event: a push
-# trigger on every branch started the same jobs a second time for it.
-# dev and main are still tested on push, so a merge is checked as it
-# landed, and any other branch can be tested with workflow_dispatch.
+# Every push to every branch runs CI, so failures surface on the branch
+# that introduced them rather than at merge time; '**' (not '*') is
+# needed to match slashes, e.g. feature/foo. A pull request shows the
+# runs of its head commit's push, so there is no pull_request trigger:
+# with one, each pull request ran the same jobs twice. A pull request
+# from a fork is not run; workflow_dispatch can run it by hand.
 on:
   push:
     branches:
-      - dev
-      - main
-  pull_request:
+      - "**"
   workflow_dispatch:
 
 jobs:
