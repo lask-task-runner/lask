@@ -311,8 +311,8 @@ examples =
     is "to_json" "to_json({b: 1, a: [true, null]})" "\"{\\\"a\\\":[true,null],\\\"b\\\":1}\"",
     is "to_json" "to_json(\"é\\u{1}\\\"\")" "\"\\\"é\\\\u0001\\\\\\\"\\\"\"",
     is "from_json" "from_json(\" 1 \")" "1",
-    pendingBecause "1.5 - 0.5 is written 1.0 and 1 is written 1: one value, two texts (13.1); valueToJson writes the Scientific as it is, while to_string normalizes it" $
-      is "to_json" "to_json(1.5 - 0.5)" "\"1\"",
+    is "to_json" "to_json(1.5 - 0.5)" "\"1\"",
+    is "encode" "encode(1.5 - 0.5, \"yaml\")" "\"1\\n\"",
     fails "from_json" "from_json(\"\")" EIoDataDecode,
     is "encode" "encode({a: 1}, \"json\")" "\"{\\\"a\\\":1}\"",
     is "encode" "encode({b: [1, true], a: null}, \"yaml\")" "\"a: null\\nb:\\n- 1\\n- true\\n\"",

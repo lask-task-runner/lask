@@ -4338,7 +4338,7 @@ Format profiles:
 
 For `json` / `pretty-json`, the following mapping rules must be satisfied.
 
-- `Number`: maps to a JSON number.
+- `Number`: maps to a JSON number. One number has one text, however it was computed: an integer is written without a fraction, so `1.5 - 0.5` is written `1`, as `1` is.
 - `String`: maps to a JSON string.
 - `Bool`: maps to a JSON boolean.
 - `Null`: maps to JSON null.
