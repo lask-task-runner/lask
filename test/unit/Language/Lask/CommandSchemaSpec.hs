@@ -13,7 +13,6 @@ import qualified Data.Text as T
 import Language.Lask.CommandSchema hiding (Spec)
 import Language.Lask.Span (Span (..))
 import Language.Lask.Syntax.Shell (ShellWord (..), SimpleCommand (..))
-import Support.Pending (knownBug)
 import Test.Hspec
 
 -- Static values ----------------------------------------------------------------
@@ -284,11 +283,15 @@ spec = do
       roles plain (ws "+x") `shouldBe` [("+x", "argument")]
     it "reads a gnu-style word that begins with a prefix option of several letters" $ do
       let cc = valid (schema (spec' [opt ["-isystem"] [("value", str "required"), ("prefix", bool True)], opt ["-c"] []] [("closed", bool True)]) [])
-      -- -isystem/usr/include names no option: read as letters, -i is
-      -- none, so by the rule of prefix options it is -isystem with the
-      -- value /usr/include ("in either style").
-      knownBug "in the gnu style a word beginning with one dash is read as a cluster first, and an unknown letter is reported before the prefix options are consulted" $
-        findings cc (ws "-isystem/usr/include -c") `shouldBe` ok
+      -- -isystem/usr/include begins with the name -isystem: it is that
+      -- option with the value /usr/include, before it is read as
+      -- single letters, -i being none.
+      findings cc (ws "-isystem/usr/include -c") `shouldBe` ok
+      roles cc (ws "-isystem/usr/include") `shouldBe` [("-isystem/usr/include", "option -isystem")]
+    it "reads a gnu-style word as the prefix option of several letters even where its first letter is an option" $ do
+      let cc = valid (schema (spec' [opt ["-isystem"] [("value", str "required"), ("prefix", bool True)], opt ["-i"] []] [("closed", bool True)]) [])
+      roles cc (ws "-isystem/usr/include") `shouldBe` [("-isystem/usr/include", "option -isystem")]
+      roles cc (ws "-i") `shouldBe` [("-i", "option -i")]
 
   describe "subcommands (appendix A)" $ do
     it "selects a subcommand by the first positional argument" $ do
