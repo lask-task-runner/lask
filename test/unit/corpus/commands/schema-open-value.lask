@@ -1,0 +1,4 @@
+// A finding other than an unknown name is an error whatever the spec says (Appendix A).
+command { "go" } on #golang:1.25 schema { "go": { root: { options: [{ names: ["-v", "--verbose"] }, { names: ["-o"], value: "required" }] } } }
+f() = ${ go --verbose=1 } // expect: E-TYPE-COMMAND-OPTION
+g() = ${ go -o } // expect: E-TYPE-COMMAND-OPTION

@@ -1,0 +1,4 @@
+// A declaration with a name error is not type checked; the others are (14.3).
+f() = nope1 // expect: E-NAME-UNDEFINED
+g(): Number = "x" // expect: E-TYPE-MISMATCH
+h() = nope2 + "a" // expect: E-NAME-UNDEFINED

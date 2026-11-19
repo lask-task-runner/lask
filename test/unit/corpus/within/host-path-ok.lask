@@ -1,0 +1,3 @@
+access Mounts = { volumes: { "/tmp/cache": "ro" } }
+
+t() within Mounts = $[#alpine:3.22.2{ volumes: ["/tmp/cache/npm:/c:ro"], network: "none" }] true

@@ -1,0 +1,4 @@
+envs = { "sealed": #alpine:3.22.2{ network: "none" }, "open": #alpine:3.22.2 }
+
+ok() within { outbound: false } = $[envs["sealed"]] true
+bad() within { outbound: false } = $[envs["open"]] true  // expect: E-TYPE-WITHIN-EXCEEDED

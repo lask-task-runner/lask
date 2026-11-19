@@ -1,0 +1,4 @@
+// A parameter joined with values of one type has that type (4.3).
+f(c: Bool, n) = c ? 0 : n
+ok: Number = f(true, 1)
+bad = f(true, "a") // expect: E-TYPE-MISMATCH

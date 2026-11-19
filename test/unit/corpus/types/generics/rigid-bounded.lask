@@ -1,0 +1,3 @@
+// A bounded type parameter is still distinct from its bound (4.4).
+ok<T: Number>(x: T): Number = x + 1
+bad<T: Number>(x: T): T = x + 1 // expect: E-TYPE-MISMATCH

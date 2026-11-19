@@ -1,0 +1,2 @@
+// Used at Number and at String, which nothing conforms to both of (4.3).
+f(x) = length(x) + x // expect: E-TYPE-MISMATCH

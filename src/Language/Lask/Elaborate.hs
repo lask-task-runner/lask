@@ -18,6 +18,9 @@ module Language.Lask.Elaborate
     HoverInfo (..),
     elaborateProgram,
     elaborateRecovering,
+    Elaborated,
+    elaborateModules,
+    elaborateRecoveringFrom,
   )
 where
 
@@ -248,7 +251,7 @@ holds ctx = satisfiesNamed (boundOf ctx)
 boundViolation :: Ctx -> Span -> Text -> Text -> Bound -> Type -> Diagnostic
 boundViolation ctx sp callee v b t =
   diag ETypeBound sp $
-    "'" <> callee <> "' requires " <> T.takeWhile (/= '@') v <> " to " <> wanted <> ", but here it is " <> renderType t <> hint
+    "'" <> callee <> "' requires " <> varDisplay v <> " to " <> wanted <> ", but here it is " <> renderType t <> hint
   where
     wanted = case b of
       BoundNamed nb -> "be " <> renderNamedBound nb
@@ -486,8 +489,41 @@ elaborateProgram prog scopes = case elaborateRecovering prog scopes [] of
 -- them. Returns the errors found, first in source order within each
 -- unit, and the core program of what did elaborate.
 elaborateRecovering :: Program -> Map FilePath GlobalScope -> [Diagnostic] -> ([Diagnostic], CoreProgram)
-elaborateRecovering prog scopes nameErrors =
-  case runStateT elabAll st0 of
+elaborateRecovering = elaborateRecoveringFrom Nothing
+
+-- | The elaboration of some of a program's modules, which the rest of
+-- it can resume from ('elaborateRecoveringFrom'): the language server
+-- keeps the one of a project's dependencies, which do not change while
+-- the project is edited.
+data Elaborated = Elaborated (Set FilePath) St
+
+-- | Elaborate the units of the given modules alone. They must import
+-- no module outside them, so that everything elaborating them reaches
+-- is among them: the result then depends on nothing but their sources
+-- and the program's directories ('recipePath'). The diagnostics are
+-- those name resolution reported in these modules. 'Nothing' for an
+-- internal error.
+elaborateModules :: Program -> Map FilePath GlobalScope -> [Diagnostic] -> [FilePath] -> Maybe Elaborated
+elaborateModules prog scopes nameErrors paths =
+  case runStateT (elabUnits ctx inBase) (initialSt (restrict (unitsHolding prog nameErrors))) of
+    Left _ -> Nothing
+    Right ((), st) -> Just (Elaborated base st)
+  where
+    base = Set.fromList paths
+    inBase p = p `Set.member` base
+    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty
+    -- The units holding an error elsewhere are not these modules' to
+    -- record: the result must not depend on the rest of the program.
+    restrict (ds, as, ws) =
+      (Set.filter (inBase . fst) ds, Set.filter (inBase . fst) as, Set.filter (inBase . fst) ws)
+
+-- | 'elaborateRecovering', resuming from the elaboration of some of the
+-- program's modules when one is given: only the other modules' units
+-- are elaborated, and what they reach in the given ones is already
+-- there.
+elaborateRecoveringFrom :: Maybe Elaborated -> Program -> Map FilePath GlobalScope -> [Diagnostic] -> ([Diagnostic], CoreProgram)
+elaborateRecoveringFrom resumed prog scopes nameErrors =
+  case runStateT (elabUnits ctx (`Set.notMember` done)) start of
     -- Every unit recovers on its own, so only an internal error in
     -- the recovery itself can get here.
     Left (f, fs) -> (reverse (fsErrors fs) <> [d | Failed d <- [f]], emptyCore)
@@ -511,49 +547,72 @@ elaborateRecovering prog scopes nameErrors =
       )
   where
     ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty
-    (failedDecls, failedAliases, failedWords) = unitsHolding prog nameErrors
-    st0 =
-      St
-        { stDecls = Map.empty,
-          stAliases = Map.empty,
-          stActive = Set.empty,
-          stHover = [],
-          stCommandUses = [],
-          stCommands = Map.empty,
-          stCommandsBuilding = Set.empty,
-          stAdvisories = [],
-          stCurrent = [],
-          stDispatched = Map.empty,
-          stSchemaUses = [],
-          stLocalBounds = Map.empty,
-          stInfer = Map.empty,
-          stInferNext = 0,
-          stQuiet = False,
-          stFailures = Failures [] failedDecls failedAliases failedWords
-        }
+    failedUnits@(failedDecls, failedAliases, failedWords) = unitsHolding prog nameErrors
+    (done, start) = case resumed of
+      Nothing -> (Set.empty, initialSt failedUnits)
+      Just (Elaborated base st) ->
+        let fs = stFailures st
+         in ( base,
+              st
+                { stFailures =
+                    fs
+                      { fsDecls = Set.union failedDecls (fsDecls fs),
+                        fsAliases = Set.union failedAliases (fsAliases fs),
+                        fsWords = Set.union failedWords (fsWords fs)
+                      }
+                }
+            )
     internal =
       maybe Set.empty (moduleInternal . lmModule) $
         Map.lookup (progEntry prog) (progModules prog)
     emptyCore =
       CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] [] Map.empty Map.empty []
-    -- Every module's command declarations are checked, whether or not
-    -- a command string uses them (spec ch. 5), and so is every type
-    -- alias, whether or not a type refers to it (spec 4.2).
-    elabAll = do
-      mapM_ (commandTable ctx . lmPath) (Map.elems (progModules prog))
-      mapM_
-        (tryAliasBody ctx)
-        [ (lmPath lm, a)
-        | lm <- Map.elems (progModules prog),
-          Decl _ (DTypeAlias a _ _) <- moduleDecls (lmModule lm)
-        ]
-      mapM_
-        (tryDemandDecl ctx)
-        [ (lmPath lm, n)
-        | lm <- Map.elems (progModules prog),
-          Decl _ f <- moduleDecls (lmModule lm),
-          n <- declValueName f
-        ]
+
+-- | The state no unit has been elaborated in, given the units that
+-- hold an error of name resolution.
+initialSt :: (Set Key, Set Key, Set (FilePath, Text)) -> St
+initialSt (failedDecls, failedAliases, failedWords) =
+  St
+    { stDecls = Map.empty,
+      stAliases = Map.empty,
+      stActive = Set.empty,
+      stHover = [],
+      stCommandUses = [],
+      stCommands = Map.empty,
+      stCommandsBuilding = Set.empty,
+      stAdvisories = [],
+      stCurrent = [],
+      stDispatched = Map.empty,
+      stSchemaUses = [],
+      stLocalBounds = Map.empty,
+      stInfer = Map.empty,
+      stInferNext = 0,
+      stQuiet = False,
+      stFailures = Failures [] failedDecls failedAliases failedWords
+    }
+
+-- | Elaborate every unit of the modules the predicate selects.
+-- Every module's command declarations are checked, whether or not a
+-- command string uses them (spec ch. 5), and so is every type alias,
+-- whether or not a type refers to it (spec 4.2).
+elabUnits :: Ctx -> (FilePath -> Bool) -> TC ()
+elabUnits ctx selected = do
+  mapM_ (commandTable ctx . lmPath) modules
+  mapM_
+    (tryAliasBody ctx)
+    [ (lmPath lm, a)
+    | lm <- modules,
+      Decl _ (DTypeAlias a _ _) <- moduleDecls (lmModule lm)
+    ]
+  mapM_
+    (tryDemandDecl ctx)
+    [ (lmPath lm, n)
+    | lm <- modules,
+      Decl _ f <- moduleDecls (lmModule lm),
+      n <- declValueName f
+    ]
+  where
+    modules = filter (selected . lmPath) (Map.elems (progModules (ctxProg ctx)))
     declValueName (DValue n _ _ _) = [n]
     declValueName (DFunction n _ _ _ _ _) = [n]
     declValueName _ = []
@@ -900,7 +959,11 @@ elabDecl ctx0 path (Decl sp f) = case f of
       -- parameters, as a function declaration does (6.1).
       ELambda tps ps rt body -> do
         vs <- typeVarsOf ctx path tps
-        (lam, ty, params) <- elabLambda (withTypeVars vs ctx) path Map.empty (exprSpan rhs) (Just name) ps rt body
+        -- The annotation's result type is the body's expected type.
+        let expectedRet = case annTy of
+              Just (TyFun _ r) -> Just r
+              _ -> Nothing
+        (lam, ty, params) <- elabLambdaExpecting (withTypeVars vs ctx) path Map.empty (exprSpan rhs) (Just name) expectedRet ps rt body
         -- A function-typed binding can never be a secret (6.10 allows
         -- only String); report that before the annotation check.
         _ <- applySecrecy sp name sec ty lam
@@ -1136,13 +1199,31 @@ elabLambda ::
   Maybe SType ->
   Expr ->
   TC (Core, Type, StaticParams)
-elabLambda ctx path locals sp mName ps0 retAnn body = do
+elabLambda ctx path locals sp mName = elabLambdaExpecting ctx path locals sp mName Nothing
+
+-- | 'elabLambda', given the result type the lambda's expected type
+-- gives it, if any. A body without a result annotation is checked
+-- against it, as an annotation would have it checked (spec 4.3), so
+-- that what needs an expected type in its last expression (fail, cast,
+-- a literal [] or {...}) has one.
+elabLambdaExpecting ::
+  Ctx ->
+  FilePath ->
+  Locals ->
+  Span ->
+  Maybe Text ->
+  Maybe Type ->
+  [Param] ->
+  Maybe SType ->
+  Expr ->
+  TC (Core, Type, StaticParams)
+elabLambdaExpecting ctx path locals sp mName expectedRet ps0 retAnn body = do
   -- A lambda that is not bound to a name has no type parameters
   -- (4.4); one bound to a name has had its parameters inferred
   -- already, with them ('inferParams').
   (ps, _) <- inferParams ctx path locals False ps0 retAnn body
   (params, kwDefaults, bodyLocals, secretParams) <- elabParams ctx path locals ps
-  retTy <- traverse (typeFromS ctx path) retAnn
+  retTy <- maybe (pure expectedRet) (fmap Just . typeFromS ctx path) retAnn
   let body' = wrapSecretParams secretParams body
   (bodyCore, bodyTy) <- case retTy of
     Just t -> (,) <$> check ctx path bodyLocals body' t <*> pure t
@@ -1261,7 +1342,10 @@ data IVar = IVar
     ivBounds :: [NamedBound],
     -- | The types of the values the body puts where it is, as the
     -- other branches of a choice: what it is when it is used at none.
-    ivLowers :: [Type]
+    ivLowers :: [Type],
+    -- | Where a case dispatches on it by type (spec 4.3, 6.4): it is
+    -- then to be Any or a union, which only can be dispatched on.
+    ivDispatch :: Maybe Span
   }
 
 -- | Inference variables are named @?x%n@: a @?@ cannot begin a type
@@ -1281,7 +1365,7 @@ newInferVar origin = do
   modify $ \s ->
     s
       { stInferNext = n + 1,
-        stInfer = Map.insert v (IVar origin n Nothing [] [] []) (stInfer s)
+        stInfer = Map.insert v (IVar origin n Nothing [] [] [] Nothing) (stInfer s)
       }
   pure (TyVar v)
 
@@ -1334,6 +1418,13 @@ addLower v t
 addVarBound :: Text -> NamedBound -> TC ()
 addVarBound v nb = modifyVar v (\iv -> iv {ivBounds = nub (ivBounds iv <> [nb])})
 
+-- | The scrutinee of a case with type heads (spec 4.3): a use at Any,
+-- and the variable is to be a type that can be dispatched on.
+addDispatch :: Span -> Text -> TC ()
+addDispatch sp v = do
+  addUse sp v TyAny
+  modifyVar v (\iv -> iv {ivDispatch = ivDispatch iv <|> Just sp})
+
 -- | Give an open variable a shape. The uses it had are uses of the
 -- shape now, and a variable it is made the same as takes its bounds.
 refineVar :: Ctx -> Text -> Type -> TC ()
@@ -1350,6 +1441,7 @@ refineVar ctx v sh = do
             Just w -> do
               mapM_ (addVarBound w) (ivBounds iv)
               mapM_ (addLower w) (ivLowers iv)
+              mapM_ (\dsp -> modifyVar w (\i -> i {ivDispatch = ivDispatch i <|> Just dsp})) (ivDispatch iv)
             Nothing -> pure ()
     _ -> pure ()
 
@@ -1638,7 +1730,28 @@ inferParams ctx path locals generalize ps retAnn body
                       <> renderType u
                       <> ", and no type is both; annotate the parameter"
           (_, m) <- foldM step (sp0, u0) rest
+          checkDispatch iv m
           pure (v, Right m)
+    -- A type is dispatched on only in Any or a union (spec 4.3, 6.4):
+    -- a use outside the case that narrows the parameter to one type
+    -- leaves nothing to dispatch on.
+    checkDispatch iv m = case ivDispatch iv of
+      Just dsp
+        | not (dispatchable m),
+          (sp, u) : _ <- [use | use@(_, u') <- ivUppers iv, not (dispatchable u')] ->
+            abort . withNote ("the case that dispatches on it is at " <> renderAt dsp) . diag ETypeMismatch sp $
+              "'"
+                <> ivOrigin iv
+                <> "' is dispatched on by type in a case, and used here as "
+                <> renderType u
+                <> "; a type is dispatched on only in Any or a union, so annotate the parameter"
+      _ -> pure ()
+    dispatchable t = case t of
+      TyAny -> True
+      TyUnion _ -> True
+      _ -> False
+    renderAt (Span (Position f l _) _) = T.pack f <> ":" <> T.pack (show l)
+    renderAt NoSpan = "its case"
     boundFor sp iv = case ivBounds iv of
       [] -> pure Nothing
       bs -> case [b | b <- bs, all (boundEntails (BoundNamed b)) bs] of
@@ -1916,9 +2029,9 @@ check ctx path locals e@(Expr sp f) expected = case f of
         pure (Core sp (CArray cs))
   EObject kvs -> checkObject ctx path locals sp kvs expected
   ELambda tps ps rt body
-    | TyFun expPs _ <- expected -> do
+    | TyFun expPs expRet <- expected -> do
         monoLambda sp tps
-        (lam, ty, _) <- elabLambdaAgainst ctx path locals sp ps rt body expPs
+        (lam, ty, _) <- elabLambdaAgainst ctx path locals sp ps rt body expPs (Just expRet)
         conformsM ctx sp ty expected >>= \ok -> unless ok (mismatch sp expected ty)
         pure lam
   ECond c a b -> check ctx path locals (condAsIf sp c a b) expected
@@ -2024,15 +2137,16 @@ elabLambdaAgainst ::
   Maybe SType ->
   Expr ->
   [Type] ->
+  Maybe Type ->
   TC (Core, Type, StaticParams)
-elabLambdaAgainst ctx path locals sp ps rt body expPs = do
+elabLambdaAgainst ctx path locals sp ps rt body expPs expRet = do
   requiredAsValue sp "a lambda" ps
   let positionals = [p | p@(Param _ (PPositional _ _ _)) <- ps]
   ps' <-
     if length positionals == length expPs && length positionals == length ps
       then pure (zipWith adopt ps expPs)
       else pure ps
-  elabLambda ctx path locals sp Nothing ps' rt body
+  elabLambdaExpecting ctx path locals sp Nothing expRet ps' rt body
   where
     adopt (Param psp (PPositional n sec Nothing)) expTy =
       Param psp (PPositional n sec (Just (typeToS psp expTy)))
@@ -2241,7 +2355,11 @@ elabDot ctx path locals sp inner fsp fld = case namespaceExpr ctx path locals in
     cannotTell ETypeAccess fsp "a field access" t
     case t of
       TyRecord fields -> case Map.lookup fld fields of
-        Just f -> pure (Core sp (CDot c fld), readFieldType f)
+        Just f -> do
+          -- Recorded so hovering the field shows its own type rather
+          -- than a top-level declaration that shares its name.
+          recordVar fsp fld (readFieldType f) Nothing
+          pure (Core sp (CDot c fld), readFieldType f)
         Nothing ->
           abort . suggesting fld (Map.keys fields) $
             diag ETypeAccess fsp ("record has no field '" <> fld <> "': " <> renderType t)
@@ -2268,10 +2386,10 @@ elabIndex ctx path locals sp inner idx = do
   cannotTell ETypeAccess sp "an index" t
   case t of
     TyArray elemTy -> do
-      i <- check ctx path locals idx TyNumber
+      i <- index "an Array" TyNumber
       pure (Core sp (CIndex IdxArray c i), elemTy)
     TyMap valTy -> do
-      i <- check ctx path locals idx TyString
+      i <- index "a Map" TyString
       pure (Core sp (CIndex IdxMap c i), valTy)
     TyRecord fields -> case literalString idx of
       Just k -> case Map.lookup k fields of
@@ -2288,6 +2406,18 @@ elabIndex ctx path locals sp inner idx = do
     literalString (Expr _ (EString [TPChunk _ t])) = Just t
     literalString (Expr _ (EString [])) = Just ""
     literalString _ = Nothing
+
+    -- An index of the wrong type is a combination of target and index
+    -- type 6.8 does not admit (E-TYPE-ACCESS). A mismatch inside the
+    -- index expression stays what it is.
+    index what want = do
+      r <- tryTC (check ctx path locals idx want)
+      case r of
+        Right i -> pure i
+        Left d
+          | diagCode d == ETypeMismatch && diagSpan d == exprSpan idx ->
+              abort d {diagCode = ETypeAccess, diagMessage = what <> " is indexed by a " <> renderType want}
+          | otherwise -> abort d
 
 -- Binary operators ---------------------------------------------------------------------
 
@@ -2569,6 +2699,36 @@ elabCase ::
   Bool ->
   TC (Core, Type)
 elabCase ctx path locals sp mScrut arms mExpected discarded = do
+  locals' <- dispatchedParam
+  elabCaseIn ctx path locals' sp mScrut arms mExpected discarded
+  where
+    -- A parameter whose type is still to be found (spec 4.3), which a
+    -- case dispatches on by type, is Any throughout the case: each arm
+    -- narrows it as it narrows an Any, so what an arm does with it is
+    -- done with the narrowed value and is no use of the parameter.
+    dispatchedParam = case mScrut of
+      Just (Expr ssp (EVar n))
+        | any typeHeaded arms,
+          Just t <- Map.lookup n locals -> do
+            vs <- gets stInfer
+            case openVar vs t of
+              Just v -> Map.insert n TyAny locals <$ addDispatch ssp v
+              Nothing -> pure locals
+      _ -> pure locals
+    typeHeaded (CaseArm _ (Just (TypeHeads _)) _) = True
+    typeHeaded _ = False
+
+elabCaseIn ::
+  Ctx ->
+  FilePath ->
+  Locals ->
+  Span ->
+  Maybe Expr ->
+  [CaseArm] ->
+  Maybe Type ->
+  Bool ->
+  TC (Core, Type)
+elabCaseIn ctx path locals sp mScrut arms mExpected discarded = do
   (matchArms, elseBody) <- splitCaseArms sp arms
   duplicateHeads [h | (ValueHeads hs, _) <- matchArms, h <- hs]
   (mBind, conds, narrows, taken) <- case mScrut of
@@ -2587,12 +2747,12 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
         abort . diag ETypeBound (exprSpan scrut) $
           "values of type " <> renderType scrutTy <> " cannot be matched by case: it is not comparable"
       parts <- mapM (armPart scrutTy name scrutVar) matchArms
-      duplicateTypeHeads [m | (_, _, ms) <- parts, m <- ms]
+      duplicateTypeHeads [h | (_, _, _, hs) <- parts, h <- hs]
       pure
         ( Just (name, scrutCore),
-          [c | (c, _, _) <- parts],
-          [n | (_, n, _) <- parts],
-          [m | (_, _, ms) <- parts, m <- ms]
+          [c | (c, _, _, _) <- parts],
+          [n | (_, n, _, _) <- parts],
+          [m | (_, _, ms, _) <- parts, m <- ms]
         )
   let elseNarrow = case (mScrut, taken) of
         (Just (Expr _ (EVar n)), _ : _)
@@ -2620,7 +2780,7 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
       case openVar vs t of
         Nothing -> pure t
         Just v
-          | any (not . isValueHeads . fst) matchArms -> TyAny <$ addUse (exprSpan scrut) v TyAny
+          | any (not . isValueHeads . fst) matchArms -> TyAny <$ addDispatch (exprSpan scrut) v
           | otherwise -> do
               tys <- mapM (headType t) [h | (ValueHeads hs, _) <- matchArms, h <- hs]
               case [u | Just u <- tys] of
@@ -2653,11 +2813,14 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
         let members = [t | Just t <- tys, t `elem` unionMembers scrutTy]
             -- Only Null is exhausted by matching one of its values.
             takenHere = filter (== TyNull) members
-        pure (anyOf conds, narrowTo scrutTy members, takenHere)
+            -- Where each type taken here is written, for
+            -- 'duplicateTypeHeads'.
+            written = [(t, exprSpan h) | (h, Just t) <- zip hs tys, t == TyNull, t `elem` unionMembers scrutTy]
+        pure (anyOf conds, narrowTo scrutTy members, takenHere, written)
       TypeHeads sts -> do
         ms <- mapM (typeHead scrutTy) sts
         let conds = [Core (stypeSpan st) (CIsType scrutVar m) | (st, m) <- zip sts ms]
-        pure (anyOf conds, narrowTo scrutTy ms, ms)
+        pure (anyOf conds, narrowTo scrutTy ms, ms, zip ms (map stypeSpan sts))
 
     -- A type head is admissible for the two types whose runtime kind
     -- is not settled statically (spec 6.4).
@@ -2749,13 +2912,14 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
         }
 
     -- Two type heads denoting the same type make the later arm
-    -- unreachable (spec 6.4).
+    -- unreachable (spec 6.4); it is reported at the later head, as a
+    -- duplicate value head is.
     duplicateTypeHeads = goTy Set.empty
       where
         goTy _ [] = pure ()
-        goTy seen (m : rest)
+        goTy seen ((m, at) : rest)
           | Set.member m seen =
-              abort . diag ETypeCaseDuplicate sp $
+              abort . diag ETypeCaseDuplicate at $
                 "this case arm can never be selected: an earlier arm already matches "
                   <> renderType m
           | otherwise = goTy (Set.insert m seen) rest
@@ -3858,9 +4022,12 @@ elabCall ctx path locals sp fn args mExpected = do
     -- A lambda argument adopts concrete parameter types from the
     -- (partially instantiated) pattern.
     inferWithHint argExpr p = case (exprF argExpr, p) of
-      (ELambda [] ps rt body, TyFun expPs _)
+      (ELambda [] ps rt body, TyFun expPs expRet)
         | all (settled ctx) expPs -> do
-            (lam, ty, _) <- elabLambdaAgainst ctx path locals (exprSpan argExpr) ps rt body expPs
+            -- The result too, once it is concrete: until then the
+            -- body is what determines it.
+            let ret = if settled ctx expRet then Just expRet else Nothing
+            (lam, ty, _) <- elabLambdaAgainst ctx path locals (exprSpan argExpr) ps rt body expPs ret
             pure (lam, ty)
       _ -> infer ctx path locals argExpr
 

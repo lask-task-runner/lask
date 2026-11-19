@@ -20,7 +20,7 @@ The recording above and the excerpt below come from [example/01-projects/02-weba
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="doc/assets/example-dark.svg">
-    <img alt="An excerpt of the example's main.lask: Python, Node, Terraform and AWS commands declared on pinned images from an imported tools module, a one-line unit-test task, a test task that within keeps free of secrets and off the host, and a deploy task that within limits to the two AWS keys" src="doc/assets/example-light.svg" width="676">
+    <img alt="An excerpt of the example's main.lask: Python, Node, Terraform and AWS commands declared on pinned images from an imported tools module, access declarations that name what tasks may reach, a module-wide within that keeps every command off the host, a one-line unit-test task, a test task kept free of secrets, and a deploy task that within limits to the two AWS keys" src="doc/assets/example-light.svg" width="676">
   </picture>
 </div>
 

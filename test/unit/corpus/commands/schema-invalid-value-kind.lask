@@ -1,0 +1,2 @@
+// value is "none", "required" or "optional" (Appendix A).
+command { "go" } on #golang:1.25 schema { "go": { root: { options: [{ names: ["-o"], value: "maybe" }] } } } // expect: E-TYPE-COMMAND-SCHEMA

@@ -1,0 +1,2 @@
+within { outbound: false }
+within { inbound: false }  // expect: E-TYPE-WITHIN-SPEC

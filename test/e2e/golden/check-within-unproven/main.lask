@@ -1,0 +1,2 @@
+probe(): String within { outbound: false } =
+  $[#alpine:3.22.2{ network: get_env("NET") }] true

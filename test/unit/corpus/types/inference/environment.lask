@@ -1,0 +1,4 @@
+// The environment of a command is a use at Runnable (4.3).
+f(e) = $[e] ls
+ok = f(#local)
+bad = f(1) // expect: E-TYPE-MISMATCH

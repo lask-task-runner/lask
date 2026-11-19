@@ -1,0 +1,4 @@
+// An option a schema that is not closed does not list is an advisory (Appendix A).
+command { "go" } on #golang:1.25 schema { "go": { root: { options: [{ names: ["-v"] }] } } }
+f() = ${ go -x } // expect: W-COMMAND-OPTION
+g() = $ go -v

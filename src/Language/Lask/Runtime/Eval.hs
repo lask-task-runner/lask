@@ -335,12 +335,12 @@ binOp _ op a b = case op of
   PNe -> pure (VBool (not (valueEq a b)))
   _ -> case (a, b) of
     (VNumber x, VNumber y) -> case op of
-      PAdd -> pure (VNumber (x + y))
-      PSub -> pure (VNumber (x - y))
-      PMul -> pure (VNumber (x * y))
+      PAdd -> VNumber <$> arithResult "+" (x + y)
+      PSub -> VNumber <$> arithResult "-" (x - y)
+      PMul -> VNumber <$> arithResult "*" (x * y)
       PDiv
         | y == 0 -> throwIO (runtimeFailure ERuntimeDivByZero "division by zero")
-        | otherwise -> pure (VNumber (divS x y))
+        | otherwise -> VNumber <$> divNumber "/" x y
       PLt -> pure (VBool (x < y))
       PLe -> pure (VBool (x <= y))
       PGt -> pure (VBool (x > y))
@@ -353,8 +353,6 @@ binOp _ op a b = case op of
       PGe -> pure (VBool (x >= y))
       _ -> internal "non-numeric operands"
     _ -> internal "non-numeric operands"
-  where
-    divS x y = realToFrac (realToFrac x / realToFrac y :: Double)
 
 -- | Runtime type check for @cast@ (spec 15.8). Records and maps are
 -- mutually accepted (structural conversion); @Any@ positions are

@@ -17,24 +17,58 @@ module Language.Lask.Lexer
   )
 where
 
+import Control.Monad.Reader (ReaderT, ask, runReaderT)
 import Control.Monad.State.Strict (State, lift, modify, runState)
 import Data.Char (chr, isDigit, isHexDigit)
 import qualified Data.Char as Char
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Vector as V
 import Data.Void (Void)
 import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
 import Language.Lask.ErrorCode (ErrorCode (ESyntaxUnexpectedToken), Stage (StageSyntax))
 import Language.Lask.Lexer.Layout (layout)
 import Language.Lask.Lexer.Token
-import Language.Lask.Span (Span (Span), fromSourcePos)
+import Language.Lask.Number (fitNumber)
+import Language.Lask.Span (Position (..), Span (Span))
 import Text.Megaparsec hiding (State, Token, Tokens)
 import Text.Megaparsec.Char (char)
 
 -- Comments are lexically whitespace (spec 3.3) but their spans are
 -- collected on the side for editor tooling (semantic highlighting).
-type Lexer = ParsecT Void Text (State [Span])
+-- | The lexer reads the line starts of its input to place a position
+-- (see 'getPos'), and collects the spans of comments.
+type Lexer = ParsecT Void Text (ReaderT LineStarts (State [Span]))
+
+-- | The file name, and the offset of the first character of each line,
+-- the first line first.
+data LineStarts = LineStarts FilePath (V.Vector Int)
+
+lineStarts :: FilePath -> Text -> LineStarts
+lineStarts file src = LineStarts file (V.fromList (0 : [i + 1 | (i, c) <- zip [0 ..] (T.unpack src), c == '\n']))
+
+-- | The position of an offset: its line, and its column counted in
+-- characters (Unicode scalar values) from 1, a tab or a wide character
+-- being one like any other (spec 14). Megaparsec's own column advances
+-- a tab to the next multiple of eight and counts a wide character as
+-- two, which no editor protocol shares.
+positionAt :: LineStarts -> Int -> Position
+positionAt (LineStarts file starts) o = Position file (i + 1) (o - starts V.! i + 1)
+  where
+    -- The last line that starts at or before the offset.
+    i = go 0 (V.length starts - 1)
+    go lo hi
+      | lo >= hi = lo
+      | otherwise =
+          let mid = (lo + hi + 1) `div` 2
+           in if starts V.! mid <= o then go mid hi else go lo (mid - 1)
+
+getPos :: Lexer Position
+getPos = do
+  o <- getOffset
+  ls <- lift ask
+  pure (positionAt ls o)
 
 -- | Tokenize a module source. Newlines are kept as 'TNewline'.
 lexTokens :: FilePath -> Text -> Either Diagnostic [Spanned Token]
@@ -43,9 +77,11 @@ lexTokens file src = fst <$> lexTokensWithComments file src
 -- | Tokenize, also returning the source spans of comments (in order).
 lexTokensWithComments :: FilePath -> Text -> Either Diagnostic ([Spanned Token], [Span])
 lexTokensWithComments file src =
-  case runState (runParserT pModuleTokens file src) [] of
-    (Left bundle, _) -> Left (bundleToDiagnostic bundle)
+  case runState (runReaderT (runParserT pModuleTokens file src) ls) [] of
+    (Left bundle, _) -> Left (bundleToDiagnostic ls bundle)
     (Right ts, comments) -> Right (ts, reverse comments)
+  where
+    ls = lineStarts file src
 
 -- | Tokenize and apply the newline-significance rules (spec 6.5).
 lexLayout :: FilePath -> Text -> Either Diagnostic [Spanned Token]
@@ -66,10 +102,10 @@ sc =
 
 recordSpan :: Lexer () -> Lexer ()
 recordSpan p = do
-  start <- getSourcePos
+  start <- getPos
   p
-  end <- getSourcePos
-  lift (modify (Span (fromSourcePos start) (fromSourcePos end) :))
+  end <- getPos
+  lift (modify (Span start end :))
 
 lineComment :: Lexer ()
 lineComment = do
@@ -95,10 +131,10 @@ blockComment = do
 
 spanned :: Lexer Token -> Lexer (Spanned Token)
 spanned p = do
-  start <- getSourcePos
+  start <- getPos
   t <- p
-  end <- getSourcePos
-  pure (Spanned (Span (fromSourcePos start) (fromSourcePos end)) t)
+  end <- getPos
+  pure (Spanned (Span start end) t)
 
 pToken :: Lexer Token
 pToken =
@@ -119,15 +155,21 @@ pNewline = () <$ chunk "\r\n" <|> () <$ char '\n'
 -- Numbers ---------------------------------------------------------------
 
 -- | Unsigned decimal with optional fraction (spec 3.3). @1.foo@ lexes
--- as the number @1@ followed by an accessor dot.
+-- as the number @1@ followed by an accessor dot. A literal beyond the
+-- range of Number (4.1) is a syntax error, reported where it starts.
 pNumber :: Lexer Token
 pNumber = do
+  start <- getOffset
   intPart <- takeWhile1P (Just "digit") isDigit
   fracPart <- optional $ try $ do
     _ <- char '.'
     takeWhile1P (Just "digit") isDigit
   let txt = intPart <> maybe "" ("." <>) fracPart
-  pure (TNumber (read (T.unpack txt)))
+  case fitNumber (read (T.unpack txt)) of
+    Just n -> pure (TNumber n)
+    Nothing -> do
+      setOffset start
+      fail "number literal is outside the range of Number (about 1.8e308)"
 
 -- Strings ---------------------------------------------------------------
 
@@ -172,10 +214,15 @@ pEscape = do
       _ <- char '{'
       hexDigits <- takeWhile1P (Just "hex digit") isHexDigit
       _ <- char '}'
-      let n = T.foldl' (\acc d -> acc * 16 + Char.digitToInt d) 0 hexDigits
+      -- Summed in an Integer, so that no number of digits wraps
+      -- around into range.
+      let n = T.foldl' (\acc d -> acc * 16 + toInteger (Char.digitToInt d)) 0 hexDigits :: Integer
       if n > 0x10FFFF
         then fail "unicode escape out of range"
-        else pure (T.singleton (chr n))
+        else
+          if n >= 0xD800 && n <= 0xDFFF
+            then fail "unicode escape names a surrogate, which is not a character"
+            else pure (T.singleton (chr (fromInteger n)))
     _ -> fail ("invalid escape sequence: \\" <> [c])
 
 -- Environment heads -----------------------------------------------------
@@ -304,7 +351,7 @@ trimBracedEnd :: [StrPart] -> [StrPart]
 trimBracedEnd = reverse . go . reverse
   where
     go (Chunk sp c : rest) =
-      let c' = T.dropWhileEnd (\x -> x == ' ' || x == '\t' || x == '\n') c
+      let c' = dropTrailingSpace (\x -> x == ' ' || x == '\t' || x == '\n') c
        in if T.null c' then go rest else Chunk sp c' : rest
     go ps = ps
 
@@ -337,10 +384,10 @@ pNestedUntil openTok closeTok = go (1 :: Int) []
 -- | Tag a chunk producer with the source span it consumed.
 chunked :: Lexer Text -> Lexer StrPart
 chunked p = do
-  start <- getSourcePos
+  start <- getPos
   t <- p
-  end <- getSourcePos
-  pure (Chunk (Span (fromSourcePos start) (fromSourcePos end)) t)
+  end <- getPos
+  pure (Chunk (Span start end) t)
 
 mergeChunks :: [StrPart] -> [StrPart]
 mergeChunks = filter notEmpty . foldr step []
@@ -353,9 +400,18 @@ mergeChunks = filter notEmpty . foldr step []
 trimTrailing :: [StrPart] -> [StrPart]
 trimTrailing ps = case reverse ps of
   (Chunk sp c : rest) ->
-    let c' = T.dropWhileEnd (\x -> x == ' ' || x == '\t') c
+    let c' = dropTrailingSpace (\x -> x == ' ' || x == '\t') c
      in reverse (if T.null c' then rest else Chunk sp c' : rest)
   _ -> ps
+
+-- | Drop the whitespace that ends a command string, but not a space or
+-- tab written after @\\@: the shell reads that one as part of a word
+-- (spec 6.6). The backslash itself may be escaped, as in @\\\\ @.
+dropTrailingSpace :: (Char -> Bool) -> Text -> Text
+dropTrailingSpace isSpace' t = case T.unsnoc t of
+  Just (rest, c)
+    | isSpace' c && even (T.length (T.takeWhileEnd (== '\\') rest)) -> dropTrailingSpace isSpace' rest
+  _ -> t
 
 -- Punctuation and operators ----------------------------------------------
 
@@ -403,11 +459,10 @@ pPunct =
 
 -- Diagnostics -------------------------------------------------------------
 
-bundleToDiagnostic :: ParseErrorBundle Text Void -> Diagnostic
-bundleToDiagnostic bundle =
+bundleToDiagnostic :: LineStarts -> ParseErrorBundle Text Void -> Diagnostic
+bundleToDiagnostic ls bundle =
   let err = NE.head (bundleErrors bundle)
-      (_, posState) = reachOffset (errorOffset err) (bundlePosState bundle)
-      pos = fromSourcePos (pstateSourcePos posState)
+      pos = positionAt ls (errorOffset err)
       msg = T.pack (parseErrorTextPretty err)
    in mkDiagnostic
         ESyntaxUnexpectedToken

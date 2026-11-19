@@ -1,0 +1,4 @@
+// The function is not generalized in its own body: x is passed as it is (4.3).
+f(x, n): Number = n < 1 ? 0 : f(x, n - 1)
+a = f("a", 1)
+b = f(true, 1)

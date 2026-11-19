@@ -1,0 +1,1 @@
+c() within { outbound: false } = $[#alpine:3.22.2{ egress: [] }] true

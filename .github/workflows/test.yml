@@ -1,17 +1,22 @@
 name: CI
 
+# Every push to every branch runs CI, so failures surface on the branch
+# that introduced them rather than at merge time; '**' (not '*') is
+# needed to match slashes, e.g. feature/foo. A pull request shows the
+# runs of its head commit's push, so there is no pull_request trigger:
+# with one, each pull request ran the same jobs twice. A pull request
+# from a fork is not run; workflow_dispatch can run it by hand.
 on:
   push:
-    # Every branch, so flaky or environment-dependent failures surface
-    # on the branch that introduced them rather than at merge time.
-    # '**' (not '*') is needed to match slashes, e.g. feature/foo.
     branches:
       - "**"
-  pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  test-linux:
+    # Pinned: on ubuntu-26.04, which ubuntu-latest became in November
+    # 2026, GHC cannot find the linker (collect2: cannot find 'ld').
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -96,3 +101,42 @@ jobs:
 
       - name: Smoke test on nerdctl
         run: dist/bin/lask run smoke-engine nerdctl --lask dist/bin/lask
+
+  # The same suites on macOS, which lask is released for: the paths,
+  # the process handling and the shells there differ from Linux. The
+  # runner has no container engine, and the tests that need one drive a
+  # fake; the examples that would sync their dependencies, which pulls
+  # images, are left pending, as they are run by test-linux above.
+  test-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Haskell Stack
+        uses: haskell-actions/setup@v2
+        with:
+          enable-stack: true
+          stack-no-global: true
+          stack-version: "latest"
+
+      - name: Cache Stack dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack
+            .stack-work
+          key: ${{ runner.os }}-${{ runner.arch }}-stack-${{ hashFiles('stack.yaml', 'package.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-stack-
+
+      - name: Install dependencies
+        run: stack build --only-dependencies --test
+
+      - name: Test
+        env:
+          LASK_TEST_OFFLINE: "1"
+        run: stack test
+
+      - name: Doctest
+        run: stack exec doctest app src

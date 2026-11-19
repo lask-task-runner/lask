@@ -1,0 +1,1575 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Language.Lask.ElaborateSpec (spec) where
+
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import qualified Data.Text as T
+import Language.Lask.Diagnostic (Advisory (..), Diagnostic (..))
+import Language.Lask.Core.Lint (lintProgram)
+import Language.Lask.Elaborate
+import Language.Lask.ErrorCode
+import Language.Lask.Module.Loader (loadProgramWith)
+import Language.Lask.Module.Resolve (validateProgram)
+import Language.Lask.Span (Position (..), Span (..))
+import Language.Lask.Types (renderType)
+import Test.Hspec
+
+-- | Full front-end pipeline over in-memory sources.
+elab :: [(FilePath, Text)] -> IO (Either [ErrorCode] (Map (FilePath, Text) CoreDecl))
+elab files = fmap cpDecls <$> elabProgram files
+
+elabProgram :: [(FilePath, Text)] -> IO (Either [ErrorCode] CoreProgram)
+elabProgram files = do
+  r <- loadProgramWith reader "main.lask"
+  pure $ case r of
+    Left ds -> Left (codes ds)
+    Right prog -> case validateProgram prog of
+      Left ds -> Left (codes ds)
+      Right scopes -> case elaborateProgram prog scopes of
+        Left ds -> Left (codes ds)
+        -- Every program the elaborator accepts here must also pass
+        -- Core.Lint, which the EDSL shares (#91).
+        Right cp -> case lintProgram cp of
+          [] -> Right cp
+          problems -> error ("Core.Lint: " <> T.unpack (T.unlines problems))
+  where
+    reader p = pure (maybe (Left "not found") Right (lookup p files))
+    codes :: [Diagnostic] -> [ErrorCode]
+    codes = map diagCode
+
+-- | The diagnostics main.lask is rejected with, none if it is not.
+diagnosticsOf :: Text -> IO [Diagnostic]
+diagnosticsOf src = do
+  r <- loadProgramWith reader "main.lask"
+  pure $ case r of
+    Left ds -> ds
+    Right prog -> case validateProgram prog of
+      Left ds -> ds
+      Right scopes -> either id (const []) (elaborateProgram prog scopes)
+  where
+    reader p = pure (if p == "main.lask" then Right src else Left "not found")
+
+messagesOf :: Text -> IO [Text]
+messagesOf src = map diagMessage <$> diagnosticsOf src
+
+-- | Type of a declaration in main.lask, rendered.
+typeOf :: Text -> Text -> IO (Either [ErrorCode] Text)
+typeOf src name = do
+  r <- elab [("main.lask", src)]
+  pure $ case r of
+    Left cs -> Left cs
+    Right decls -> case Map.lookup ("main.lask", name) decls of
+      Just cd -> Right (renderType (cdType cd))
+      Nothing -> Left []
+
+-- | The lines of main.lask where an advisory is reported; the program
+-- itself must be valid.
+advisedAt :: AdvisoryCode -> Text -> IO [Int]
+advisedAt code src = do
+  r <- elabProgram [("main.lask", src)]
+  case r of
+    Left cs -> expectationFailure ("expected success, got " <> show cs) >> pure []
+    Right cp -> pure [l | Advisory c (Span (Position _ l _) _) _ <- cpAdvisories cp, c == code]
+
+unusedAt :: Text -> [Int] -> Expectation
+unusedAt src expected = advisedAt WAsyncUnused src >>= (`shouldBe` expected)
+
+hasType :: Text -> Text -> Text -> Expectation
+hasType src name expected = typeOf src name >>= (`shouldBe` Right expected)
+
+accepts :: Text -> Expectation
+accepts src = do
+  r <- elab [("main.lask", src)]
+  case r of
+    Right _ -> pure ()
+    Left cs -> expectationFailure ("expected success, got " <> show cs)
+
+rejects :: Text -> ErrorCode -> Expectation
+rejects src code = rejectsFiles [("main.lask", src)] code
+
+-- | The type of a declaration in main.lask, over several modules.
+hasTypeFiles :: [(FilePath, Text)] -> Text -> Text -> Expectation
+hasTypeFiles files name expected = do
+  r <- elab files
+  fmap (fmap (renderType . cdType) . Map.lookup ("main.lask", name)) r
+    `shouldBe` Right (Just expected)
+
+-- | As 'accepts' and 'rejects', over several modules; the program is
+-- entered at main.lask.
+acceptsFiles :: [(FilePath, Text)] -> Expectation
+acceptsFiles files = do
+  r <- elab files
+  case r of
+    Right _ -> pure ()
+    Left cs -> expectationFailure ("expected success, got " <> show cs)
+
+rejectsFiles :: [(FilePath, Text)] -> ErrorCode -> Expectation
+rejectsFiles files code = do
+  r <- elab files
+  case r of
+    Left cs | code `elem` cs -> pure ()
+    other -> expectationFailure ("expected " <> show code <> ", got " <> show other)
+
+spec :: Spec
+spec = do
+  describe "literal inference (spec 4.3)" $ do
+    it "infers numbers" $ hasType "n = 1" "n" "Number"
+    it "infers booleans" $ hasType "ok = true" "ok" "Bool"
+    it "infers homogeneous arrays" $ hasType "names = [\"a\", \"b\"]" "names" "Array<String>"
+    it "widens mixed arrays to Any" $ hasType "mixed = [1, \"a\"]" "mixed" "Array<Any>"
+    it "types empty arrays as Array<Any> without expectation" $ hasType "empty = []" "empty" "Array<Any>"
+    it "infers records from object literals" $
+      hasType "user = {name: \"alice\", age: 20}" "user" "Record<age: Number, name: String>"
+    it "types object literals as Map under a Map expectation" $
+      hasType "envMap: Map<String> = {\"APP_ENV\": \"prod\"}" "envMap" "Map<String>"
+    it "rejects map values not conforming to the expectation" $
+      rejects "bad: Map<Number> = {\"a\": \"x\"}" ETypeMismatch
+    it "checks array elements against the expected element type" $
+      accepts "xs: Array<Any> = [1, \"a\"]"
+    it "rejects records with missing expected fields" $
+      rejects "u: Record<name: String, age: Number> = {name: \"a\"}" ETypeMismatch
+
+  describe "declarations and calls (spec 4.3, 7.5)" $ do
+    it "types annotated functions" $
+      hasType "add2(x: Number, y: Number): Number = x + y" "add2" "Function<Number, Number, Number>"
+    it "makes an unconstrained unannotated parameter a type parameter" $
+      hasType "identity(x) = x" "identity" "Function<T, T>"
+    it "infers keyword parameter types from defaults" $
+      hasType "inc(--x = 0) = x + 1" "inc" "Function<Number>"
+    it "accepts keyword calls and defaults" $
+      accepts "inc(--x = 0) = x + 1\na = inc()\nb = inc(x = 5)"
+    it "rejects unknown keyword arguments" $
+      rejects "inc(--x = 0) = x + 1\na = inc(y = 1)" ETypeKeyword
+    it "rejects binding positional parameters by keyword" $
+      rejects "f(a: Number) = a\nx = f(a = 1)" ETypeKeyword
+    it "rejects duplicate keyword arguments" $
+      rejects "inc(--x = 0) = x + 1\na = inc(x = 1, x = 2)" ETypeKeyword
+    it "accepts a call that gives a required keyword parameter" $
+      accepts "f(--x: Number, --y = x + 1) = x + y\na = f(x = 1)"
+    it "types an unannotated required keyword parameter as Any" $
+      accepts "f(--x) = x\na = f(x = \"s\")\nb = f(x = 1)"
+    it "rejects a call that leaves out a required keyword parameter" $
+      rejects "f(--x: Number) = x\na = f()" ETypeKeyword
+    it "rejects a pipe into a function with a required keyword parameter" $
+      rejects "f(s: String, --x: Number) = s\na = \"s\" |> f" ETypeKeyword
+    it "rejects a function with a required keyword parameter as a value" $
+      rejects "f(--x: Number) = x\na = map([1], f)" ETypeKeyword
+    it "rejects a lambda with a required keyword parameter as a value" $
+      rejects "a = map([1], \\(n: Number, --x: Number) -> n)" ETypeKeyword
+    it "accepts calling a lambda with a required keyword parameter directly" $
+      accepts "a = (\\(--x: Number) -> x)(x = 1)"
+    it "accepts a recursive call that gives a required keyword parameter" $
+      accepts "f(n: Number, --acc: Number): Number = if (n == 0) { acc } else { f(n - 1, acc = acc + n) }"
+    it "rejects a recursive call that leaves out a required keyword parameter" $
+      rejects "f(n: Number, --acc: Number): Number = if (n == 0) { acc } else { f(n - 1) }" ETypeKeyword
+    it "rejects missing positional arguments" $
+      rejects "f(a: Number, b: Number) = a\nx = f(1)" ETypeArity
+    it "rejects excess arguments without variadic" $
+      rejects "f(a: Number) = a\nx = f(1, 2)" ETypeArity
+    it "collects variadic arguments" $
+      accepts "s(...xs: Array<Number>): Number = reduce(xs, 0, \\(a: Number, x: Number) -> a + x)\nx = s(1, 2, 3)\ny = s()"
+    it "gives variadic functions an array parameter type" $
+      hasType "s(...xs: Array<Number>): Number = 0" "s" "Function<Array<Number>, Number>"
+    it "function values take the packed array positionally" $
+      accepts "s(...xs: Array<Number>): Number = 0\nf: Function<Array<Number>, Number> = s\nr = f([1, 2])"
+    it "rejects keyword arguments through function values" $
+      rejects "f(--n: Number = 0) = n\ng: Function<Number> = f\nx = g(n = 1)" ETypeKeyword
+    it "rejects argument type mismatches" $
+      rejects "f(a: Number) = a\nx = f(\"s\")" ETypeMismatch
+    it "rejects calling non-functions" $
+      rejects "x = 1\ny = x(2)" ETypeCall
+    it "supports recursion with a return annotation" $
+      accepts "fact(n: Number): Number = if (n == 0) { 1 } else { n * fact(n - 1) }"
+    it "rejects recursion without a return annotation" $
+      rejects "f(n: Number) = f(n)" ETypeMismatch
+
+  describe "inference of parameter types (spec 4.3)" $ do
+    it "takes the type a parameter is used at" $ do
+      hasType "inc(x) = x + 1" "inc" "Function<Number, Number>"
+      hasType "shout(s) = to_upper(s)" "shout" "Function<String, String>"
+      hasType "f(c, n) = c ? n : 0" "f" "Function<Bool, Number, Number>"
+      hasType "f(xs) = do {\n  for (x : xs) { x + 1 }\n}" "f" "Function<Array<Number>, Array<Number>>"
+    it "takes the greatest type every use conforms to" $ do
+      hasType "g(s: String | Null): Number = 1\nf(x) = g(x) + length(x)" "f" "Function<String, Number>"
+      hasType "f(x) = do {\n  j = to_json(x)\n  x + 1\n}" "f" "Function<Number, Number>"
+    it "rejects uses no one type conforms to, asking for an annotation" $
+      rejects "f(x) = length(x) + x" ETypeMismatch
+    it "gives a parameter the shape a generic use needs" $ do
+      hasType "count(xs) = size(xs)" "count" "Function<Array<T>, Number>"
+      hasType "f(xs) = size(xs) + xs[0]" "f" "Function<Array<Number>, Number>"
+      hasType "f(xs, x) = contains_array(xs, x)" "f" "Function<Array<T>, T, Bool>"
+    it "makes a parameter used at no type a type parameter" $ do
+      hasType "pair(a, b) = [a, b]" "pair" "Function<T, U, Array<Any>>"
+      hasType "wrap(x) = [to_json(x), x]" "wrap" "Function<T, Array<Any>>"
+      hasType "first(a, b) = a" "first" "Function<T, U, T>"
+      hasType "f(x) = do {\n  _ = to_json(x)\n  x\n}" "f" "Function<T, T>"
+    it "instantiates an inferred type parameter at each call" $ do
+      hasType "identity(x) = x\nf() = identity(1)" "f" "Function<Number>"
+      hasType "identity(x) = x\nf() = identity(\"a\")" "f" "Function<String>"
+    it "bounds an inferred type parameter by what its uses need" $ do
+      accepts "greet(name) = \"hi #{name}\"\nf() = greet(1)"
+      rejects "greet(name) = \"hi #{name}\"\nf() = greet([1])" ETypeBound
+      accepts "same(a, b) = a == b\nf() = same(1, 2)"
+      rejects "same(a, b) = a == b\nf() = same(1, \"a\")" ETypeMismatch
+      hasType "sorted(xs) = sort(xs)" "sorted" "Function<Array<T>, Array<T>>"
+      rejects "sorted(xs) = sort(xs)\nf() = sorted([true])" ETypeBound
+    it "keeps the stronger of two bounds one entails" $
+      accepts "f(xs, x) = contains_array(sort(xs), x)\ng() = f([1], 2)"
+    it "rejects a parameter that needs two bounds neither entails" $
+      rejects "f(a, b) = a == b ? \"#{a}\" : \"\"" ETypeBound
+    it "takes the type of the values a parameter is joined with, when used at none" $ do
+      hasType "f(c: Bool, n) = c ? 0 : n" "f" "Function<Bool, Number, Number>"
+      hasType "f(xs, x) = contains_array(xs, \"a\") ? x : 1" "f" "Function<Array<String>, Number, Number>"
+      hasType "f(c: Bool, x) = c ? x : null" "f" "Function<Bool, T, T | Null>"
+    it "takes a comparison with a value as a use at its type" $
+      hasType "f(x) = x == \"a\"" "f" "Function<String, Bool>"
+    it "uses the scrutinee of a case at the type of its value heads" $
+      hasType "f(t) = case (t) {\n  \"amd64\" -> 1\n  \"arm64\" -> 2\n  else -> 0\n}" "f" "Function<String, Number>"
+    it "takes the scrutinee of a case with type heads as Any" $
+      hasType "f(x) = case (x) {\n  String -> 1\n  else -> 0\n}" "f" "Function<Any, Number>"
+    it "asks for an annotation where the body cannot tell the whole type" $ do
+      rejects "f(u) = u.name" ETypeAccess
+      rejects "f(u) = u[\"name\"]" ETypeAccess
+      rejects "f(g) = g(1)" ETypeCall
+    it "types a !! parameter as String or String | Null" $ do
+      hasType "f(x!!) = x" "f" "Function<String | Null, String | Null>"
+      hasType "f(x!!) = length(x)" "f" "Function<String, Number>"
+    it "infers variadic and required keyword parameters" $ do
+      hasType "f(...xs) = sum(xs)" "f" "Function<Array<Number>, Number>"
+      accepts "f(--n) = n + 1\ng() = f(n = 1)"
+      rejects "f(--n) = n + 1\ng() = f(n = \"a\")" ETypeMismatch
+    it "does not let a call decide the type" $
+      rejects "inc(x) = x + 1\nf() = inc(\"a\")" ETypeMismatch
+    it "lets an annotation win over inference" $
+      hasType "f(x: Number | String) = x" "f" "Function<Number | String, Number | String>"
+    it "checks a recursive call against the inferred types, without making it a use" $ do
+      hasType "count(n): Number = n < 1 ? 0 : 1 + count(n - 1)" "count" "Function<Number, Number>"
+      rejects "count(n): Number = n < 1 ? 0 : 1 + count(\"a\")" ETypeMismatch
+      hasType "f(x, n): Number = n < 1 ? 0 : f(x, n - 1)" "f" "Function<T, Number, Number>"
+    it "rejects a cycle of calls through another unannotated declaration" $ do
+      rejects "a(n): Number = n < 1 ? 0 : b(n - 1)\nb(n: Number): Number = a(n)" ETypeMismatch
+      accepts "a(n: Number): Number = n < 1 ? 0 : b(n - 1)\nb(n: Number): Number = a(n)"
+    it "infers the parameters of a lambda bound to a name, generically" $ do
+      hasType "inc = \\(x) -> x + 1" "inc" "Function<Number, Number>"
+      accepts "f(): String = do {\n  id = \\(x) -> x\n  n: Number = id(1)\n  id(\"s\")\n}"
+    it "makes an unconstrained parameter of an unbound lambda Any" $
+      accepts "f() = (\\(x) -> to_json(x))(1)"
+    it "names inferred type parameters apart from written ones and aliases" $ do
+      hasType "f<T>(a: T, b) = b" "f" "Function<T, U, U>"
+      hasType "type T = Number\nf(a) = a" "f" "Function<U, U>"
+
+  describe "builtin polymorphism (spec 4.4)" $ do
+    it "instantiates map per call" $
+      hasType "xs = map([1, 2], \\(x: Number) -> x + 1)" "xs" "Array<Number>"
+    it "adopts lambda parameter types from instantiation" $
+      hasType "xs = map([1, 2], \\(x) -> x)" "xs" "Array<Number>"
+    it "instantiates reduce" $
+      hasType "n = reduce([1, 2], 0, \\(acc: Number, x: Number) -> acc + x)" "n" "Number"
+    it "instantiates from an annotation when referenced as a value" $
+      accepts "m: Function<Array<Number>, Function<Number, Number>, Array<Number>> = map"
+    it "rejects unannotated references to polymorphic builtins" $
+      rejects "m = map" ETypeMismatch
+    it "types cast from the expected type" $
+      accepts "v: Any = 1\nn: Number = cast(v)"
+    it "rejects cast without a contextual type" $
+      rejects "v: Any = 1\nn = cast(v)" ETypeMismatch
+    it "rejects cast to non-data types" $
+      rejects "v: Any = 1\nf: Function<Number> = cast(v)" ETypeIllformed
+    it "instantiates from a later argument, not only from the left" $ do
+      hasType
+        "f() = filter(cast(from_json(\"[1]\")), \\(s: String) -> length(s) > 0)"
+        "f"
+        "Function<Array<String>>"
+      accepts "f(): Array<Number> = append(cast(from_json(\"[1]\")), 2)"
+      accepts "f(m: Map<Number>): Number = get_or(m, \"k\", cast(from_json(\"1\")))"
+    it "lets fail stand in an argument a sibling determines (spec 15.7)" $
+      accepts
+        "f(e: Record<code: Number, message: String>, xs: Array<Number>): Number = reduce(xs, fail(e), \\(a: Number, x: Number) -> a)"
+    it "refuses an Any argument in a polymorphic position (spec 4.4)" $ do
+      -- The element type came from the lambda, so the array was typed
+      -- Array<String> while holding numbers, with no cast in sight.
+      rejects
+        "f(): String = do {\n  ys = filter(from_json(\"[1,2,3]\"), \\(s: String) -> length(s) > 0)\n  join(ys, \",\")\n}"
+        ETypeMismatch
+      rejects "f(): Number = size(from_json(\"[1]\"))" ETypeMismatch
+      rejects "f(): Array<Any> = do {\n  xs = from_json(\"[1]\")\n  for (x : xs) { x }\n}" ETypeMismatch
+    it "takes the same value once it has been cast (spec 15.8)" $ do
+      accepts
+        "f(): String = join(filter(cast(from_json(\"[1]\")), \\(s: String) -> length(s) > 0), \",\")"
+      accepts "f(): Number = do {\n  xs: Array<Any> = cast(from_json(\"[1]\"))\n  size(xs)\n}"
+    it "keeps taking Any where Any is what the position requires" $ do
+      accepts "f(v: Any): String = to_json(v)"
+      accepts "f(v: Any): Number = cast(v)"
+      accepts "f(v: Any): Array<Any> = append([], v)"
+    it "still reports an argument nothing can determine" $ do
+      rejects "f(): Number = size(cast(from_json(\"[1]\")))" ETypeMismatch
+      rejects
+        "f(): Number = size(concat_array(cast(from_json(\"[1]\")), cast(from_json(\"[2]\"))))"
+        ETypeMismatch
+
+  describe "lambdas with type parameters (spec 6.1)" $ do
+    it "makes a top-level binding generic, as a function declaration" $ do
+      hasType "ident = \\<T>(x: T): T -> x\nf() = ident(1)" "f" "Function<Number>"
+      hasType "ident = \\<T>(x: T): T -> x\nf() = ident(\"a\")" "f" "Function<String>"
+      accepts "ident = \\<T>(x: T): T -> x\nf(): Array<Number> = map([1], ident)"
+    it "keeps the keyword parameters of a top-level binding" $
+      accepts "pick = \\<T>(c: Bool, --a: T, --b: T): T -> c ? a : b\nf(): String = pick(true, a = \"x\", b = \"y\")"
+    it "makes a binding in a block generic, instantiated at each reference" $ do
+      accepts "f(): String = do {\n  id = \\<T>(x: T): T -> x\n  n: Number = id(1)\n  id(\"s\")\n}"
+      accepts "f(): Array<Number> = do {\n  id = \\<T>(x: T): T -> x\n  map([1, 2], id)\n}"
+    it "adds to the type parameters of the declaration it is in" $
+      accepts "outer<U>(u: U): U = do {\n  wrap = \\<T>(x: T): Array<T> -> [x]\n  wrap(u)[0]\n}"
+    it "holds a generic local to its bounds" $
+      rejects "f(): Number = do {\n  sq = \\<T: orderable>(x: T): T -> x\n  sq([1])[0]\n}" ETypeBound
+    it "keeps its type parameters opaque in its body" $
+      rejects "f(): Number = do {\n  id = \\<T>(x: T): T -> x + 1\n  id(1)\n}" ETypeMismatch
+    it "needs an expected type to reference a generic local as a value" $
+      rejects "f() = do {\n  id = \\<T>(x: T): T -> x\n  g = id\n  1\n}" ETypeMismatch
+    it "rejects one that is not bound to a name" $ do
+      rejects "f(): Array<Number> = map([1], \\<T>(x: T): T -> x)" ETypeIllformed
+      rejects "f() = (\\<T>(x: T): T -> x)(1)" ETypeIllformed
+    it "rejects an annotation on a binding of one" $
+      rejects "g: Function<Number, Number> = \\<T>(x: T): T -> x" ETypeIllformed
+    it "rejects a type parameter the enclosing declaration has" $
+      rejects "outer<T>(u: T): T = do {\n  w = \\<T>(x: T): T -> x\n  w(u)\n}" ENameDuplicate
+    it "takes positional arguments only for a generic local" $
+      rejects "f(): Number = do {\n  id = \\<T>(x: T): T -> x\n  id(1, k = 2)\n}" ETypeKeyword
+
+  describe "recursion through a lambda binding (spec 6.1)" $ do
+    it "takes the lambda's return type as the binding's" $ do
+      accepts "count = \\(n: Number): Number -> n < 1 ? 0 : 1 + count(n - 1)"
+      accepts "walk = \\<T>(xs: Array<T>): Number -> is_empty(xs) ? 0 : 1 + walk(drop(xs, 1))"
+    it "still needs a type from somewhere" $
+      rejects "loop = \\(n: Number) -> n < 1 ? 0 : loop(n - 1)" ETypeMismatch
+
+  describe "user type parameters (spec 4.2, 4.4)" $ do
+    it "instantiates a declaration per call" $ do
+      hasType
+        "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\ng() = first_or([1], 0)"
+        "g"
+        "Function<Number>"
+      hasType
+        "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\ng() = first_or([\"a\"], \"z\")"
+        "g"
+        "Function<String>"
+    it "requires the arguments to agree on the instantiation" $
+      rejects
+        "first_or<T>(xs: Array<T>, fallback: T): T = if (is_empty(xs)) { fallback } else { xs[0] }\ng(): Number = first_or([1], \"a\")"
+        ETypeMismatch
+    it "keeps keyword arguments and variadics (spec 7.5)" $ do
+      accepts
+        "tag<T>(x: T, --label: String = \"v\"): Record<label: String, value: T> = {label: label, value: x}\ng(): Record<label: String, value: Number> = tag(1, label = \"n\")"
+      accepts "listy<T>(...xs: Array<T>): Array<T> = xs\ng(): Array<Number> = listy(1, 2, 3)"
+      rejects "listy<T>(...xs: Array<T>): Array<T> = xs\ng(): Array<Number> = listy(1, \"a\")" ETypeMismatch
+    it "treats a type parameter as opaque in the body (rigidity)" $ do
+      rejects "eq<T>(a: T, b: T): Bool = a == b" ETypeBound
+      rejects "show<T>(x: T): String = \"v=#{x}\"" ETypeBound
+      rejects "render<T>(x: T): String = to_string(x)" ETypeBound
+      rejects "sorted<T>(xs: Array<T>): Array<T> = sort(xs)" ETypeBound
+      rejects "narrow<T>(x: T): Number = case (x) {\n  Number -> 1\n  else -> 0\n}" ETypeMismatch
+    it "gives a bounded type parameter what its bound entails (spec 4.4)" $ do
+      accepts "eq<T: comparable>(a: T, b: T): Bool = a == b"
+      accepts "show<T: stringifiable>(x: T): String = \"v=#{x}\""
+      accepts "render<T: stringifiable>(x: T): String = to_string(x)"
+      accepts "sorted<T: orderable>(xs: Array<T>): Array<T> = sort(xs)"
+      -- orderable entails comparable and stringifiable.
+      accepts "f<T: orderable>(xs: Array<T>): String = \"#{contains_array(xs, xs[0])} #{xs[0]}\""
+      -- A type bound entails what the type satisfies, and conforms to it.
+      accepts "g<T: Number | String>(a: T, b: T): String = if (a == b) { \"#{a}\" } else { \"\" }"
+      accepts "inc<T: Number>(x: T): Number = x + 1"
+      accepts "wide<T: Number>(x: T): Number | String = x"
+      -- ... but not what the type does not: a union is not orderable,
+      -- and Any gives nothing, since every type conforms to it.
+      rejects "s<T: Number | String>(xs: Array<T>): Array<T> = sort(xs)" ETypeBound
+      rejects "e<T: Any>(a: T, b: T): Bool = a == b" ETypeBound
+      -- A bounded parameter is still distinct from its bound.
+      rejects "back<T: Number>(x: T): T = x + 1" ETypeMismatch
+    it "holds a use to the bounds of what it uses (spec 4.4)" $ do
+      rejects "largest<T: orderable>(xs: Array<T>): T = xs[0]\nf() = largest([true])" ETypeBound
+      accepts "largest<T: orderable>(xs: Array<T>): T = xs[0]\nf() = largest([\"a\"])"
+      rejects "label<T: Number | String>(x: T): String = \"#{x}\"\nf() = label(true)" ETypeBound
+      accepts "type Key = Number | String\nlabel<T: Key>(x: T): String = \"#{x}\"\nf() = label(1)"
+      -- A bound passes through a call from one generic to another.
+      accepts "a<T: orderable>(xs: Array<T>): Array<T> = sort(xs)\nb<U: orderable>(xs: Array<U>): Array<U> = a(xs)"
+      rejects "a<T: orderable>(xs: Array<T>): Array<T> = sort(xs)\nb<U: comparable>(xs: Array<U>): Array<U> = a(xs)" ETypeBound
+    it "holds a reference as a value to the bounds, as a call is (spec 4.4)" $ do
+      rejects "s: Function<Array<Bool>, Array<Bool>> = sort" ETypeBound
+      accepts "s: Function<Array<Number>, Array<Number>> = sort"
+      rejects "u: Function<Array<Function<Number>>, Array<Function<Number>>> = unique" ETypeBound
+      rejects "l<T: orderable>(xs: Array<T>): Array<T> = xs\nf: Function<Array<Bool>, Array<Bool>> = l" ETypeBound
+    it "checks the bounds of a type alias where it is applied (spec 4.2)" $ do
+      accepts "type Box<T: comparable> = Record<v: T>\nb: Box<Number> = {v: 1}"
+      rejects "type Box<T: comparable> = Record<v: T>\nb: Box<Function<Number>> = {v: \\() -> 1}" ETypeBound
+    it "rejects a malformed bound" $ do
+      rejects "k<T: nope>(x: T): T = x" ENameUndefined
+      rejects "k<T, U: Array<T>>(x: T): T = x" ETypeIllformed
+      rejects "k<T: Void>(x: T): T = x" ETypeIllformed
+    it "lets a type parameter be moved around, which is all it can be" $ do
+      accepts "ident<T>(x: T): T = x"
+      accepts "pair<T>(x: T): Array<T> = [x, x]"
+      accepts "wrap<T>(x: T): Record<value: T> = {value: x}"
+      accepts "encode<T>(x: T): String = to_json(x)"
+      accepts "pick<T>(xs: Array<T>, p: Function<T, Bool>): T | Null = find(xs, p)"
+    it "scopes a type parameter over body annotations (spec 6.5)" $
+      accepts "head<T>(xs: Array<T>): T = do {\n  x: T = xs[0]\n  x\n}"
+    it "instantiates a reference as a value only from the expected type" $ do
+      accepts "ident<T>(x: T): T = x\nf: Function<Number, Number> = ident"
+      rejects "ident<T>(x: T): T = x\nf = ident" ETypeMismatch
+      accepts "ident<T>(x: T): T = x\nf(xs: Array<Number>): Array<Number> = map(xs, ident)"
+    it "rejects a type parameter that collides with an alias" $
+      rejects "type T = Number\nf<T>(x: T): T = x" ENameDuplicate
+    -- `String` would still be read as the type of strings (spec 4.2).
+    it "rejects a type parameter named like a type of the grammar" $ do
+      rejects "f<String>(x: String): String = x" ENameDuplicate
+      rejects "f<Map>(x: Number): Number = x" ENameDuplicate
+    it "allows a type parameter that appears nowhere" $
+      accepts "f<T>(x: Number): Number = x"
+    it "checks a default against the rigid parameter (spec 6.1)" $ do
+      accepts "f<T>(x: T, --y: T = x): T = y"
+      accepts "f<T>(--xs: Array<T> = []): Array<T> = xs"
+      accepts "f<T>(--y: T | Null = null): T | Null = y"
+      rejects "f<T>(--y: T = 1): T = y" ETypeMismatch
+    it "supports recursion with a return annotation" $
+      accepts
+        "countdown<T>(n: Number, x: T): T = if (n > 0) { countdown(n - 1, x) } else { x }\ng(): Number = countdown(3, 7)"
+
+  describe "optional record fields (spec 4.2)" $ do
+    it "lets a literal omit an optional key and no other" $ do
+      accepts "f(): Record<a: Number, b?: String> = {a: 1}"
+      rejects "f(): Record<a: Number, b: String> = {a: 1}" ETypeMismatch
+      rejects "f(): Record<a: Number, b?: String> = {a: 1, c: 2}" ETypeMismatch
+    it "keeps the key question and the value question apart" $ do
+      -- b?: String says the key may be absent, not that the value may
+      -- be null; b?: String | Null says both.
+      rejects "f(): Record<a: Number, b?: String> = {a: 1, b: null}" ETypeMismatch
+      accepts "f(): Record<a: Number, b?: String | Null> = {a: 1, b: null}"
+    it "reads an optional field as T | Null (spec 6.8)" $ do
+      hasType "f(r: Record<a?: String>) = r.a" "f" "Function<Record<a?: String>, String | Null>"
+      hasType "f(r: Record<a: String>) = r.a" "f" "Function<Record<a: String>, String>"
+      hasType "f(r: Record<a?: String>) = r[\"a\"]" "f" "Function<Record<a?: String>, String | Null>"
+    it "makes optionality part of the type (spec 4.4)" $ do
+      rejects "f(r: Record<a: String>): Record<a?: String> = r" ETypeMismatch
+      rejects "f(r: Record<a?: String>): Record<a: String> = r" ETypeMismatch
+    it "never infers an optional field" $
+      rejects "f(): Record<a?: Number> = do {\n  r = {a: 1}\n  r\n}" ETypeMismatch
+    it "renders the marker on the key" $
+      hasType "f(r: Record<a?: String, b: Number>): Number = 1" "f" "Function<Record<a?: String, b: Number>, Number>"
+
+  describe "parameterised type aliases (spec 4.2)" $ do
+    it "expands by substituting the type arguments" $
+      hasType
+        "type Pair<A, B> = Record<first: A, second: B>\nf(p: Pair<Number, String>): String = p.second"
+        "f"
+        "Function<Record<first: Number, second: String>, String>"
+    it "gives a name to an optional" $
+      accepts
+        "type Opt<A> = A | Null\nf(x: Opt<String>): String = case (x) {\n  Null -> \"n\"\n  else -> x\n}"
+    it "requires the argument count to match" $ do
+      rejects "type Pair<A, B> = Record<first: A, second: B>\nf(p: Pair<Number>): Number = p.first" ETypeArity
+      rejects "type Strings = Array<String>\nf(x: Strings<Number>): Number = 1" ETypeArity
+      rejects "type Pair<A, B> = Record<first: A, second: B>\nf(p: Pair): Number = 1" ETypeArity
+    it "checks well-formedness after expansion" $
+      rejects "type Bad<A> = Array<A>\nf(x: Bad<Void>): Number = 1" ETypeIllformed
+    it "checks an alias that nothing uses" $ do
+      rejects "type R = Record<a: Number, a: String>" ETypeFieldDuplicate
+      rejects "type R = Array<Void>" ETypeIllformed
+      rejects "type P<A> = Record<a: A, a: A>" ETypeFieldDuplicate
+    it "accepts a well-formed alias that nothing uses" $ do
+      accepts "type R = Void"
+      accepts "type P<A> = Array<A>"
+    it "checks an alias of an imported module that nothing uses" $
+      rejectsFiles
+        [ ("main.lask", "import { a } from \"./lib.lask\"\nx = a"),
+          ("lib.lask", "a = 1\ntype R = Record<a: Number, a: String>")
+        ]
+        ETypeFieldDuplicate
+
+  describe "unused async handles (spec 6.3, 14.2)" $ do
+    it "reports a discarded handle" $
+      unusedAt "f(): String = do {\n  async \"x\"\n  \"done\"\n}" [2]
+    it "reports a handle bound to a name nothing refers to" $
+      unusedAt "f(): String = do {\n  h = async \"x\"\n  \"done\"\n}" [2]
+    it "reports the handles of a discarded for over an async body" $
+      unusedAt "f(): String = do {\n  for (s : [\"a\"]) {\n    async s\n  }\n  \"done\"\n}" [2]
+    it "reports a discarded call that returns a handle" $
+      unusedAt "g(): AsyncHandle<String> = async \"x\"\nf(): String = do {\n  g()\n  \"done\"\n}" [3]
+    it "is only advice: the program stays valid" $
+      accepts "f(): String = do {\n  async \"x\"\n  \"done\"\n}"
+    it "does not report a handle that is awaited, consumed, passed on or returned" $ do
+      unusedAt "f(): String = do {\n  h = async \"x\"\n  await h\n}" []
+      unusedAt "f(): Array<String> = do {\n  h = async \"x\"\n  all([h])\n}" []
+      unusedAt "w(h: AsyncHandle<String>): String = await h\nf(): String = do {\n  h = async \"x\"\n  w(h)\n}" []
+      unusedAt "f(): AsyncHandle<String> = do {\n  h = async \"x\"\n  h\n}" []
+      unusedAt "f(): AsyncHandle<String> = do {\n  \"x\"\n  async \"y\"\n}" []
+      unusedAt "f(): Array<AsyncHandle<String>> = do {\n  h = async \"x\"\n  hs = [h]\n  hs\n}" []
+      unusedAt "f(): Function<String> = do {\n  h = async \"x\"\n  \\() -> await h\n}" []
+
+  describe "operators (spec 6.2)" $ do
+    it "types arithmetic as Number" $ hasType "x = 1 + 2 * 3" "x" "Number"
+    it "rejects string operands of +" $ rejects "x = \"a\" + \"b\"" ETypeMismatch
+    it "types comparisons as Bool" $ hasType "x = 1 < 2" "x" "Bool"
+    it "orders strings as well as numbers" $ do
+      hasType "x = \"a\" < \"b\"" "x" "Bool"
+      accepts "f<T: orderable>(a: T, b: T): Bool = a <= b"
+    it "orders only one orderable type" $ do
+      rejects "x = 1 < \"a\"" ETypeMismatch
+      rejects "x = true < false" ETypeBound
+      rejects "x = [1] < [2]" ETypeBound
+      rejects "f<T>(a: T, b: T): Bool = a < b" ETypeBound
+    it "gives an operand that needs an expected type the other's" $
+      accepts "f(s: String): Bool = cast(from_json(s)) < 3"
+    it "infers an ordered parameter from the other operand" $ do
+      hasType "f(x) = x < 1" "f" "Function<Number, Bool>"
+      hasType "f(s) = s >= \"m\"" "f" "Function<String, Bool>"
+      hasType "f(a, b) = a < b" "f" "Function<T, T, Bool>"
+      rejects "f(a, b) = a < b\ng() = f(true, false)" ETypeBound
+    it "types unary minus as Number" $ do
+      hasType "x = -1" "x" "Number"
+      hasType "f(n: Number) = -n * 2" "f" "Function<Number, Number>"
+      hasType "f(n) = -n" "f" "Function<Number, Number>"
+      rejects "x = -\"a\"" ETypeMismatch
+    it "requires equal comparable types for ==" $ rejects "x = 1 == \"a\"" ETypeMismatch
+    it "rejects == on functions" $
+      rejects "f(x: Number) = x\ng(x: Number) = x\nb = f == g" ETypeBound
+    it "allows == on environments" $ hasType "b = #local == #alpine:3.12" "b" "Bool"
+    it "types pipes as application" $
+      hasType "g(x: Number) = x + 1\ny = 3 |> g" "y" "Number"
+    it "types composition" $
+      hasType "g(x: Number): Number = x + 1\nh = g >> g" "h" "Function<Number, Number>"
+    it "composed functions are callable" $
+      accepts "g(x: Number): Number = x + 1\nh = g >> g\ny = h(1)"
+
+  describe "control structures (spec 6.4, 6.5)" $ do
+    it "requires Bool conditions" $
+      rejects "x = if (1) { 2 } else { 3 }" ETypeMismatch
+    it "requires matching branch types" $
+      rejects "x = if (true) { 2 } else { \"a\" }" ETypeMismatch
+    it "types a conditional as its branches (spec 6.2)" $
+      hasType "f(c: Bool) = c ? 1 : 2" "f" "Function<Bool, Number>"
+    it "requires a Bool condition in a conditional" $
+      rejects "x = 1 ? 2 : 3" ETypeMismatch
+    it "requires matching branch types in a conditional" $
+      rejects "x = true ? 2 : \"a\"" ETypeMismatch
+    it "propagates an expected union into both branches of a conditional" $
+      accepts "f(c: Bool): String | Null = c ? \"a\" : null"
+    it "lets a context-typed branch of a conditional take the other's type" $
+      hasType "f(c: Bool) = c ? fail({code: 1, message: \"x\"}) : 1" "f" "Function<Bool, Number>"
+    it "types for over arrays as map" $
+      hasType "f(xs: Array<String>) = for (x : xs) { concat(\"item:\", x) }" "f" "Function<Array<String>, Array<String>>"
+    it "types Void-bodied for as for_each" $
+      hasType "f(xs: Array<String>) = for (x : xs) {}" "f" "Function<Array<String>, Void>"
+    it "types do blocks by the last statement" $
+      hasType "f() = do {\n  a = 1\n  a + 1\n}" "f" "Function<Number>"
+    it "types empty blocks as Void" $ hasType "f() = do {}" "f" "Function<Void>"
+
+  describe "union types (spec 4.2, 4.4)" $ do
+    it "reduces a union to its canonical form" $ do
+      hasType "f(x: Null | String): Null | String = x" "f" "Function<String | Null, String | Null>"
+      hasType "f(x: String | String): String = x" "f" "Function<String, String>"
+      hasType "f(x: Any | Null): Any = x" "f" "Function<Any, Any>"
+    it "accepts a member where the union is required" $
+      accepts "f(): String | Null = \"a\"\ng(): String | Null = null"
+    it "rejects the union where a member is required" $
+      rejects "f(x: String | Null): String = x" ETypeMismatch
+    it "lets a container of narrower elements stand where wider ones are wanted (spec 4.4)" $ do
+      accepts "show(xs: Array<Any>): String = to_json(xs)\nh(): String = do {\n  ns: Array<Number> = [1, 2]\n  show(ns)\n}"
+      accepts "es(): Array<Environment> = [#local]\nn(rs: Array<Runnable>): Number = size(rs)\ng(): Number = n(es())"
+      accepts "m(): Map<String> = {\"a\": \"x\"}\nf(x: Map<String | Null>): Number = 1\ng(): Number = f(m())"
+      accepts "h(): AsyncHandle<String> = async \"x\"\nf(x: AsyncHandle<String | Null>): Number = 1\ng(): Number = f(h())"
+    it "widens the field types of a record, and keeps its fields (spec 4.4)" $ do
+      accepts "r(): Record<a: String> = {a: \"x\"}\nf(x: Record<a: String | Null>): Number = 1\ng(): Number = f(r())"
+      rejects "r(): Record<a: String, b: Number> = {a: \"x\", b: 1}\nf(x: Record<a: String>): Number = 1\ng(): Number = f(r())" ETypeMismatch
+      rejects "r(): Record<a: String> = {a: \"x\"}\nf(x: Record<a?: String>): Number = 1\ng(): Number = f(r())" ETypeMismatch
+    it "lets a function that takes more or returns less stand in (spec 4.4)" $ do
+      accepts "p(n: Number): String = \"x\"\napply(g: Function<Number, String | Null>): Number = 1\nf(): Number = apply(p)"
+      accepts "p(x: Any): String = \"x\"\napply(g: Function<String, String>): Number = 1\nf(): Number = apply(p)"
+      rejects "p(x: String): String = x\napply(g: Function<Any, String>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
+      rejects "p(n: Number): String | Null = null\napply(g: Function<Number, String>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
+    it "does not let a Void result stand for a value (spec 4.4)" $
+      rejects "p(n: Number): Void = log(\"x\")\napply(g: Function<Number, Any>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
+    it "still instantiates a type variable inside a function type exactly (spec 4.4)" $
+      rejects "show(x: Any): Void = log(to_json(x))\nf(): Void = for_each([\"a\"], show)" ETypeMismatch
+    it "types branches of conforming types at the wider, in either order (spec 4.3)" $ do
+      hasType "n(): Array<String> = [\"a\"]\nw(): Array<String | Null> = [null]\nf(c: Bool) = c ? n() : w()" "f" "Function<Bool, Array<String | Null>>"
+      hasType "n(): Array<String> = [\"a\"]\nw(): Array<String | Null> = [null]\nf(c: Bool) = c ? w() : n()" "f" "Function<Bool, Array<String | Null>>"
+      hasType "f(c: Bool) = if (c) { #alpine:3.20 } else { #alpine:3.20{memory: \"1g\"} }" "f" "Function<Bool, Runnable>"
+    -- Containers are covariant (spec 4.4): the union is lifted through
+    -- them, in the one direction.
+    it "lifts the union through a constructor, and not the other way (spec 4.4)" $ do
+      accepts "f(xs: Array<String>): Array<String | Null> = xs"
+      rejects "f(xs: Array<String | Null>): Array<String> = xs" ETypeMismatch
+    it "checks a literal element-wise against a union element type" $
+      accepts "xs: Array<String | Null> = [\"a\", null]"
+    it "checks an object literal against the one record or map member of a union (spec 4.3)" $ do
+      accepts "f(): Record<a: Number, b?: String> | Null = {a: 1}"
+      accepts "f(): Map<Number> | Null = {a: 1, b: 2}"
+      accepts "type A = Record<x: Number, y: String>\nf(c: Bool): A | Null = do {\n  if (c) {\n    { x: 5, y: \"hello\" }\n  }\n}"
+      rejects "f(): Record<a: Number> | Null = {a: \"x\"}" ETypeMismatch
+      rejects "f(): Record<a: Number> | Null = {a: 1, b: 2}" ETypeMismatch
+    it "infers an object literal against a union with no single object member" $ do
+      accepts "f(): Record<a: Number> | Record<b: String> = {b: \"x\"}"
+      rejects "f(): String | Null = {a: 1}" ETypeMismatch
+    it "propagates an expected union into both branches of an if (spec 4.3)" $
+      accepts "f(c: Bool): String | Null = if (c) { \"a\" } else { null }"
+    -- Only a join with Null is inferred (spec 4.3).
+    it "still refuses to infer a union from differing branches" $
+      rejects "f(c: Bool) = if (c) { \"a\" } else { 1 }" ETypeMismatch
+    it "compares a union with one of its members (spec 6.2)" $ do
+      accepts "f(x: String | Null): Bool = x == null"
+      rejects "f(x: String | Null): Bool = x == 1" ETypeMismatch
+    it "refuses to interpolate a union that may be absent (spec 6.6)" $
+      rejects "f(x: String | Null): String = \"v=#{x}\"" ETypeBound
+    it "refuses to_string of a union that may be absent (spec 15.3)" $
+      rejects "f(x: String | Null): String = to_string(x)" ETypeBound
+    it "interpolates a union all of whose members are stringifiable" $
+      accepts "f(x: String | Number): String = \"v=#{x}\""
+    it "rejects a member that is not a data type (spec 4.2)" $ do
+      rejects "f(x: Function<Number, Number> | Null): Number = 1" ETypeIllformed
+      rejects "f(x: AsyncHandle<Number> | Null): Number = 1" ETypeIllformed
+      rejects "f(x: Void | Null): Number = 1" ETypeIllformed
+    it "determines a union from the expected type (spec 4.4)" $ do
+      -- What a signature with a union in a parameter position relies
+      -- on: the variable is fixed by whichever position fixes it, and
+      -- the arguments are then checked against the concrete union.
+      accepts "g(): Array<String | Number> = append([1], \"a\")"
+      rejects "g() = append([1], \"a\")" ETypeMismatch
+    it "accepts a mixed variadic where the union is written down" $ do
+      accepts "f(...xs: Array<String | Number>): Number = size(xs)\ng(): Number = f(1, \"a\")"
+      rejects "f(...xs: Array<Number>): Number = size(xs)\ng(): Number = f(1, \"a\")" ETypeMismatch
+    it "casts to a union (spec 15.8)" $
+      accepts "f(v: Any): String | Null = cast(v)"
+    it "instantiates a union return type from an argument (spec 4.4)" $
+      hasType
+        "f(xs: Array<String>) = find(xs, \\(s: String) -> true)"
+        "f"
+        "Function<Array<String>, String | Null>"
+    it "rejects an instantiation whose result would be ill-formed" $
+      rejects
+        "f(fs: Array<Function<Number, Number>>) = find(fs, \\(g: Function<Number, Number>) -> true)"
+        ETypeIllformed
+
+  describe "case expressions (spec 6.4)" $ do
+    it "types a case by its arm bodies" $
+      hasType
+        "f(x: String) = case (x) {\n  \"a\" -> 1\n  else -> 2\n}"
+        "f"
+        "Function<String, Number>"
+    it "types the condition form by its arm bodies" $
+      hasType
+        "f(n: Number) = case {\n  n > 1 -> \"big\"\n  else -> \"small\"\n}"
+        "f"
+        "Function<Number, String>"
+    it "requires an else arm" $
+      rejects "f(x: String) = case (x) {\n  \"a\" -> 1\n}" ESyntaxCaseElse
+    it "requires the else arm to be last" $
+      rejects "f(x: String) = case (x) {\n  else -> 1\n  \"a\" -> 2\n}" ESyntaxCaseElse
+    it "requires arm heads to have the scrutinee type" $
+      rejects "f(x: String) = case (x) {\n  1 -> 1\n  else -> 2\n}" ETypeMismatch
+    it "requires the condition form's heads to be Bool" $
+      rejects "f(x: String) = case {\n  x -> 1\n  else -> 2\n}" ETypeMismatch
+    it "requires the arm bodies to agree" $
+      rejects "f(x: String) = case (x) {\n  \"a\" -> 1\n  else -> \"z\"\n}" ETypeMismatch
+    it "rejects a scrutinee that cannot be compared (spec 6.2)" $
+      rejects "f(x: Any) = case (x) {\n  \"a\" -> 1\n  else -> 2\n}" ETypeBound
+    it "rejects a literal head an earlier arm already matches" $
+      rejects
+        "f(x: String) = case (x) {\n  \"a\" -> 1\n  \"b\", \"a\" -> 2\n  else -> 3\n}"
+        ETypeCaseDuplicate
+    it "allows equal heads that are not literals" $
+      accepts "k = \"a\"\nf(x: String) = case (x) {\n  k -> 1\n  k -> 2\n  else -> 3\n}"
+    it "takes the arm type from any arm that infers on its own (spec 15.7)" $
+      hasType
+        "f(x: String): String = case (x) {\n  \"a\" -> fail({ code: 1, message: \"no\" })\n  else -> \"z\"\n}"
+        "f"
+        "Function<String, String>"
+    it "checks every arm against an expected type" $
+      rejects
+        "f(x: String): String = case (x) {\n  \"a\" -> \"y\"\n  else -> 2\n}"
+        ETypeMismatch
+    it "narrows a union scrutinee in each arm (spec 6.4)" $
+      hasType
+        "f(x: Number | String | Null): String = case (x) {\n  Null -> \"none\"\n  Number -> to_string(x)\n  else -> x\n}"
+        "f"
+        "Function<Number | String | Null, String>"
+    it "narrows the else arm by subtracting the matched members" $
+      accepts "f(x: String | Null): String = case (x) {\n  Null -> \"none\"\n  else -> x\n}"
+    it "subtracts Null for a null value head too" $
+      accepts "f(x: String | Null): String = case (x) {\n  null -> \"none\"\n  else -> x\n}"
+    it "does not subtract for a value head that does not exhaust its member" $
+      rejects "f(x: String | Null): String = case (x) {\n  \"a\" -> \"none\"\n  else -> x\n}" ETypeMismatch
+    it "does not narrow a scrutinee that is not a plain name" $
+      rejects
+        "g(): String | Null = null\nf(): String = case (g()) {\n  Null -> \"none\"\n  else -> g()\n}"
+        ETypeMismatch
+    it "keeps the narrowing inside the arm" $
+      rejects
+        "f(x: String | Null): String = do {\n  y = case (x) {\n    Null -> \"none\"\n    else -> x\n  }\n  x\n}"
+        ETypeMismatch
+    it "dispatches on the type of an Any scrutinee (spec 4.4, 6.4)" $
+      hasType
+        "f(v: Any): String = case (v) {\n  String -> v\n  Array<String> -> join(v, \",\")\n  else -> to_json(v)\n}"
+        "f"
+        "Function<Any, String>"
+    it "leaves an Any scrutinee Any in the else arm" $
+      rejects "f(v: Any): String = case (v) {\n  Number -> \"n\"\n  else -> v\n}" ETypeMismatch
+    it "rejects a type head that is not a member of the union" $
+      rejects "f(x: String | Null): Number = case (x) {\n  Number -> 1\n  else -> 2\n}" ETypeMismatch
+    it "rejects a type head on a scrutinee that is neither a union nor Any" $
+      rejects "f(x: Number): Number = case (x) {\n  Number -> 1\n  else -> 2\n}" ETypeMismatch
+    it "rejects a type head that is not a data type" $
+      rejects "f(v: Any): Number = case (v) {\n  Function<Number> -> 1\n  else -> 2\n}" ETypeIllformed
+    it "rejects a type head in the condition form" $
+      rejects "f(): Number = case {\n  String -> 1\n  else -> 2\n}" ETypeMismatch
+    it "rejects a type head an earlier arm already matches" $
+      rejects
+        "f(x: String | Null): Number = case (x) {\n  Null -> 1\n  Null -> 2\n  else -> 3\n}"
+        ETypeCaseDuplicate
+    it "does not require a comparable scrutinee when every head is a type" $
+      accepts "f(x: Map<Any> | Null): Number = case (x) {\n  Null -> 0\n  else -> 1\n}"
+
+  describe "local binding annotations (spec 6.5)" $ do
+    it "takes the annotation as the declared type" $
+      hasType "f() = do {\n  x: Any = 1\n  x\n}" "f" "Function<Any>"
+    it "checks the right-hand side against the annotation" $
+      rejects "f() = do {\n  x: Number = \"a\"\n  x\n}" ETypeMismatch
+    it "gives an expected type to an expression that needs one (spec 15.8)" $
+      accepts "f(v: Any): String = do {\n  s: String = cast(v)\n  s\n}"
+    it "gives a union to a binding whose right-hand side does not determine it" $
+      accepts "f(): String = do {\n  p: String | Null = null\n  case (p) {\n    Null -> \"n\"\n    else -> p\n  }\n}"
+    it "checks an annotated last statement against what the block owes" $
+      rejects "f(): Number = do {\n  x: String = \"a\"\n}" ETypeMismatch
+    it "rejects a Void annotation (spec 4.2)" $
+      rejects "f(): Number = do {\n  x: Void = 1\n  2\n}" ETypeIllformed
+    it "keeps the !! rule on the declared type (spec 6.10)" $ do
+      accepts "f(): Number = do {\n  p!!: String = \"s\"\n  length(p)\n}"
+      rejects "f(): Number = do {\n  p!!: Number = 1\n  p\n}" ETypeSecretNonString
+    it "resolves a named type in the annotation" $ do
+      accepts "type Name = String\nf(): Name = do {\n  x: Name = \"a\"\n  x\n}"
+      rejects "f(): Number = do {\n  x: Nope = 1\n  1\n}" ENameUndefined
+
+  describe "if without else (spec 6.4)" $ do
+    it "types it as the block's type or Null" $
+      hasType "f(c: Bool) = if (c) { \"a\" }" "f" "Function<Bool, String | Null>"
+    it "keeps a block that already admits Null as it is" $
+      hasType "f(c: Bool, x: String | Null) = if (c) { x }" "f" "Function<Bool, String | Null, String | Null>"
+    it "types it as Void for a Void block" $
+      hasType "f(c: Bool) = if (c) { log(\"x\") }" "f" "Function<Bool, Void>"
+    it "checks the block against an expected type that admits Null" $
+      accepts "f(c: Bool): String | Null = if (c) { \"a\" }"
+    it "rejects an expected type that does not admit Null" $
+      rejects "f(c: Bool): String = if (c) { \"a\" }" ETypeMismatch
+    it "ends a Void function" $
+      accepts "f(c: Bool): Void = do {\n  log(\"a\")\n  if (c) { log(\"x\") }\n}"
+    it "lets a context-typed block stand as a statement" $
+      accepts "f(c: Bool): Number = do {\n  if (c) { fail({code: 1, message: \"x\"}) }\n  1\n}"
+    it "accepts a block of any type when the value is discarded" $
+      accepts "f(c: Bool): Number = do {\n  if (c) { \\(x: Number) -> x }\n  1\n}"
+    it "rejects a block that is not a data type where the value is used" $
+      rejects "f(c: Bool) = if (c) { \\(x: Number) -> x }" ETypeIllformed
+    it "still requires a Bool condition" $
+      rejects "f(n: Number) = if (n) { 1 }" ETypeMismatch
+    it "leaves no return to write (spec 6.5)" $
+      rejects "f(c: Bool): String = do {\n  if (c) { return \"a\" }\n  \"b\"\n}" ESyntaxUnexpectedToken
+    it "is typed as the if with else { null } it is sugar for (spec 4.3)" $ do
+      hasType "f(c: Bool) = if (c) { \"a\" }" "f" "Function<Bool, String | Null>"
+      hasType "f(c: Bool) = if (c) { \"a\" } else { null }" "f" "Function<Bool, String | Null>"
+
+  describe "join with Null (spec 4.3)" $ do
+    it "joins an if whose else is null" $
+      hasType "f(c: Bool) = if (c) { 1 } else { null }" "f" "Function<Bool, Number | Null>"
+    it "joins an if whose then is null" $
+      hasType "f(c: Bool) = if (c) { null } else { \"a\" }" "f" "Function<Bool, String | Null>"
+    it "joins a conditional expression (spec 6.2)" $
+      hasType "f(c: Bool) = c ? \"a\" : null" "f" "Function<Bool, String | Null>"
+    it "joins the arms of a case, wherever the null arm is (spec 6.4)" $ do
+      hasType "f(s: String) = case (s) {\n  \"a\" -> 1\n  \"b\" -> null\n  else -> 2\n}" "f" "Function<String, Number | Null>"
+      hasType "f(n: Number) = case {\n  n > 0 -> null\n  else -> \"x\"\n}" "f" "Function<Number, String | Null>"
+    it "joins the body and the catch block of a try (spec 6.9)" $
+      hasType "f() = try { $[#local]{echo hi} } catch (e) { null }" "f" "Function<String | Null>"
+    it "keeps a type that already admits Null" $
+      hasType "f(c: Bool) = if (c) { find_env(\"A\") } else { null }" "f" "Function<Bool, String | Null>"
+    it "is absorbed by Any" $
+      hasType "f(c: Bool, x: Any) = if (c) { x } else { null }" "f" "Function<Bool, Any, Any>"
+    it "types branches that are all null as Null" $
+      hasType "f(c: Bool) = c ? null : null" "f" "Function<Bool, Null>"
+    it "still lets a context-typed branch take the type of the others" $ do
+      hasType "f(c: Bool) = if (c) { null } else { fail(error(2, \"x\")) }" "f" "Function<Bool, Null>"
+      hasType "f(c: Bool) = if (c) { fail(error(2, \"x\")) } else { null }" "f" "Function<Bool, Null>"
+      hasType "f(c: Bool, s: String) = case (s) {\n  \"a\" -> null\n  \"b\" -> 1\n  else -> fail(error(2, \"x\"))\n}" "f" "Function<Bool, String, Number | Null>"
+    it "rejects branches whose types differ otherwise" $ do
+      rejects "f(c: Bool) = if (c) { 1 } else { \"a\" }" ETypeMismatch
+      rejects "f(c: Bool) = c ? 1 : \"a\"" ETypeMismatch
+      rejects "f(s: String) = case (s) {\n  \"a\" -> 1\n  \"b\" -> null\n  else -> \"x\"\n}" ETypeMismatch
+    it "rejects a join whose other branch is not a data type" $ do
+      rejects "f(c: Bool) = c ? \\(x: Number) -> x : null" ETypeIllformed
+      rejects "f(c: Bool) = if (c) { log(\"x\") } else { null }" ETypeIllformed
+      rejects "f(c: Bool) = do {\n  g = c ? \\(x: Number) -> x : null\n  2\n}" ETypeIllformed
+      rejects "f(c: Bool) = do {\n  1\n  if (c) { \\(x: Number) -> x } else { null }\n}" ETypeIllformed
+    -- As an if without else is (spec 6.4).
+    it "accepts any branch type when the value is discarded" $ do
+      accepts "f(c: Bool): Number = do {\n  if (c) { \\(x: Number) -> x } else { null }\n  1\n}"
+      accepts "f(c: Bool): Number = do {\n  c ? \\(x: Number) -> x : null\n  1\n}"
+      accepts "f(c: Bool): Number = do {\n  case {\n    c -> \\(x: Number) -> x\n    else -> null\n  }\n  1\n}"
+      accepts "f(): Number = do {\n  try { log(\"x\") } catch (e) { null }\n  1\n}"
+    it "still requires discarded branches to agree otherwise" $
+      rejects "f(c: Bool): Number = do {\n  if (c) { 1 } else { \"a\" }\n  2\n}" ETypeMismatch
+    it "plays no part under an expected type" $ do
+      accepts "f(c: Bool): String | Null = c ? \"a\" : null"
+      rejects "f(c: Bool): Number = c ? 1 : null" ETypeMismatch
+    it "gives a union that has to be narrowed before use" $
+      rejects "f(c: Bool): String = to_string(c ? \"a\" : null)" ETypeBound
+
+  describe "accessors (spec 6.8)" $ do
+    it "types record field access" $
+      hasType "u = {name: \"a\"}\nn = u.name" "n" "String"
+    it "rejects unknown record fields" $
+      rejects "u = {name: \"a\"}\nn = u.nope" ETypeAccess
+    it "rejects dot access on maps" $
+      rejects "m: Map<String> = {\"a\": \"x\"}\nv = m.a" ETypeAccess
+    it "types record access via string-literal index" $
+      hasType "h = {\"X-Api-Key\": \"secret\"}\nv = h[\"X-Api-Key\"]" "v" "String"
+    it "rejects non-literal record indexes" $
+      rejects "u = {name: \"a\"}\nk = \"name\"\nv = u[k]" ETypeAccess
+    it "types array indexing" $
+      hasType "xs = [1, 2]\nv = xs[0]" "v" "Number"
+    it "requires Number indexes for arrays (spec 6.8)" $
+      rejects "xs = [1, 2]\nv = xs[\"0\"]" ETypeAccess
+    it "requires String indexes for maps (spec 6.8)" $
+      rejects "m: Map<Number> = {\"a\": 1}\nv = m[0]" ETypeAccess
+    it "keeps a mismatch inside an index expression a mismatch" $
+      rejects "xs = [1, 2]\nv = xs[1 + \"a\"]" ETypeMismatch
+    it "types map indexing" $
+      hasType "m: Map<Number> = {\"a\": 1}\nv = m[\"a\"]" "v" "Number"
+
+  describe "commands and environments (spec 6.6, 6.7)" $ do
+    it "types $ as String" $ hasType "v() = $[#local] git --version" "v" "Function<String>"
+    it "types $*[#local] as CommandResult" $
+      hasType "v() = $*[#local] ls" "v" "Function<Record<code: Number, stderr: String, stdout: String>>"
+    it "accepts Environment-typed command environments" $
+      accepts "b(env: Environment) = $[env] ls"
+    it "rejects non-Environment command environments" $
+      rejects "b(e: Number) = $[e] ls" ETypeCommandEnv
+    it "accepts environment constructors" $
+      accepts "e1 = #local\ne2 = #alpine:3.12{memory: \"4g\"}\ne3 = #./infra/Dockerfile(context = \".\")\ne4 = #alpine:3.12"
+    -- The removed constructor is refused with a hint, rather than
+    -- read as the image `docker` given a positional argument.
+    it "rejects the removed #docker(...) form" $ do
+      rejects "e = #docker(\"alpine:3.20\")" ETypeEnvConstruct
+      rejects "e = #docker(dockerfile = \"D\")" ETypeEnvConstruct
+    it "reads #docker as the image docker" $
+      accepts "e = #docker\nf = #docker:27-cli{memory: \"1g\"}"
+    it "rejects unknown docker options" $
+      rejects "e = #a{nope: 1}" ETypeEnvConstruct
+    it "rejects positional arguments to a head" $
+      rejects "e = #remote(\"h\")" ETypeEnvConstruct
+    it "rejects an argument list on #local" $ do
+      rejects "e = #local()" ETypeEnvConstruct
+      rejects "e = #local(memory = \"1g\")" ETypeEnvConstruct
+    it "accepts a recipe head with its image options" $
+      accepts "e = #./infra/Dockerfile(context = \".\", build_args = {\"V\": \"1\"}, platform = \"linux/amd64\"){memory: \"1g\"}"
+    it "rejects recipe options on a registry reference" $ do
+      rejects "e = #alpine:3.20(context = \".\")" ETypeEnvConstruct
+      rejects "e = #alpine:3.20(build_args = {\"V\": \"1\"})" ETypeEnvConstruct
+    it "types #head{...} and runnable(...) as Runnable" $ do
+      hasType "v = #alpine:3.12{memory: \"1g\"}" "v" "Runnable"
+      hasType "v = runnable(#alpine:3.12, memory = \"1g\")" "v" "Runnable"
+    it "lets an Environment stand where a Runnable is expected" $
+      accepts "f(e: Runnable): String = $[e] ls\ng(): String = f(#alpine:3.12)\nh(): String = f(#alpine:3.12{memory: \"1g\"})"
+    it "takes an Environment only, so options are given once" $ do
+      rejects "r = #alpine:3.12{memory: \"1g\"}\nx = runnable(r, user = \"app\")" ETypeMismatch
+      rejects "f(e: Environment): Environment = e\nx = f(#alpine:3.12{memory: \"1g\"})" ETypeMismatch
+    it "rejects run options in a head's parentheses" $
+      rejects "e = #alpine:3.20(memory = \"1g\")" ETypeEnvConstruct
+    it "accepts base_mount and base_access, as a mode or a table (spec 10.2)" $ do
+      accepts "e = #alpine:3.12{base_mount: \"/src\", base_access: \"ro\"}"
+      accepts "e = #alpine:3.12{base_access: {\".\": \"ro\", \"dist\": \"rw\", \".env\": \"none\"}}"
+      accepts "f(--m: String = \"ro\"): Runnable = runnable(#alpine:3.12, base_access = m)"
+    it "rejects a base_mount that is not an absolute, normalized path inside the container's own tree" $ do
+      rejects "e = #alpine:3.12{base_mount: \"src\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/src/\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/a/../b\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/proc/x\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_mount: \"/a,b\"}" ETypeEnvConstruct
+    it "rejects a base_access that gives no mode, or a table without \".\" or with a path outside the base directory" $ do
+      rejects "e = #alpine:3.12{base_access: \"readonly\"}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: {\"dist\": \"rw\"}}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: {\".\": \"ro\", \"../x\": \"rw\"}}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: {\".\": \"ro\", \"/etc\": \"rw\"}}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: {\".\": \"ro\", \"./dist\": \"rw\"}}" ETypeEnvConstruct
+      rejects "e = #alpine:3.12{base_access: 1}" ETypeMismatch
+    it "rejects a base_mount given with base_access \"none\", which mounts nothing" $
+      rejects "e = #alpine:3.12{base_access: \"none\", base_mount: \"/src\"}" ETypeEnvConstruct
+    it "rejects image options given to runnable" $ do
+      rejects "e = runnable(#alpine:3.20, platform = \"linux/amd64\")" ETypeEnvConstruct
+      rejects "e = runnable(#alpine:3.20, image = \"node:24\")" ETypeEnvConstruct
+      rejects "e = #./D{context: \".\"}" ETypeEnvConstruct
+    it "rejects a positional run option" $
+      rejects "e = runnable(#alpine:3.20, \"x\")" ETypeEnvConstruct
+    it "rejects run options on #local" $ do
+      rejects "e = #local{memory: \"1g\"}" ETypeEnvConstruct
+      rejects "e = runnable(#local, memory = \"1g\")" ETypeEnvConstruct
+    it "no longer calls an environment value" $
+      rejects "e = #alpine:3.20\nf = e(memory = \"1g\")" ETypeCall
+    it "accepts a literal platform on a head" $
+      accepts "e = #alpine:3.20(platform = \"linux/arm64\")"
+    it "rejects a platform that is not a literal" $ do
+      rejects "p = \"linux/arm64\"\ne = #alpine:3.20(platform = p)" ETypeEnvConstruct
+      rejects "p = \"arm64\"\ne = #alpine:3.20(platform = \"linux/#{p}\")" ETypeEnvConstruct
+    it "rejects a build argument that is not a literal" $
+      rejects "v = \"1\"\ne = #./D(build_args = {\"V\": v})" ETypeEnvConstruct
+    -- The lock pins what a bare name resolves to (spec 10.3), in the
+    -- sugar and the constructor alike.
+    it "accepts a registry reference without a tag" $ do
+      accepts "e = #alpine"
+      accepts "e = #rancher/cowsay"
+    it "rejects giving both an image reference and a recipe" $
+      rejects "e = #alpine:3.20{dockerfile: \"D\"}" ETypeEnvConstruct
+    it "rejects a recipe path escaping the module tree" $
+      rejects "e = #./../D" ETypeEnvConstruct
+    it "rejects a non-literal context" $
+      rejects "p = \".\"\ne = #./D(context = p)" ETypeEnvConstruct
+    it "accepts the container options of 10.2" $
+      accepts
+        "e = #alpine:3.20{cpus: 2, ulimits: [\"nofile=1024:1024\"], env: {\"CI\": \"1\"}, init: true, tmpfs: [\"/tmp\"], publish: [\"8080:80\"], volumes: [\"c:/cache\"]}"
+    it "accepts null for a container option, and in the elements of a list or table" $
+      accepts
+        "f(--u: String | Null = null): Runnable = #a:1{user: u, env: {\"A\": u, \"B\": \"\"}, tmpfs: [u], init: null, cpus: null}"
+    -- Containers are covariant (4.4): a list or table already typed
+    -- without null conforms to one whose elements may be null.
+    it "accepts a list or table of strings that is not a literal" $
+      accepts
+        "xs: Array<String> = [\"/tmp\"]\nm: Map<String> = {\"A\": \"1\"}\nmk(): Map<String> = m\ne = #a:1{tmpfs: xs, env: mk(), volumes: xs, add_hosts: m}"
+    it "still rejects a list of anything but strings" $
+      rejects "xs: Array<Number> = [1]\ne = #a:1{tmpfs: xs}" ETypeMismatch
+    it "accepts build arguments on a recipe" $
+      accepts "e = #./D(build_args = {\"VERSION\": \"1.2.3\"})"
+    it "rejects build arguments that are not literals, since they decide the image" $ do
+      rejects "v = \"1.2.3\"\ne = #./D(build_args = {\"VERSION\": v})" ETypeEnvConstruct
+      rejects "v = \"1.2.3\"\ne = #./D(build_args = {\"VERSION\": \"#{v}\"})" ETypeEnvConstruct
+    it "rejects build arguments on a registry reference" $
+      rejects "e = #alpine:3.20(build_args = {\"V\": \"1\"})" ETypeEnvConstruct
+    it "rejects a container option of the wrong type" $
+      rejects "e = #alpine:3.20{tmpfs: \"/tmp\"}" ETypeMismatch
+    it "rejects interpolating non-stringifiable values" $
+      rejects "u = {a: 1}\ns = \"v=#{u}\"" ETypeBound
+
+  describe "command imports and exports (spec ch. 5)" $ do
+    let tools =
+          ( "tools.lask",
+            "mk(--proxy: String = \"\"): Runnable = #golang:1.25{env: {\"GOPROXY\": proxy}}\n\
+            \node = #node:24-alpine\n\
+            \command { \"go\", \"gofmt\" } on mk()\n\
+            \export command { \"node\", \"npm\" } on node\n\
+            \internal command { \"helper\" } on #local"
+          )
+
+    it "dispatches an imported command word" $
+      acceptsFiles
+        [ ("main.lask", "import command { \"go\", \"npm\" } from \"./tools.lask\"\nt(): String = $ go test ./...\nw(): String = $ npm ci"),
+          tools
+        ]
+
+    it "keeps the words of one imported declaration on one environment" $
+      acceptsFiles
+        [ ("main.lask", "import command { \"go\", \"gofmt\" } from \"./tools.lask\"\nv(): String = $ gofmt -l . && go vet"),
+          tools
+        ]
+
+    it "brings in only the words it names" $
+      rejectsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./tools.lask\"\nv(): String = $ npm ci"),
+          tools
+        ]
+        ETypeCommandNoEnv
+
+    it "brings in no command word through a namespace import" $
+      rejectsFiles
+        [("main.lask", "import * as t from \"./tools.lask\"\nv(): String = $ go vet"), tools]
+        ETypeCommandNoEnv
+
+    it "rejects a word the module does not export" $ do
+      rejectsFiles
+        [("main.lask", "import command { \"helper\" } from \"./tools.lask\""), tools]
+        ENameUndefined
+      rejectsFiles
+        [("main.lask", "import command { \"cargo\" } from \"./tools.lask\""), tools]
+        ENameUndefined
+
+    it "does not export a word the module itself imported" $
+      rejectsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./mid.lask\""),
+          ("mid.lask", "import command { \"go\" } from \"./tools.lask\""),
+          tools
+        ]
+        ENameUndefined
+
+    it "passes a word on through a re-export" $
+      acceptsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./mid.lask\"\nv(): String = $ go vet"),
+          ("mid.lask", "export command { \"go\" } from \"./tools.lask\""),
+          tools
+        ]
+
+    it "treats one declaration reached along two paths as one" $
+      acceptsFiles
+        [ ( "main.lask",
+            "import command { \"go\" } from \"./tools.lask\"\nimport command { \"go\" } from \"./mid.lask\"\nv(): String = $ go vet"
+          ),
+          ("mid.lask", "export command { \"go\" } from \"./tools.lask\""),
+          tools
+        ]
+
+    it "rejects a word both declared and imported" $
+      rejectsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./tools.lask\"\ncommand { \"go\" } on #golang:1.25"),
+          tools
+        ]
+        ETypeCommandDuplicate
+
+    it "names an environment through a namespace member" $
+      acceptsFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\ncommand { \"node\" } on t.node\nv(): String = $ node -v"),
+          tools
+        ]
+
+    it "names an environment through a call into another module" $
+      acceptsFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\ncommand { \"aws\" } on t.mk(proxy = \"direct\")\nv(): String = $ aws --version"),
+          tools
+        ]
+
+  -- A re-export publishes a name from the module that declares it
+  -- (spec 5); a namespace member has to reach that declaration, not a
+  -- declaration of the re-exporting module, which has none.
+  describe "namespace members that a module re-exports (spec 5, 7.2)" $ do
+    let lib =
+          ( "lib/go.lask",
+            "go(--proxy: String = \"\"): Runnable = #golang:1.25{env: {\"GOPROXY\": proxy}}\n\
+            \image = \"golang:1.25\"\n\
+            \type Pin = Record<image: String>\n\
+            \internal hidden = 1"
+          )
+        tools = ("tools.lask", "export { go, image, Pin } from \"./lib/go.lask\"")
+
+    it "calls a re-exported function, keyword arguments included" $
+      hasTypeFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\nb(): Runnable = t.go(proxy = \"direct\")"),
+          tools,
+          lib
+        ]
+        "b"
+        "Function<Runnable>"
+
+    it "reads a re-exported value" $
+      hasTypeFiles
+        [("main.lask", "import * as t from \"./tools.lask\"\nv(): String = t.image"), tools, lib]
+        "v"
+        "Function<String>"
+
+    it "follows a chain of re-exports" $
+      hasTypeFiles
+        [ ("main.lask", "import * as t from \"./outer.lask\"\nb(): Runnable = t.go(proxy = \"direct\")"),
+          ("outer.lask", "export { go } from \"./tools.lask\""),
+          tools,
+          lib
+        ]
+        "b"
+        "Function<Runnable>"
+
+    it "follows a re-export that renames" $
+      hasTypeFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\nb(): Runnable = t.golang(proxy = \"direct\")"),
+          ("tools.lask", "export { go as golang } from \"./lib/go.lask\""),
+          lib
+        ]
+        "b"
+        "Function<Runnable>"
+
+    it "names a re-exported type through the namespace" $
+      acceptsFiles
+        [("main.lask", "import * as t from \"./tools.lask\"\np: t.Pin = {image: t.image}"), tools, lib]
+
+    it "backs a command declaration with a re-exported function" $
+      acceptsFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\ncommand { \"go\" } on t.go()\nv(): String = $ go vet"),
+          tools,
+          lib
+        ]
+
+    it "still rejects a name the module does not publish" $
+      rejectsFiles
+        [ ("main.lask", "import * as t from \"./tools.lask\"\nv(): Number = t.hidden"),
+          ("tools.lask", "import { hidden } from \"./lib/go.lask\""),
+          lib
+        ]
+        ENameUndefined
+
+  describe "async and errors (spec 6.3, 6.9)" $ do
+    it "types async as AsyncHandle" $
+      hasType "f() = async 1" "f" "Function<AsyncHandle<Number>>"
+    it "types await as the resolved type" $
+      hasType "f() = do {\n  h = async 1\n  await h\n}" "f" "Function<Number>"
+    it "rejects await on non-handles" $
+      rejects "f() = await 1" ETypeMismatch
+    it "types spawn and all" $
+      hasType "f() = all([async 1, async 2])" "f" "Function<Array<Number>>"
+    it "types try/catch with matching branches" $
+      hasType "f() = try { \"ok\" } catch (e) { e.message }" "f" "Function<String>"
+    it "gives catch variables the Error type" $
+      hasType "f() = try { 1 } catch (e) { e.code }" "f" "Function<Number>"
+    it "rejects mismatched catch types" $
+      rejects "f() = try { 1 } catch (e) { \"x\" }" ETypeMismatch
+    it "types try/finally by the body" $
+      hasType "f() = try { 1 } finally { run(#local, \"true\") }" "f" "Function<Number>"
+
+  describe "command declarations and dispatch (spec ch. 5, 10.9)" $ do
+    it "takes the environment from the command word" $
+      hasType "command { \"go\" } on #golang:1.25\nv() = $ go test ./..." "v" "Function<String>"
+
+    it "accepts a top-level binding of an environment expression" $
+      hasType "e = #golang:1.25\ncommand { \"go\" } on e\nv() = $ go test ./..." "v" "Function<String>"
+
+    it "lets neutral words stand alongside a declared command" $
+      hasType "command { \"npm\" } on #node:20.20.2-alpine3.23\nv() = $ cd web && npm ci" "v" "Function<String>"
+
+    it "skips assignment words before the command word" $
+      hasType "command { \"npm\" } on #node:20.20.2-alpine3.23\nv() = $ FOO=1 npm ci" "v" "Function<String>"
+
+    it "rejects a command string that names no declared command" $
+      rejects "command { \"go\" } on #golang:1.25\nv() = $ npm ci" ETypeCommandNoEnv
+
+    it "rejects a bare command with no declarations at all" $
+      rejects "v() = $ echo hi" ETypeCommandNoEnv
+
+    it "rejects a command word that cannot be determined statically" $
+      rejects "command { \"go\" } on #golang:1.25\nbin = \"go\"\nv() = $ #{bin} test" ETypeCommandNoEnv
+
+    it "rejects a command string that could not be segmented" $
+      rejects "command { \"go\" } on #golang:1.25\nv() = $ go test # it's" ETypeCommandNoEnv
+
+    it "rejects two different environments in one command string" $
+      rejects
+        "command { \"go\" } on #golang:1.25\ncommand { \"npm\" } on #node:20.20.2-alpine3.23\nv() = $ go build && npm ci"
+        ETypeCommandConflict
+
+    it "treats #local as an environment like any other" $ do
+      hasType "command { \"ls\" } on #local\nv() = $ ls dist" "v" "Function<String>"
+      rejects
+        "command { \"ls\" } on #local\ncommand { \"go\" } on #golang:1.25\nv() = $ ls dist && go test"
+        ETypeCommandConflict
+
+    it "does not conflict when two declarations name the same environment" $
+      hasType
+        "command { \"go\" } on #golang:1.25\ncommand { \"gofmt\" } on #golang:1.25\nv() = $ gofmt -l . && go vet"
+        "v"
+        "Function<String>"
+
+    -- Selection compares environment values (10.9), so the order the
+    -- options were written in is not part of what is compared.
+    it "does not conflict when the same options are written in a different order" $
+      hasType
+        "command { \"go\" } on #golang:1.25{cpus: 2, memory: \"4g\"}\ncommand { \"gofmt\" } on #golang:1.25{memory: \"4g\", cpus: 2}\nv() = $ gofmt -l . && go vet"
+        "v"
+        "Function<String>"
+
+    -- A list or a table is still known before execution, so an
+    -- environment carrying one stays declarable (ch. 5).
+    it "accepts an environment whose options are literal lists and tables" $
+      hasType
+        "command { \"go\" } on #golang:1.25{env: {\"CI\": \"1\"}, tmpfs: [\"/tmp\"]}\nv() = $ go vet"
+        "v"
+        "Function<String>"
+
+    -- The environment of a declaration is an ordinary expression
+    -- (ch. 5): what it may not do is have an effect.
+    it "accepts an environment computed from other values" $
+      hasType
+        "d = \"/tmp\"\ncommand { \"go\" } on #golang:1.25{tmpfs: [d]}\nv() = $ go vet"
+        "v"
+        "Function<String>"
+
+    it "accepts an environment produced by a call" $
+      hasType
+        "mk(--proxy: String = \"\"): Runnable = #golang:1.25{env: {\"GOPROXY\": proxy}}\ncommand { \"go\" } on mk(proxy = \"direct\")\nv() = $ go vet"
+        "v"
+        "Function<String>"
+
+    it "accepts an environment that reads a variable of the process" $
+      hasType
+        "command { \"go\" } on #golang:1.25{env: {\"GOPROXY\": get_env(\"GOPROXY\")}}\nv() = $ go vet"
+        "v"
+        "Function<String>"
+
+    it "rejects an environment that can run a command" $
+      rejects
+        "mk(): Runnable = do {\n  proxy = $[#local] cat proxy\n  #golang:1.25{env: {\"GOPROXY\": proxy}}\n}\ncommand { \"go\" } on mk()\nv() = $ go vet"
+        ETypeCommandEffect
+
+    it "rejects an environment that reads the standard input" $
+      rejects "command { \"go\" } on #golang:1.25{env: {\"IN\": stdin}}\nv() = $ go vet" ETypeCommandEffect
+
+    it "rejects an environment that waits (spec 15.7)" $
+      rejects
+        "command { \"go\" } on #golang:1.25{user: \"#{timeout(5, \\() -> \"1000\")}\"}\nv() = $ go vet"
+        ETypeCommandEffect
+
+    it "rejects an environment that touches the filesystem" $
+      rejects
+        "command { \"go\" } on #golang:1.25{user: read_file(\"user\", #local)}\nv() = $ go vet"
+        ETypeCommandEffect
+
+    -- The command string inside mk() is dispatched against the table
+    -- being built: an effect, and one that must not loop.
+    it "rejects an environment that dispatches a command of its own module" $
+      rejects
+        "command { \"ls\" } on mk()\nmk(): Environment = do {\n  x = $ ls\n  #alpine:3.22.2\n}"
+        ETypeCommandEffect
+
+    it "rejects an environment that is not an Environment" $
+      rejects "command { \"go\" } on \"golang:1.25\"\nv() = $ go vet" ETypeCommandEnv
+
+    it "leaves an explicit environment specification alone" $
+      hasType
+        "command { \"npm\" } on #node:20.20.2-alpine3.23\nv() = $[#local] npm ci"
+        "v"
+        "Function<String>"
+
+    -- Selection compares where environments come from (10.9): two
+    -- calls are two values, known equal only at run time.
+    it "agrees on two declarations naming one binding" $
+      hasType
+        "box = #golang:1.25{env: {\"HOME\": get_env(\"HOME\")}}\ncommand { \"go\" } on box\ncommand { \"gofmt\" } on box\nv() = $ gofmt -l . && go vet"
+        "v"
+        "Function<String>"
+
+    it "agrees on the words of one declaration whose environment is a call" $
+      hasType
+        "mk(): Environment = #golang:1.25\ncommand { \"go\", \"gofmt\" } on mk()\nv() = $ gofmt -l . && go vet"
+        "v"
+        "Function<String>"
+
+    it "does not take two calls for one environment" $
+      rejects
+        "mk(): Environment = #golang:1.25\ncommand { \"go\" } on mk()\ncommand { \"gofmt\" } on mk()\nv() = $ gofmt -l . && go vet"
+        ETypeCommandConflict
+
+    it "rejects the command words without braces, saying how to write them" $
+      rejects "command \"go\" on #golang:1.25\nv() = $ go vet" ESyntaxUnexpectedToken
+
+    it "rejects a name that could never be a command word" $
+      rejects "command { \"my prog\" } on #local\nv() = $ ls" ETypeCommandName
+
+    it "rejects a duplicate command word" $
+      rejects "command { \"go\", \"go\" } on #golang:1.25\nv() = $ go test" ETypeCommandDuplicate
+
+  describe "shell syntax of a command string (spec 6.6)" $ do
+    it "rejects a region left open, whatever gives the environment" $ do
+      rejects "v() = $[#local] echo \"unterminated" ETypeCommandSyntax
+      rejects "command { \"go\" } on #golang:1.25\nv() = $ go test \"unterminated" ETypeCommandSyntax
+
+    it "rejects an operator with no command on one side" $ do
+      rejects "v() = $[#local] make &&" ETypeCommandSyntax
+      rejects "v() = $[#local] | grep x" ETypeCommandSyntax
+      rejects "v() = $[#local] a ;; b" ETypeCommandSyntax
+
+    it "rejects a redirection with no target, an unmatched ')' and an empty group" $ do
+      rejects "v() = $[#local] cat >" ETypeCommandSyntax
+      rejects "v() = $[#local] echo a)" ETypeCommandSyntax
+      rejects "v() = $[#local] ( )" ETypeCommandSyntax
+
+    it "accepts what it cannot read past" $ do
+      accepts "v() = $[#local] for f in a b; do echo $f; done"
+      accepts "v() = $[#local] case x in a) echo a;; esac"
+      accepts "flags = \"&&\"\nv() = $[#local] echo #!{flags}"
+
+    it "accepts an escaped hole as one word" $
+      accepts "f = \"&&\"\nv() = $[#local] echo #{f}"
+
+  describe "command schemas (spec ch. 5)" $ do
+    let goSchema =
+          T.unlines
+            [ "goSchema: CommandSchema = {",
+              "  root: { closed: true, style: \"single-dash\" },",
+              "  subcommands: {",
+              "    \"test\": {",
+              "      closed: true,",
+              "      intermixed: true,",
+              "      options: [",
+              "        { names: [\"-v\"] },",
+              "        { names: [\"-run\"], value: \"required\" },",
+              "        { names: [\"-covermode\"], value: \"required\", values: [\"set\", \"count\", \"atomic\"] }",
+              "      ]",
+              "    },",
+              "    \"run\": { closed: true, stop_at_first_positional: true },",
+              "    \"mod\": { closed: true },",
+              "    \"mod tidy\": { closed: true, options: [{ names: [\"-v\"] }] }",
+              "  }",
+              "}",
+              "command { \"go\" } on #golang:1.25 schema { \"go\": goSchema }"
+            ]
+        withGo body = goSchema <> body
+        lsSchema =
+          T.unlines
+            [ "command { \"ls\" } on #alpine:3.20 schema { \"ls\": {",
+              "  root: {",
+              "    closed: true,",
+              "    options: [",
+              "      { names: [\"-l\"] },",
+              "      { names: [\"-a\", \"--all\"] },",
+              "      { names: [\"-w\", \"--width\"], value: \"required\" }",
+              "    ]",
+              "  }",
+              "} }"
+            ]
+
+    it "accepts invocations the schema describes" $ do
+      accepts (withGo "v() = $ go test -v -run TestX ./...")
+      accepts (withGo "v() = $ go test ./... -v")
+      accepts (withGo "v() = $ go test --run=TestX -covermode=atomic")
+      accepts (withGo "v() = $ go mod tidy -v")
+      accepts (withGo "v() = $ go run ./cmd -anything goes")
+      accepts (withGo "v() = $ cd x && go test -v | tee log")
+
+    it "rejects an unknown option or subcommand of a closed schema" $ do
+      rejects (withGo "v() = $ go test -rn TestX") ETypeCommandOption
+      rejects (withGo "v() = $ go tset ./...") ETypeCommandOption
+      rejects (withGo "v() = $ go mod tidy -x") ETypeCommandOption
+      rejects (withGo "v() = $ echo $(go tset)") ETypeCommandOption
+
+    it "rejects a missing value, a value where none is taken, and a value not listed" $ do
+      rejects (withGo "v() = $ go test -run") ETypeCommandOption
+      rejects (withGo "v() = $ go test -v=1") ETypeCommandOption
+      rejects (withGo "v() = $ go test -covermode fast") ETypeCommandOption
+
+    it "reads the gnu style: clusters, long names and attached values" $ do
+      accepts (lsSchema <> "v() = $ ls -la --width=80 -w80 --all -w 80 dir")
+      rejects (lsSchema <> "v() = $ ls -lx") ETypeCommandOption
+      rejects (lsSchema <> "v() = $ ls --color") ETypeCommandOption
+      rejects (lsSchema <> "v() = $ ls -l --width") ETypeCommandOption
+
+    it "leaves what follows an option with stops to the program it names" $ do
+      let py = "command { \"python\" } on #python:3.13 schema { \"python\": { root: { closed: true, stop_at_first_positional: true, options: [{ names: [\"-m\"], value: \"required\", stops: true }, { names: [\"-c\"], value: \"required\", stops: true }, { names: [\"-u\"] }] } } }\n"
+      accepts (py <> "v() = $ python -u -m pytest -k smoke -x")
+      accepts (py <> "v() = $ python -c 'print(1)' -x")
+      accepts (py <> "v() = $ python script.py --anything")
+      rejects (py <> "v() = $ python -x -m pytest") ETypeCommandOption
+      rejects (py <> "v() = $ python -m") ETypeCommandOption
+
+    it "reads an abbreviated long option where the spec allows it" $ do
+      let mk = "command { \"make\" } on #gcc:16.2.0 schema { \"make\": { root: { closed: true, abbreviations: true, options: [{ names: [\"-n\", \"--dry-run\"] }, { names: [\"--debug\"], value: \"optional\" }, { names: [\"-C\", \"--directory\"], value: \"required\" }] } } }\n"
+      accepts (mk <> "v() = $ make --dry all")
+      accepts (mk <> "v() = $ make --dir build all")
+      rejects (mk <> "v() = $ make --d all") ETypeCommandOption
+      rejects (mk <> "v() = $ make --dir") ETypeCommandOption
+      rejects (withGo "v() = $ go test --ru X") ETypeCommandOption
+
+    it "reads an option whose value follows its name in the same word" $ do
+      let java = "command { \"java\" } on #eclipse-temurin:25 schema { \"java\": { root: { closed: true, style: \"single-dash\", stop_at_first_positional: true, options: [{ names: [\"-D\"], value: \"required\", prefix: true }, { names: [\"-X\", \"-XX:\"], value: \"required\", prefix: true }, { names: [\"-cp\", \"-classpath\"], value: \"required\" }, { names: [\"-jar\"], value: \"required\", stops: true }, { names: [\"-version\"] }] } } }\n"
+      accepts (java <> "v() = $ java -Xmx2g -XX:+UseG1GC -Dapp.env=prod -cp lib/* Main --anything")
+      accepts (java <> "v(p: String) = $ java -D#{p} -jar app.jar -x")
+      accepts (java <> "v() = $ java -version")
+      rejects (java <> "v() = $ java -Ymx2g Main") ETypeCommandOption
+      rejects (java <> "v() = $ java -jar") ETypeCommandOption
+
+    it "reads a two-dash name of a single-dash program as itself, and otherwise as one dash" $ do
+      let mvn = "command { \"mvn\" } on #maven:3.9 schema { \"mvn\": { root: { closed: true, style: \"single-dash\", intermixed: true, options: [{ names: [\"-am\", \"--also-make\"] }, { names: [\"-B\", \"--batch-mode\"] }, { names: [\"-q\"] }] } } }\n"
+      accepts (mvn <> "v() = $ mvn -am --also-make -B --batch-mode --q package")
+      rejects (mvn <> "v() = $ mvn --also-mak package") ETypeCommandOption
+
+    it "reads a +word as an option named with '+', before the subcommand" $ do
+      let rustup = "command { \"rustup\" } on #rust:1.98 schema { \"rustup\": { root: { closed: true, options: [{ names: [\"+\"], value: \"required\", prefix: true }] }, subcommands: { \"show\": { closed: true } } } }\n"
+      accepts (rustup <> "v() = $ rustup +nightly show")
+      rejects (rustup <> "v() = $ rustup +nightly shwo") ETypeCommandOption
+      rejects "command { \"x\" } on #alpine:3.20 schema { \"x\": { root: { options: [{ names: [\"+x\"] }] } } }\nv() = $ x" ETypeCommandSchema
+
+    it "reads a word that names no subcommand as an argument where the subcommand may be omitted" $ do
+      let grype = "command { \"grype\" } on #anchore/grype:v0.119 schema { \"grype\": { root: { closed: true, subcommand_optional: true, options: [{ names: [\"-o\", \"--output\"], value: \"required\" }] }, subcommands: { \"db\": { closed: true }, \"db update\": { closed: true } } } }\n"
+      accepts (grype <> "v() = $ grype alpine:3.20 -o json && grype db update")
+      rejects (grype <> "v() = $ grype alpine:3.20 --bogus") ETypeCommandOption
+      rejects (grype <> "v() = $ grype db updat") ETypeCommandOption
+
+    it "rejects a prefix option that takes no value" $
+      rejects "command { \"x\" } on #alpine:3.20 schema { \"x\": { root: { options: [{ names: [\"-W\"], prefix: true }] } } }\nv() = $ x" ETypeCommandSchema
+
+    it "stops at what it cannot read" $ do
+      accepts (withGo "v(n: String) = $ go test -run #{n} -v")
+      accepts (withGo "v(n: String) = $ go test #{n} -bogus")
+      accepts (withGo "v(n: String) = $ go test -run #!{n}")
+      accepts (withGo "v() = $ go test $FLAGS -bogus")
+      accepts (withGo "v() = $ go test -- -bogus")
+
+    it "checks only commands whose environment dispatch selected" $
+      accepts (withGo "v() = $[#golang:1.25] go tset")
+
+    it "advises instead of rejecting when the schema is not closed" $ do
+      let src = "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"-v\"] }] } } }\nv() = $ go -x\n"
+      advisedAt WCommandOption src >>= (`shouldBe` [2])
+
+    it "carries a schema with an imported command word" $
+      rejectsFiles
+        [ ("main.lask", "import command { \"go\" } from \"./tools.lask\"\nv() = $ go tset\n"),
+          ("tools.lask", withGo "")
+        ]
+        ETypeCommandOption
+
+    it "takes a schema from a binding in another module" $
+      acceptsFiles
+        [ ("main.lask", "import * as tools from \"./tools.lask\"\ncommand { \"go\" } on #golang:1.25 schema { \"go\": tools.s }\nv() = $ go -v\n"),
+          ("tools.lask", "s: CommandSchema = { root: { options: [{ names: [\"-v\"] }] } }\n")
+        ]
+
+    it "rejects a schema that is computed" $
+      rejects "mk(): CommandSchema = { root: {} }\ncommand { \"go\" } on #golang:1.25 schema { \"go\": mk() }\nv() = $ go" ETypeCommandSchema
+
+    it "rejects a schema for a word the declaration does not have" $
+      rejects "command { \"go\" } on #golang:1.25 schema { \"gofmt\": { root: {} } }\nv() = $ go" ETypeCommandSchema
+
+    it "rejects what the type of a schema cannot say" $ do
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { style: \"posix\" } } }\nv() = $ go" ETypeCommandSchema
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"v\"] }] } } }\nv() = $ go" ETypeCommandSchema
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"-v\"] }, { names: [\"-v\"] }] } } }\nv() = $ go" ETypeCommandSchema
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: {}, subcommands: { \"mod tidy\": {} } } }\nv() = $ go" ETypeCommandSchema
+      rejects "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { options: [{ names: [\"-v\"], values: [\"a\"] }] } } }\nv() = $ go" ETypeCommandSchema
+
+    it "needs a binding of a schema to be annotated, records having no width subtyping" $
+      rejects "s = { root: {} }\ncommand { \"go\" } on #golang:1.25 schema { \"go\": s }\nv() = $ go" ETypeMismatch
+
+    it "keeps the schema type names for the built-in aliases" $
+      rejects "type CommandSchema = String" ENameDuplicate
+
+  describe "dispatched command words (spec ch. 5)" $
+    it "records the words each declaration dispatches through, with the table they are in" $ do
+      r <- elabProgram [("main.lask", "command { \"go\" } on #golang:1.25\nv() = $ go vet\nw() = $[#golang:1.25] go vet\n")]
+      fmap (Map.toList . cpDispatched) (either (const Nothing) Just r)
+        `shouldBe` Just [(("main.lask", "v"), [("main.lask", "go")])]
+
+  describe "holes the shell parses (spec 6.6)" $ do
+    it "types a #!{e} hole as any other hole" $ do
+      accepts "n = 1\nv() = $[#local] echo #!{n}"
+      rejects "n = [1]\nv() = $[#local] echo #!{n}" ETypeBound
+
+    it "has no function raw" $
+      rejects "flags = \"-v\"\nv() = $[#local] go build #{raw(flags)}" ENameUndefined
+
+    it "keeps #!{ an ordinary piece of text outside a command" $
+      hasType "s = \"#!{x}\"" "s" "String"
+
+  describe "namespace re-export (spec 5)" $ do
+    let files main =
+          [ ("main.lask", main),
+            ("tools.lask", "export * as py from \"./py.lask\"\nexport * as go from \"./go.lask\"\n"),
+            ("py.lask", "env(--image: Environment = #python:3.12): Runnable = runnable(image)\nschema_3_12: Map<CommandSchema> = { \"python\": { root: { closed: true, options: [{ names: [\"-u\"] }] } }, \"pip\": { root: {} } }\nschema: Map<CommandSchema> = schema_3_12\ninternal hidden = 1\n"),
+            ("go.lask", "env(): Runnable = runnable(#golang:1.25)\n")
+          ]
+
+    it "reaches a member through two namespaces, keyword arguments included" $
+      acceptsFiles (files "import * as tools from \"./tools.lask\"\ncommand { \"python\" } on tools.py.env(image = #python:3.13) schema tools.py.schema\nv() = $ python -u x.py\n")
+
+    it "imports a re-exported namespace by name" $
+      acceptsFiles (files "import { py } from \"./tools.lask\"\nv() = $[py.env()] python -u x.py\n")
+
+    it "uses the namespace in the module that re-exports it" $
+      acceptsFiles
+        [ ("main.lask", "export * as py from \"./py.lask\"\ne = py.env()\n"),
+          ("py.lask", "env(): Runnable = runnable(#python:3.12)\n")
+        ]
+
+    it "checks a command against a schema reached through namespaces, ignoring the words it does not declare" $
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\ncommand { \"python\" } on tools.py.env() schema tools.py.schema\nv() = $ python -x\n") ETypeCommandOption
+
+    it "still rejects a word a written map gives that the declaration lacks" $
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\ncommand { \"python\" } on tools.py.env() schema { \"pyhton\": { root: {} } }\nv() = $ python\n") ETypeCommandSchema
+
+    it "rejects a namespace written as a value, a missing member and a non-public one" $ do
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.py\n") ENameUndefined
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.py.nope\n") ENameUndefined
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.py.hidden\n") ENameUndefined
+      rejectsFiles (files "import * as tools from \"./tools.lask\"\nv = tools.rb.env()\n") ENameUndefined
+
+  describe "the text of diagnostics (spec 4.3, 14.3)" $ do
+    it "names a written type parameter as it is written" $
+      messagesOf "f<T: orderable>(a: T, b: T) = a < b\ng = f([1], [2])"
+        >>= (`shouldSatisfy` any ("requires T to be orderable" `T.isInfixOf`))
+    it "names an inferred type parameter T, as help shows it" $
+      messagesOf "show(x) = \"#{x}\"\ny = show(null)"
+        >>= (`shouldSatisfy` all (\m -> "requires T to be" `T.isInfixOf` m && not ("%" `T.isInfixOf` m)))
+    it "writes a union in canonical form (4.2)" $
+      diagnosticsOf "x: Null | String = 1" >>= (`shouldBe` [Just "String | Null"]) . map diagExpected
+
+  describe "misc" $ do
+    it "types stdin as String" $ hasType "s = trim(stdin)" "s" "String"
+    it "rejects Array<Void> annotations" $
+      rejects "xs: Array<Void> = []" ETypeIllformed
+
+  describe "secret bindings (spec 6.10)" $ do
+    it "accepts !! on String bindings of every kind" $ do
+      accepts "a!!: String = \"s\""
+      accepts "a!! = \"s\""
+      accepts "f(x!!: String) = x"
+      accepts "f(--x!!: String = \"d\") = x"
+      accepts "f() = do { x!! = \"s\"\n  x }"
+
+    it "leaves the binding's type unchanged (no distinct secret type)" $ do
+      hasType "a!!: String = \"s\"" "a" "String"
+      hasType "f(x!!: String): String = x" "f" "Function<String, String>"
+
+    it "accepts !! on String | Null bindings of every kind (spec 6.10)" $ do
+      accepts "a!!: String | Null = null"
+      accepts "f(x!!: String | Null) = x"
+      accepts "f(--x!!: String | Null = null) = x"
+      accepts "f() = do { x!!: String | Null = find_env(\"A\")\n  x }"
+      hasType "a!!: String | Null = null" "a" "String | Null"
+
+    it "rejects !! on a union other than String | Null" $ do
+      rejects "n!!: Number | Null = null" ETypeSecretNonString
+      rejects "f(--x!!: String | Number = 1) = x" ETypeSecretNonString
+
+    it "rejects mark_secret of anything outside its bound String | Null" $ do
+      rejects "f() = mark_secret(1)" ETypeBound
+      accepts "f(): Null = mark_secret(null)"
+
+    it "rejects !! on a non-String value declaration" $
+      rejects "n!!: Number = 1" ETypeSecretNonString
+
+    it "rejects !! on a non-String inferred bind statement" $
+      rejects "f() = do { n!! = 1\n  n }" ETypeSecretNonString
+
+    it "rejects !! on non-String parameters" $ do
+      rejects "f(n!!: Number) = n" ETypeSecretNonString
+      rejects "f(--n!!: Number = 1) = n" ETypeSecretNonString
+
+    it "rejects !! on a function-typed binding" $
+      rejects "g!! = \\(x: String) -> x" ETypeSecretNonString
+    it "resolves imported declarations with types" $ do
+      r <-
+        elab
+          [ ("main.lask", "import { add } from \"./lib.lask\"\nx = add(1, 2)"),
+            ("lib.lask", "add(a: Number, b: Number): Number = a + b")
+          ]
+      case r of
+        Right _ -> pure ()
+        Left cs -> expectationFailure (show cs)
+    it "namespace member calls check keyword arguments" $ do
+      r <-
+        elab
+          [ ("main.lask", "import * as m from \"./lib.lask\"\nx = m.greet(\"a\", prefix = \"hi\")"),
+            ("lib.lask", "greet(name: String, --prefix: String = \"hello\"): String = concat(prefix, name)")
+          ]
+      case r of
+        Right _ -> pure ()
+        Left cs -> expectationFailure (show cs)
+
+    it "expands a namespace-qualified type reference (spec 4.2 QualifiedNamedType)" $ do
+      r <-
+        elab
+          [ ("main.lask", "import * as m from \"./lib.lask\"\nxs: m.Strings = [\"a\"]"),
+            ("lib.lask", "type Strings = Array<String>")
+          ]
+      case r of
+        Right decls -> case Map.lookup ("main.lask", "xs") decls of
+          Just cd -> renderType (cdType cd) `shouldBe` "Array<String>"
+          Nothing -> expectationFailure "xs not found"
+        Left cs -> expectationFailure (show cs)

@@ -1,0 +1,4 @@
+// Null and Void are not identified (4.4).
+f(): Void = log("a")
+g(): Null = f() // expect: E-TYPE-MISMATCH
+x = f() // expect: E-TYPE-ILLFORMED

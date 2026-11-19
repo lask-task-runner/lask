@@ -1,0 +1,7 @@
+// Branches of conforming types take the wider, in either order (4.3).
+names: Array<String> = ["a"]
+maybe: Array<String | Null> = [null]
+f(c: Bool) = c ? names : maybe
+g(c: Bool) = c ? maybe : names
+x: Array<String | Null> = f(true)
+y: Array<String | Null> = g(true)

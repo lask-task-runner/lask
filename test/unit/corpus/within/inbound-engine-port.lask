@@ -1,0 +1,3 @@
+access Ports = { inbound: ["127.0.0.1:8080"] }
+
+t() within Ports = $[#nginx:1.27{ publish: ["127.0.0.1::80"], network: "none" }] nginx  // expect: E-TYPE-WITHIN-EXCEEDED

@@ -1,0 +1,2 @@
+// So is a missing required key (4.3).
+r: Record<a: Number, b: Number> = { a: 1 } // expect: E-TYPE-MISMATCH

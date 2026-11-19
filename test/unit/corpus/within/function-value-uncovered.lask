@@ -1,0 +1,7 @@
+// A function stored in a value is reported only where a constraint covers
+// what reaches it (spec 10.11, Resolution): nothing covers t here.
+run_in(e: Runnable): String = $[e] true
+
+r = { go: run_in }
+
+t(): String = r.go(#alpine:3.22.2)

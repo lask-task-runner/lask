@@ -1,0 +1,2 @@
+// A type bound must not mention a type parameter (4.2).
+f<T, U: T>(x: U) = 1 // expect: E-TYPE-ILLFORMED

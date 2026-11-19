@@ -1,0 +1,2 @@
+internal type Hidden = Number
+type Shown = Number

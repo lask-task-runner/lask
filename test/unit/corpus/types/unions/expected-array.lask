@@ -1,0 +1,4 @@
+// An array literal against a union with one Array member is checked against it (4.3).
+f(): Array<Number> | Null = []
+g(--hosts: Array<String> | Null = null) = 1
+h = g(hosts = [])

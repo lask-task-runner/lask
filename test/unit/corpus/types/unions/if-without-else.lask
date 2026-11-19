@@ -1,0 +1,4 @@
+// An if without else is the join with null (6.4).
+f(c: Bool) = if (c) { 1 }
+ok: Number | Null = f(true)
+bad: Number = f(true) // expect: E-TYPE-MISMATCH

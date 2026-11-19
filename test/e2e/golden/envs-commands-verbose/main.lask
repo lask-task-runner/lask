@@ -1,0 +1,14 @@
+alpine = #alpine:3.22.2
+
+images: Map<Environment> = { a: #alpine:3.22.2, d: #debian:13 }
+
+clean(): String = $[#local] rm -rf dist
+
+build(): String = $[alpine] make build && make check
+
+pick(env: String): String = $[images[env]] make
+
+show(e: Environment): String = $[e] cat x | \
+  sort
+
+run_it(): CommandResult = run(#local, "ls")

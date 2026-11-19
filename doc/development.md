@@ -15,10 +15,20 @@ The tasks in [main.lask](../main.lask) wrap what you run day to day. `lask run -
 ```bash
 $ lask sync                              # once: pulls the Haskell image the docker environment uses
 
-$ lask run test                          # unit tests and doctests in parallel, in the Haskell image
+$ lask run test                          # every suite, in the Haskell image
 $ lask run test --env local              # the same on the host, with your own Stack
-$ lask run unittest [--env local]        # unit tests only (test/)
-$ lask run doctest [--env local]         # doctests of app/ and src/ only
+$ lask run unittest [--match Parser]     # unit tests only (test/unit): seconds, no binary, no engine
+$ lask run e2etest [--match Cli.Help]    # end-to-end tests only (test/e2e): the built binary
+$ lask run doctest                       # doctests of app/ and src/ only
+
+# one kind of test at a time (each also takes --env local)
+
+$ lask run corpustest                    # the diagnostics corpus, test/unit/corpus
+$ lask run proptest                      # the QuickCheck properties of the syntax
+$ lask run goldentest [--accept]         # the golden outputs, test/e2e/golden; --accept rewrites them
+$ lask run spectest                      # the lask blocks of doc/spec.md
+$ lask run exampletest [--offline]       # every project under example/
+$ lask run errorcodetest                 # every error and advisory code, through the binary
 
 $ lask run install                       # build and install lask into ~/.local/bin
 $ lask run install --output /usr/local/bin
@@ -31,9 +41,33 @@ Stack directly, for what the tasks do not cover:
 
 ```bash
 $ stack build                            # compile only
+$ stack test lask:lask-unit              # one suite: lask-unit or lask-e2e
 $ stack test --ta '--match "Parser"'     # the hspec specs whose description matches
 $ stack exec lask -- check               # the binary just built, without installing it
 ```
+
+### Tests
+
+Two hspec suites, and the doctests:
+
+| Where | Suite | What it tests |
+|---|---|---|
+| `test/unit` | `lask-unit` | The library, called in process: no binary, no container engine. A spec mirrors the module it tests, `test/unit/Language/Lask/Lexer/LayoutSpec.hs` for `src/Language/Lask/Lexer/Layout.hs`. |
+| `test/e2e` | `lask-e2e` | The built `lask` binary, run as a person or CI runs it. `Cli/` holds one spec per area of the command line; the rest check whole sets: every error code, every example, every spec example, the golden outputs. Some start containers; those that need an engine they cannot have use a fake one. |
+| `test/support` | both | Helpers, never specs: `Support.Harness` (finding and running the binary, throwaway projects, the fake engine), `Support.FakeVault`, `Support.SyntaxGen` (QuickCheck generators of the syntax), `Support.EmbedTwin`, `Support.Pending` (`knownBug`, a test of a known bug). |
+| `src`, `app` | doctests | The `>>>` examples in the documentation of functions. |
+
+A new test goes in `lask-unit` unless it needs the binary. Two kinds of test are files rather than code:
+
+- **`test/unit/corpus`**: programs that state their own diagnostics. A line ending in `// expect: E-A, W-B` expects those codes there, and every code reported must be expected; a file with none must check cleanly. A case is a `.lask` file, or a directory whose `main.lask` imports the files beside it. Add a case for each way a rule can be broken.
+- **`test/e2e/golden`**: a directory per command line, with its `.lask` files, `args` (one per line) and `expected` (exit code, stdout, stderr, with the project's directory written `<dir>`). For output read whole: help, the `envs` tables, the text of diagnostics. `lask run goldentest --accept` rewrites `expected` from the binary; read the diff before committing it.
+
+**Pending** means one of two things, and its message says which:
+
+- A known bug, with its reproduction. A corpus case marks it with a first line `// pending: <reason>`, a spec with `knownBug`, which still runs it. It fails once it passes, so the mark goes with the fix.
+- A test that needs the network, left pending with `LASK_TEST_OFFLINE=1`, as the macOS job runs.
+
+**Coverage** counts both suites, and with `LASK_TEST_TIX_DIR=<dir>` the runs of the binary the end-to-end tests start, each writing its own tix there; `ci-test` sets it, and `coverage-report` sums them.
 
 ### What CI runs
 

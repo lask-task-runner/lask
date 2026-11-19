@@ -1,0 +1,2 @@
+t() within { files: { ".": "ro", "dist": "rw" } } =
+  $[#alpine:3.22.2{ base_access: { ".": "ro", "src": "rw" }, network: "none" }] true  // expect: E-TYPE-WITHIN-EXCEEDED

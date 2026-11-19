@@ -1,0 +1,5 @@
+// A record is indexed by a string literal only (6.8).
+r = { a: 1 }
+key = "a"
+a = r[key] // expect: E-TYPE-ACCESS
+b = r[0] // expect: E-TYPE-ACCESS

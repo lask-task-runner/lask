@@ -1,0 +1,1 @@
+access A = { outbound: [443] }  // expect: E-TYPE-WITHIN-SPEC

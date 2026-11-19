@@ -331,6 +331,10 @@ flagCandidates :: CompleteIndex -> Text -> [Text] -> Text -> [Candidate]
 flagCandidates idx fn used pfx =
   [ Candidate (renderName pfx ("--" <> ipName p)) (ipDoc p)
   | p <- keywords,
+    -- @--help@ written alone shows the help, and never binds a
+    -- parameter named help (spec 11.2, 11.6): only the @--help@
+    -- below is offered.
+    ipName p /= "help",
     matches pfx ("--" <> ipName p)
   ]
     <> [ Candidate (T.cons '-' (ipName p)) (ipDoc p)

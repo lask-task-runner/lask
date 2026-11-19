@@ -1,0 +1,1 @@
+f() = try { 1 } catch (e) { "a" }  // expect: E-TYPE-MISMATCH

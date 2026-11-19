@@ -1,0 +1,1 @@
+f(): Number = 1(2)  // expect: E-TYPE-CALL

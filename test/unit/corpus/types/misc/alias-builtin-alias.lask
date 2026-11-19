@@ -1,0 +1,2 @@
+// Nor that of a built-in type alias (4.2, 6.9).
+type Error = String // expect: E-NAME-DUPLICATE

@@ -1,0 +1,4 @@
+// Reading an optional field yields T | Null (4.2, 6.8).
+r: Record<a?: String> = {}
+ok: String | Null = r.a
+bad: String = r.a // expect: E-TYPE-MISMATCH

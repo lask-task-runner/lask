@@ -1,0 +1,4 @@
+// Array<Number> conforms to Array<Any>; the reverse does not (4.4).
+xs: Array<Number> = [1]
+ys: Array<Any> = xs
+zs: Array<Number> = ys // expect: E-TYPE-MISMATCH

@@ -1,0 +1,3 @@
+// No type alias references itself, directly or mutually (4.2).
+type A = Array<B> // expect: E-TYPE-ILLFORMED
+type B = Array<A> // expect: E-TYPE-ILLFORMED

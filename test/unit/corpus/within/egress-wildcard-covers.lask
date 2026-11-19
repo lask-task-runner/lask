@@ -1,0 +1,3 @@
+access Hub = { outbound: ["*.github.com:443"] }
+
+ok() within Hub = $[#alpine:3.22.2{ egress: ["api.github.com:443"] }] true

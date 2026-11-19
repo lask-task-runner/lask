@@ -1,0 +1,5 @@
+// A use as the argument of an inferred declaration is a use at its type.
+f(x) = x + 1
+g(y) = f(y)
+ok: Number = g(1)
+bad: String = g(1) // expect: E-TYPE-MISMATCH

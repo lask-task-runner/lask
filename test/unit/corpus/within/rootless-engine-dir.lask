@@ -1,0 +1,3 @@
+access Contained = { runs: ["container"] }
+
+t() within Contained = $[#alpine:3.22.2{ volumes: ["/run/user/1000:/r"], network: "none" }] true  // expect: E-TYPE-WITHIN-EXCEEDED

@@ -1,0 +1,2 @@
+t(--e: Runnable = #alpine:3.22.2): String within { runs: ["container"] } = $[e] uname
+u(): String = t(e = #local)  // expect: E-TYPE-WITHIN-EXCEEDED

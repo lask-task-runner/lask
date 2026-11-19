@@ -1,0 +1,5 @@
+// A function value takes no keyword argument (7.5).
+f(a: Number, --k: Number = 1) = a + k
+g = f
+y = g(1, k = 2) // expect: E-TYPE-KEYWORD
+z: Number = g(1)

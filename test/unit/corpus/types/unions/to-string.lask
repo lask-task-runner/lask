@@ -1,0 +1,2 @@
+// to_string of String | Null is a static error (15.3).
+f(s: String | Null): String = to_string(s) // expect: E-TYPE-BOUND

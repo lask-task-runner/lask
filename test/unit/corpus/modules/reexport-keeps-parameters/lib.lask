@@ -1,0 +1,2 @@
+export { greet } from "./inner.lask"
+export { greet as hello } from "./inner.lask"

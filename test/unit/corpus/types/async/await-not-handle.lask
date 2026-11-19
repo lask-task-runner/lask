@@ -1,0 +1,2 @@
+// Anything other than a handle given to await is a type error (6.3).
+f() = await 1 // expect: E-TYPE-MISMATCH

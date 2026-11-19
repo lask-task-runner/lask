@@ -1,0 +1,3 @@
+// A bare path that is not a declared dependency (5).
+import { x } from "kit" // expect: E-MODULE-UNRESOLVED
+y = x

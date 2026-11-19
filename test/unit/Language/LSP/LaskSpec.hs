@@ -1,0 +1,682 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Language.LSP.LaskSpec (spec) where
+
+import Control.Lens ((^.))
+import Control.Monad (forM_, unless)
+import Data.Char (isDigit)
+import Data.List (nub, sort)
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import Language.LSP.Lask (completionAt, completionTriggered, documentDiagnostics, formattingEdits, hoverAt, inlayHintsIn, lexSemanticTokens, quickFixes, semanticTokens, uriPath)
+import qualified Language.LSP.Protocol.Lens as L
+import Language.LSP.Protocol.Types
+import Language.Lask (checkText)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
+import Test.Hspec
+
+-- | (line, startChar, length, type), all 0-based as in the protocol.
+type Atom = (Int, Int, Int, SemanticTokenTypes)
+
+toks :: Text -> [Atom]
+toks src = case lexSemanticTokens "test.lask" src of
+  Right ts ->
+    [ (fromIntegral l, fromIntegral c, fromIntegral len, typ)
+    | SemanticTokenAbsolute l c len typ _ <- ts
+    ]
+  Left e -> error (show e)
+
+hasAtom :: Text -> Atom -> Expectation
+hasAtom src atom = toks src `shouldSatisfy` elem atom
+
+-- | Semantic tokens including the layer elaboration contributes.
+semTokens :: FilePath -> Text -> IO [Atom]
+semTokens path src = do
+  r <- semanticTokens path src
+  case r of
+    Right ts ->
+      pure
+        [ (fromIntegral l, fromIntegral c, fromIntegral len, typ)
+        | SemanticTokenAbsolute l c len typ _ <- ts
+        ]
+    Left e -> error (show e)
+
+-- | (line, character, label) of every inlay hint in the document.
+hintsFor :: FilePath -> Text -> IO [(UInt, UInt, Text)]
+hintsFor path src = do
+  hs <- inlayHintsIn path src (Range (Position 0 0) (Position 1000 0))
+  pure
+    [ (l, c, lbl)
+    | InlayHint (Position l c) (InL lbl) _ _ _ _ _ _ <- hs
+    ]
+
+spec :: Spec
+spec = do
+  describe "document formatting (spec 11.11)" $ do
+    it "replaces the whole document with its formatted text" $
+      formattingEdits "main.lask" "a  =  1\nb = \"\233\128512\""
+        `shouldBe` [TextEdit (Range (Position 0 0) (Position 1 9)) "a = 1\nb = \"\233\128512\"\n"]
+    it "changes nothing in a formatted document, or one that does not parse" $ do
+      formattingEdits "main.lask" "a = 1\n" `shouldBe` []
+      formattingEdits "main.lask" "a = \n" `shouldBe` []
+
+  describe "document diagnostics (spec 14.2)" $ do
+    let severities src = map (\d -> (d ^. L.severity, d ^. L.code)) . fst <$> documentDiagnostics "main.lask" src
+    it "shows an advisory of a valid document as a warning" $
+      severities "f(): String = do {\n  async \"x\"\n  \"done\"\n}"
+        `shouldReturn` [(Just DiagnosticSeverity_Warning, Just (InR "W-ASYNC-UNUSED"))]
+    it "shows an error as an error" $
+      severities "x: Number = \"s\""
+        `shouldReturn` [(Just DiagnosticSeverity_Error, Just (InR "E-TYPE-MISMATCH"))]
+    it "shows nothing for a clean document" $
+      severities "a = 1" `shouldReturn` []
+    -- A position counts UTF-16 code units: a wide character is one, a
+    -- character outside the BMP two, and a tab one.
+    it "places an error after a wide character, a tab or an emoji in UTF-16 units" $ do
+      let rangeOf src = map (^. L.range) . fst <$> documentDiagnostics "main.lask" src
+      rangeOf "x = \"字字\" + zz\n" `shouldReturn` [Range (Position 0 11) (Position 0 13)]
+      rangeOf "x = \"\t\" + zz\n" `shouldReturn` [Range (Position 0 10) (Position 0 12)]
+      rangeOf "x = \"\128512\" + zz\n" `shouldReturn` [Range (Position 0 11) (Position 0 13)]
+    it "shows every independent error (spec 14.3)" $
+      map (^. L.range . L.start . L.line) . fst
+        <$> documentDiagnostics "main.lask" "a(): Number = \"s\"\nb = nope\nc(): String = 1\n"
+        `shouldReturn` [0, 1, 2]
+    it "shows an error in an imported module at the start of the document" $
+      withSystemTempDirectory "lask-lsp" $ \dir -> do
+        writeFile (dir </> "lib.lask") "export a(): Number = 1\n\n\nexport b(): Number = \"s\"\n"
+        (ds, _) <- documentDiagnostics (dir </> "main.lask") "import { a } from \"./lib.lask\"\nx: String = a()\n"
+        map (^. L.range . L.start . L.line) ds `shouldBe` [0, 1]
+
+  describe "quick fixes (spec 14.3)" $ do
+    let uri = Uri "file:///main.lask"
+        fixes src = do
+          ds <- fst <$> documentDiagnostics "main.lask" src
+          pure
+            [ (a ^. L.title, [(e ^. L.range, e ^. L.newText) | Just m <- [a ^. L.edit >>= (^. L.changes)], es <- Map.elems m, e <- es])
+            | a <- quickFixes uri src ds
+            ]
+    it "replaces a misspelt name with each suggestion" $
+      fixes "hello = 1\nhelp = 2\nmain() = helo\n"
+        `shouldReturn` [ ("Change to 'hello'", [(Range (Position 2 9) (Position 2 13), "hello")]),
+                         ("Change to 'help'", [(Range (Position 2 9) (Position 2 13), "help")])
+                       ]
+    it "offers none where the range holds more than the name" $
+      fixes "hello(--dry_run: Bool = false) = 1\nmain() = hello(dry_rnu = true)\n" `shouldReturn` []
+
+  describe "comments" $ do
+    it "emits comment tokens for line comments" $
+      -- "// hi" occupies columns 0-4 on line 0.
+      hasAtom "// hi\na = 1" (0, 0, 5, SemanticTokenTypes_Comment)
+    it "counts a token's start and length in UTF-16 units" $ do
+      hasAtom "a = '\128512' + n\n" (0, 4, 4, SemanticTokenTypes_String)
+      hasAtom "a = '\128512' + n\n" (0, 9, 1, SemanticTokenTypes_Operator)
+      hasAtom "a = '字\t' + n\n" (0, 9, 1, SemanticTokenTypes_Operator)
+    it "emits comment tokens for each line of a block comment" $ do
+      let src = "/* a\nb */\nx = 1"
+      hasAtom src (0, 0, 4, SemanticTokenTypes_Comment)
+      hasAtom src (1, 0, 4, SemanticTokenTypes_Comment)
+    it "keeps surrounding code tokens intact" $ do
+      let src = "a = 1 // trailing"
+      hasAtom src (0, 0, 1, SemanticTokenTypes_Variable)
+      hasAtom src (0, 6, 11, SemanticTokenTypes_Comment)
+
+  describe "string interpolation" $ do
+    -- s = "Hi, #{name}!"
+    let src = "s = \"Hi, #{name}!\""
+    it "highlights the interpolated expression" $
+      hasAtom src (0, 11, 4, SemanticTokenTypes_Variable)
+    it "keeps the string segments around the interpolation" $ do
+      -- Opening segment: from the quote up to the nested tokens.
+      toks src
+        `shouldSatisfy` any
+          (\(l, c, _, typ) -> l == 0 && c == 4 && typ == SemanticTokenTypes_String)
+      -- Closing segment ends at the closing quote.
+      toks src
+        `shouldSatisfy` any
+          (\(_, c, _, typ) -> c > 11 && typ == SemanticTokenTypes_String)
+    it "highlights nested expressions recursively" $
+      -- x + 1 inside the interpolation
+      hasAtom "s = \"v=#{x + 1}\"" (0, 11, 1, SemanticTokenTypes_Operator)
+
+  describe "command expressions" $ do
+    it "marks $ as a function token" $
+      -- f() = $ echo hi
+      hasAtom "f() = $ echo hi" (0, 6, 1, SemanticTokenTypes_Function)
+    it "marks stream selectors as part of the function head" $ do
+      hasAtom "f() = $* ls" (0, 6, 2, SemanticTokenTypes_Function)
+      hasAtom "f() = $2 ls" (0, 6, 2, SemanticTokenTypes_Function)
+    it "renders the command text as string segments" $
+      toks "f() = $ echo hi"
+        `shouldSatisfy` any
+          (\(_, c, _, typ) -> c > 6 && typ == SemanticTokenTypes_String)
+    it "highlights interpolation inside commands" $
+      -- f() = $ echo #{msg}
+      hasAtom "f() = $ echo #{msg}" (0, 15, 3, SemanticTokenTypes_Variable)
+    it "highlights the environment expression in commands" $
+      -- f() = $[#alpine:3.20] ls   (env head starts at col 8, length 12)
+      hasAtom "f() = $[#alpine:3.20] ls" (0, 8, 12, SemanticTokenTypes_Macro)
+    it "leaves the env brackets out of the command string" $ do
+      -- f() = $[#local] ls   (`[` at col 7, `]` at col 14)
+      let ts = toks "f() = $[#local] ls"
+      ts `shouldSatisfy` notElem (0, 7, 1, SemanticTokenTypes_String)
+      ts `shouldSatisfy` all (\(_, c, len, _) -> c > 14 || c + len <= 14)
+      hasAtom "f() = $[#local] ls" (0, 15, 3, SemanticTokenTypes_String)
+    it "leaves the braces of a braced command out of the command string" $ do
+      -- f() = $[#local] { ls }   (`{` at col 16, `}` at col 21)
+      let ts = toks "f() = $[#local] { ls }"
+      ts `shouldSatisfy` all (\(_, c, len, _) -> c + len <= 16 || c > 16)
+      ts `shouldSatisfy` all (\(_, c, len, _) -> c + len <= 21)
+      hasAtom "f() = $[#local] { ls }" (0, 17, 4, SemanticTokenTypes_String)
+    it "leaves the braces of a multi-line braced command out of the command string" $ do
+      let ts = toks "f() = ${\n  ls\n}"
+      ts `shouldSatisfy` all (\(l, c, len, _) -> not (l == 0 && c <= 7 && 7 < c + len))
+      ts `shouldSatisfy` all (\(l, c, _, _) -> not (l == 2 && c == 0))
+
+  describe "command words (spec 10.9)" $ do
+    let src = "command { \"go\" } on #golang:1.25\nf() = $ go test ./...\n"
+
+    it "marks a dispatching command word as a reference, not string text" $ do
+      ts <- semTokens "test.lask" src
+      -- line 1, column 8: the `go` that carries the environment
+      ts `shouldSatisfy` elem (1, 8, 2, SemanticTokenTypes_Function)
+
+    it "leaves the rest of the command string as string text" $ do
+      ts <- semTokens "test.lask" src
+      ts `shouldSatisfy` any (\(l, c, _, typ) -> l == 1 && c >= 10 && typ == SemanticTokenTypes_String)
+
+    it "marks nothing when no word carries the environment" $ do
+      ts <- semTokens "test.lask" "f() = $[#local] go test\n"
+      let inCommand = [t | t@(l, c, _, typ) <- ts, l == 0, c > 15, typ == SemanticTokenTypes_Function]
+      inCommand `shouldBe` []
+
+  describe "inlay hints (spec 10.9)" $ do
+    it "shows the environment dispatch derived, in the notation of the source" $ do
+      hs <- hintsFor "test.lask" "command { \"go\" } on #golang:1.25\nf() = $ go test ./...\n"
+      -- reads as `$[#golang:1.25] go test ./...`
+      hs `shouldBe` [(1, 7, "[#golang:1.25]")]
+
+    it "places the bracket after a stream selector" $ do
+      hs <- hintsFor "test.lask" "command { \"go\" } on #golang:1.25\nf() = $* go test\n"
+      hs `shouldBe` [(1, 8, "[#golang:1.25]")]
+
+    it "shows nothing where the expression carries an environment" $ do
+      -- Each of these says where it runs; a second bracket in front of
+      -- the first would only be noise.
+      byLiteral <- hintsFor "test.lask" "f() = $[#local] ls\n"
+      byLiteral `shouldBe` []
+      byBinding <- hintsFor "test.lask" "e = #golang:1.25\nf() = $[e] go test\n"
+      byBinding `shouldBe` []
+      byExpression <-
+        hintsFor
+          "test.lask"
+          "es: Map<Environment> = {\"a\": #local}\nf(k: String) = $[es[k]] ls\n"
+      byExpression `shouldBe` []
+
+    it "anchors on the $ of a command continued across lines" $ do
+      hs <-
+        hintsFor
+          "test.lask"
+          ( "command { \"npm\" } on #node:20\n"
+              <> "f(u: String) = $ cd web && npm ci && \\\n"
+              <> "  VITE_API_URL=\"#{u}\" \\\n"
+              <> "  npm run build\n"
+          )
+      hs `shouldBe` [(1, 16, "[#node:20]")]
+
+  describe "plain tokens" $ do
+    it "still maps keywords, types, numbers" $ do
+      let src = "add(x: Number): Number = x + 1"
+      hasAtom src (0, 7, 6, SemanticTokenTypes_Type)
+      hasAtom src (0, 29, 1, SemanticTokenTypes_Number)
+
+  describe "visibility markers" $ do
+    it "marks `internal` on a declaration as a keyword" $
+      hasAtom "internal x = 1" (0, 0, 8, SemanticTokenTypes_Keyword)
+    it "marks `export` on a declaration as a keyword" $
+      hasAtom "export f() = 1" (0, 0, 6, SemanticTokenTypes_Keyword)
+    it "marks `export ... from` as a keyword" $
+      hasAtom "export { a } from \"./lib.lask\"" (0, 0, 6, SemanticTokenTypes_Keyword)
+    it "marks a marker after another declaration" $
+      hasAtom "a = 1\ninternal b = 2" (1, 0, 8, SemanticTokenTypes_Keyword)
+
+  -- `on` is a contextual keyword (spec ch. 5): a keyword after the
+  -- braces of a command declaration, an identifier anywhere else.
+  describe "the contextual keyword `on`" $ do
+    it "marks `on` in a command declaration as a keyword" $
+      hasAtom "command { \"go\" } on #golang:1.25" (0, 17, 2, SemanticTokenTypes_Keyword)
+    it "marks it after several words and in the export form" $ do
+      hasAtom "command { \"go\", \"gofmt\" } on e" (0, 26, 2, SemanticTokenTypes_Keyword)
+      hasAtom "export command { \"go\" } on e" (0, 24, 2, SemanticTokenTypes_Keyword)
+    it "leaves `on` an identifier elsewhere" $ do
+      hasAtom "on = 1" (0, 0, 2, SemanticTokenTypes_Variable)
+      hasAtom "f(on: Number) = on" (0, 16, 2, SemanticTokenTypes_Variable)
+    it "marks `command` in an import as a keyword" $
+      hasAtom "import command { \"go\" } from \"./tools.lask\"" (0, 7, 7, SemanticTokenTypes_Keyword)
+
+  -- `within` is a contextual keyword (spec 3.3): a keyword before the
+  -- brace of an access constraint, an identifier anywhere else.
+  describe "the contextual keyword `within`" $ do
+    it "marks a module constraint and a function's as keywords" $ do
+      hasAtom "within { volumes: false }" (0, 0, 6, SemanticTokenTypes_Keyword)
+      hasAtom "f(): String within { outbound: false } = \"x\"" (0, 12, 6, SemanticTokenTypes_Keyword)
+    it "marks `within` before a name, and `access` before the name it declares" $ do
+      hasAtom "within Offline" (0, 0, 6, SemanticTokenTypes_Keyword)
+      hasAtom "f() within m.Offline = 1" (0, 4, 6, SemanticTokenTypes_Keyword)
+      hasAtom "access Offline = { runs: false }" (0, 0, 6, SemanticTokenTypes_Keyword)
+      hasAtom "access = 1" (0, 0, 6, SemanticTokenTypes_Variable)
+    it "leaves `within` an identifier elsewhere" $ do
+      hasAtom "within = 1" (0, 0, 6, SemanticTokenTypes_Variable)
+      hasAtom "f(within: Number) = within" (0, 20, 6, SemanticTokenTypes_Variable)
+
+  describe "command schemas (spec ch. 5)" $ do
+    let decl =
+          "command { \"go\" } on #golang:1.25 schema { \"go\": { root: { closed: true, style: \"single-dash\", description: \"the Go tool\" }, \
+          \subcommands: { \"test\": { closed: true, intermixed: true, description: \"test packages\", options: [\
+          \{ names: [\"-v\"], description: \"verbose output\" }, \
+          \{ names: [\"-covermode\"], value: \"required\", values: [\"set\", \"count\"] }] }, \
+          \\"mod\": {} } } }\n"
+        at line = do
+          let src = decl <> line <> "\n"
+          labels "test.lask" src 1 (fromIntegral (T.length line))
+        hoverOn line word = do
+          let src = decl <> line <> "\n"
+              c = T.length (fst (T.breakOn word line))
+          h <- hoverAt "test.lask" src (Position 1 (fromIntegral c))
+          pure $ case h of
+            Just (Hover (InL (MarkupContent _ t)) _) -> Just t
+            _ -> Nothing
+
+    it "offers the subcommands after the command word" $
+      at "v() = $ go " >>= (`shouldMatchList` ["test", "mod"])
+
+    it "offers the options of the subcommand reached" $
+      at "v() = $ go test -" >>= (`shouldMatchList` ["-v", "-covermode"])
+
+    it "offers the values of an option awaiting one" $ do
+      at "v() = $ go test -covermode " >>= (`shouldMatchList` ["set", "count"])
+      at "v() = $ go test -covermode=" >>= (`shouldMatchList` ["set", "count"])
+
+    it "replaces the word being written" $ do
+      let src = decl <> "v() = $ go test -co\n"
+      items <- completionAt "test.lask" src (Position 1 19)
+      [r | i <- items, i ^. L.label == "-covermode", Just (InL (TextEdit r _)) <- [i ^. L.textEdit]]
+        `shouldBe` [Range (Position 1 16) (Position 1 19)]
+
+    it "offers the subcommands when a space is typed after the command word" $ do
+      let src = decl <> "v() = $ go \n"
+      items <- completionTriggered (Just " ") "test.lask" src (Position 1 11)
+      map (^. L.label) items `shouldMatchList` ["test", "mod"]
+
+    it "offers nothing when a space is typed outside a command string" $ do
+      let src = decl <> "v() = 1 \n"
+      completionTriggered (Just " ") "test.lask" src (Position 1 8) >>= (`shouldBe` [])
+
+    it "leaves an explicit environment to the language's completion" $
+      at "v() = $[#golang:1.25] go test -" >>= (`shouldSatisfy` notElem "-v")
+
+    it "describes an option, a subcommand and the command on hover" $ do
+      hoverOn "v() = $ go test -v ./..." "-v" >>= (`shouldSatisfy` maybe False (T.isInfixOf "verbose output"))
+      hoverOn "v() = $ go test -v ./..." "test" >>= (`shouldSatisfy` maybe False (T.isInfixOf "test packages"))
+      hoverOn "v() = $ go test -v ./..." "go" >>= (`shouldSatisfy` maybe False (T.isInfixOf "the Go tool"))
+
+    it "marks `schema` in a command declaration as a keyword" $ do
+      hasAtom "command { \"go\" } on #golang:1.25 schema s" (0, 33, 6, SemanticTokenTypes_Keyword)
+      hasAtom "command { \"go\" } on #golang:1.25{memory: \"1g\"} schema s" (0, 47, 6, SemanticTokenTypes_Keyword)
+      hasAtom "command { \"go\" } on schema" (0, 20, 6, SemanticTokenTypes_Variable)
+      hasAtom "schema = 1" (0, 0, 6, SemanticTokenTypes_Variable)
+
+  describe "hover" $ do
+    it "reads a position after an emoji in UTF-16 units" $ do
+      let emojiSrc = "inc(x: Number): Number = x + 1\ny = [\"\128512\", inc(2)]\n"
+      h <- hoverAt "test.lask" emojiSrc (Position 1 11) -- `inc`, after the two units of 😀
+      fmap (^. L.range) h `shouldBe` Just (Just (Range (Position 1 11) (Position 1 14)))
+    let src =
+          "// Adds one.\n\
+          \// Second line.\n\
+          \inc(x: Number): Number = x + 1\n\
+          \y = inc(2)\n"
+        hoverText l c = do
+          h <- hoverAt "test.lask" src (Position l c)
+          pure $ case h of
+            Just (Hover (InL (MarkupContent _ t)) _) -> Just t
+            _ -> Nothing
+    it "shows the type of a referenced function" $ do
+      t <- hoverText 3 4 -- `inc` in `y = inc(2)`
+      t `shouldSatisfy` maybe False (T.isInfixOf "inc: Function<Number, Number>")
+    it "shows the comment block above the declaration" $ do
+      t <- hoverText 3 4
+      t `shouldSatisfy` maybe False (T.isInfixOf "Adds one.\nSecond line.")
+    it "shows type and docs on the declaration name itself" $ do
+      t <- hoverText 2 0 -- `inc` at its definition
+      t `shouldSatisfy` maybe False (T.isInfixOf "inc: Function<Number, Number>")
+      t `shouldSatisfy` maybe False (T.isInfixOf "Adds one.")
+    it "shows the type of local parameter references" $ do
+      t <- hoverText 2 25 -- trailing `x` in the body
+      t `shouldSatisfy` maybe False (T.isInfixOf "x: Number")
+    it "shows the documentation of a builtin" $ do
+      h <- hoverAt "test.lask" "f(xs: Array<Number>) = map(xs, \\(x: Number) -> x + 1)\n" (Position 0 24)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldSatisfy` maybe False (T.isInfixOf "map<T, U>: Function<Array<T>, Function<T, U>, Array<U>>")
+      t `shouldSatisfy` maybe False (T.isInfixOf "`map(xs, f)` applies `f`")
+      t `shouldSatisfy` maybe False (T.isInfixOf "spec 15.4")
+    it "shows the bound of a builtin's type parameter (spec 4.2)" $ do
+      h <- hoverAt "test.lask" "f(xs: Array<Number>) = sort(xs)\n" (Position 0 24)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldSatisfy` maybe False (T.isInfixOf "sort<T: orderable>: Function<Array<T>, Array<T>>")
+    it "shows the bounds of a declaration's type parameters" $ do
+      h <- hoverAt "test.lask" "largest<T: orderable>(xs: Array<T>): T = xs[0]\ny = largest([1])\n" (Position 1 5)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldSatisfy` maybe False (T.isInfixOf "largest<T: orderable>")
+    it "does not take a local shadowing a builtin for the builtin" $ do
+      h <- hoverAt "test.lask" "f(size: Number): Number = size\n" (Position 0 26)
+      let t = case h of
+            Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+            _ -> Nothing
+      t `shouldBe` Just "```lask\nsize: Number\n```"
+    describe "a word sharing a top-level declaration's name" $ do
+      let shadowSrc = "a() = 123\n\nb() = do {\n  c = { a: 1 }\n  c.a\n}\n\nexport d = 1\n"
+          shadowHover l c = do
+            h <- hoverAt "test.lask" shadowSrc (Position l c)
+            pure $ case h of
+              Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+              _ -> Nothing
+      it "shows the field's type on a field access" $
+        shadowHover 4 4 >>= (`shouldBe` Just "```lask\na: Number\n```")
+      it "is not the declaration on an object literal key" $
+        shadowHover 3 8 >>= (`shouldBe` Nothing)
+      it "still shows the declaration after `export`" $
+        shadowHover 7 7 >>= (`shouldSatisfy` maybe False (T.isInfixOf "d: Number"))
+    it "returns nothing on blank positions" $ do
+      t <- hoverText 3 1 -- whitespace after `y`
+      t `shouldBe` Nothing
+    it "shows types of imported symbols with their docs" $
+      withSystemTempDirectory "lask-hover" $ \dir -> do
+        writeFile (dir </> "lib.lask") "// Doubles a number.\ndouble(n: Number): Number = n * 2\n"
+        let docSrc = "import { double } from \"./lib.lask\"\nf() = double(3)\n"
+        h <- hoverAt (dir </> "main.lask") docSrc (Position 1 6) -- `double` reference
+        let t = case h of
+              Just (Hover (InL (MarkupContent _ x)) _) -> Just x
+              _ -> Nothing
+        t `shouldSatisfy` maybe False (T.isInfixOf "double: Function<Number, Number>")
+        t `shouldSatisfy` maybe False (T.isInfixOf "Doubles a number.")
+
+  describe "document paths" $ do
+    it "strips the file:// scheme from document URIs" $
+      uriPath (Uri "file:///tmp/proj/main.lask") `shouldBe` "/tmp/proj/main.lask"
+    it "resolves imports relative to the document's directory" $
+      withSystemTempDirectory "lask-lsp" $ \dir -> do
+        writeFile (dir </> "a.lask") "a = 1\n"
+        let docUri = Uri ("file://" <> T.pack (dir </> "main.lask"))
+        ds <- checkText (uriPath docUri) "import { a } from \"./a.lask\"\nx = a"
+        ds `shouldBe` []
+
+  describe "completion" $ do
+    it "offers the parameters of the enclosing function" $ do
+      -- Cursor on `a` in the body of `add`.
+      ls <- labels "test.lask" "add(a: Number, b: Number) = a + b" 0 28
+      ls `shouldSatisfy` elem "a"
+      ls `shouldSatisfy` elem "b"
+    it "does not offer parameters of other declarations" $ do
+      ls <- labels "test.lask" "f(only: Number) = 1\ng() = 2" 1 6
+      ls `shouldSatisfy` notElem "only"
+    it "offers do-block bindings made before the cursor" $ do
+      let src = "f() = do {\n  x = 1\n  y = 2\n}\n"
+      ls <- labels "test.lask" src 2 6
+      ls `shouldSatisfy` elem "x"
+      ls `shouldSatisfy` notElem "y"
+    it "offers builtins with their type as detail" $ do
+      items <- completionAt "test.lask" "x = to" (Position 0 6)
+      map (^. L.label) items `shouldSatisfy` elem "to_lower"
+      [i ^. L.detail | i <- items, i ^. L.label == "to_lower"]
+        `shouldBe` [Just "Function<String, String>"]
+    it "leaves narrowing to the client" $ do
+      -- The client matches case-insensitively and fuzzily, so a
+      -- candidate must not be dropped just because the typed word is
+      -- not a literal prefix of it.
+      ls <- labels "test.lask" "x = cA" 0 6
+      ls `shouldSatisfy` elem "concat_array"
+    it "offers reserved words" $ do
+      ls <- labels "test.lask" "im" 0 2
+      ls `shouldSatisfy` elem "import"
+    it "offers the visibility markers" $ do
+      ls <- labels "test.lask" "e" 0 1
+      ls `shouldSatisfy` elem "export"
+      ls `shouldSatisfy` elem "internal"
+    it "ranks module top-level names above builtins and reserved words" $ do
+      items <- completionAt "test.lask" "inc(x: Number) = x + 1\ny = i" (Position 1 5)
+      let sortTextOf n = [i ^. L.sortText | i <- items, i ^. L.label == n]
+      sortTextOf "inc" `shouldBe` [Just "2-inc"]
+      sortTextOf "import" `shouldBe` [Just "6-import"]
+    it "offers keyword parameters of the call being written" $ do
+      let src = "greet(--name: String = \"World\") = name\ny = greet()"
+      items <- completionAt "test.lask" src (Position 1 10)
+      [i ^. L.insertText | i <- items, i ^. L.label == "name"]
+        `shouldBe` [Just "name = "]
+    it "offers the public members of a namespace after a dot" $
+      withSystemTempDirectory "lask-completion" $ \dir -> do
+        writeFile (dir </> "lib.lask") "double(n: Number): Number = n * 2\nhidden = 1\n"
+        let src = "import * as m from \"./lib.lask\"\nf() = m."
+        ls <- labels (dir </> "main.lask") src 1 8
+        ls `shouldMatchList` ["double", "hidden"]
+    -- A re-exported name is declared in another module, and its keyword
+    -- parameters come from there (spec 5).
+    it "offers keyword parameters of a re-exported function called through a namespace" $
+      withSystemTempDirectory "lask-completion" $ \dir -> do
+        writeFile (dir </> "impl.lask") "greet(--name: String = \"World\") = name\n"
+        writeFile (dir </> "lib.lask") "export { greet } from \"./impl.lask\"\n"
+        let src = "import * as m from \"./lib.lask\"\ny = m.greet()"
+        ls <- labels (dir </> "main.lask") src 1 12
+        ls `shouldSatisfy` elem "name"
+    it "still offers builtins and reserved words when the buffer does not parse" $ do
+      ls <- labels "test.lask" "y = }\nz = to" 1 6
+      ls `shouldSatisfy` elem "to_json"
+
+  describe "completion resilience" $ do
+    it "offers top-level names while a new declaration is being named" $ do
+      -- The name being typed is the whole line, so nothing parses.
+      ls <- labels "test.lask" "inc(x: Number) = x + 1\ni" 1 1
+      ls `shouldSatisfy` elem "inc"
+    it "offers top-level names when another declaration is broken" $ do
+      ls <- labels "test.lask" "inc(x: Number) = x + 1\nbroken(\ny = i" 2 5
+      ls `shouldSatisfy` elem "inc"
+    it "offers top-level names inside an unclosed block" $ do
+      ls <- labels "test.lask" "f() = do {\n  x = 1\ngg = g" 2 6
+      ls `shouldSatisfy` elem "gg"
+    it "offers names bound by an import when the buffer does not parse" $ do
+      let src = "import * as m from \"./x.lask\"\nbroken(\ny = m"
+      ls <- labels "test.lask" src 2 5
+      ls `shouldSatisfy` elem "m"
+    it "offers names bound by an export-from when the buffer does not parse" $ do
+      let src = "export { a } from \"./x.lask\"\nbroken(\ny = a"
+      ls <- labels "test.lask" src 2 5
+      ls `shouldSatisfy` elem "a"
+    it "offers names declared with a visibility marker when the buffer does not parse" $ do
+      let src = "internal inc(x: Number) = x + 1\nbroken(\ny = i"
+      ls <- labels "test.lask" src 2 5
+      ls `shouldSatisfy` elem "inc"
+    it "never offers the healing placeholder" $ do
+      ls <- labels "test.lask" "" 0 0
+      ls `shouldSatisfy` notElem "_"
+
+  describe "completion after a dot" $ do
+    it "offers the fields of a record" $ do
+      items <- completionAt "test.lask" "a = {x: 2, y: \"s\"}\nb = a." (Position 1 6)
+      map (^. L.label) items `shouldMatchList` ["x", "y"]
+      [i ^. L.detail | i <- items, i ^. L.label == "y"] `shouldBe` [Just "String"]
+    it "offers the fields of a command result" $ do
+      let src = "f() = do {\n  r = $*[#local] echo hi\n  r.\n}"
+      ls <- labels "test.lask" src 2 4
+      ls `shouldMatchList` ["code", "stderr", "stdout"]
+    it "offers nothing for a receiver it cannot resolve" $ do
+      ls <- labels "test.lask" "b = zzz." 0 8
+      ls `shouldBe` []
+    it "offers nothing for a chained receiver" $ do
+      ls <- labels "test.lask" "a = {x: {y: 1}}\nb = a.x." 1 8
+      ls `shouldBe` []
+
+  describe "completion edge cases" $ do
+    it "offers builtins in an empty document" $ do
+      ls <- labels "test.lask" "" 0 0
+      ls `shouldSatisfy` elem "to_lower"
+    it "handles a column past the end of the line" $ do
+      ls <- labels "test.lask" "y = 1\nz = " 1 99
+      ls `shouldSatisfy` elem "to_lower"
+    it "handles CRLF line endings" $ do
+      ls <- labels "test.lask" "inc(x: Number) = x + 1\r\ny = i" 1 5
+      ls `shouldSatisfy` elem "inc"
+    it "offers locals inside a command interpolation" $ do
+      ls <- labels "test.lask" "greet(name: String) = $[#local] echo #{na}" 0 41
+      ls `shouldSatisfy` elem "name"
+
+  describe "completion invariants" $
+    forM_ corpora $ \(name, src, _) ->
+      it ("hold at every position of " <> name) $
+        forM_ (positions src) $ \(l, c) -> do
+          items <- completionAt "test.lask" src (Position l c)
+          let ls = map (^. L.label) items
+              caseLabel = name <> " at " <> show (l, c) <> ": "
+          -- Comparing the whole list forces the result, so a crash in
+          -- the analysis surfaces at the position that caused it.
+          assert (caseLabel <> "duplicate labels in " <> show ls) (nub ls == ls)
+          forM_ items $ \i ->
+            assert
+              (caseLabel <> "bad sortText " <> show (i ^. L.sortText) <> " on " <> show (i ^. L.label))
+              (sortTextOk i)
+
+  describe "completion while typing" $
+    forM_ corpora $ \(name, src, names) -> do
+      it ("offers every top-level name of " <> name <> " from a fresh line") $
+        forM_ names $ \n ->
+          forM_ [1 .. T.length n] $ \k -> do
+            let typed = T.take k n
+                src' = src <> "\nscratch = " <> typed
+                l = fromIntegral (length (T.splitOn "\n" src') - 1)
+                c = fromIntegral (10 + k)
+            ls <- labels "test.lask" src' l c
+            assert
+              (name <> ": " <> show n <> " missing after typing " <> show typed)
+              (n `elem` ls)
+      it ("answers independently of the typed prefix in " <> name) $ do
+        -- The client reuses one answer for the rest of the word, so
+        -- the answer must not change as the word grows.
+        let scratch typed = src <> "\nscratch = " <> typed
+            posOf typed =
+              ( fromIntegral (length (T.splitOn "\n" (scratch typed)) - 1),
+                fromIntegral (10 + T.length typed)
+              )
+        base <- uncurry (labels "test.lask" (scratch "")) (posOf "")
+        forM_ names $ \n ->
+          forM_ [1 .. T.length n] $ \k -> do
+            let typed = T.take k n
+            ls <- uncurry (labels "test.lask" (scratch typed)) (posOf typed)
+            assert
+              (name <> ": candidates changed after typing " <> show typed)
+              (sort ls == sort base)
+      it ("survives every truncation of " <> name) $
+        forM_ [0, 3 .. T.length src] $ \k -> do
+          let typed = T.take k src
+              typedLines = T.splitOn "\n" typed
+              l = fromIntegral (length typedLines - 1)
+              c = fromIntegral (T.length (lastLine typedLines))
+          ls <- labels "test.lask" typed l c
+          assert
+            (name <> " truncated to " <> show k <> ": duplicate labels in " <> show ls)
+            (nub ls == ls)
+
+  describe "completion on the repository's own sources" $
+    forM_ realSources $ \(file, name) ->
+      it ("offers " <> show name <> " while typing in " <> file) $ do
+        src <- TIO.readFile file
+        forM_ [1 .. T.length name] $ \k -> do
+          let typed = T.take k name
+              src' = src <> "\nscratch = " <> typed
+              l = fromIntegral (length (T.splitOn "\n" src') - 1)
+              c = fromIntegral (10 + k)
+          ls <- labels file src' l c
+          assert
+            (file <> ": " <> show name <> " missing after typing " <> show typed)
+            (name `elem` ls)
+
+-- | Real sources from the repository, each with a name it declares.
+-- The dependencies example does not resolve its import unless the
+-- dependency has been fetched, which is exactly the degraded state to
+-- cover.
+realSources :: [(FilePath, Text)]
+realSources =
+  [ ("main.lask", "doctest"),
+    ("example/01-projects/01-hello-world/main.lask", "cowsay_hello"),
+    ("example/02-language/09-dependencies/main.lask", "status")
+  ]
+
+-- | Sources exercising the states a buffer passes through while it is
+-- being edited. Each carries the top-level names it defines.
+corpora :: [(String, Text, [Text])]
+corpora =
+  [ ( "a valid module",
+      "inc(x: Number): Number = x + 1\ntotal = inc(1)\n",
+      ["inc", "total"]
+    ),
+    ( "a do block",
+      "run() = do {\n  a = 1\n  b = a + 1\n  b\n}\n",
+      ["run"]
+    ),
+    ( "a module with a syntax error",
+      "inc(x: Number) = x + 1\nbroken(\ntotal = 2\n",
+      ["inc", "total"]
+    ),
+    ( "an unclosed block",
+      "inc(x: Number) = x + 1\nrun() = do {\n  a = 1\n",
+      ["inc", "run"]
+    ),
+    ( "CRLF line endings",
+      "inc(x: Number) = x + 1\r\ntotal = inc(1)\r\n",
+      ["inc", "total"]
+    ),
+    ( "Japanese comments and strings",
+      "// 日本語のコメント\ngreet() = \"こんにちは\"\n",
+      ["greet"]
+    ),
+    ( "an unresolved import",
+      "import * as m from \"./missing.lask\"\ninc(x: Number) = x + 1\n",
+      ["inc"]
+    )
+  ]
+
+-- | Every cursor position in a source, including one past each line.
+positions :: Text -> [(UInt, UInt)]
+positions src =
+  [ (fromIntegral l, fromIntegral c)
+  | (l, line) <- zip [0 :: Int ..] (T.splitOn "\n" src),
+    c <- [0 .. T.length line]
+  ]
+
+-- | Sort text is always @\<rank\>-\<label\>@, which is what makes the
+-- client show the candidates in resolution order.
+sortTextOk :: CompletionItem -> Bool
+sortTextOk i = case i ^. L.sortText of
+  Nothing -> False
+  Just s ->
+    let (rank, rest) = T.breakOn "-" s
+     in not (T.null rank) && T.all isDigit rank && rest == "-" <> (i ^. L.label)
+
+lastLine :: [Text] -> Text
+lastLine ts = case reverse ts of
+  (x : _) -> x
+  [] -> ""
+
+-- | An assertion that names the failing case, so a sweep reports the
+-- position that broke rather than just which check it was.
+assert :: String -> Bool -> Expectation
+assert caseLabel ok = unless ok (expectationFailure caseLabel)
+
+labels :: FilePath -> Text -> UInt -> UInt -> IO [Text]
+labels path src l c = map (^. L.label) <$> completionAt path src (Position l c)

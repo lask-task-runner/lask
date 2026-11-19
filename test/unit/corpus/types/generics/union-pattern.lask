@@ -1,0 +1,5 @@
+// For Function<T | Null, T, T>, a String | Null argument binds T to String (4.4).
+f<T>(a: T | Null, b: T): T = b
+s: String | Null = null
+ok: String = f(s, "a")
+bad: Number = f(s, "a") // expect: E-TYPE-MISMATCH

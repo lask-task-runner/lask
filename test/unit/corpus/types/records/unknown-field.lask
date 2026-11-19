@@ -1,0 +1,4 @@
+// An unknown field (6.8).
+r = { a: 1 }
+k = r.b // expect: E-TYPE-ACCESS
+l = r["b"] // expect: E-TYPE-ACCESS

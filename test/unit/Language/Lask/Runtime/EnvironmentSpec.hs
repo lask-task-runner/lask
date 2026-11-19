@@ -1,0 +1,603 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Language.Lask.Runtime.EnvironmentSpec (spec) where
+
+import Data.Either (isLeft, isRight)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (listToMaybe)
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Vector as V
+import Language.Lask.Builtins.Impl (FileOp (..))
+import Language.Lask.ErrorCode
+import Language.Lask.Obs.CommandLog
+import Language.Lask.Runtime.Container
+import Language.Lask.Runtime.Environment
+import Language.Lask.Runtime.Image (ImagePins, Recipe (..), recipeTag, unlockedPins)
+import Language.Lask.Runtime.Secrets (registerSecret, resetSecretRegistryForTests)
+import Language.Lask.Runtime.Value
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, cancel)
+import Language.Lask.Runtime.ProcessStop (stopProcessTree)
+import System.Directory (canonicalizePath, createDirectoryIfMissing, createDirectoryLink, doesFileExist)
+import System.Exit (ExitCode (..))
+import System.FilePath ((</>))
+import System.Process (createProcess, getPid, proc, readProcessWithExitCode)
+import System.IO.Temp (withSystemTempDirectory)
+import Test.Hspec
+
+-- | These runners run on the host, where no image is involved.
+noPins :: ImagePins
+noPins = unlockedPins Map.empty
+
+-- | The engine the tests that run a command use: none of them reaches
+-- it, since they run on #local.
+docker :: ContainerBackend
+docker = cliBackend Docker
+
+-- | The arguments of a container run of a command string, as the
+-- command runner makes it.
+dockerShellArgs :: FilePath -> Text -> Text -> Map.Map Text Value -> Bool -> Text -> [String]
+dockerShellArgs baseDir name image opts wantStdin cmd =
+  runArgs Docker (RunSpec baseDir (Just name) image opts wantStdin False "/bin/sh" ["-c", cmd] (defaultBaseMounts baseDir))
+
+dockerArgs :: FilePath -> Text -> Text -> Map.Map Text Value -> Text -> [String]
+dockerArgs baseDir name image opts = dockerShellArgs baseDir name image opts False
+
+dockerClientEnv :: Map.Map Text Value -> [(String, String)]
+dockerClientEnv = clientEnv Docker
+
+env :: Text -> [(Text, Value)] -> EnvValue
+env k ps = EnvValue k (Map.fromList ps)
+
+-- | A successful operation returning Void. It cannot be compared with
+-- '==': Void is not a comparable type (spec 6.2), so 'Eq' 'Value'
+-- reports even two Voids unequal.
+returnsVoid :: Either LaskFailure Value -> Expectation
+returnsVoid r = case r of
+  Right VVoid -> pure ()
+  other -> expectationFailure ("expected Void, got " <> show other)
+
+failsWithFs :: Either LaskFailure Value -> Expectation
+failsWithFs r = case r of
+  Left lf -> lfCode lf `shouldBe` Just EIoFs
+  Right v -> expectationFailure ("expected E-IO-FS, got " <> show v)
+
+-- | Whether a process exists, as @kill -0@ answers.
+isAlive :: Int -> IO Bool
+isAlive pid = do
+  (code, _, _) <- readProcessWithExitCode "kill" ["-0", show pid] ""
+  pure (code == ExitSuccess)
+
+-- | Wait until a file lists the given number of pids, and read them.
+waitForPids :: FilePath -> Int -> IO [Int]
+waitForPids path n = go (100 :: Int)
+  where
+    go 0 = fail ("no pids in " <> path)
+    go k = do
+      present <- doesFileExist path
+      pids <- if present then map read . lines <$> readFile path else pure []
+      if length pids >= n
+        then pure pids
+        else threadDelay 50000 >> go (k - 1)
+
+spec :: Spec
+spec = do
+  describe "environment resolution (spec 10.4)" $ do
+    it "resolves local" $
+      resolveEnv (env "local" []) `shouldBe` Right ResolvedLocal
+    it "resolves a registry reference" $
+      resolveEnv (env "docker" [("image", VString "alpine:3.20")])
+        `shouldBe` Right (ResolvedDocker "alpine:3.20" Map.empty)
+    it "resolves a recipe, defaulting the context to the Dockerfile's directory" $
+      resolveEnv (env "docker" [("dockerfile", VString "infra/Dockerfile")])
+        `shouldBe` Right (ResolvedRecipe (Recipe "infra/Dockerfile" "infra" [] Nothing Nothing) Map.empty)
+    it "keeps an explicit context" $
+      resolveEnv (env "docker" [("dockerfile", VString "infra/Dockerfile"), ("context", VString ".")])
+        `shouldBe` Right (ResolvedRecipe (Recipe "infra/Dockerfile" "." [] Nothing Nothing) Map.empty)
+    it "carries the build arguments and the platform into the recipe, and runs on that platform" $
+      resolveEnv
+        ( env
+            "docker"
+            [ ("dockerfile", VString "infra/Dockerfile"),
+              ("build_args", VMap (Map.fromList [("V", VString "1")])),
+              ("platform", VString "linux/amd64")
+            ]
+        )
+        `shouldBe` Right
+          ( ResolvedRecipe
+              (Recipe "infra/Dockerfile" "infra" [("V", "1")] (Just "linux/amd64") Nothing)
+              ( Map.fromList
+                  [ ("build_args", VMap (Map.fromList [("V", VString "1")])),
+                    ("platform", VString "linux/amd64")
+                  ]
+              )
+          )
+    it "fails on docker without an image or a recipe" $
+      case resolveEnv (env "docker" []) of
+        Left lf -> lfCode lf `shouldBe` Just EIoEnvResolve
+        Right r -> expectationFailure (show r)
+    it "resolves a session to its container and the environment it was started on (spec 15.5)" $
+      resolveEnv (env "session" [("container", VString "lask-1"), ("origin", VEnv (env "docker" [("image", VString "alpine:3.20")]))])
+        `shouldBe` Right (ResolvedSession "lask-1" (ResolvedDocker "alpine:3.20" Map.empty))
+    it "fails on unknown kinds" $
+      resolveEnv (env "remote" [("host", VString "h")]) `shouldSatisfy` isLeft
+
+  describe "launch argument construction (spec 10.5)" $ do
+    it "builds docker run arguments with mounted workdir" $
+      dockerArgs "/proj" "lask-0" "alpine:3.20" (Map.fromList [("memory", VString "4g")]) "uname -a"
+        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
+                     "--init",
+                     "--mount", "type=bind,source=/proj,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "--memory", "4g",
+                     "alpine:3.20",
+                     "-c", "uname -a"
+                   ]
+
+    it "attaches stdin for a container write, so no content rides on the command line" $
+      dockerShellArgs "/proj" "lask-0" "alpine:3.20" Map.empty True "cat > 'out.txt'"
+        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
+                     "-i", "--init",
+                     "--mount", "type=bind,source=/proj,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "alpine:3.20",
+                     "-c", "cat > 'out.txt'"
+                   ]
+
+    -- The colon-separated `-v` form would read the part after the
+    -- colon as the target, so the source must be its own field.
+    it "keeps a colon inside a POSIX base directory out of the mount separator" $
+      dockerArgs "/tmp/a:b" "lask-0" "alpine:3.20" Map.empty "uname -a"
+        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
+                     "--init",
+                     "--mount", "type=bind,source=/tmp/a:b,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "alpine:3.20",
+                     "-c", "uname -a"
+                   ]
+
+  describe "the mount of the base directory (spec 10.2, 10.5)" $ do
+    let mountedArgs opts mounts =
+          runArgs Docker (RunSpec "/proj" Nothing "alpine:3.20" (Map.fromList opts) False False "/bin/sh" [] mounts)
+        mountsIn args = [m | ("--mount", m) <- zip args (drop 1 args)]
+        workdirsIn args = [w | ("-w", w) <- zip args (drop 1 args)]
+    it "mounts a key over the shorter path it is under, read-only where the table says, and hides what it gives none" $
+      mountsIn
+        ( mountedArgs
+            []
+            [ BaseBind "/proj" "/work" True,
+              BaseHideFile "/work/.env",
+              BaseHideDir "/work/secrets",
+              BaseBind "/proj/dist" "/work/dist" False
+            ]
+        )
+        `shouldBe` [ "type=bind,source=/proj,target=/work,readonly",
+                     "type=bind,source=/dev/null,target=/work/.env,readonly",
+                     "type=tmpfs,destination=/work/secrets",
+                     "type=bind,source=/proj/dist,target=/work/dist"
+                   ]
+    it "starts in the path the base directory is mounted at, which workdir still overrides" $ do
+      workdirsIn (mountedArgs [("base_mount", VString "/src")] []) `shouldBe` ["/src"]
+      workdirsIn (mountedArgs [("base_mount", VString "/src"), ("workdir", VString "/src/api")] []) `shouldBe` ["/src", "/src/api"]
+      workdirsIn (mountedArgs [] []) `shouldBe` ["/work"]
+
+    it "reads base_mount and base_access from the run options (real filesystem)" $
+      withSystemTempDirectory "lask-mounts" $ \tmp0 -> do
+        tmp <- canonicalizePath tmp0
+        createDirectoryIfMissing True (tmp </> "dist")
+        createDirectoryIfMissing True (tmp </> "secrets")
+        writeFile (tmp </> ".env") "TOKEN=1"
+        resolveBaseMounts tmp Map.empty `shouldReturn` Right [BaseBind tmp "/work" False]
+        resolveBaseMounts tmp (Map.fromList [("base_mount", VString "/src"), ("base_access", VString "ro")])
+          `shouldReturn` Right [BaseBind tmp "/src" True]
+        resolveBaseMounts tmp (Map.fromList [("base_access", VString "none")]) `shouldReturn` Right []
+        resolveBaseMounts
+          tmp
+          (Map.fromList [("base_access", VMap (Map.fromList [(".", VString "ro"), ("dist", VString "rw"), (".env", VString "none"), ("secrets", VString "none"), ("absent", VString "none")]))])
+          `shouldReturn` Right
+            [ BaseBind tmp "/work" True,
+              BaseHideFile "/work/.env",
+              BaseBind (tmp </> "dist") "/work/dist" False,
+              BaseHideDir "/work/secrets"
+            ]
+
+    it "refuses a path the host does not have, or one that leads out of the base directory (real filesystem)" $
+      withSystemTempDirectory "lask-mounts" $ \tmp -> do
+        createDirectoryIfMissing True (tmp </> "base")
+        createDirectoryIfMissing True (tmp </> "outside")
+        createDirectoryLink (tmp </> "outside") (tmp </> "base" </> "escape")
+        let table kvs = Map.fromList [("base_access", VMap (Map.fromList [(k, VString v) | (k, v) <- kvs]))]
+        missing <- resolveBaseMounts (tmp </> "base") (table [(".", "ro"), ("nope", "rw")])
+        missing `shouldSatisfy` \r -> case r of
+          Left (MountUnresolved _) -> True
+          _ -> False
+        escaped <- resolveBaseMounts (tmp </> "base") (table [(".", "ro"), ("escape", "ro")])
+        escaped `shouldSatisfy` \r -> case r of
+          Left (MountUnresolved m) -> "outside the base directory" `T.isInfixOf` m
+          _ -> False
+        -- Hiding what leads out reaches nothing, so it is allowed.
+        hidden <- resolveBaseMounts (tmp </> "base") (table [(".", "ro"), ("escape", "none")])
+        hidden `shouldSatisfy` isRight
+
+    describe "volumes, as the client is given them (spec 10.2)" $ do
+      let vols xs = Map.fromList [("volumes", VArray (V.fromList (map VString xs)))]
+          given r = case r of
+            Right m | Just (VArray xs) <- Map.lookup "volumes" m -> [t | VString t <- V.toList xs]
+            _ -> []
+          refused r = case r of
+            Left (MountUnresolved _) -> True
+            _ -> False
+      it "gives a host path normalized, and a path relative to the base directory made absolute there (real filesystem)" $
+        withSystemTempDirectory "lask-volumes" $ \tmp0 -> do
+          tmp <- canonicalizePath tmp0
+          createDirectoryIfMissing True (tmp </> "base" </> "data")
+          r <- resolveVolumesWith [] (tmp </> "base") (vols ["/tmp/cache/../other:/c:ro", "./data/../data:/d", ".:/b", "cache:/k"])
+          given r `shouldBe` ["/tmp/other:/c:ro", T.pack (tmp </> "base" </> "data") <> ":/d", T.pack (tmp </> "base") <> ":/b", "cache:/k"]
+      it "leaves the options alone when there are no volumes" $
+        resolveVolumesWith [] "/" (Map.fromList [("cpus", VNumber 2)]) `shouldReturn` Right (Map.fromList [("cpus", VNumber 2)])
+      it "refuses a relative path that leads out of the base directory, by .. or by a link (real filesystem)" $
+        withSystemTempDirectory "lask-volumes" $ \tmp -> do
+          createDirectoryIfMissing True (tmp </> "base")
+          createDirectoryIfMissing True (tmp </> "outside")
+          createDirectoryLink (tmp </> "outside") (tmp </> "base" </> "escape")
+          resolveVolumesWith [] (tmp </> "base") (vols ["./../outside:/o"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith [] (tmp </> "base") (vols ["./escape:/o"]) >>= (`shouldSatisfy` refused)
+      it "refuses a link to what gives the host, and allows what was written as the host (real filesystem)" $
+        withSystemTempDirectory "lask-volumes" $ \tmp0 -> do
+          tmp <- canonicalizePath tmp0
+          createDirectoryLink "/etc" (tmp </> "cfg")
+          resolveVolumesWith [] tmp (vols [T.pack (tmp </> "cfg") <> ":/c"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith [] tmp (vols ["/etc:/c:ro"]) >>= (`shouldSatisfy` isRight)
+      it "refuses a path that is or holds a path only the run knows gives the host (real filesystem)" $
+        withSystemTempDirectory "lask-volumes" $ \tmp0 -> do
+          tmp <- canonicalizePath tmp0
+          createDirectoryIfMissing True (tmp </> "xdg" </> "inner")
+          let extra = [tmp </> "xdg"]
+          resolveVolumesWith extra tmp (vols [T.pack (tmp </> "xdg") <> ":/r"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith extra tmp (vols [T.pack tmp <> ":/r"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith extra tmp (vols ["./xdg:/r"]) >>= (`shouldSatisfy` refused)
+          resolveVolumesWith extra tmp (vols [T.pack (tmp </> "other") <> ":/r"]) >>= (`shouldSatisfy` isRight)
+
+    it "refuses a value no option takes, which the elaborator could not see (spec 10.2)" $
+      withSystemTempDirectory "lask-mounts" $ \tmp -> do
+        let invalid r = case r of
+              Left (MountInvalid _) -> True
+              _ -> False
+        resolveBaseMounts tmp (Map.fromList [("base_mount", VString "/")]) >>= (`shouldSatisfy` invalid)
+        resolveBaseMounts tmp (Map.fromList [("base_access", VString "readonly")]) >>= (`shouldSatisfy` invalid)
+        resolveBaseMounts tmp (Map.fromList [("base_access", VMap (Map.fromList [("dist", VString "rw")]))]) >>= (`shouldSatisfy` invalid)
+        resolveBaseMounts tmp (Map.fromList [("base_access", VString "none"), ("base_mount", VString "/src")]) >>= (`shouldSatisfy` invalid)
+
+  describe "commands in a session (spec 15.5)" $ do
+    it "runs a command in the container with no run option given again" $
+      execArgs (ExecSpec "lask-1" False Nothing [("LASK_SESSION_EXEC", "lask-2")] ["/bin/sh", "-c", "make"])
+        `shouldBe` ["exec", "--env", "LASK_SESSION_EXEC=lask-2", "lask-1", "/bin/sh", "-c", "make"]
+    it "attaches stdin and names a user when asked" $
+      execArgs (ExecSpec "lask-1" True (Just "0") [] ["true"])
+        `shouldBe` ["exec", "-i", "--user", "0", "lask-1", "true"]
+
+  describe "container options (spec 10.2)" $ do
+    let opts ps = dockerArgs "/proj" "lask-0" "alpine:3.20" (Map.fromList ps) "uname -a"
+        -- Just the part between the fixed prologue (run, the name, the
+        -- init, the mount, the default -w and the entrypoint) and the
+        -- image.
+        optionArgs ps = takeWhile (/= "alpine:3.20") (drop 1 (dropWhile (/= "/bin/sh") (opts ps)))
+
+    it "passes scalar options as one flag each" $
+      optionArgs
+        [ ("memory", VString "4g"),
+          ("cpus", VNumber 1.5),
+          ("pids_limit", VNumber 256),
+          ("user", VString "1000:1000"),
+          ("platform", VString "linux/amd64"),
+          ("network", VString "none")
+        ]
+        `shouldBe` [ "--cpus", "1.5",
+                     "--memory", "4g",
+                     "--network", "none",
+                     "--pids-limit", "256",
+                     "--platform", "linux/amd64",
+                     "--user", "1000:1000"
+                   ]
+
+    -- One environment value has to produce one argument vector, or a
+    -- container could differ between two runs of the same task.
+    it "emits options in name order, not in the order they were given" $
+      optionArgs [("memory", VString "4g"), ("cpus", VNumber 2)]
+        `shouldBe` optionArgs [("cpus", VNumber 2), ("memory", VString "4g")]
+
+    it "repeats the flag for a list option" $
+      optionArgs [("tmpfs", VArray (V.fromList [VString "/tmp", VString "/run"]))]
+        `shouldBe` ["--tmpfs", "/tmp", "--tmpfs", "/run"]
+
+    it "joins a table option into the form its flag expects" $ do
+      optionArgs [("add_hosts", VMap (Map.fromList [("api", VString "10.0.0.2")]))]
+        `shouldBe` ["--add-host", "api:10.0.0.2"]
+
+    -- A command line is visible to every user of the host, so a value
+    -- passed to the container never appears on it (spec 10.2).
+    it "names an env variable on the command line and gives its value to the docker client" $ do
+      let options = [("env", VMap (Map.fromList [("CI", VNumber 1), ("TOKEN", VString "s3cr3t")]))]
+      optionArgs options `shouldBe` ["--env", "CI", "--env", "TOKEN"]
+      dockerClientEnv (Map.fromList options) `shouldBe` [("CI", "1"), ("TOKEN", "s3cr3t")]
+
+    it "gives a variable the docker client reads itself in a file, never on the command line (spec 10.2)" $ do
+      let options = [("env", VMap (Map.fromList [(k, VString "v") | k <- ["DOCKER_HOST", "HTTPS_PROXY", "no_proxy", "PATH", "HOME"]]))]
+      optionArgs options `shouldBe` []
+      dockerClientEnv (Map.fromList options) `shouldBe` []
+      fileEnv Docker (Map.fromList options)
+        `shouldBe` [("DOCKER_HOST", "v"), ("HOME", "v"), ("HTTPS_PROXY", "v"), ("PATH", "v"), ("no_proxy", "v")]
+      let args = runArgsWith Docker (Just "/tmp/lask-env-x/env") (RunSpec "/p" Nothing "i" (Map.fromList options) False False "/bin/sh" [] (defaultBaseMounts "/p"))
+      [f | ("--env-file", f) <- zip args (drop 1 args)] `shouldBe` ["/tmp/lask-env-x/env"]
+      args `shouldSatisfy` all (not . T.isInfixOf "=v" . T.pack)
+
+    it "gives in a file a variable the podman or nerdctl client reads itself (spec 10.10)" $ do
+      let options = Map.fromList [("env", VMap (Map.fromList [(k, VString "v") | k <- ["CONTAINER_HOST", "CONTAINERD_ADDRESS", "XDG_RUNTIME_DIR", "TOKEN"]]))]
+          envValues e =
+            let args = runArgs e (RunSpec "/p" Nothing "i" options False False "/bin/sh" [] (defaultBaseMounts "/p"))
+             in [a | ("--env", a) <- zip args (drop 1 args)]
+      envValues Podman `shouldBe` ["CONTAINERD_ADDRESS", "TOKEN"]
+      map fst (clientEnv Podman options) `shouldBe` ["CONTAINERD_ADDRESS", "TOKEN"]
+      map fst (fileEnv Podman options) `shouldBe` ["CONTAINER_HOST", "XDG_RUNTIME_DIR"]
+      envValues Nerdctl `shouldBe` ["CONTAINER_HOST", "TOKEN"]
+      map fst (clientEnv Nerdctl options) `shouldBe` ["CONTAINER_HOST", "TOKEN"]
+      map fst (fileEnv Nerdctl options) `shouldBe` ["CONTAINERD_ADDRESS", "XDG_RUNTIME_DIR"]
+
+    -- Null is how an argument says "not given" (spec 10.2); "" is a
+    -- value the caller means, and is passed on.
+    it "leaves out an option given null, and the null elements and values of a list or table" $ do
+      optionArgs [("user", VNull), ("init", VNull), ("cpus", VNull)] `shouldBe` []
+      optionArgs
+        [ ("env", VMap (Map.fromList [("A", VNull), ("B", VString "")])),
+          ("tmpfs", VArray (V.fromList [VNull, VString "/t"]))
+        ]
+        `shouldBe` ["--env", "B", "--tmpfs", "/t"]
+
+    it "says nothing for a switch left false, which is the daemon's own default" $ do
+      optionArgs [("read_only", VBool True)] `shouldBe` ["--read-only"]
+      optionArgs [("read_only", VBool False)] `shouldBe` []
+
+    -- A program that is PID 1 ignored the termination request that
+    -- stops an abandoned command, so `timeout(1, ...)` around `sleep 5`
+    -- took the whole 3s grace period (spec 8.7).
+    it "runs an init process unless the environment turns it off" $ do
+      opts [] `shouldSatisfy` elem "--init"
+      opts [("init", VBool True)] `shouldSatisfy` ((== 1) . length . filter (== "--init"))
+      opts [("init", VNull)] `shouldSatisfy` elem "--init"
+      opts [("init", VBool False)] `shouldNotSatisfy` elem "--init"
+
+    -- 10.5 gives an explicit working directory precedence over the
+    -- default, and the daemon takes the last -w it is given.
+    it "puts an explicit workdir after the mounted default so it wins" $
+      opts [("workdir", VString "/work/web")]
+        `shouldBe` [ "run", "--rm", "--pull=never", "--name", "lask-0",
+                     "--init",
+                     "--mount", "type=bind,source=/proj,target=/work",
+                     "-w", "/work",
+                     "--entrypoint", "/bin/sh",
+                     "-w", "/work/web",
+                     "alpine:3.20",
+                     "-c", "uname -a"
+                   ]
+
+    -- Build arguments belong to the recipe hash (10.3), not to the
+    -- container the image is then run in.
+    it "does not pass the image reference or build arguments as run options" $
+      optionArgs
+        [ ("image", VString "alpine:3.20"),
+          ("build_args", VMap (Map.fromList [("VERSION", VString "1.2.3")]))
+        ]
+        `shouldBe` []
+
+  describe "recipe hashing (spec 10.3)" $ do
+    let tagWith buildArgs platform = withSystemTempDirectory "lask-recipe" $ \dir -> do
+          writeFile (dir <> "/Dockerfile") "FROM alpine:3.20\n"
+          recipeTag dir (Recipe "Dockerfile" "." buildArgs platform Nothing)
+        tagFor buildArgs = tagWith buildArgs Nothing
+
+    it "covers the declared build arguments" $ do
+      a <- tagFor []
+      b <- tagFor [("VERSION", "1.2.3")]
+      a `shouldSatisfy` isRight
+      b `shouldNotBe` a
+
+    it "does not depend on the order the build arguments were written in" $ do
+      a <- tagFor [("VERSION", "1.2.3"), ("FLAVOUR", "slim")]
+      b <- tagFor [("FLAVOUR", "slim"), ("VERSION", "1.2.3")]
+      b `shouldBe` a
+
+    it "covers the platform" $ do
+      a <- tagFor []
+      b <- tagWith [] (Just "linux/amd64")
+      c <- tagWith [] (Just "linux/arm64")
+      b `shouldSatisfy` isRight
+      b `shouldNotBe` a
+      c `shouldNotBe` b
+
+  describe "local execution (spec 8.7, real process)" $ do
+    it "runs a local command and captures streams and exit code" $ do
+      runner <- mkCommandRunner docker noPins "/tmp" noCommandLog
+      r <- runner (env "local" []) "echo out; echo err 1>&2; exit 3"
+      case r of
+        Right (code, out, errOut) -> do
+          code `shouldBe` 3
+          out `shouldBe` "out\n"
+          errOut `shouldBe` "err\n"
+        Left lf -> expectationFailure (show lf)
+    it "uses the base directory as the working directory" $ do
+      runner <- mkCommandRunner docker noPins "/tmp" noCommandLog
+      r <- runner (env "local" []) "pwd"
+      case r of
+        Right (0, out, _) -> out `shouldSatisfy` (\o -> o == "/tmp\n" || o == "/private/tmp\n")
+        other -> expectationFailure (show other)
+
+  describe "command execution log relay (spec 12.3)" $ do
+    let mkLoggedRunner = do
+          logRef <- newIORef []
+          -- The runner relays stdout and stderr from two concurrent
+          -- threads, so a sink must be atomic: a plain read-modify-write
+          -- here loses entries.
+          let sink cl = atomicModifyIORef' logRef (\ls -> (ls <> [cl], ()))
+          runner <- mkCommandRunner docker noPins "/tmp" sink
+          pure (runner, readIORef logRef)
+        runWithLog cmd = do
+          (runner, readLog) <- mkLoggedRunner
+          r <- runner (env "local" []) cmd
+          entries <- readLog
+          pure (r, entries)
+        kinds = map clKind
+
+    it "relays lines in order between start and exit" $ do
+      (r, entries) <- runWithLog "echo one; echo two; echo err 1>&2; exit 5"
+      case r of
+        Right (code, out, errOut) -> do
+          code `shouldBe` 5
+          out `shouldBe` "one\ntwo\n"
+          errOut `shouldBe` "err\n"
+        Left lf -> expectationFailure (show lf)
+      listToMaybe (kinds entries) `shouldBe` Just ClStart
+      last (kinds entries) `shouldBe` ClExit 5
+      [l | ClLine 1 l <- kinds entries] `shouldBe` ["one", "two"]
+      [l | ClLine 2 l <- kinds entries] `shouldBe` ["err"]
+
+    it "always emits start and exit even without output" $ do
+      (_, entries) <- runWithLog "true"
+      kinds entries `shouldBe` [ClStart, ClExit 0]
+
+    it "keeps CommandResult faithful for unterminated output" $ do
+      (r, entries) <- runWithLog "printf 'no-newline'"
+      case r of
+        Right (0, out, _) -> out `shouldBe` "no-newline"
+        other -> expectationFailure (show other)
+      [l | ClLine 1 l <- kinds entries] `shouldBe` ["no-newline"]
+
+    it "stamps log entries with the environment summary and command" $ do
+      (_, entries) <- runWithLog "true"
+      map clEnvSummary entries `shouldSatisfy` all (== "#local")
+      map clCommand entries `shouldSatisfy` all (== "true")
+
+    it "assigns unique 1-based execution numbers per command" $ do
+      (runner, readLog) <- mkLoggedRunner
+      _ <- runner (env "local" []) "echo a"
+      _ <- runner (env "local" []) "echo b"
+      entries <- readLog
+      let execsOf cmd = [clExec cl | cl <- entries, clCommand cl == cmd]
+      execsOf "echo a" `shouldSatisfy` all (== 1)
+      execsOf "echo b" `shouldSatisfy` all (== 2)
+
+    it "masks a registered secret out of the log without touching the captured result (spec 12.8)" $ do
+      resetSecretRegistryForTests
+      registerSecret "sup3rsecret"
+      (r, entries) <- runWithLog "echo sup3rsecret; echo sup3rsecret 1>&2"
+      resetSecretRegistryForTests
+      case r of
+        Right (0, out, errOut) -> do
+          -- The value returned to the running program is the real one.
+          out `shouldBe` "sup3rsecret\n"
+          errOut `shouldBe` "sup3rsecret\n"
+        other -> expectationFailure (show other)
+      -- The observed log copy is masked, on both the relayed lines...
+      [l | ClLine 1 l <- kinds entries] `shouldBe` ["***"]
+      [l | ClLine 2 l <- kinds entries] `shouldBe` ["***"]
+      -- ...and the command string on the start line.
+      map clCommand entries `shouldSatisfy` (not . any (T.isInfixOf "sup3rsecret"))
+
+  describe "stopping an abandoned command (spec 8.7, real process)" $ do
+    it "stops the command and what it started when its thread is cancelled, and logs it as killed" $
+      withSystemTempDirectory "lask-stop" $ \dir -> do
+        logRef <- newIORef []
+        runner <- mkCommandRunner docker noPins dir (\cl -> atomicModifyIORef' logRef (\ls -> (ls <> [clKind cl], ())))
+        -- The shell and the child it leaves in the background both
+        -- record themselves, so both can be looked for afterwards.
+        a <- async (runner (env "local" []) "echo $$ > pids; sleep 30 & echo $! >> pids; wait")
+        pids <- waitForPids (dir </> "pids") 2
+        cancel a
+        mapM isAlive pids `shouldReturn` [False, False]
+        entries <- readIORef logRef
+        entries `shouldSatisfy` (\ks -> take 1 ks == [ClStart] && last ks == ClKilled)
+        entries `shouldSatisfy` notElem (ClExit 143)
+
+    it "kills what ignores the termination request once the grace period is over" $ do
+      (_, _, _, ph) <- createProcess (proc "sh" ["-c", "trap '' TERM; sleep 30"])
+      threadDelay 200000
+      Just pid <- getPid ph
+      stopProcessTree 1 ph
+      isAlive (fromIntegral pid) `shouldReturn` False
+
+  describe "environment log info (spec 12.3)" $ do
+    it "summarizes environments in environment-expression notation" $ do
+      fst (envLogInfo (env "local" []) ResolvedLocal) `shouldBe` "#local"
+      fst (envLogInfo (env "docker" [("image", VString "alpine:3.20")]) (ResolvedDocker "alpine:3.20" Map.empty))
+        `shouldBe` "#alpine:3.20"
+    it "summarizes a recipe by its Dockerfile" $
+      fst
+        ( envLogInfo
+            (env "docker" [("dockerfile", VString "infra/Dockerfile")])
+            (ResolvedRecipe (Recipe "infra/Dockerfile" "infra" [] Nothing Nothing) Map.empty)
+        )
+        `shouldBe` "#./infra/Dockerfile"
+
+  describe "filesystem functions (spec 15.11, real filesystem)" $ do
+    let withProject act = withSystemTempDirectory "lask-fs" $ \dir -> do
+          runner <- mkFileRunner docker noPins dir
+          act dir (\op -> runner (env "local" []) op)
+
+    it "writes a file and reads it back" $ withProject $ \_ run -> do
+      run (FileWrite "note.txt" "hello\n") >>= returnsVoid
+      run (FileRead "note.txt") `shouldReturn` Right (VString "hello\n")
+
+    it "resolves a relative path against the base directory" $ withProject $ \dir run -> do
+      _ <- run (FileWrite "note.txt" "x")
+      doesFileExist (dir <> "/note.txt") `shouldReturn` True
+
+    it "reports a read of a missing file as E-IO-FS" $ withProject $ \_ run -> do
+      run (FileRead "absent.txt") >>= failsWithFs
+
+    it "answers file_exists without failing on a missing path" $ withProject $ \_ run -> do
+      run (FileExists "absent.txt") `shouldReturn` Right (VBool False)
+      _ <- run (FileWrite "there.txt" "x")
+      run (FileExists "there.txt") `shouldReturn` Right (VBool True)
+
+    it "creates parents with make_dir and refuses them in write_file" $ withProject $ \_ run -> do
+      run (FileWrite "sub/deep/note.txt" "x") >>= failsWithFs
+      run (FileMakeDir "sub/deep") >>= returnsVoid
+      run (FileWrite "sub/deep/note.txt" "x") >>= returnsVoid
+
+    it "removes a file, and removing what is absent succeeds" $ withProject $ \_ run -> do
+      _ <- run (FileWrite "gone.txt" "x")
+      run (FileRemove "gone.txt") >>= returnsVoid
+      run (FileRemove "gone.txt") >>= returnsVoid
+      run (FileExists "gone.txt") `shouldReturn` Right (VBool False)
+
+    it "refuses to remove a directory" $ withProject $ \_ run -> do
+      _ <- run (FileMakeDir "adir")
+      run (FileRemove "adir") >>= failsWithFs
+
+    it "lists a directory in a deterministic order" $ withProject $ \_ run -> do
+      _ <- run (FileMakeDir "d")
+      mapM_ (\n -> run (FileWrite ("d/" <> n) "x")) ["c.txt", "a.txt", "b.txt"]
+      run (FileListDir "d")
+        `shouldReturn` Right (VArray (V.fromList (map VString ["a.txt", "b.txt", "c.txt"])))
+
+    it "reports list_dir on a non-directory as E-IO-FS" $ withProject $ \_ run -> do
+      _ <- run (FileWrite "afile" "x")
+      run (FileListDir "afile") >>= failsWithFs
+
+    it "globs across components and hides dot entries" $ withProject $ \dir run -> do
+      createDirectoryIfMissing True (dir <> "/src/lib")
+      createDirectoryIfMissing True (dir <> "/.git")
+      mapM_ (\n -> run (FileWrite n "x"))
+        ["src/main.lask", "src/lib/util.lask", "src/notes.md", ".git/config.lask"]
+      run (FileGlob "src/**/*.lask")
+        `shouldReturn` Right (VArray (V.fromList (map VString ["src/lib/util.lask", "src/main.lask"])))
+      run (FileGlob "**/*.lask")
+        `shouldReturn` Right (VArray (V.fromList (map VString ["src/lib/util.lask", "src/main.lask"])))
+
+    it "returns no match as an empty array rather than a failure" $ withProject $ \_ run -> do
+      run (FileGlob "nowhere/*.lask") `shouldReturn` Right (VArray V.empty)
+      run (FileGlob "*.absent") `shouldReturn` Right (VArray V.empty)

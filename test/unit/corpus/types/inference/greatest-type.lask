@@ -1,0 +1,5 @@
+// Used at String and at String | Null, a parameter is String (4.3).
+g(s: String | Null): Number = 1
+f(x) = g(x) + length(x)
+ok = f("a")
+bad = f(null) // expect: E-TYPE-MISMATCH

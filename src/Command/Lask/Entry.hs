@@ -28,7 +28,7 @@ import Data.List (nub, sortOn)
 import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
-import Data.Scientific (FPFormat (Generic), formatScientific, toRealFloat)
+import Data.Scientific (FPFormat (Generic), formatScientific, toBoundedInteger)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -222,7 +222,7 @@ cmdRunEval printResult runOpts = do
   let -- `log` (spec 15.12) writes execution log lines to stderr,
       -- through the same serialized writer as the command logs.
       logSink
-        | optLogJson opts = jsonLogSink traceId writeErr
+        | optLogJson opts = jsonLogSink traceId (A.object [("module", A.String (T.pack (fst key))), ("function", A.String (snd key))]) writeErr
         | otherwise = textLogSink writeErr
   tracker <- newAsyncTracker
   secrets <- newSecretResolver
@@ -520,10 +520,12 @@ failureExit opts traceId uncaught = do
 exitCodeOf :: Value -> Int
 exitCodeOf v = case v of
   VRecord m
-    | Just (VNumber n) <- Map.lookup "code" m ->
-        let d = toRealFloat n :: Double
-            i = round d :: Int
-         in if fromIntegral i == d && i >= 1 && i <= 255 then i else 1
+    -- Read exactly, as the Scientific it is: through a Double, a code
+    -- such as 7.0000000000000001 would round to the integer 7.
+    | Just (VNumber n) <- Map.lookup "code" m,
+      Just i <- (toBoundedInteger n :: Maybe Int),
+      i >= 1 && i <= 255 ->
+        i
   _ -> 1
 
 -- repl -----------------------------------------------------------------------
@@ -602,25 +604,29 @@ confirmOrExit opts approved compiled fnName key cd posVals kwVals = do
         else TIO.hPutStrLn stderr (codeText ECliNotConfirmed <> ": " <> msg)
       exitWith (ExitFailure 4)
 
+-- | Read standard input whole (spec 9.2). A read that fails is
+-- @E-IO-STDIN-READ@; bytes that are not UTF-8 are a decoding error,
+-- @E-IO-DATA-DECODE@ (9.4). Either is exit 3.
 readStdinOrExit :: CommonOpts -> IO Text
 readStdinOrExit opts = do
   isTty <- hIsTerminalDevice stdin
   if isTty
     then pure ""
     else do
-      bytes <- BS.getContents
-      case TE.decodeUtf8' bytes of
-        Right t -> pure t
-        Left e -> do
-          if optLogJson opts
-            then
-              TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
-                A.object
-                  [ ("code", A.String (codeText EIoStdinRead)),
-                    ("message", A.String (T.pack (show e)))
-                  ]
-            else TIO.hPutStrLn stderr (codeText EIoStdinRead <> ": " <> T.pack (show e))
-          exitWith (ExitFailure 3)
+      read' <- try BS.getContents :: IO (Either IOException BS.ByteString)
+      case read' of
+        Left e -> failWith EIoStdinRead ("cannot read stdin: " <> T.pack (show e))
+        Right bytes -> case TE.decodeUtf8' bytes of
+          Right t -> pure t
+          Left _ -> failWith EIoDataDecode "stdin is not valid UTF-8"
+  where
+    failWith code msg = do
+      if optLogJson opts
+        then
+          TIO.hPutStrLn stderr . TE.decodeUtf8 . BL.toStrict . A.encode $
+            A.object [("code", A.String (codeText code)), ("message", A.String msg)]
+        else TIO.hPutStrLn stderr (codeText code <> ": " <> msg)
+      exitWith (ExitFailure 3)
 
 -- | An advisory in the JSON form of 14.3, marked by @severity@ (14.2).
 advisoryJson :: Advisory -> A.Value

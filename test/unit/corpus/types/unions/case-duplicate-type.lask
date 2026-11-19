@@ -1,0 +1,6 @@
+// Two type heads denoting one type: the later arm is unreachable (6.4, 14.2).
+f(x: Any) = case (x) {
+  String -> 1
+  String -> 2 // expect: E-TYPE-CASE-DUPLICATE
+  else -> 3
+}

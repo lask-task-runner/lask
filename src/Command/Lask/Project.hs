@@ -51,7 +51,7 @@ import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.Fetch (Pinned (..), syncAll)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock
-import Language.Lask.Access (AccessTable, Channel (..), Constraint (..), Finding (..), channelText, exposedChannel, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, hostEquivalent, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume)
+import Language.Lask.Access (AccessTable, Channel (..), Constraint (..), Finding (..), channelText, exposedChannel, Mode (..), NetClass (..), Volume (..), VolumeSource (..), accessScalar, accessTable, checkAccess, hostEquivalent, classifyNetwork, defaultBaseMount, modeText, netClassText, parseMode, parseVolume, volumeSourceText)
 import Language.Lask.Diagnostic (Diagnostic (..))
 import Language.Lask.Core.AST (Core (..))
 import Language.Lask.Elaborate (CommandUse (..), CoreProgram (..))
@@ -1236,8 +1236,8 @@ fileLines r
         ]
       Nothing -> [("(computed)", "(volumes)", "(computed) !")]
     source s = case s of
-      VolumeHost p -> p
       VolumeNamed n -> "volume:" <> n
+      _ -> volumeSourceText s
     rootfs = case rowOpt r "read_only" of
       Just (Known (SBool True)) -> [("/", "(image)", "ro")]
       Just (Known _) -> [("/", "(image)", "rw")]

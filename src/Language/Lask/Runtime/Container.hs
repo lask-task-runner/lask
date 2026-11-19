@@ -24,6 +24,9 @@ module Language.Lask.Runtime.Container
     MountError (..),
     defaultBaseMounts,
     resolveBaseMounts,
+    resolveVolumes,
+    resolveVolumesWith,
+    runtimeHostPaths,
     baseMountTarget,
     resolveBackend,
     cliBackend,
@@ -53,10 +56,10 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
-import Language.Lask.Access (Mode (..), accessScalar, accessTable, defaultBaseMount, parseMode, validateBaseMount)
+import Language.Lask.Access (Mode (..), Volume (..), VolumeSource (..), accessScalar, accessTable, defaultBaseMount, hostEquivalent, normalizePath, parseMode, parseVolume, validateBaseMount)
 import Language.Lask.Runtime.Value (Value (..))
 import Language.Lask.Runtime.Reaper (ensureReaper, ownerArgs)
-import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable, getTemporaryDirectory, removeDirectoryRecursive)
+import System.Directory (canonicalizePath, makeAbsolute, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable, getTemporaryDirectory, removeDirectoryRecursive)
 import System.FilePath (isRelative, makeRelative, splitDirectories, (</>))
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
@@ -507,6 +510,76 @@ resolveBaseMounts baseDir opts = case options of
                 if real == realBase || (isRelative rel && ".." `notElem` splitDirectories rel)
                   then Right [BaseBind host inside (mode == ModeRo)]
                   else Left (MountUnresolved ("'" <> key <> "' in 'base_access' resolves outside the base directory"))
+
+-- | The @volumes@ of the run options as the client is to be given them
+-- (spec 10.2): each host path normalized, and each source beginning
+-- with @.@ made absolute under the base directory, so that what is
+-- mounted is the path 10.11 checked rather than one the client resolves
+-- against its own working directory. Each path is resolved, links
+-- followed, as far as it exists: a source beginning with @.@ must
+-- resolve inside the base directory, and no path may resolve to what
+-- gives the host when the path as written does not ('hostEquivalent',
+-- and the paths of 'runtimeHostPaths').
+resolveVolumes :: FilePath -> Map Text Value -> IO (Either MountError (Map Text Value))
+resolveVolumes baseDir opts = do
+  extra <- runtimeHostPaths
+  resolveVolumesWith extra baseDir opts
+
+-- | Paths that give what the host has which only a run can know (spec
+-- 10.2): the directory @XDG_RUNTIME_DIR@ names, where a rootless engine
+-- keeps its socket, and the socket a @unix://@ value of @DOCKER_HOST@
+-- or @CONTAINER_HOST@ names; each resolved, links followed.
+runtimeHostPaths :: IO [FilePath]
+runtimeHostPaths = do
+  xdg <- lookupEnv "XDG_RUNTIME_DIR"
+  hosts <- mapM lookupEnv ["DOCKER_HOST", "CONTAINER_HOST"]
+  let sockets = [p | Just h <- hosts, Just p <- [T.unpack <$> T.stripPrefix "unix://" (T.pack h)]]
+      paths = [p | p@('/' : _) <- maybe [] pure xdg <> sockets]
+  mapM canonicalizePath paths
+
+-- | 'resolveVolumes', given the paths of 'runtimeHostPaths'.
+resolveVolumesWith :: [FilePath] -> FilePath -> Map Text Value -> IO (Either MountError (Map Text Value))
+resolveVolumesWith extra baseDir opts = case Map.lookup "volumes" opts of
+  Just (VArray xs) -> do
+    absBase <- makeAbsolute baseDir
+    realBase <- canonicalizePath baseDir
+    entries <- mapM (entry absBase realBase) (V.toList xs)
+    pure (fmap (\ys -> Map.insert "volumes" (VArray (V.fromList ys)) opts) (sequence entries))
+  _ -> pure (Right opts)
+  where
+    entry absBase realBase v = case v of
+      VString t | Just vol <- parseVolume t, _ : rest <- T.splitOn ":" t -> case volSource vol of
+        VolumeNamed _ -> pure (Right v)
+        VolumeHost p -> do
+          real <- canonicalizePath (T.unpack p)
+          pure $
+            if givesHost real && not (hostEquivalent (VolumeHost p))
+              then Left (MountUnresolved (quote t <> " in 'volumes' resolves to " <> quote (T.pack real) <> ", which gives what the host has"))
+              else Right (VString (T.intercalate ":" (p : rest)))
+        VolumeBase rel -> do
+          let path = normalizePath (T.pack absBase <> "/" <> rel)
+          real <- canonicalizePath (T.unpack path)
+          let inside = makeRelative realBase real
+          pure $
+            if real /= realBase && (not (isRelative inside) || ".." `elem` splitDirectories inside)
+              then Left (MountUnresolved (quote t <> " in 'volumes' resolves outside the base directory"))
+              else
+                if (real /= realBase && hostEquivalent (VolumeBase (T.pack inside))) || any (holds real) extra
+                  then Left (MountUnresolved (quote t <> " in 'volumes' resolves to " <> quote (T.pack real) <> ", which gives what the host has"))
+                  else
+                    if ":" `T.isInfixOf` path
+                      then Left (MountUnresolved (quote t <> " in 'volumes' is under a base directory whose path holds ':', which --volume would split"))
+                      else Right (VString (T.intercalate ":" (path : rest)))
+      _ -> pure (Right v)
+
+    -- On macOS @/etc@, @/var@ and @/tmp@ are links into @/private@,
+    -- so a resolved path is also read without it.
+    givesHost real =
+      any (hostEquivalent . VolumeHost . T.pack) (real : [drop (length ("/private" :: String)) real | "/private/" `isPrefixOfS` real])
+        || any (holds real) extra
+    holds real e = real == e || (real <> "/") `isPrefixOfS` e
+    isPrefixOfS a b = take (length a) b == a
+    quote x = "'" <> x <> "'"
 
 -- | The arguments of the client's @run@ (spec 10.5): the base
 -- directory mounted as the working directory, an init process, the run

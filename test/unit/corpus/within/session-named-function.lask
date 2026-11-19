@@ -1,0 +1,2 @@
+inside(box: Runnable): String = $[box] true
+f(): String within { runs: ["container"] } = with_container(#local, inside)  // expect: E-TYPE-WITHIN-EXCEEDED

@@ -1,0 +1,2 @@
+pick(k: String): Runnable = k == "a" ? #alpine:3.22.2{ network: "none" } : runnable(#local)
+f(k: String): String within { outbound: false } = $[pick(k)] true  // expect: E-TYPE-WITHIN-EXCEEDED

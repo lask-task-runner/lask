@@ -36,22 +36,27 @@ textLogSink write message = do
   now <- getCurrentTime
   write (renderLogText now message)
 
-jsonLogSink :: TraceId -> (Text -> IO ()) -> LogSink
-jsonLogSink traceId write message = do
+-- | The context is the auxiliary information of 12.2 every line
+-- carries: for a run, the module and the function it called.
+jsonLogSink :: TraceId -> A.Value -> (Text -> IO ()) -> LogSink
+jsonLogSink traceId context write message = do
   now <- getCurrentTime
-  write (renderLogJson traceId now message)
+  write (renderLogJson traceId context now message)
 
 -- | @<timestamp> info <message>@: the line carries a level and a
 -- message, which is what 12.2 requires of the text format.
 renderLogText :: UTCTime -> Text -> Text
 renderLogText now message = formatTimestamp now <> " info " <> message
 
-renderLogJson :: TraceId -> UTCTime -> Text -> Text
-renderLogJson traceId now message =
+-- | One line with the fields 12.2 requires: @timestamp@, @level@,
+-- @traceId@, @message@ and @context@.
+renderLogJson :: TraceId -> A.Value -> UTCTime -> Text -> Text
+renderLogJson traceId context now message =
   TE.decodeUtf8 . BL.toStrict . A.encode $
     A.object
-      [ ("ts", A.toJSON (formatTimestamp now)),
+      [ ("timestamp", A.toJSON (formatTimestamp now)),
         ("level", "info"),
+        ("traceId", A.toJSON traceId),
         ("message", A.toJSON message),
-        ("traceId", A.toJSON traceId)
+        ("context", context)
       ]

@@ -1,0 +1,2 @@
+// A reserved word is no identifier (7.2).
+if = 1 // expect: E-SYNTAX-UNEXPECTED-TOKEN

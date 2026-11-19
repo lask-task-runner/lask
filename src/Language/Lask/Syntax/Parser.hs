@@ -680,7 +680,7 @@ pRecordField = do
 -- whole expression again, so it associates to the right.
 pExpr :: P Expr
 pExpr = do
-  c <- makeExprParser pUnary operatorTable
+  c <- pPipe
   option c $ do
     _ <- sym TQuestion
     a <- pExpr
@@ -694,12 +694,46 @@ operatorTable =
     [binL OpAdd, binL OpSub],
     [binL OpEq, binL OpNe, binL OpLt, binL OpLe, binL OpGt, binL OpGe],
     [binL OpAnd],
-    [binL OpOr],
-    [binL OpPipeR, binL OpPipeL, binL OpCompR, binL OpCompL]
+    [binL OpOr]
   ]
   where
     binL o = InfixL (mkBin o <$ op o)
     mkBin o a b = Expr (exprSpan a <> exprSpan b) (EBin o a b)
+
+-- | The application operators, below composition (spec 6.2).
+pPipe :: P Expr
+pPipe = directed OpPipeR OpPipeL pCompose
+
+-- | The composition operators, below the operator table (spec 6.2).
+pCompose :: P Expr
+pCompose = directed OpCompR OpCompL (makeExprParser pUnary operatorTable)
+
+-- | One level of a forward operator and its backward twin (spec 6.2):
+-- the forward one associates to the left and the backward one to the
+-- right, so each reads in the direction its arrow points, and the two
+-- cannot be mixed without parentheses, as neither reading of
+-- @x |> f <| y@ is the obvious one.
+directed :: Op -> Op -> P Expr -> P Expr
+directed fwd bwd operand = do
+  x <- operand
+  rest <- many $ do
+    o <- getOffset
+    d <- (fwd <$ op fwd) <|> (bwd <$ op bwd)
+    y <- operand
+    pure (o, d, y)
+  case rest of
+    [] -> pure x
+    (_, d, _) : _
+      | (o, _, _) : _ <- filter (\(_, d', _) -> d' /= d) rest ->
+          parseError . FancyError o . Set.singleton . ErrorFail $
+            "'" <> render fwd <> "' and '" <> render bwd <> "' associate in opposite directions and cannot be mixed without parentheses: parenthesize the part meant to go first"
+      | d == fwd -> pure (foldl (\a (_, _, b) -> bin d a b) x rest)
+      | otherwise ->
+          let operands = x : [y | (_, _, y) <- rest]
+           in pure (foldr1 (bin d) operands)
+  where
+    render = renderToken . TOp
+    bin d a b = Expr (exprSpan a <> exprSpan b) (EBin d a b)
 
 pUnary :: P Expr
 pUnary =

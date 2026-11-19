@@ -1,0 +1,2 @@
+// Nor does a call of a function value (4.3).
+f(g) = g(1) // expect: E-TYPE-CALL

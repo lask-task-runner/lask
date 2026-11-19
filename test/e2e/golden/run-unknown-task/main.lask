@@ -1,0 +1,12 @@
+// Builds the site into dist.
+//
+// @param target  Where the site is deployed later.
+// @param minify  Shrinks the output.
+// @example lask run build staging
+build(target: String, --minify: Bool = false, --jobs: Number = 4): String =
+  "#{target} #{minify} #{jobs}"
+
+// Removes dist.
+clean(): String = "clean"
+
+internal_helper(): String = "x"

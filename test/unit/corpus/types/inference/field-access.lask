@@ -1,0 +1,2 @@
+// A field access does not say what the whole type is (4.3).
+f(u) = u.name // expect: E-TYPE-ACCESS

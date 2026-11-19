@@ -1,0 +1,11 @@
+// if, ?:, case and try all join with null (4.3).
+f(c: Bool): String | Null = if (c) { "x" } else { null }
+g(c: Bool): String | Null = c ? "x" : null
+h(s: String) = case (s) {
+  "a" -> 1
+  else -> null
+}
+t() = try { 1 } catch (e) { null }
+k: Number | Null = h("a")
+bad: Number = h("a") // expect: E-TYPE-MISMATCH
+also_bad: Number = t() // expect: E-TYPE-MISMATCH

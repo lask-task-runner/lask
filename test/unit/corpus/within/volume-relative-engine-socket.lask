@@ -1,0 +1,1 @@
+f(): String within { outbound: false } = $[#alpine:3.22.2{ network: "none", volumes: ["./../../../../../../../../var/run/docker.sock:/var/run/docker.sock"] }] docker ps  // expect: E-TYPE-WITHIN-EXCEEDED

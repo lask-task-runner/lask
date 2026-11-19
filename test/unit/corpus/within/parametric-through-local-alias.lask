@@ -1,0 +1,5 @@
+go(env: Environment): String = $[env] true
+f() within { outbound: false } = do {
+  g = go
+  g(#alpine:3.22.2)  // expect: E-TYPE-WITHIN-EXCEEDED
+}

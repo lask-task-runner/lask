@@ -1,0 +1,5 @@
+// Compared with ==, an inferred type parameter is comparable (4.3).
+same(a, b) = a == b
+ok = same([1], [2])
+mixed = same(1, "a") // expect: E-TYPE-MISMATCH
+bad = same(\() -> 1, \() -> 2) // expect: E-TYPE-BOUND

@@ -1,0 +1,2 @@
+// Every member of a union is a data type (4.2).
+x: Function<Number> | Null = null // expect: E-TYPE-ILLFORMED

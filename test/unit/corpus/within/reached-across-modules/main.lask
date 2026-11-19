@@ -1,0 +1,3 @@
+import * as helpers from "./helpers.lask"
+
+t() within { outbound: false } = helpers.fetch()  // expect: E-TYPE-WITHIN-EXCEEDED

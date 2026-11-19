@@ -1,0 +1,2 @@
+// A function branch joined with null is not a type, where it is used (4.3).
+f(c: Bool) = if (c) { \() -> 1 } else { null } // expect: E-TYPE-ILLFORMED

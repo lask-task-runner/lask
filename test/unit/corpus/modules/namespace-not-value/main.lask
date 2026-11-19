@@ -1,0 +1,3 @@
+// A namespace is not a value (5, Namespace re-export).
+import * as m from "./lib.lask"
+x = m.ns // expect: E-NAME-UNDEFINED

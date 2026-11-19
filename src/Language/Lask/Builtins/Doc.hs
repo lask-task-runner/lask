@@ -384,9 +384,9 @@ builtinDocs =
           "15.10"
           ["`path_join(parts)` joins `parts` with `/`, drops empty parts, and normalizes the result. An absolute part discards everything before it."]
       ),
-      ("dirname", doc "15.10" ["`dirname(p)` returns everything before the final component: `\"a/b/c\"` gives `\"a/b\"`, and `\"c\"` gives `\".\"`."]),
+      ("dirname", doc "15.10" ["`dirname(p)` returns everything before the final component: `\"a/b/c\"` gives `\"a/b\"`, `\"c\"` gives `\".\"`, and `\"/\"` gives `\"/\"`."]),
       ("basename", doc "15.10" ["`basename(p)` returns the final component, ignoring trailing slashes: `\"a/b/c.txt\"` gives `\"c.txt\"`."]),
-      ("extname", doc "15.10" ["`extname(p)` returns the final extension, including the dot: `\"c.tar.gz\"` gives `\".gz\"`, and `\".env\"` gives `\"\"`."]),
+      ("extname", doc "15.10" ["`extname(p)` returns the final extension, including the dot: `\"c.tar.gz\"` gives `\".gz\"`, `\".env\"` gives `\"\"`, and `\"a.\"` gives `\".\"`."]),
       ("normalize_path", doc "15.10" ["`normalize_path(p)` collapses repeated `/` and resolves `.` and `..` lexically, without touching the filesystem."]),
       ("is_absolute_path", doc "15.10" ["`is_absolute_path(p)` is true when `p` begins with `/`."]),
       -- 15.11 filesystem

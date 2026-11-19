@@ -1,0 +1,1 @@
+f<T, T>(x: T): T = x  // expect: E-NAME-DUPLICATE

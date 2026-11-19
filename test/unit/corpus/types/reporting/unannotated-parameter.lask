@@ -1,0 +1,3 @@
+// A failed declaration's unannotated parameters give nothing to check against (14.3).
+bad(x): Number = x + "s" // expect: E-TYPE-MISMATCH
+use() = bad("a")

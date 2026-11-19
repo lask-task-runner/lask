@@ -1,0 +1,4 @@
+access Pure = { runs: false }
+
+sum(xs: Array<Number>): Number within Pure = reduce(xs, 0, \(a: Number, x: Number) -> a + x)
+sneaky(): String within Pure = $[#alpine:3.22.2{ network: "none" }] true  // expect: E-TYPE-WITHIN-EXCEEDED

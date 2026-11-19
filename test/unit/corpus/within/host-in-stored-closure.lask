@@ -1,0 +1,3 @@
+mk(e: Runnable): Function<String> = \() -> $[e]{ uname }
+f = mk(#local)  // expect: E-TYPE-WITHIN-EXCEEDED
+t(): String within { runs: ["container"] } = f()

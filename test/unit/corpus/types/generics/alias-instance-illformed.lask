@@ -1,0 +1,4 @@
+// Well-formedness is checked on the expansion, where it is written (4.2).
+type Bad<A> = Array<A>
+ok: Bad<Number> = []
+bad: Bad<Void> = [] // expect: E-TYPE-ILLFORMED

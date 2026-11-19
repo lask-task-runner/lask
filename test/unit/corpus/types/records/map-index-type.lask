@@ -1,0 +1,4 @@
+// Any other combination of target and index type is E-TYPE-ACCESS (6.8).
+m: Map<Number> = { a: 1 }
+ok: Number = m["a"]
+bad = m[0] // expect: E-TYPE-ACCESS

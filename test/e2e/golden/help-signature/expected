@@ -1,0 +1,35 @@
+exit: 0
+--- stdout
+deploy - Deploy the release to the target.
+
+Usage:
+  lask run deploy <target> [<files> ...] [--token <String>] --region <String> [--dry-run] [--retries <Number | Null>]
+
+Every file under the release directory is uploaded; nothing is removed.
+
+Parameters:
+  target : String
+      Where it goes.
+  ...files : Array<String>
+      The files, relative to the release directory.
+  --token : String = <secret>
+      The credential of the target.
+  --region : String  (required)
+  --dry-run : Bool = false
+      Print what would be uploaded.
+  --retries : Number | Null = null
+
+Returns:
+  String
+      What was uploaded.
+
+Environments:
+  #alpine:3.22.2  registry
+
+Examples:
+  lask run deploy prod a.txt b.txt --token $TOKEN
+
+Defined at main.lask:13
+
+--- stderr
+

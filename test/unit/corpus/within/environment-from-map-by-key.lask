@@ -1,0 +1,2 @@
+envs: Map<Runnable> = { a: #alpine:3.22.2{ network: "none" }, b: runnable(#local) }
+f(k: String): String within { outbound: false } = $[envs[k]] true  // expect: E-TYPE-WITHIN-EXCEEDED

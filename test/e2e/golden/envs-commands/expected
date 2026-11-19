@@ -1,0 +1,14 @@
+exit: 0
+--- stdout
+ENVIRONMENT     PROGRAM     USED BY
+#local          (computed)  main.lask: run_it
+#local          rm          main.lask: clean
+#alpine:3.22.2  make        main.lask: build, main.lask: pick (images[env])
+#debian:13      make        main.lask: pick (images[env])
+(dynamic)       cat         main.lask: show
+(dynamic)       sort        main.lask: show
+
+3 environments and (dynamic): 5 programs in 5 commands
+
+--- stderr
+

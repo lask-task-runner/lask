@@ -1,0 +1,2 @@
+f(x: Number, ...ys: Array<Number>): Number = x
+g(): Number = f()  // expect: E-TYPE-ARITY

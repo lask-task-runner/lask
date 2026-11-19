@@ -1,0 +1,5 @@
+// Any other combination of target and index type is E-TYPE-ACCESS (6.8).
+xs = [1, 2]
+ok: Number = xs[0]
+a = xs["a"] // expect: E-TYPE-ACCESS
+b = xs[true] // expect: E-TYPE-ACCESS

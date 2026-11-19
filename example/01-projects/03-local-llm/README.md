@@ -25,8 +25,8 @@ lask eval ask "Explain a monad in one sentence" --model llama3.2:3b
 An environment is a value, so where the network is allowed is written once, at the top of [main.lask](main.lask), rather than remembered at every call:
 
 ```lask
-ollama_online = #ollama/ollama:0.12.5{volumes: [models_volume]}
-ollama_offline = #ollama/ollama:0.12.5{volumes: [models_volume], network: "none"}
+ollama_online = #ollama/ollama:0.12.5{ volumes: [models_volume] }
+ollama_offline = #ollama/ollama:0.12.5{ volumes: [models_volume], network: "none" }
 ```
 
 `pull` runs on the first, everything else on the second. Each task starts a throwaway Ollama server in its container, runs one `ollama` command next to it, and the server goes when the container does.

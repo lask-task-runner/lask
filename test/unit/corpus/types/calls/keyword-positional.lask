@@ -1,0 +1,5 @@
+// A positional or variadic parameter is not bound by name (7.5).
+f(a: Number, --k: Number = 1) = a + k
+g(...xs: Array<Number>) = xs
+x = f(a = 1) // expect: E-TYPE-KEYWORD
+y = g(xs = [1]) // expect: E-TYPE-KEYWORD

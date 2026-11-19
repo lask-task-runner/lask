@@ -20,7 +20,8 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (cancel, waitAnyCatch, waitCatch)
-import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
+import Control.Monad (foldM)
+import Control.Exception (SomeAsyncException, SomeException, catch, fromException, throwIO, try)
 import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
@@ -48,6 +49,7 @@ import Language.Lask.Obs.Events (summarizeValue)
 import Language.Lask.Runtime.AsyncTrack (AsyncTracker (..), siteOf)
 import Language.Lask.Runtime.CancelScope (cancelScope, spawnInScopes, withScope)
 import Language.Lask.Runtime.Secrets (maskSecrets, registerSecret)
+import Language.Lask.Number (fitNumber)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (failureMessage)
 import System.Entropy (getEntropy)
@@ -110,12 +112,12 @@ data RtHooks = RtHooks
 callBuiltin :: Apply -> RtHooks -> Text -> [Value] -> [(Text, Value)] -> IO Value
 callBuiltin apply hooks name args _kwArgs = case (name, args) of
   -- 15.2 numeric ---------------------------------------------------------
-  ("add", [VNumber a, VNumber b]) -> num (a + b)
-  ("sub", [VNumber a, VNumber b]) -> num (a - b)
-  ("mul", [VNumber a, VNumber b]) -> num (a * b)
+  ("add", [VNumber a, VNumber b]) -> VNumber <$> arithResult "add" (a + b)
+  ("sub", [VNumber a, VNumber b]) -> VNumber <$> arithResult "sub" (a - b)
+  ("mul", [VNumber a, VNumber b]) -> VNumber <$> arithResult "mul" (a * b)
   ("div", [VNumber a, VNumber b])
     | b == 0 -> throwIO (runtimeFailure ERuntimeDivByZero "division by zero")
-    | otherwise -> num (divS a b)
+    | otherwise -> VNumber <$> divNumber "div" a b
   ("mod", [VNumber a, VNumber b])
     | b == 0 -> throwIO (runtimeFailure ERuntimeDivByZero "modulo by zero")
     | otherwise -> num (modS a b)
@@ -125,7 +127,9 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("round", [VNumber a]) -> num (fromInteger (round (toRealTo a)))
   ("min", [VNumber a, VNumber b]) -> num (min a b)
   ("max", [VNumber a, VNumber b]) -> num (max a b)
-  ("sum", [VArray xs]) -> num (sum [n | VNumber n <- V.toList xs])
+  -- Summed one at a time, so that a sum past the range of Number
+  -- fails before its digits grow without bound.
+  ("sum", [VArray xs]) -> VNumber <$> foldM (\acc n -> arithResult "sum" (acc + n)) 0 [n | VNumber n <- V.toList xs]
   ("pow", [VNumber a, VNumber b]) ->
     let r = toRealTo a ** toRealTo b
      in if isNaN r || isInfinite r
@@ -179,7 +183,9 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
       throwIO . domainError $
         "to_string cannot render " <> typeNameOf other <> "; use to_json for structured values"
   ("to_number", [VString s]) -> case A.eitherDecode (BL.fromStrict (TE.encodeUtf8 (T.strip s))) of
-    Right (A.Number n) -> num n
+    Right (A.Number n) -> case fitNumber n of
+      Just n' -> num n'
+      Nothing -> throwIO (ioFailure EIoDataDecode ("'" <> s <> "' is outside the range of Number (about 1.8e308)"))
     _ -> throwIO (ioFailure EIoDataDecode ("not a number: '" <> s <> "'"))
   ("regex_test", [VString s, VString pat]) -> withRegex pat (\re -> pure (VBool (Re.test re s)))
   ("regex_match", [VString s, VString pat]) ->
@@ -300,8 +306,16 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   -- 15.6 parallel/async ------------------------------------------------------
   ("spawn", [f]) -> do
     -- Started inside the timeout bodies it runs in, so that it is
-    -- cancelled with any of them that is abandoned (15.7).
-    a <- spawnInScopes (apply f [] [])
+    -- cancelled with any of them that is abandoned (15.7). It runs in
+    -- a scope of its own, so that when it is cancelled, by race, all,
+    -- timeout or a signal, what it started with async is cancelled
+    -- with it and none is left running (15.6, 8.7); they are consumed,
+    -- so none is reported as never awaited (6.3). What it started
+    -- runs on when it ends in any other way.
+    a <- spawnInScopes . withScope $ \sid ->
+      apply f [] [] `catch` \(ex :: SomeAsyncException) -> do
+        cancelScope sid >>= mapM_ (trackAwaited (hookAsync hooks))
+        throwIO ex
     trackSpawned (hookAsync hooks) (siteOf f) a
     pure (VAsync (AsyncHandle a))
   ("await", [VAsync (AsyncHandle a)]) -> awaitHandle a
@@ -395,15 +409,16 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     count <- countOf "backoff_linear" n
     initial <- nonNegative "backoff_linear" "initial delay" d
     by <- nonNegative "backoff_linear" "step" step
-    numbers [initial + by * fromIntegral i | i <- [0 .. count - 1]]
+    representable "backoff_linear" [initial + by * fromIntegral i | i <- [0 .. count - 1]]
   ("backoff_exponential", [VNumber d, VNumber factor, VNumber n]) -> do
     count <- countOf "backoff_exponential" n
     initial <- nonNegative "backoff_exponential" "initial delay" d
     f <- nonNegative "backoff_exponential" "factor" factor
-    let ds = [initial * f ^ i | i <- [0 .. count - 1]]
-    if any (\x -> isInfinite x || isNaN x) ds
-      then throwIO (domainError "backoff_exponential grows beyond a representable delay; cap it with a smaller count")
-      else numbers ds
+    -- Each delay is the one before times the factor, so that no power
+    -- of the factor is formed on its own: one that overflows would
+    -- make a delay of 0 NaN, and a small delay infinite, where the
+    -- delay itself is representable.
+    representable "backoff_exponential" (take count (iterate (* f) initial))
   -- 15.8 serialization ------------------------------------------------------------
   ("to_json", [v]) -> either throwIO (pure . VString) (encodeFormat "json" v)
   ("from_json", [VString s]) -> either throwIO pure (decodeFormat "json" s)
@@ -585,9 +600,6 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     toRealTo :: Scientific -> Double
     toRealTo = toRealFloat
 
-    -- Scientific division can diverge on repeating decimals; go
-    -- through Double (integer results stay exact via fromFloatDigits).
-    divS a b = fromFloatDigits (toRealTo a / toRealTo b)
     modS a b
       | isInteger a && isInteger b =
           fromInteger (floor (toRealTo a) `mod` floor (toRealTo b))
@@ -614,10 +626,21 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
       | finiteNumber x && x >= 0 = pure (toRealTo x)
       | otherwise = throwIO (domainError (fn <> " takes a finite, non-negative " <> what <> ", not " <> formatNumber x))
 
+    -- The count is bounded (15.7), so that a strategy is never longer
+    -- than an array can be built in reasonable time and memory.
     countOf :: Text -> Scientific -> IO Int
     countOf fn x
-      | isInteger x && x >= 0 && x <= 1000000 = pure (floor (toRealTo x))
+      | isInteger x && x >= 0 && x <= maxBackoffCount = pure (floor (toRealTo x :: Double))
+      | isInteger x && x > maxBackoffCount = throwIO (domainError (fn <> " takes a count of at most " <> formatNumber maxBackoffCount <> ", not " <> formatNumber x))
       | otherwise = throwIO (domainError (fn <> " takes a count that is a non-negative integer, not " <> formatNumber x))
+    maxBackoffCount = 1000000
+
+    -- A strategy whose delays all fit in a Double; one that grows past
+    -- them is refused rather than written as the largest one.
+    representable :: Text -> [Double] -> IO Value
+    representable fn ds
+      | any (\x -> isInfinite x || isNaN x) ds = throwIO (domainError (fn <> " grows beyond a representable delay; cap it with a smaller count"))
+      | otherwise = numbers ds
 
     numbers :: [Double] -> IO Value
     numbers = pure . VArray . V.fromList . map (VNumber . fromFloatDigits)

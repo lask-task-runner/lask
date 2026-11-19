@@ -1,5 +1,5 @@
 name: lask
-version: 0.17.0
+version: 0.18.0
 github: "lask-task-runner/lask"
 license: MIT
 author: "Toru Ikeda"
@@ -90,24 +90,35 @@ executables:
     dependencies:
       - lask
 
+# What both test suites are built with: test/support holds the helpers
+# they share (doc/development.md, Tests).
+_test-suite: &test-suite
+  main: Spec.hs
+  ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+  dependencies:
+    - lask
+    - doctest >= 0.22 && < 0.25
+    - hspec >= 2.11 && < 3
+    - hspec-core >= 2.11 && < 3
+    - hspec-megaparsec >= 2.2 && < 3
+    - lsp-types >= 2.0 && < 3
+    - QuickCheck >= 2.14 && < 3
+    - temporary >= 1.3 && < 2
+    - wai >= 3.2 && < 4
+    - warp >= 3.3 && < 4
+
 tests:
-  lask-test:
-    main: Spec.hs
-    source-dirs: test
-    ghc-options:
-      - -threaded
-      - -rtsopts
-      - -with-rtsopts=-N
-    dependencies:
-      - lask
-      - doctest >= 0.22 && < 0.25
-      - hspec >= 2.11 && < 3
-      - hspec-core >= 2.11 && < 3
-      - hspec-megaparsec >= 2.2 && < 3
-      - lsp-types >= 2.0 && < 3
-      - temporary >= 1.3 && < 2
-      - wai >= 3.2 && < 4
-      - warp >= 3.3 && < 4
+  # In process: the library called directly, no binary and no engine.
+  lask-unit:
+    <<: *test-suite
+    source-dirs: [test/unit, test/support]
+  # End to end: the built lask binary, run as a person or CI runs it.
+  lask-e2e:
+    <<: *test-suite
+    source-dirs: [test/e2e, test/support]
   # The Language.Lask.Embed example, run as a test so that it is built and
   # executed in CI without being installed as a binary.
   edsl-example:

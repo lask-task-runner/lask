@@ -15,6 +15,8 @@ module Language.Lask.Runtime.Value
     valueEq,
     stringify,
     formatNumber,
+    arithResult,
+    divNumber,
     errorValue,
     runtimeFailure,
     ioFailure,
@@ -24,16 +26,17 @@ module Language.Lask.Runtime.Value
 where
 
 import Control.Concurrent.Async (Async)
-import Control.Exception (Exception)
+import Control.Exception (Exception, throwIO)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Scientific (FPFormat (Fixed), Scientific, formatScientific, isInteger)
+import Data.Scientific (FPFormat (Fixed), Scientific, formatScientific, fromFloatDigits, isInteger, toRealFloat)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import Language.Lask.Core.AST (Lam)
 import Language.Lask.ErrorCode (ErrorCode (..))
+import Language.Lask.Number (fitNumber)
 
 data Value
   = VNumber !Scientific
@@ -129,6 +132,25 @@ formatNumber :: Scientific -> Text
 formatNumber n
   | isInteger n = T.pack (formatScientific Fixed (Just 0) n)
   | otherwise = T.pack (formatScientific Fixed Nothing n)
+
+-- | The result of an arithmetic operation, which fails with
+-- @E-RUNTIME-VALUE@ when it is beyond the range of Number (spec 4.1),
+-- and is 0 when it is too small to tell from zero.
+arithResult :: Text -> Scientific -> IO Scientific
+arithResult what n = maybe (throwIO (outOfRange what)) pure (fitNumber n)
+
+outOfRange :: Text -> LaskFailure
+outOfRange what = runtimeFailure ERuntimeValue ("the result of " <> what <> " is outside the range of Number (about 1.8e308)")
+
+-- | @a / b@ for a nonzero @b@ (spec 6.2). An exact quotient may not
+-- end (@1 / 3@), so it is that of the two doubles, to the shortest
+-- decimal that reads back as the same double.
+divNumber :: Text -> Scientific -> Scientific -> IO Scientific
+divNumber what a b
+  | isInfinite q = throwIO (outOfRange what)
+  | otherwise = pure (fromFloatDigits q)
+  where
+    q = toRealFloat a / toRealFloat b :: Double
 
 -- | Text used by string\/command interpolation (spec 6.6).
 stringify :: Value -> Text

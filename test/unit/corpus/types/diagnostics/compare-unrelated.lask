@@ -1,0 +1,1 @@
+f(): Bool = 1 == "a"  // expect: E-TYPE-MISMATCH

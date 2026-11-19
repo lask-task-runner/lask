@@ -35,7 +35,7 @@ import qualified Data.Text.IO as TIO
 import Language.Lask.Deps.Cache (cacheDirFor, cachePathFor, holdsPinned)
 import Language.Lask.Deps.File
 import Language.Lask.Deps.Lock (LockFile (..), childPath, defaultLockFileName, loadLockFile, lockDisagreement, lookupHash)
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
+import Language.Lask.Diagnostic (Diagnostic (..), mkDiagnostic, withNote)
 import Language.Lask.ErrorCode (ErrorCode (EModuleCycle, EModuleDeepImport, EModuleLockStale, EModuleUnresolved, ENameUndefined), Stage (StageStatic))
 import Language.Lask.Span (Span (NoSpan))
 import Language.Lask.Syntax.AST
@@ -169,7 +169,7 @@ loadProgramEnv env entryPath = do
     (Right rootDeps, Right lock) -> case lockGap rootDeps lock of
       Just d -> pure (Left [d])
       Nothing -> do
-        result <- go (ModCtx baseDir rootDeps "" Nothing) [] Map.empty [] entry
+        result <- go (ModCtx baseDir rootDeps "" Nothing) NoSpan [] Map.empty [] entry
         pure $ case result of
           Left ds -> Left ds
           Right (mods, order) ->
@@ -214,21 +214,24 @@ loadProgramEnv env entryPath = do
     stale = mkDiagnostic EModuleLockStale StageStatic NoSpan
 
     -- DFS with an explicit visiting stack for cycle detection.
-    -- The accumulated order is reversed topological order.
+    -- The accumulated order is reversed topological order. The span is
+    -- that of the import being followed, where a module that closes a
+    -- cycle or cannot be loaded is reported (14.3); the entry has none.
     go ::
       ModCtx ->
+      Span ->
       [FilePath] ->
       Map FilePath LoadedModule ->
       [FilePath] ->
       FilePath ->
       IO (Either [Diagnostic] (Map FilePath LoadedModule, [FilePath]))
-    go ctx visiting done order path
+    go ctx at visiting done order path
       | path `Map.member` done = pure (Right (done, order))
       | path `elem` visiting =
           pure . Left . pure $
             withNote
               (T.pack ("cycle: " <> showCycle path visiting))
-              (mkDiagnostic EModuleCycle StageStatic NoSpan "circular module import")
+              (mkDiagnostic EModuleCycle StageStatic at "circular module import")
       | otherwise = do
           srcOrErr <- leReader env path
           case srcOrErr of
@@ -238,14 +241,14 @@ loadProgramEnv env entryPath = do
                   mkDiagnostic
                     ENameUndefined
                     StageStatic
-                    NoSpan
+                    at
                     (T.pack ("cannot load module: " <> path))
             Right src -> do
               parsed <- leParse env path src
               case parsed of
                 Left ds -> pure (Left ds)
                 Right m -> do
-                  let importPaths = [p | Decl _ f <- moduleDecls m, p <- declImportPath f]
+                  let importPaths = [(p, sp) | Decl sp f <- moduleDecls m, p <- declImportPath f]
                   resolvedE <- resolveAll ctx importPaths
                   case resolvedE of
                     Left d -> pure (Left [d])
@@ -257,20 +260,21 @@ loadProgramEnv env entryPath = do
                                 { lmPath = path,
                                   lmModule = m,
                                   lmSource = src,
-                                  lmImportKeys = Map.fromList [(p, k) | (p, k, _) <- resolved]
+                                  lmImportKeys = Map.fromList [(p, k) | (p, k, _, _) <- resolved]
                                 }
                         pure (Map.insert path lm done', path : order')
 
     resolveAll _ [] = pure (Right [])
-    resolveAll ctx (p : rest) = do
+    resolveAll ctx ((p, sp) : rest) = do
       r <- resolveImport env ctx p
       case r of
-        Left d -> pure (Left d)
-        Right (key, childCtx) -> fmap ((p, key, childCtx) :) <$> resolveAll ctx rest
+        -- Resolution knows the path, not where it is written.
+        Left d -> pure (Left (if diagSpan d == NoSpan then d {diagSpan = sp} else d))
+        Right (key, childCtx) -> fmap ((p, key, childCtx, sp) :) <$> resolveAll ctx rest
 
     loadAll _ done order [] = pure (Right (done, order))
-    loadAll visiting done order ((_, key, childCtx) : rest) = do
-      r <- go childCtx visiting done order key
+    loadAll visiting done order ((_, key, childCtx, sp) : rest) = do
+      r <- go childCtx sp visiting done order key
       case r of
         Left ds -> pure (Left ds)
         Right (done', order') -> loadAll visiting done' order' rest

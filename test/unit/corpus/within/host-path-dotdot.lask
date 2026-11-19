@@ -1,0 +1,3 @@
+access Mounts = { volumes: true }
+
+t() within Mounts = $[#alpine:3.22.2{ volumes: ["/tmp/../var/run/docker.sock:/s"], network: "none" }] true  // expect: E-TYPE-WITHIN-EXCEEDED

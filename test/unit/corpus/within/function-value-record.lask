@@ -1,0 +1,5 @@
+run_in(e: Runnable): String = $[e] true
+
+r = { go: run_in }  // expect: E-TYPE-WITHIN-UNPROVEN
+
+t(): String within { outbound: false } = r.go(#alpine:3.22.2)

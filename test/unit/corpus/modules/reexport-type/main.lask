@@ -1,0 +1,3 @@
+// Type aliases may be re-exported (5).
+import { T } from "./lib.lask"
+x: T = 1

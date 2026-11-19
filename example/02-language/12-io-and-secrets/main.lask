@@ -97,7 +97,7 @@ required_profile(): String = get_env("AWS_PROFILE")
 // @example lask run show-token
 show_token(--token!!: String = get_env_or("APP_TOKEN", "s3cr3t-value")): Void = do {
   log("about to use #{token}")
-  $[runnable(alpine, env = {"APP_TOKEN": token})] echo "token=$APP_TOKEN user=lask"
+  $[runnable(alpine, env = { "APP_TOKEN": token })] echo "token=$APP_TOKEN user=lask"
   log("done")
 }
 
@@ -107,7 +107,7 @@ show_token(--token!!: String = get_env_or("APP_TOKEN", "s3cr3t-value")): Void = 
 // not declared with `!!` — the return value of a command, say.
 issue_token(): String = do {
   generated = mark_secret(random_string(12))
-  $[runnable(alpine, env = {"GENERATED": generated})] echo "issued $GENERATED"
+  $[runnable(alpine, env = { "GENERATED": generated })] echo "issued $GENERATED"
   "issued"
 }
 

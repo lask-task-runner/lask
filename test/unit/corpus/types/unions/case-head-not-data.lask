@@ -1,0 +1,5 @@
+// A case type head on Any is a data type (6.4).
+f(v: Any): Number = case (v) {
+  Function<Number> -> 1 // expect: E-TYPE-ILLFORMED
+  else -> 0
+}

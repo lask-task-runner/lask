@@ -32,6 +32,7 @@ import qualified Data.Text.Encoding as TE
 import Language.Lask.Elaborate (StaticParams (..))
 import Language.Lask.Runtime.Eval (castValueEither, renderCastMismatch)
 import Language.Lask.Runtime.Value (Value (..))
+import Language.Lask.Number (numberText)
 import Language.Lask.Serialize (valueFromJson)
 import Language.Lask.Types
   ( Bound (..),
@@ -91,6 +92,8 @@ flagNames ps = [n | (n, t) <- spKeywords ps, isFlagType t]
 -- digit (3.2), so @-1@ is a negative number rather than a short form.
 -- A flag (the parameter names given) takes the next token as its
 -- value only when it is @true@ or @false@, and is otherwise @true@.
+-- Any other name that ends the line is a 'CliFlag' too: whether the
+-- declaration takes it, and as a flag, is for 'bindCliArgs' to say.
 parseCliArgs :: [Text] -> [Text] -> Either Text [CliArg]
 parseCliArgs flags = go
   where
@@ -110,9 +113,12 @@ parseCliArgs flags = go
             (v : rest')
               | v `elem` ["true", "false"] -> (CliKw (kebabToSnake name) v :) <$> go rest'
             _ -> (CliFlag (kebabToSnake name) :) <$> go rest
+      -- With nothing after it, a name is left to 'bindCliArgs', which
+      -- reports one the declaration does not take as unknown, and
+      -- one that is not a flag as needing a value.
       (name, "") -> case rest of
         (v : rest') -> (CliKw (kebabToSnake name) v :) <$> go rest'
-        [] -> Left ("keyword argument '--" <> name <> "' needs a value")
+        [] -> Right [CliFlag (kebabToSnake name)]
       _ -> Left ("malformed keyword argument: '" <> body <> "'")
 
 -- | Decode one raw argument (spec 11.2): @text@ = always String;
@@ -121,11 +127,14 @@ decodeArgValue :: ArgDecodeMode -> Text -> Either Text Value
 decodeArgValue mode raw = case mode of
   DecodeText -> Right (VString raw)
   DecodeJson -> case decodeJson raw of
-    Just v -> Right v
+    Just v -> fitted v
     Nothing -> Left ("argument is not valid JSON: '" <> raw <> "'")
-  DecodeAuto -> Right (maybe (VString raw) id (decodeJson raw))
+  DecodeAuto -> maybe (Right (VString raw)) fitted (decodeJson raw)
   where
     decodeJson t = valueFromJson <$> A.decode (BL.fromStrict (TE.encodeUtf8 t))
+    -- JSON with a number beyond the range of Number (spec 4.1) is
+    -- refused, not read as the String it is spelled as.
+    fitted = either (\n -> Left ("argument '" <> raw <> "' has the number " <> numberText n <> ", outside the range of Number (about 1.8e308)")) Right
 
 -- | Bind decoded CLI arguments against the declaration parameter info
 -- (spec 11.2): positionals in order (excess collected by a variadic
@@ -204,7 +213,9 @@ bindCliArgs params mode cliArgs =
                   CliKw _ raw -> plain (decodeAndCheck ("keyword argument '" <> flag n <> "'") (raw, t))
                   -- Only a flag parses without a value, whatever the
                   -- decoding mode.
-                  _ -> Right (VBool True)
+                  _
+                    | isFlagType t -> Right (VBool True)
+                    | otherwise -> plain (Left ("keyword argument '" <> flag n <> "' needs a value"))
                 bindKw ((n, v) : acc) rest
 
     decodeAndCheck what (raw, ty) = do

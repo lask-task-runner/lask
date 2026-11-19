@@ -1,0 +1,2 @@
+// The named bounds are closed; any other lower-case word is undefined (4.2).
+f<T: foo>(x: T) = 1 // expect: E-NAME-UNDEFINED

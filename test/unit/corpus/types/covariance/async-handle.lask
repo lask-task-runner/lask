@@ -1,0 +1,4 @@
+// AsyncHandle<T> is covariant (4.4).
+h(): AsyncHandle<Number> = spawn(\() -> 1)
+g(): AsyncHandle<Number | Null> = h()
+k(): AsyncHandle<Number> = g() // expect: E-TYPE-MISMATCH

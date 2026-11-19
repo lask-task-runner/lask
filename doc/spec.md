@@ -333,6 +333,7 @@ Lexical rules:
 - Comments are treated the same as whitespace for the purposes of lexical analysis.
 - A line comment ends at a newline, and a block comment is enclosed by `/*` and `*/`.
 - Number literals do not include a sign. A negative number is written with unary minus (6.2), `-1`, which is the expression `0 - 1` and not a literal. `+` is always a binary operator.
+- A number literal beyond the range of `Number` (4.1) is a syntax error, reported where the literal starts. One too small to tell from zero is `0`.
 - `env_head` is the leading token of an environment expression (6.7) and is read with longest match. It terminates at the position where a character that is not an `env_char` (whitespace, `]`, `,`, `)`, `}`, etc.) appears.
 - A `#` not followed by at least one `env_char` is a lexical error (except for the interpolation opener `#{` inside interpreted strings and command strings).
 - The character set of `env_char` is defined so that any Docker image reference including registry, repository, tag, and digest can be written. `@` is included for digest specification (e.g. `#alpine@sha256:...`). It also covers a relative path to a Dockerfile (`#./images/build/Dockerfile`, 6.7).
@@ -359,7 +360,7 @@ Escape sequences:
 
 - Escape sequences are valid only in interpreted strings.
 - The minimum supported escapes are `\\`, `\"`, `\n`, `\r`, `\t`.
-- Unicode escapes are supported in the `\u{HEX}` form (`HEX` is one or more hexadecimal digits).
+- Unicode escapes are supported in the `\u{HEX}` form (`HEX` is one or more hexadecimal digits). `HEX` names a Unicode scalar value: one greater than `10FFFF`, or a surrogate (`D800` to `DFFF`), which is not a character, is a syntax error.
 - Raw strings perform no escape processing.
 
 ## 4. Type System
@@ -370,7 +371,7 @@ This chapter defines the types of values that Lask handles, type annotations, ty
 
 - Base types
   - `Any`: A general-purpose type that accepts any value
-  - `Number`: Integers and floating-point numbers
+  - `Number`: Integers and floating-point numbers, within the range of a finite IEEE 754 double (below)
   - `String`: UTF-8 strings
   - `Bool`: Boolean values
   - `Null`: Absence of a value
@@ -385,6 +386,13 @@ This chapter defines the types of values that Lask handles, type annotations, ty
   - `Function<T1, T2, ..., R>`: A function type consisting of positional parameters only. The last type argument is the return type.
 - Union types
   - `T1 | T2 | ...`: A type whose values are the values of any one of its members. It is how a value that may be absent is typed (`String | Null`), and it is the only type former whose members are types of the program's own choosing rather than a fixed shape.
+
+The range of `Number`:
+
+- A `Number` is a decimal of magnitude at most `1.7976931348623157e308`, the largest finite double to its shortest decimal. There is no infinity and no NaN.
+- A number beyond the range is refused where it would become a value: a number literal is a syntax error (3.3); a number decoded from text, by `to_number` (15.3), `from_json` or `decode` (15.8), is `E-IO-DATA-DECODE`; a command-line argument is `E-CLI-USAGE` (11.2); and the result of an arithmetic operation (6.2, 15.2) is `E-RUNTIME-VALUE`.
+- A nonzero number of magnitude below `5e-324`, the smallest positive double to its shortest decimal, is `0` wherever it enters: such a number is read as `0`, and an arithmetic result that small is `0`, as a double would round it.
+- The range keeps every number one with a double, and one whose decimal text (13.1) has a bounded length: an exact decimal of `1e1000000000` would take a billion digits to write.
 
 ### 4.2 Type Syntax
 
@@ -565,7 +573,7 @@ Type annotations are optional, and the following type inference rules apply wher
   - A `T` that already admits `Null`, or is `Any`, is unchanged by the join.
   - So `if (c) { "x" } else { null }` and `c ? "x" : null` are `String | Null`, and `case (s) { "a" -> 1; else -> null }` is `Number | Null`, which is also what an `if` without `else` is (6.4). Any other difference between the types of branches is a type error, as before: `if (c) { 1 } else { "a" }` is not `Number | String`.
   - With an expected type, each branch is checked against it (below), and the join plays no part.
-- Branches of conforming types: when the branches of one expression (above) are checked with no expected type, and the types of the branches that are not `Null` differ, but one of them is a type every other conforms to (4.4), the type is that one, joined with `Null` by the rule above where a branch is `Null`. So `c ? names : maybe_names` and `c ? maybe_names : names`, with `names: Array<String>` and `maybe_names: Array<String | Null>`, are both `Array<String | Null>`, and `if (c) { #alpine:3.20 } else { #alpine:3.20{memory: "1g"} }` is `Runnable`. This builds no type of its own, unlike a union of the branches, so the order of the branches never decides the type.
+- Branches of conforming types: when the branches of one expression (above) are checked with no expected type, and the types of the branches that are not `Null` differ, but one of them is a type every other conforms to (4.4), the type is that one, joined with `Null` by the rule above where a branch is `Null`. So `c ? names : maybe_names` and `c ? maybe_names : names`, with `names: Array<String>` and `maybe_names: Array<String | Null>`, are both `Array<String | Null>`, and `if (c) { #alpine:3.20 } else { #alpine:3.20{ memory: "1g" } }` is `Runnable`. This builds no type of its own, unlike a union of the branches, so the order of the branches never decides the type.
 - For an array literal `[e1, e2, ...]` with no expected type, the type of each element is inferred; if all are the same type `T`, the literal is `Array<T>`, and if heterogeneous, it is `Array<Any>`.
 - When the expected type is `Array<T>`, if every element expression conforms to `T`, the literal's type is `Array<T>`. If any element does not conform, it is a type error.
 - The empty array `[]` follows the expected type if one exists; with no expected type it is `Array<Any>`.
@@ -580,6 +588,7 @@ Type annotations are optional, and the following type inference rules apply wher
 - When the expected type is a union `U1 | ... | Un`, the expression is checked against it by the conformance relation of 4.4, and an expected type is propagated into the branches of an `IfExpr` and of a conditional expression `c ? a : b` (6.2), and the arms of a `CaseExpr` (6.4), unchanged. Therefore `f(): String | Null = if (c) { "x" } else { null }` is well-typed: each branch is checked against `String | Null`, and both `String` and `Null` conform to it.
 - When a variable or function declaration has no annotation, the type of the right-hand-side expression is adopted as the declared type.
 - When a function has no return-value annotation, the type of the function body is inferred as the return type.
+- A lambda whose expected type is a function type `Function<T1, ..., Tn, R>` takes its parameter types from it where it writes none (as before), and, when it has no return-value annotation, its body is checked against `R` as an annotation would check it. So `a: Function<Number> = \() -> fail(error(3, "x"))` concretizes the `T` of `fail` from `R` (15.7), `\() -> []` against `Function<Array<Number>>` is a list of numbers, and `retry([0], \() -> cast(v))` in a position of type `Number` gives `cast` its target (15.8). The expected type of a lambda passed as an argument is the callee's parameter type instantiated so far (4.4); while `R` still holds a type variable, the body determines it instead.
 - When a positional, variadic or required keyword parameter has no annotation, its type is inferred from how the body uses it (Inference of parameter types, below). A keyword parameter with a default value and no annotation takes the type of its default, as before.
 - In a function call `f(a1, ..., an)`, `f` must resolve to `Function<T1, T2, ..., Tm, R>`, the argument binding must satisfy the rules of 7.5 (including keyword arguments and default-value completion), and each bound argument must conform to the type at the corresponding position. The result type is `R`.
 - In the form `Function<T1, T2, ..., R>`, the last type argument is the return type, and the preceding ones are the positional parameter types.
@@ -592,7 +601,7 @@ Inference of parameter types:
 
 A parameter written without a type annotation is not `Any`: its type is the one the body of its function needs it to have. This holds for the positional, variadic and required keyword parameters of a function declaration and of a lambda, at top level or in a block. A lambda checked against an expected type takes its parameter types from it (6.1), as before, and infers none.
 
-- **Uses.** Each place the body puts the parameter in a position that requires a type `U` — an argument of a callee whose parameter is `U`, an operand of an operator (6.2), the condition of `if` or `case`, the scrutinee of a `case` with value patterns (6.4) at the type of those patterns, an operand of `==`, `!=`, `<`, `<=`, `>` or `>=` (6.2) at the type of the other operand, the environment of a command (6.6), a binding or a return with an annotation, a field of a record literal with an expected type — is a *use* at `U`. A position that requires `Any`, such as the argument of `to_json` or `cast` (15.8), constrains nothing, since every type conforms to `Any`, and is not a use. The scrutinee of a `case` with type heads (6.4) is a use at `Any`: a type is dispatched on only in an `Any` or a union. Compared with `null`, a parameter is used at no type; compared or ordered with another parameter whose type is inferred, the two have one type.
+- **Uses.** Each place the body puts the parameter in a position that requires a type `U` — an argument of a callee whose parameter is `U`, an operand of an operator (6.2), the condition of `if` or `case`, the scrutinee of a `case` with value patterns (6.4) at the type of those patterns, an operand of `==`, `!=`, `<`, `<=`, `>` or `>=` (6.2) at the type of the other operand, the environment of a command (6.6), a binding or a return with an annotation, a field of a record literal with an expected type — is a *use* at `U`. A position that requires `Any`, such as the argument of `to_json` or `cast` (15.8), constrains nothing, since every type conforms to `Any`, and is not a use. The scrutinee of a `case` with type heads (6.4) is a use at `Any`: a type is dispatched on only in an `Any` or a union. When the scrutinee is the parameter itself, it is `Any` throughout the `case`, and each arm narrows it as it narrows an `Any` (6.4), so what an arm does with it is done with the narrowed value and is no use of the parameter: in `f(x) = case (x) { Number -> x + 1; else -> 0 }`, `x` is `Any`. A use outside the `case` that leaves the parameter a type other than `Any` or a union, such as `Number`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names the `case` and suggests an annotation. Compared with `null`, a parameter is used at no type; compared or ordered with another parameter whose type is inferred, the two have one type.
 - **The inferred type** is the most general type that conforms (4.4) to every type the parameter is used at: the one a caller can pass the most values of. Used at `String` and at `String | Null`, a parameter is `String`; put at `Number` and at `Any`, it is `Number`; put only at `Any`, it is a type parameter (below), so that `wrap(x) = [to_json(x), x]` keeps the type of `x` in its result. A parameter used at two types that no type conforms to both of, such as `Number` and `String`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names both uses and suggests an annotation.
 - **A use at a type that has a type variable** in it, as an argument of a generic function (4.4) or as the element of an array the function takes, gives the parameter that shape, with the variable left to be inferred in turn: `size(xs)` makes `xs` an `Array<a>` for an `a` still to be found. A use inside a lambda the parameter is passed to counts as any other use.
 - **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (6.2, 15.4). Where its uses need two of them, it has the one that entails the other (`orderable` entails both others); two of which neither entails the other, such as `comparable` and `stringifiable`, are a type error (`E-TYPE-BOUND`) that asks for an annotation: a type parameter has at most one bound, written or inferred. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
@@ -810,7 +819,7 @@ Command declarations:
 
 ```lask
 node = #node:20.20.2-alpine3.23
-go(--proxy: String = ""): Runnable = #golang:1.25{env: { "GOPROXY": proxy }}
+go(--proxy: String = ""): Runnable = #golang:1.25{ env: { "GOPROXY": proxy } }
 
 command { "go", "gofmt" } on go(proxy = "direct")
 command { "node", "npm", "npx" } on node
@@ -835,8 +844,8 @@ Command imports and exports:
 
 ```lask fragment
 // tools/main.lask
-go(--proxy: String = ""): Runnable = #golang:1.25{env: {"GOPROXY": proxy}}
-aws(--profile: String = ""): Runnable = #amazon/aws-cli:2.36.41{env: {"AWS_PROFILE": profile}}
+go(--proxy: String = ""): Runnable = #golang:1.25{ env: { "GOPROXY": proxy } }
+aws(--profile: String = ""): Runnable = #amazon/aws-cli:2.36.41{ env: { "AWS_PROFILE": profile } }
 command { "go", "gofmt" } on go()
 export command { "node", "npm" } on #node:20.20.2-alpine3.23
 internal command { "helper" } on #local
@@ -1196,10 +1205,15 @@ Operator precedence, from highest to lowest, is as follows.
 4. Comparison operators `==` `!=` `<` `<=` `>` `>=`
 5. Logical AND `&&`
 6. Logical OR `||`
-7. Pipe and composition operators `|>` `<|` `>>` `<<`
-8. Conditional operator `? :`
+7. Composition operators `>>` `<<`
+8. Application operators `|>` `<|`
+9. Conditional operator `? :`
 
-Operators of the same precedence associate from left to right, except the conditional operator, which associates from right to left.
+Operators of the same precedence associate from left to right, with these exceptions:
+
+- The backward operators `<|` and `<<` associate from right to left, so each of the four reads in the direction its arrow points: `x |> f |> g` is `(x |> f) |> g`, `f <| g <| x` is `f <| (g <| x)`, that is `f(g(x))`, and `f << g << h` is `f << (g << h)`. Composition is associative, so for `<<` this decides only the grouping, not the meaning.
+- `|>` and `<|` cannot be mixed at one level without parentheses, and neither can `>>` and `<<`, since they associate in opposite directions: `x |> f <| y` is a syntax error, and is written `(x |> f) <| y` or `x |> (f <| y)`. A composition inside an application needs none, as composition binds more tightly: `xs |> f >> g` is `xs |> (f >> g)`.
+- The conditional operator associates from right to left.
 
 The conditional operator `c ? a : b`:
 
@@ -1248,7 +1262,7 @@ The types of the operators are as follows.
 
 The pipe and composition operators are syntactic sugar for making the passing of functions readable from left to right, and parentheses can be used to make the association order explicit.
 
-The result of comparison operators and logical operators is `Bool`. The result of arithmetic operators is `Number`, and they must be evaluable as numeric operations. The arithmetic operators, including `+`, are exclusively for `Number`; applying them to `String` is a type error. String concatenation is not done with an operator; use the built-in library function `concat` (15.3).
+The result of comparison operators and logical operators is `Bool`. The result of arithmetic operators is `Number`, and they must be evaluable as numeric operations. `+`, `-` and `*` are exact; `/` divides the doubles of its operands and yields the shortest decimal that reads back as the double quotient (`10 / 3` is `3.3333333333333335`), since an exact quotient need not end. A divisor of `0` is `E-RUNTIME-DIV-BY-ZERO`, and a result beyond the range of `Number` (4.1) is `E-RUNTIME-VALUE`. The arithmetic operators, including `+`, are exclusively for `Number`; applying them to `String` is a type error. String concatenation is not done with an operator; use the built-in library function `concat` (15.3).
 
 ### 6.3 Asynchronous Invocation and Awaiting
 
@@ -1642,8 +1656,8 @@ Lexical rules:
 - The command string extends from immediately after `$` (immediately after the stream specifier if present, or after the closing `]` if an environment specification is present) to the end of the line. The newline is the terminator of the command string and is treated as the newline token of 3.3. The stream specifier and environment specification must follow `$` without intervening whitespace.
 - When the first character there other than spaces and tabs is `{`, the command is **braced**: its command string is what lies between that `{` and the `}` that closes it, and what follows the `}` is not part of it, so the expression may go on on the same line. `${uname -s}`, `$ { uname -s }`, `$*{ls}` and `$[#alpine:3.22] {ls}` are braced commands. A shell brace group written as a whole command, `$ { a; b; }`, is therefore read as a braced command; since every command runs in a shell of its own (10.2), the group added nothing.
 - Inside a braced command, braces are counted to find the closing one, whatever the shell quoting around them: every `{` opens and every `}` closes, so the braces of `'{"a": {"b": 1}}'`, `awk '{print $1}'`, `${HOME}` and `find . -exec rm {} \;` are inside the command. The braces of a hole are the hole's own. A brace written right after `\` is not counted, and the `\` is kept: `\{` and `\}` reach the shell as written, as `\{2\}` in a regular expression, or `echo \}`, needs. A brace the command must hold unpaired inside quotes, where the shell would keep a `\`, is written as a hole: `${sed 's/#{"}"}/x/' f}`.
-- Leading and trailing whitespace of a braced command string, newlines included, is removed. Inside it, a newline is part of the command string, read by the shell as the shell reads it; a line ending in `\` is joined to the next as in an unbraced command. A braced command with nothing between its braces, or whose closing brace never comes, is a syntax error.
-- Leading and trailing whitespace of the command string is removed, and internal whitespace is preserved as is.
+- Leading and trailing whitespace of a braced command string, newlines included, is removed, except a space or tab written after an unescaped `\`, which the shell reads as part of a word: `${echo a\ }` is `echo a\ `. Inside it, a newline is part of the command string, read by the shell as the shell reads it; a line ending in `\` is joined to the next as in an unbraced command. A braced command with nothing between its braces, or whose closing brace never comes, is a syntax error.
+- Leading and trailing whitespace of the command string is removed, except a space or tab written after an unescaped `\` (`$ echo a\ ` keeps its last space, and `$ echo a\\ ` does not), and internal whitespace is preserved as is.
 - If the line ends with `\`, it is a continuation line; the `\` and the newline are removed and the next line is concatenated.
 - Inside the command string, the shell's `;`, quotation marks, pipes, etc. can be used without escaping.
 - `#{` starts an interpolation, and `#!{` a raw hole. To include a literal `#{` or `#!{`, write `\#{` or `\#!{`. A `#` followed by neither `{` nor `!{` is treated as an ordinary character, so `$ echo '#!/bin/sh'` needs no escape.
@@ -1691,7 +1705,7 @@ Shell syntax:
 Environment specification rules:
 
 - `Environment` is a basic type defined in 4.1, and the responsibilities of execution environments are defined in Chapter 10.
-- `env` is an expression of type `Runnable`: an `Environment`, which conforms to it (4.4), or a runnable. It is usually written as an environment expression (6.7) — `#local`, an image reference such as `#alpine:3.20`, a recipe such as `#./images/build/Dockerfile`, or any of these with run options, `#alpine:3.20{memory: "4g"}` — but any expression of either type (a variable reference, a call, etc.) can be placed there.
+- `env` is an expression of type `Runnable`: an `Environment`, which conforms to it (4.4), or a runnable. It is usually written as an environment expression (6.7) — `#local`, an image reference such as `#alpine:3.20`, a recipe such as `#./images/build/Dockerfile`, or any of these with run options, `#alpine:3.20{ memory: "4g" }` — but any expression of either type (a variable reference, a call, etc.) can be placed there.
 - If resolution of `env` fails, it is a pre-execution error.
 - When an environment specification is present it is the environment, and dispatch is not performed whatever the command string contains. When it is absent the environment is the one dispatch selects (10.9), and its absence is a static error when dispatch selects none. There is no default execution environment (10.1).
 - Whitespace after `$` is not significant. The command string begins immediately after `$`, after the stream specifier, or after the closing `]`, and its leading whitespace is removed, so `$go test` and `$ go test` are the same expression, and `${go test}` and `$ { go test }` are too. Only a stream specifier and an environment specification may follow `$` without intervening whitespace.
@@ -1745,9 +1759,9 @@ lint(): String = do {
 // A braced command ends at its closing brace, so the expression goes on
 // after it on the same line, and its command string may span lines
 // where the shell continues the command.
-kernel(): String = $[#local]{uname -s} |> trim
+kernel(): String = $[#local]{ uname -s } |> trim
 
-versions(): Array<String> = map(["go", "node"], \(t: String) -> $[#local]{#{t} --version} |> trim)
+versions(): Array<String> = map(["go", "node"], \(t: String) -> $[#local]{ #{t} --version } |> trim)
 
 largest(--dir = "."): String = $[#local]{
   du -s #{dir}/* |
@@ -1790,7 +1804,7 @@ Syntax rules:
 
 Desugaring rules:
 
-- `#head(image options){k1: e1, ..., kn: en}` is syntactic sugar for `runnable(#head(image options), k1 = e1, ..., kn = en)` (15.5). It refers to the built-in `runnable` whatever the name `runnable` is bound to in scope (7.6).
+- `#head(image options){ k1: e1, ..., kn: en }` is syntactic sugar for `runnable(#head(image options), k1 = e1, ..., kn = en)` (15.5). It refers to the built-in `runnable` whatever the name `runnable` is bound to in scope (7.6).
 - The sugar is available on a head only. Run options for an environment held in a variable are given with `runnable(e, ...)`.
 
 Typing rules:
@@ -1809,10 +1823,10 @@ Examples:
 ```lask
 e1 = #local
 e2 = #alpine:3.20
-e3 = #alpine:3.20{memory: "4g", env: { "TOKEN": get_env("TOKEN") }}
+e3 = #alpine:3.20{ memory: "4g", env: { "TOKEN": get_env("TOKEN") } }
 e4 = #ubuntu@sha256:9cee2b382fe2412cd77d5d437d15a93da8de373813621f2e4d406e3df0cf0e7c
 e5 = #./infra/Dockerfile(context = ".", build_args = { "GO_VERSION": "1.25" })
-e6 = #node:24.21.0-alpine3.24(platform = "linux/amd64"){memory: "2g"}
+e6 = #node:24.21.0-alpine3.24(platform = "linux/amd64"){ memory: "2g" }
 
 // A function that lets its caller choose the image, and says how to run it.
 python(--image: Environment = #python:3.12.14-alpine3.24, --index_url: String | Null = null): Runnable =
@@ -1998,7 +2012,7 @@ deploy(
   // It is given to the container as the variable the CLI reads itself:
   // written into the command, it would be an argument of the program the
   // command runs, which the host's process list shows (W-SECRET-COMMAND-LINE).
-  aws = #amazon/aws-cli:2.31.9{env: {"AWS_SECRET_ACCESS_KEY": secret_key}}
+  aws = #amazon/aws-cli:2.31.9{ env: { "AWS_SECRET_ACCESS_KEY": secret_key } }
   $[aws] aws sts get-caller-identity --region #{region}
 }
 ```
@@ -2339,7 +2353,7 @@ Resolution of an environment or runnable value to an execution environment (10.4
 
 Equality comparison:
 
-- `==` / `!=` (6.2) on `Environment` and `Runnable` values is determined by structural equality of the profile, the image with its image options, and the set of run options that are set. An `Environment` and a `Runnable` with no run option set are equal: `#alpine:3.20 == runnable(#alpine:3.20)`, and `#alpine:3.20{memory: null} == #alpine:3.20`. The order run options are written in is not part of the value (10.2), so it plays no part.
+- `==` / `!=` (6.2) on `Environment` and `Runnable` values is determined by structural equality of the profile, the image with its image options, and the set of run options that are set. An `Environment` and a `Runnable` with no run option set are equal: `#alpine:3.20 == runnable(#alpine:3.20)`, and `#alpine:3.20{ memory: null } == #alpine:3.20`. The order run options are written in is not part of the value (10.2), so it plays no part.
 - The session a `with_container` call that starts a container gives its body (15.5) is equal only to itself: not to the environment it was opened on, nor to the session of another call. A call given `#local`, or a session that is open, gives the body that value itself, which compares as it does anywhere else.
 
 ### 8.9 Evaluation of Accessor Expressions (Core Expression)
@@ -2425,7 +2439,7 @@ Channel separation rules:
 
 ### 9.2 Ingestion of Standard Input
 
-Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure, when the function called can refer to `stdin`: when it, or a declaration it reaches, or the environment of one of the program's command declarations, names `stdin` (9.3). A function that cannot refer to it cannot observe its contents, so stdin is then not read at all, and the run does not wait for it to close. Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable (9.3).
+Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure, when the function called can refer to `stdin`: when it, or a declaration it reaches, or the environment of one of the program's command declarations, names `stdin` (9.3). A function that cannot refer to it cannot observe its contents, so stdin is then not read at all, and the run does not wait for it to close. Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable at the prompt (9.3, 11.9).
 
 1. Read stdin until EOF.
 2. Fix the entire input that was read as a single input snapshot.
@@ -2448,7 +2462,7 @@ Rules:
 - The binding of `stdin` is established exactly once per execution unit.
 - The visibility of `stdin` takes effect from the top-level environment at the start of evaluation, and it is referenceable according to the ordinary name resolution rules (7.2).
 - `stdin` is treated as an immutable value; destructive updates are not permitted.
-- `stdin` cannot be used in `repl`. Because no binding is provided, a reference is an undefined reference error (`E-NAME-UNDEFINED`).
+- `stdin` cannot be used at the `repl` prompt. Because no binding is provided there, a reference in a declaration or an expression typed at the prompt is an undefined reference error (`E-NAME-UNDEFINED`). A reference in the target module, or in a module it imports, does not stop the session from loading it; evaluated in the session, it reads the empty string (11.9).
 
 Type rules:
 
@@ -2545,7 +2559,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 
 ```lask
 aws(key_id: String, secret: String) =
-  #amazon/aws-cli:2.31.9{env: { "AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret }}
+  #amazon/aws-cli:2.31.9{ env: { "AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret } }
 
 deploy(
   --key_id!!: String = get_env("AWS_ACCESS_KEY_ID"),
@@ -2579,7 +2593,7 @@ Reading:
 - A value resolved from a reference is registered for masking (12.8). This is the one case in which a value is registered because of where it came from: writing a reference is how the environment declares the value secret. Binding it to a `!!`-marked name (6.10) remains good practice and changes nothing.
 - A run reads each secret at most once. Two references that name the same secret (the same path and version, differing in their field at most) are answered by the same read, also when they are read concurrently (6.3). For a store that issues a new credential on every read, this is what makes the fields of one credential agree.
 - A resolved value is kept in memory for the rest of the run only. Nothing is written to disk.
-- Resolution never changes the process environment. A command reads the variables of its execution environment (10.6), and a `local` command that reads the variable itself sees the reference, not the secret; a value reaches a command only as the program passes it on, for instance as `#alpine:3.20{env: {"TOKEN": get_env("TOKEN")}}`.
+- Resolution never changes the process environment. A command reads the variables of its execution environment (10.6), and a `local` command that reads the variable itself sees the reference, not the secret; a value reaches a command only as the program passes it on, for instance as `#alpine:3.20{ env: { "TOKEN": get_env("TOKEN") } }`.
 - Nothing that does not evaluate a program resolves a reference: `check`, `serve`, completion and help never reach a store. `cmd --help` (11.8) reports a command whose environment reads a reference without resolving it.
 
 The `vault` scheme (HashiCorp Vault, and stores serving the same HTTP API, such as OpenBao):
@@ -2656,7 +2670,7 @@ The host running Lask is a POSIX system, such as Linux or macOS. Windows is not 
   - A run option takes any expression of its type, like an argument anywhere else. It is resolved when a command runs.
   - The order options are written in is not part of the value. Two runnables with the same image and the same options set are structurally equal (8.8), so dispatch does not see them as two environments (10.9).
   - A run option must not be able to unsettle what this chapter fixes elsewhere: the image, the process launch method, the mount of the base directory beyond moving it and narrowing what it permits (10.5), the streams (9.1, 11.8), or the rule that images are materialized only by `sync` (10.3). An option that would override one of those is outside what may be provided.
-  - Notation examples: `#alpine:3.12`, `#./infra/Dockerfile(context = ".")`, `#node:24.21.0-alpine3.24(platform = "linux/amd64")`; with run options, `#alpine:3.12{memory: "4g"}`, `runnable(e, memory = "4g")`
+  - Notation examples: `#alpine:3.12`, `#./infra/Dockerfile(context = ".")`, `#node:24.21.0-alpine3.24(platform = "linux/amd64")`; with run options, `#alpine:3.12{ memory: "4g" }`, `runnable(e, memory = "4g")`
 
 The run options this implementation provides:
 
@@ -2686,6 +2700,9 @@ The run options this implementation provides:
   - A key that is `..` or begins with it, an absolute path, or one containing a comma (which `--mount` would split, below), is `E-TYPE-ENV-CONSTRUCT`, as is a mode other than the three. Both are found statically when the value is written as a literal, and are `E-RUNTIME-VALUE` when the command runs otherwise.
   - When a command runs, a path given `"rw"` or `"ro"` must exist on the host and must resolve, symbolic links followed, inside the base directory; otherwise the command does not run (`E-IO-ENV-RESOLVE`), so no mount reaches past the base directory. A path given `"none"` that does not exist has nothing to hide, and is passed over.
 - This implementation mounts each key of `base_access` with the client's `--mount`, from the shortest path to the longest, so that the longer is mounted over the shorter: a path given `"rw"` or `"ro"` as a bind mount of the host path, a directory given `"none"` as an empty `tmpfs`, and a file given `"none"` as a bind mount of an empty read-only file. `--mount` splits its fields on commas, so a `base_mount` containing a comma is `E-TYPE-ENV-CONSTRUCT`.
+- `volumes` mounts host paths and named volumes, each entry read as 10.11 reads it (Access sets). Lask gives the engine client the path it checked rather than the one written: a host path normalized, and a source beginning with `.` resolved against the base directory into an absolute path, rather than left for the client to resolve against the directory it is started in.
+  - When a command runs, a host path is resolved, symbolic links followed, as far as it exists. The command does not run (`E-IO-ENV-RESOLVE`) when a source beginning with `.` resolves outside the base directory, as a key of `base_access` must not; or when the path resolves to one that gives a container what the host has (10.11, Access sets) and the path as written, normalized, does not, so that no link carries a mount past the check.
+  - Besides the paths 10.11 lists, a path gives what the host has here when it is, or is a directory that holds, the directory the variable `XDG_RUNTIME_DIR` of lask's process names, where a rootless engine keeps its socket, or the socket a `unix://` value of `DOCKER_HOST` or `CONTAINER_HOST` names. These are known only when a command runs, and the check of 10.11 reads no variable of the process.
 - `egress` admits only the destinations it lists, through a proxy Lask provides (10.12). It is not given with `network` or `publish`.
 - `read_only`, `tmpfs` and `cap_drop` narrow the permission boundary of 10.7, and so do `base_access`, `egress` and `network = "none"`; `publish` and `volumes` widen it, and a module that uses them says so where the environment is written. What they permit, and what an access constraint permits, is compared as 10.11 describes.
 - A `Bool` parameter left `false` is the daemon's own default and is not passed; nothing is inferred from its absence.
@@ -2931,7 +2948,7 @@ An access constraint bounds the host files and the networks that the commands of
 ```lask
 within { outbound: false, volumes: false }
 
-node = #node:24.21.0-alpine3.24{base_access: { ".": "ro", "dist": "rw" }, network: "none"}
+node = #node:24.21.0-alpine3.24{ base_access: { ".": "ro", "dist": "rw" }, network: "none" }
 
 // Builds into dist; nothing else under the base directory is written.
 build(): String within { files: { ".": "ro", "dist": "rw" } } = do {
@@ -2949,7 +2966,7 @@ Access sets:
 
 - The **access set** of a use describes what its container reaches past itself, and what it is given. It has five components. The first four are read from the run options of its environment:
   - `files`: a table from paths relative to the base directory to `"rw"`, `"ro"` or `"none"`, read from `base_access` (10.2): `{".": "rw"}` when it is not given, `{".": m}` when it is the mode `m`, and the table when it is one.
-  - `volumes`: the host paths and named volumes the `volumes` option mounts, each with `"rw"` or `"ro"`. This implementation reads an entry as `[<source>:]<target>[:<options>]`: a source beginning with `/` is a host path, any other source a named volume, and an entry with no source adds nothing, since an anonymous volume holds nothing from the host. The mode is `"ro"` when the options include `ro`, and `"rw"` otherwise.
+  - `volumes`: the host paths and named volumes the `volumes` option mounts, each with `"rw"` or `"ro"`. This implementation reads an entry as `[<source>:]<target>[:<options>]`: a source beginning with `/` is a host path; a source beginning with `.` is a host path relative to the base directory, which lask makes absolute there (10.2); any other source is a named volume; and an entry with no source adds nothing, since an anonymous volume holds nothing from the host. A path is read normalized, its `.` and `..` components resolved as written: `/tmp/cache/../../home/me/.ssh` is `/home/me/.ssh`, and `./data/../src` is `./src`. The mode is `"ro"` when the options include `ro`, and `"rw"` otherwise.
   - `outbound`: `none`, the entries of `egress`, `default` or `host`. It is the entries of `egress` when `egress` is given (10.12). Otherwise it is read from `network`: `none` for `"none"`; `host` for `"host"`; `default` when it is not given, for `"bridge"` and `"default"`, and for any other name of a network (letters, digits, `_`, `.` and `-`, beginning with a letter or digit); and `host` for any other value, such as one naming another container's or a namespace's network (`container:<name>`), whose reach is not known.
   - `inbound`: the host addresses and ports the entries of `publish` open. This implementation reads an entry as `[[<ip>:][<hostPort>]:]<containerPort>[/<proto>]`, an IPv6 address in brackets, a port as a range where it is one: it opens the host ports it names, or ports the engine chooses when it names none, on its address, or on every interface of both families, `0.0.0.0` and `::`, when it names none. An entry it does not read this way opens any port on every interface.
 - The fifth, `secrets`, is read from the values the use is given (Secret flow, below): the secrets that reach it, each with the **channel** by which it does:
@@ -2961,13 +2978,13 @@ Access sets:
 - `egress` enters the access set, and must be static as `network` must (Resolution, below).
 - A run option that reaches past the container in another way — a device, a privilege, a namespace of the host — must not be provided unless this section gives it a place in the access set.
 - A use in `#local` reaches everything its process can (10.7). Its access set is unbounded in `files`, `volumes`, `outbound` and `inbound`; its `secrets` are read as for any other use.
-- So is a use that mounts a host path that gives a container what the host has, whatever its mode: the root, `/`; the kernel's interfaces, `/proc`, `/sys` and `/dev`, and what is under them; the socket or the state of a container engine, which starts any container with any option (`/var/run/docker.sock`, `/run/docker.sock`, `/run/containerd`, `/run/podman`, `/var/lib/docker`, `/var/lib/containerd`, `/var/lib/containers`, and any path ending in `/docker.sock`, `/podman.sock`, `/containerd.sock` or `/buildkitd.sock`); the host's configuration and root's home, `/etc`, `/root` and `/boot`; and any directory that holds one of those, such as `/var/run`. A path is read with `.` and `..` resolved as written, and no link is followed. A constraint that admits the volume does not make it less than the host, so it is within no constraint that gives `files`, `volumes`, `outbound` or `inbound`, and it is counted as `local` by `runs` (below).
+- So is a use that mounts a host path that gives a container what the host has, whatever its mode: the root, `/`; the kernel's interfaces, `/proc`, `/sys` and `/dev`, and what is under them; the socket or the state of a container engine, which starts any container with any option (`/var/run/docker.sock`, `/run/docker.sock`, `/run/containerd`, `/run/podman`, `/var/lib/docker`, `/var/lib/containerd`, `/var/lib/containers`, the directory `/run/user/<uid>` for any user id, where a rootless engine keeps its socket, and any path ending in `/docker.sock`, `/podman.sock`, `/containerd.sock` or `/buildkitd.sock`); the host's configuration and root's home, `/etc`, `/root` and `/boot`; and any directory that holds one of those, such as `/var/run` or `/run/user`. A path relative to the base directory gives what the host has when, normalized, it climbs out of the base directory, since where it then lands depends on where the base directory is, or when it ends in one of those socket names. Paths are read normalized, as above, and no link is followed: a link is followed when the command runs (10.2). A constraint that admits the volume does not make it less than the host, so it is within no constraint that gives `files`, `volumes`, `outbound` or `inbound`, and it is counted as `local` by `runs` (below).
 
 Constraints:
 
 - An access constraint is written as an `AccessSpec`, or by the name of an `AccessDecl` that gives one (Chapter 5). Its fields bound the components of the same name, and `runs` the kind of environment of each use:
   - `files`: `"rw"`, `"ro"`, `"none"`, or a table of them, as `base_access` takes them (10.2), with `"."` required.
-  - `volumes`: `false`, admitting none; `true`, admitting any; or a table from host paths (absolute, normalized as for `base_mount`) and volume names to `"rw"` or `"ro"`.
+  - `volumes`: `false`, admitting none; `true`, admitting any; or a table from host paths (absolute, normalized as for `base_mount`) and volume names to `"rw"` or `"ro"`. A host path relative to the base directory is a key of no table, and only `true` admits it.
   - `outbound`: `false`, admitting no network; `true`, admitting any network but the host's; or an array of egress entries, written as `egress` takes them (10.12), admitting a use whose `egress` only lists destinations they cover.
   - `inbound`: `false`, admitting no published port; `true`, admitting any; or an array of host addresses a port may be published on, each `<addr>` or `<addr>:<port>`, the port a range where it is one (`"127.0.0.1:8000-8010"`). An address is an IPv4 address or an IPv6 one, in brackets when a port follows it (`"::1"`, `"[::1]:8080"`); `0.0.0.0` and `::` are written to admit every interface of their family. Only where a port is opened is bounded, not who may connect to it.
   - `secrets`: `false`, admitting none, or an array of names, written as identifiers (`[key, token]`), admitting the secrets bound to them, and those only in `env`. A name is one of the secret bindings (6.10) of what the constraint covers: for a function's constraint, a `!!`-marked parameter of the function or a `!!`-marked binding in its body; for either, a top-level value of the module that is a secret binding. A binding through `mark_secret` (`a = mark_secret(e)`) is one, as 6.10 makes it. Any other name is `E-TYPE-WITHIN-SPEC`. A secret of another module is named by binding it, marked, to a name of this one.
@@ -2976,7 +2993,7 @@ Constraints:
 - Every value is a literal, containing no interpolation, and `within {}` constrains nothing. Any other field or value is `E-TYPE-WITHIN-SPEC`.
 - An access set is **within** a constraint when each component the constraint bounds is:
   - `files`: for `"."` and for every key of either table, the mode the access set gives the path is no wider than the mode the constraint gives it, both read by the longest key that is the path or an ancestor of it (10.2), where `"none"` < `"ro"` < `"rw"`. Modes change only at keys, so these paths are enough.
-  - `volumes`: anything, when the constraint gives `true`; otherwise every host path is the key, or under a key, of a host path the constraint gives a mode no narrower than its own; every named volume is a key of its own with such a mode. Paths are compared by their components as written; a symbolic link on the host is not followed.
+  - `volumes`: anything, when the constraint gives `true`; otherwise every host path is the key, or under a key, of a host path the constraint gives a mode no narrower than its own; every named volume is a key of its own with such a mode. Paths are compared by their components, normalized (Access sets, above), so a path that climbs out of a key with `..` is not under it. A symbolic link on the host is not followed: the check bounds the paths a program names, and a link that leads from them to what the host has is refused when the command runs (10.2).
   - `outbound`: no wider, where `none` < the entries of `egress` < `default` < `host`, `false` admitting `none` and `true` admitting `default`. A use's `egress` is within an array the constraint gives when each of its entries is covered by one of the array (10.12, Entries), within `true` whatever it lists, and within `false` when it lists nothing, since it then reaches nothing. Two arrays are compared only by coverage, so `["*.github.com:443"]` admits `egress: ["api.github.com:443"]` and not the reverse.
   - `inbound`: anything, when the constraint gives `true`; otherwise every address each entry of `publish` opens a port on is an address of the array, compared as addresses, whose port, when it gives one, holds every host port the entry opens. An entry whose host ports the engine chooses is admitted only by an address the array gives with no port, and one that names no address only when both `0.0.0.0` and `::` are given.
   - `secrets`: none when the constraint gives `false`; otherwise every secret is bound to one of the names the constraint gives (Secret flow, below), and reaches the use by the channel `env`. The channels `option`, `command` and `file` are within no constraint that gives `secrets`, and a secret bound to no name — one marked by a `mark_secret` that no binding takes — is within none either.
@@ -2993,14 +3010,14 @@ Resolution:
   - an entry of a map or record literal, or of a top-level binding of one: the entry, when it is named by a literal key, and any entry otherwise;
   - a call of a top-level function: what any result expression of its body can be, with its parameters resolved at that call;
   - `runnable(e, ...)` and its sugar `#head{...}` (6.7): what `e` can be, with the options given;
-  - the session `with_container` gives its body: what the call's first argument can be;
+  - the session `with_container` gives its body, a lambda or a top-level function named: what the call's first argument can be;
   - a parameter, resolved at each call (below).
 - The access set of a resolved environment is read from the options it is given. An option that does not enter an access set may be any expression; one that does — `base_access`, `volumes`, `network`, `egress` and `publish` — must be **static**: a literal containing no interpolation, `null`, an array or table literal of static values, a reference to a top-level value binding whose expression is static, a parameter, resolved at each call, or an expression that **only computes**. Any other expression leaves the access set unresolved.
 - An expression only computes when it, and every top-level declaration it reaches, reaches no effect (Chapter 5: no command execution, filesystem, diagnostic output, nondeterministic generation, waiting or standard input), reads no variable of the process (15.9) and awaits nothing (6.3), and every local it reads is static. Its value is the one evaluating it gives, as a run would evaluate it; one whose evaluation fails, or takes more than 1,000,000 steps, is not static. A step is the evaluation of one expression of the core program (Chapter 8), and each element or character of a string, array or map that an interpolation or a built-in function produces; the bound is counted in steps rather than in time so that whether an expression is static is the same on every machine and under any load. A run is not bounded. So is the result of a call of a top-level function that only computes, and a field of a record or table literal that only computes, whatever the other fields are: a library that builds its run options with functions, such as `mount(config_dir, "/root/.aws:ro")`, is read as the run would read them.
 - A use whose environment or static options depend on a parameter of the declaration it is written in is **parametric**. It is resolved at each call of the declaration from the argument given there, or the default of a keyword parameter not given, by the same rules; an argument that is a parameter of the calling declaration leaves it parametric in that one, so resolution proceeds outward through the calls.
 - A call of a parameter of function type — directly, or by a built-in function that calls the function it is given — reaches the uses of the argument given at each call: those of a lambda, of a top-level function named, or, for a parameter of the calling declaration, those resolved further out.
 - A use that reaches the function invoked by `run` or `eval` (11.2) still parametric is resolved from the command line, before anything is evaluated: the arguments given there, and the defaults of the keyword parameters not given. A parameter of type `Environment` or `Runnable` takes its default, since none can be given there (11.2).
-- A function whose uses are parametric, referenced other than by a call or as an argument of a call of a top-level function — stored in a value, returned, or given to a built-in function — leaves them unresolved where they would be resolved. When a constraint covers them, the reference is `E-TYPE-WITHIN-UNPROVEN`: the function is to be called by name.
+- A function whose uses are parametric, referenced other than by a call or as an argument of a call of a top-level function — stored in a value, returned, or given to a built-in function — leaves them unresolved where they would be resolved. When a constraint covers them, the reference is `E-TYPE-WITHIN-UNPROVEN`: the function is to be called by name. A constraint covers them both where the function is covered and where a covered declaration reaches a top-level value the function is stored in (`r = { go: run_in }` called as `r.go(e)`); a local binding of it is followed to its calls as any local binding is.
 
 Secret flow:
 
@@ -3027,7 +3044,7 @@ Checking:
 
 ```lask fragment
 alpine = #alpine:3.22.2
-sealed = #alpine:3.22.2{network: "none"}
+sealed = #alpine:3.22.2{ network: "none" }
 
 release_of(e: Runnable): String within { outbound: false } =
   $[e] cat /etc/alpine-release
@@ -3051,28 +3068,28 @@ kernel(): String within Contained = $[#local] uname -s
 sum(xs: Array<Number>): Number within Pure = reduce(xs, 0, \(a: Number, x: Number) -> a + x)
 
 serve(): String within Loopback =
-  $[#nginx:1.27{publish: ["127.0.0.1:8080:80", "[::1]:8080:80"], network: "none"}] nginx
+  $[#nginx:1.27{ publish: ["127.0.0.1:8080:80", "[::1]:8080:80"], network: "none" }] nginx
 
 // E-TYPE-WITHIN-EXCEEDED: a port is published on 0.0.0.0:8080, and on :: too.
 open_to_all(): String within Loopback =
-  $[#nginx:1.27{publish: ["8080:80"], network: "none"}] nginx
+  $[#nginx:1.27{ publish: ["8080:80"], network: "none" }] nginx
 ```
 
 ```lask fragment
 token!!: String = get_env("TOKEN")
 other!!: String = get_env("OTHER")
 
-aws(key: String) = #amazon/aws-cli:2.31.9{env: {"AWS_SECRET_ACCESS_KEY": key}}
+aws(key: String) = #amazon/aws-cli:2.31.9{ env: { "AWS_SECRET_ACCESS_KEY": key } }
 
 whoami(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secrets: [key] } =
   $[aws(key)] aws sts get-caller-identity
 
 // Bound to v here, whatever the caller calls it.
-show(v!!: String): String within { secrets: [v] } = $[#alpine:3.22.2{env: {"V": v}}] true
+show(v!!: String): String within { secrets: [v] } = $[#alpine:3.22.2{ env: { "V": v } }] true
 ok(): String = show(token)
 
 // E-TYPE-WITHIN-EXCEEDED: main.lask: other is not one of the names given.
-pick(): String within { secrets: [token] } = $[#alpine:3.22.2{env: {"T": token, "O": other}}] true
+pick(): String within { secrets: [token] } = $[#alpine:3.22.2{ env: { "T": token, "O": other } }] true
 
 // E-TYPE-WITHIN-EXCEEDED: main.lask: leak --key is given in the command string.
 // It is W-SECRET-COMMAND-LINE as well, constraint or not.
@@ -3089,7 +3106,7 @@ leak(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secret
 `egress` lets the commands of a container reach the destinations it lists, and nothing else. It is enforced by where the container is placed, not by what its programs choose to do: the container is on a network with no route out, and the only way out is a proxy Lask runs, which forwards a connection only to a listed destination.
 
 ```lask
-npm = #node:24.21.0-alpine3.24{egress: ["registry.npmjs.org:443"]}
+npm = #node:24.21.0-alpine3.24{ egress: ["registry.npmjs.org:443"] }
 
 fetch(): String within { outbound: ["registry.npmjs.org:443", "*.github.com:443"] } =
   $[npm] npm ci
@@ -3173,7 +3190,7 @@ Develop:
 
 - `check`: returns static validation results.
 - `fmt`: formats the project's `.lask` files in a single style, or checks that they are formatted (11.11).
-- `serve`: provides editor integration (Language Server Protocol) functionality.
+- `serve`: provides editor integration (Language Server Protocol) functionality. It ends on the `exit` notification with the exit code the Language Server Protocol gives: `0` after a `shutdown` request, and `1` without one.
 - `completion`: prints the shell completion script.
 - `version`: prints the version.
 
@@ -3286,6 +3303,7 @@ Argument decoding modes:
 - `--arg-decode auto`: JSON if interpretable as JSON, otherwise `String`.
 - The default when unspecified is `auto`.
 - Decoding applies to the values of both positional and keyword arguments.
+- JSON with a number beyond the range of `Number` (4.1), such as `1e400`, is `E-CLI-USAGE` under `json` and under `auto` alike: it is JSON, and `auto` does not take it as the `String` it is spelled as.
 
 Type conformance rules:
 
@@ -3326,7 +3344,7 @@ Standard input contract:
 - stdin is always read as a UTF-8 string and bound to `stdin` as a `String` value (9.2–9.4). No option to select a decoding mode (`--stdin-decode` etc.) is provided.
 - Structuring such as line splitting or JSON interpretation is performed inside the function by applying `split` / `from_json` etc.
 - `run` / `eval` accept stdin.
-- `repl` uses stdin for interactive input, and therefore does not provide the `stdin` reference variable (9.2, 9.3).
+- `repl` uses stdin for interactive input, and therefore does not provide the `stdin` reference variable to what is typed at the prompt (9.2, 9.3, 11.9).
 - `check` / `serve` may accept stdin, but the meaning must be defined in the subcommand specification.
 - `cmd` connects stdin to the invoked program rather than binding it as a value (11.8). It evaluates no function, so the `stdin` reference variable of 9.3 does not arise.
 
@@ -3534,7 +3552,7 @@ Columns (`envs files`):
 
 - One line for each mount of the row, after the row's first: the base directory, by each key of its `files` table, then each volume, then the root filesystem of the image and each `tmpfs`, which hold nothing of the host and are shown for what a command may write.
 - `TARGET`: where the mount is in the container (`/work`, `/work/dist`, `/var/run/docker.sock`); `/` for `#local`.
-- `SOURCE`: the path relative to the base directory, the host path or `volume:<name>` of a volume, `(image)`, `(tmpfs)`, or `(host)` for `#local`.
+- `SOURCE`: the path relative to the base directory for a mount of it; for a volume, its host path, normalized, and written with a leading `./` when it is relative to the base directory and stays inside it, or `volume:<name>`; `(image)`, `(tmpfs)`, or `(host)` for `#local`.
 - `ACCESS`: `rw`, `ro` or `none`.
 - With `--verbose`, each row is followed by one line for each call of a filesystem function (15.11) among its uses whose path is a string literal: where it is written, the declaration, the function and the path.
 
@@ -3928,7 +3946,7 @@ Stream rules:
 - The program's stdin and stdout are always those of the `cmd` process. `cmd` produces no evaluation result, so its stdout belongs to the program (11.3), and `lask cmd` can therefore be piped exactly as the program it runs can.
 - When stdin, stdout and stderr are all terminals, stderr is attached to the program as well, and a terminal is allocated in the `container` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
 - Otherwise the program's standard error is relayed as the command execution log (12.3). The relay is applied to standard error only: relaying standard output would either duplicate it or withhold it from the pipe, and interactivity and pipeability both take precedence over the completeness of the relay.
-- The start line and the exit line of 12.3 are emitted in every case, so every invocation is recorded with its environment, its argument vector and its exit status.
+- The start line and the exit line of 12.3 are emitted in every case, so every invocation is recorded with its environment, its argument vector and its exit status. The start line writes the argument vector as POSIX shell words separated by spaces: an entry made only of ASCII letters, digits and `_@%+=:,./-` is written as it stands, and any other entry, the empty one included, is single-quoted (`'` inside written `'\''`, as `shell_quote` does; 15.5). So `lask cmd echo 'a b'` is recorded as `echo 'a b'` and `lask cmd echo a b` as `echo a b`.
 - `INT` and `TERM` are forwarded to the program, and the container must be removed on exit, including on signal (11.12).
 
 Exit code rules:
@@ -3974,6 +3992,7 @@ Input rules:
 - A declaration is added to the session if the session still compiles with it; otherwise its diagnostics are reported and the session is unchanged.
 - An expression is evaluated against the session and its result printed. It is not kept in the session.
 - The target module's text is the one read at start or by the last successful `:reload`. Imported modules and the lock file are read from disk on every input, so a change to them takes effect without a reload.
+- Standard input is the session's input, not a value (9.2). A declaration or an expression typed at the prompt that names `stdin` is an undefined reference error (`E-NAME-UNDEFINED`) and changes nothing. A function of the target module, or of a module it imports, that names `stdin` is still loaded and can be called; there `stdin` is the empty string.
 
 Session commands:
 
@@ -4068,7 +4087,7 @@ Targets:
 
 What changes, and what does not:
 
-- Spacing is normalized: one space around binary operators, `=` and `->`, after `,` and `:`, and none inside brackets, except the braces of a record literal, an import list or a command word list, which take one space inside unless they are empty (`{ "a": 1 }`, `import { a, b } from "lib"`, `command { "go" } on #golang:1.25`).
+- Spacing is normalized: one space around binary operators, `=` and `->`, after `,` and `:`, and none inside brackets, except the braces of a record literal, an import list, a command word list or the run options of an environment expression, which take one space inside unless they are empty (`{ "a": 1 }`, `import { a, b } from "lib"`, `command { "go" } on #golang:1.25`, `#alpine:3.22.2{ network: "none" }`).
 - Indentation is two spaces per level. `else`, `catch` and `finally` follow the closing brace of the block before them on its line.
 - Each statement, declaration and `case` arm is on a line of its own. A block or a `case` whose content the source writes on the line of its braces keeps it there.
 - Line breaks inside an expression stay where the source has them, and only there: between the items of a bracketed list, before its closing bracket, and around a binary operator, `?`, `:`, `=` and `->`. No line is broken or joined for its length. A continuation line that begins with an operator is indented one level, unless the expression starts a line of its own, whose indentation it then keeps:
@@ -4082,7 +4101,7 @@ What changes, and what does not:
 - The `->` of `case` arms that the source writes in one column stay in one column.
 - Comments are kept, each with the declaration, statement, `case` arm or list item it stands above or beside, so a documentation comment (3.1) stays directly above its declaration. A comment that ends a line keeps the space the source puts before it, so a column of such comments stays aligned. An item with a comment in any other place is kept exactly as written.
 - Runs of blank lines become one blank line; a blank line is never added.
-- Literals keep their spelling (raw or interpreted strings, escapes, number digits). Command expressions (6.6) are kept exactly as written, since their text is the command. Parentheses are kept.
+- Literals keep their spelling (raw or interpreted strings, escapes, number digits). The command string of a command expression (6.6) is kept exactly as written, since its text is the command; its environment in `[...]` and the expressions of its holes are formatted as any other expression, with no space inside their brackets (`$[#alpine:3.22.2{ network: "none" }] echo #{name}`). A braced command written on one line takes one space inside its braces (`${ uname -s }`), which leaves its command string as it was, since that string is trimmed (6.6); one that spans lines, or whose string ends in an escaped space (`\ `), is kept as written. An environment or a hole that spans lines, and a command expression with a comment in it, are kept as written. Parentheses are kept.
 - Formatting is idempotent: formatting a formatted file changes nothing.
 
 Rules:
@@ -4162,6 +4181,12 @@ The execution log is time-series diagnostic information and must contain at leas
 - `traceId`: the identifier defined in 12.5
 - `message`: human-readable message
 - `context`: arbitrary auxiliary information (function name, module name, environment kind, etc.)
+
+In JSON (`--log-format json`), a line is one object with these five fields under these names. `context` is an object; for `run` and `eval` it holds at least `module` and `function`, the module and the name of the function the command line called:
+
+```json
+{"timestamp":"2026-07-23T10:15:04.123Z","level":"info","traceId":"...","message":"retry: attempt 1 of 3 failed with code 7; retrying in 2s","context":{"module":"main.lask","function":"deploy"}}
+```
 
 Output rules:
 
@@ -4323,7 +4348,7 @@ Format profiles:
 
 For `json` / `pretty-json`, the following mapping rules must be satisfied.
 
-- `Number`: maps to a JSON number.
+- `Number`: maps to a JSON number. One number has one text, however it was computed: an integer is written without a fraction, so `1.5 - 0.5` is written `1`, as `1` is.
 - `String`: maps to a JSON string.
 - `Bool`: maps to a JSON boolean.
 - `Null`: maps to JSON null.
@@ -4545,7 +4570,7 @@ The table below is the complete list of codes. An implementation reports every o
 | `E-RUNTIME-COMMAND-NONZERO` | runtime | `2`¹ | failure caused by a non-zero exit of a command execution expression (`$`, `$1`, `$2`; 6.6) |
 | `E-RUNTIME-ACCESS` | runtime | `2`¹ | index out of range or missing key (8.9), and the failure of a `get_`-family built-in asked for something that is not there (15.1, 15.4, 15.9) |
 | `E-RUNTIME-CAST` | runtime | `2`¹ | failure of the runtime type check of `cast` (15.8) |
-| `E-RUNTIME-VALUE` | runtime | `2`¹ | a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13); or `runnable` was given a run option for a `local` environment (8.8, 15.5) |
+| `E-RUNTIME-VALUE` | runtime | `2`¹ | a built-in function received an argument outside its domain, or was asked for a value its result format cannot represent (15.2, 15.3, 15.4, 15.8, 15.13); an arithmetic result is beyond the range of `Number` (4.1, 6.2); or `runnable` was given a run option for a `local` environment (8.8, 15.5) |
 | `E-RUNTIME-REGEX` | runtime | `2`¹ | a malformed regular expression pattern (15.3) |
 | `E-RUNTIME-TIMEOUT` | runtime | `2`¹ | the limit of a `timeout` passed before its body finished (15.7). Its `Error` has `code` `124` (8.10). |
 | `E-RUNTIME-UNTIL-EXHAUSTED` | runtime | `2`¹ | the delays of an `until` ran out before its condition held (15.7). Its `Error` has `code` `124` (8.10). |
@@ -4592,7 +4617,7 @@ An implementation must include at least the following when reporting an error.
 - `message`: human-readable message
 - `stage`: `syntax` / `static` / `runtime` / `io` / `cli`
 - `traceId`: the identifier of 12.5, when available
-- `location`: line and column, or span, where possible
+- `location`: line and column, or span, where possible. Lines and columns count from 1. A column counts characters (Unicode scalar values): a tab, a wide character such as `字` and a character outside the Basic Multilingual Plane such as `😀` are each one column. `serve` (11.1) gives a position in the UTF-16 code units the Language Server Protocol counts, in which only a character outside the Basic Multilingual Plane differs, as two.
 
 Additional requirements related to types and names:
 
@@ -4778,7 +4803,7 @@ Semantics:
 - If the divisor of `div` is 0, it is `E-RUNTIME-DIV-BY-ZERO`.
 - If the right-hand side of `mod` is 0, it is also `E-RUNTIME-DIV-BY-ZERO`.
 - `min`/`max` return the smaller and the larger of the two arguments respectively, and return the left argument when they are equal.
-- `sum(xs)` adds the elements from left to right. The sum of an empty array is `0`.
+- `sum(xs)` adds the elements from left to right. The sum of an empty array is `0`. A partial sum beyond the range of `Number` (4.1) is `E-RUNTIME-VALUE`, as for `add`.
 - `pow(base, exponent)` raises `base` to `exponent`. The exponent need not be an integer, and `pow(0, 0)` is `1`. A result that is not a real number (for example a negative base with a fractional exponent) is `E-RUNTIME-VALUE`.
 - `sqrt(x)` for a negative `x` is `E-RUNTIME-VALUE`.
 - `clamp(value, low, high)` returns `low` when `value < low`, `high` when `value > high`, and `value` otherwise. `low > high` is `E-RUNTIME-VALUE`.
@@ -4826,7 +4851,7 @@ Semantics:
 - `lines(s)` splits `s` on `\n` and removes one trailing `\r` from each line, so both LF and CRLF text split identically. A trailing newline does not produce a final empty element, and the empty string yields the empty array. This is the form to use on the `stdout` of a `CommandResult` (6.6).
 - `to_string(v)` produces the same text that interpolating `v` into a string would (6.6): a `String` unchanged, a `Number` in the canonical form of 13.1, and a `Bool` as `true` or `false`. A runtime value of any other kind, `Null` included, is `E-RUNTIME-VALUE`; use `to_json` (15.8) for structured values.
 - The type of `v` must be stringifiable (6.6), which is the bound of `T`. `to_string` of a `String | Null` is therefore a static error (`E-TYPE-BOUND`), and the union is narrowed with `case` (6.4) first. `Any` is stringifiable and remains accepted, with the runtime check above as its guard.
-- `to_number(s)` decodes `s`, ignoring surrounding whitespace, as a number in the JSON number grammar (13.1). Any other text is `E-IO-DATA-DECODE`. This is the form to use on a number read out of command output, and it replaces going through `from_json` and `cast`.
+- `to_number(s)` decodes `s`, ignoring surrounding whitespace, as a number in the JSON number grammar (13.1). Any other text, and a number beyond the range of `Number` (4.1), is `E-IO-DATA-DECODE`. This is the form to use on a number read out of command output, and it replaces going through `from_json` and `cast`.
 
 Regular expressions:
 
@@ -4963,7 +4988,7 @@ Contract:
 Runnables:
 
 - `runnable(env, k1 = v1, ...)` returns `env` with the run options given (10.2): how the image runs, never which image it is. Each run option is a keyword parameter defaulting to `null`, and an option given `null` is not set.
-- `#head{k1: v1, ...}` is its sugar (6.7).
+- `#head{ k1: v1, ... }` is its sugar (6.7).
 - It takes an `Environment` only. A `Runnable` is not one (4.4), so the options of a runnable are given once, where it is made (8.8).
 - An image option given to it is a static error (`E-TYPE-ENV-CONSTRUCT`): the image is named by a head, with its image options (6.7).
 - A run option for a `local` environment is `E-TYPE-ENV-CONSTRUCT` when the environment is `#local` written as the argument, and `E-RUNTIME-VALUE` when it is reached as a value. `runnable(e)` with no run option is a runnable for any environment.
@@ -5003,7 +5028,7 @@ Container sessions:
 ```lask
 // Install a tool outside /work, start a server in the background, and
 // test against it: three steps, each on a line of its own.
-test_api(): String = with_container(#node:24.21.0-alpine3.24{workdir: "/work/api"}, \(box) -> do {
+test_api(): String = with_container(#node:24.21.0-alpine3.24{ workdir: "/work/api" }, \(box) -> do {
   $[box] apk add --no-cache curl
   $[box] npm ci
   $[box] npm start > /tmp/server.log 2>&1 &
@@ -5037,6 +5062,7 @@ Failure rules:
 - `await` on a handle whose computation failed re-raises that failure unchanged (6.3, 8.6): the same `Error` value, with its code and message, and therefore the same exit code if it goes uncaught (11.3). `all` and `race` do the same with the failure they receive.
 - `all` fails as soon as any one of them fails, whichever position it holds in the array, with that failure. The computations of the other handles are cancelled, and a command one of them is running is stopped (8.7), so none is left running after the failure is reported. Their `finally` blocks run before it is (8.10).
 - `race` on an empty array is `E-RUNTIME-VALUE`: there is no result to return.
+- A computation that is cancelled, by `race`, `all`, `timeout` (15.7) or an interruption (8.7), takes with it every computation it started with `async`, and every one those started, so that none outlives it; their `finally` blocks run before it ends. They are consumed, and none is reported as never awaited (6.3). A computation that ends in any other way, by returning or failing, leaves what it started running.
 
 ### 15.7 Error Handling Functions
 
@@ -5093,7 +5119,8 @@ Interval strategies:
 - `backoff_linear(initial, step, count)` is `[initial, initial + step, ...]`, `count` long: `backoff_linear(1, 2, 3)` is `[1, 3, 5]`.
 - `backoff_exponential(initial, factor, count)` is `[initial, initial * factor, ...]`, `count` long: `backoff_exponential(1, 2, 4)` is `[1, 2, 4, 8]`.
 - A cap is a composition rather than a function: `map(backoff_exponential(1, 2, 8), \(d) -> min(d, 30))`. Jitter, being nondeterministic, is `backoff_jitter` (15.13).
-- `delay`, `initial`, `step` and `factor` must be finite and non-negative, and `count` a non-negative integer. Anything else, or a strategy growing past a representable delay, is `E-RUNTIME-VALUE`.
+- `delay`, `initial`, `step` and `factor` must be finite and non-negative, and `count` a non-negative integer of at most 1000000. Anything else, or a strategy growing past a representable delay, is `E-RUNTIME-VALUE`. The bound keeps a strategy an array that can be built: a million delays of even one second is more than eleven days of retrying.
+- Each delay of `backoff_exponential` is the one before it multiplied by `factor`. A strategy grows past a representable delay only when one of its delays does: `backoff_exponential(0, f, n)` is `n` zeros whatever `f` is.
 
 Evaluation of `retry(delays, body)` and `retry_if(delays, when, body)`:
 
@@ -5154,7 +5181,7 @@ Format arguments:
 
 - The 2nd argument of `encode`/`decode` is a format specification string, and at least `json`, `pretty-json`, `yaml`, `toml`, `csv`, and `dotenv` are accepted.
 - `yaml` follows the YAML 1.2 core schema. Decoding maps scalars to values by the same rules the JSON list below gives, and encoding emits a block-style document.
-- `toml` decodes a table to an object under the same rule as a JSON object, and decodes a date or time as a `String`, since the language has no date type. Encoding is defined only when the top-level value is an object.
+- `toml` decodes a table to an object under the same rule as a JSON object, and decodes a date or time as a `String`, since the language has no date type. A float `inf` or `nan` has no `Number` (4.1), and is `E-IO-DATA-DECODE`. Encoding is defined only when the top-level value is an object.
 - `csv` follows RFC 4180 with a header row. Decoding yields an array of objects keyed by the header, in which every value is a `String`; no type is inferred from the text. Encoding takes an array of objects, uses the field set of the first element as the header, and requires every element to carry that same field set with only `String`, `Number`, or `Bool` values.
 - `dotenv` decodes `NAME=value` lines to an object whose values are all `String`, ignoring blank lines and lines whose first non-space character is `#`, and stripping one layer of surrounding quotation from a value. Only the first `=` of a line separates the name from the value, so a value may contain further ones. Encoding emits one `NAME=value` line per entry, quoting a value that needs it, and is defined only for string-valued objects.
 - A value that the requested format cannot represent is `E-RUNTIME-VALUE`; input that is not well-formed in the requested format is `E-IO-DATA-DECODE`.
@@ -5163,7 +5190,7 @@ Format arguments:
 
 JSON conversion rules of `from_json` / `decode`:
 
-- JSON number -> `Number`
+- JSON number -> `Number`. A number beyond the range of `Number` (4.1) is `E-IO-DATA-DECODE`, as is one in YAML or TOML.
 - JSON string -> `String`
 - JSON boolean -> `Bool`
 - JSON null -> `Null`
@@ -5243,9 +5270,9 @@ Semantics:
 - These are pure, lexical operations on strings. They never consult the filesystem, and therefore take no `Environment`: `dirname` of a path that does not exist is still its parent, and `normalize_path` never resolves a symbolic link.
 - Paths are POSIX paths, as the host's are (10.2): `/` is the only separator, and no drive letter or backslash is recognized. A path computed on the host therefore still means the same thing inside a container, which is the case these functions exist for (10.8).
 - `path_join(parts)` joins the parts with a single `/`, dropping empty parts, and normalizes the result. A part that is absolute discards everything before it. An empty array yields the empty string.
-- `dirname(p)` returns everything before the final component: `"a/b/c"` gives `"a/b"`, a path with no separator gives `"."`, and a child of the root gives `"/"`.
+- `dirname(p)` returns everything before the final component: `"a/b/c"` gives `"a/b"`, a path with no separator gives `"."`, and a child of the root, or the root itself, gives `"/"`.
 - `basename(p)` returns the final component, ignoring trailing separators: `"a/b/c.txt"` gives `"c.txt"` and `"a/b/"` gives `"b"`.
-- `extname(p)` returns the final extension of the final component, including the dot: `"a/b/c.tar.gz"` gives `".gz"`. A final component with no dot, or one whose only dot is its first character, gives the empty string, so `".env"` gives `""`.
+- `extname(p)` returns the final extension of the final component, including the dot: `"a/b/c.tar.gz"` gives `".gz"`. A final component with no dot, one whose only dot is its first character, or `..`, gives the empty string, so `".env"` gives `""`; one ending in a dot gives `"."`, so `"a."` gives `"."`.
 - `normalize_path(p)` collapses repeated separators and resolves `.` and `..` lexically. A leading `/` is preserved, a `..` that would ascend past the root of an absolute path is dropped, and a leading `..` in a relative path is preserved because there is no way to resolve it without touching the filesystem.
 - `is_absolute_path(p)` is true when `p` begins with `/`.
 - The name `path_join` carries its prefix because `join` is already the string operation of 15.3 and the library has no overloading (15.1).
@@ -5753,7 +5780,7 @@ Checking a command string against a schema:
   2. An option with `stops` ends the check once it and its value are read: `python -m pytest -k smoke` checks `-m` and its value, and leaves `-k` to pytest.
   3. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
   4. `--` ends the check.
-  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
+  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. In the `gnu` style a word that begins with such a name of more than one letter after its dash is read so before it is read as single-letter options: with `-isystem` declared, `-isystem/usr/include` is `-isystem` with the value `/usr/include`, whether or not `-i` is an option. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
   6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. With `subcommand_optional`, a word that names no subcommand is a positional argument of the current spec instead of an unknown subcommand. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
 - Each of the following is reported, and the check ends at the first:
   - an option the current spec does not have, or a subcommand it does not have, or an abbreviated option that is ambiguous;

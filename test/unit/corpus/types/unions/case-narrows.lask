@@ -1,0 +1,9 @@
+// case narrows a union in each arm, and subtracts in else (6.4).
+f(s: String | Null): String = case (s) {
+  Null -> ""
+  else -> s
+}
+g(s: String | Null): Number = case (s) {
+  null -> 0
+  else -> length(s)
+}

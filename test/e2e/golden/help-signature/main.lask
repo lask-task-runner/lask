@@ -1,0 +1,20 @@
+alpine = #alpine:3.22.2
+
+// Deploy the release to the target.
+//
+// Every file under the release directory is uploaded; nothing is removed.
+//
+// @param target  Where it goes.
+// @param files   The files, relative to the release directory.
+// @param token   The credential of the target.
+// @param dry_run Print what would be uploaded.
+// @return What was uploaded.
+// @example lask run deploy prod a.txt b.txt --token $TOKEN
+deploy(
+  target: String,
+  ...files: Array<String>,
+  --token!!: String = get_env_or("DEPLOY_TOKEN", ""),
+  --region: String,
+  --dry_run: Bool = false,
+  --retries: Number | Null = null
+): String = $[alpine] upload #{target} #{join(files, " ")}

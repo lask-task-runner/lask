@@ -1,0 +1,5 @@
+// identity(x) = x is identity<T>(x: T): T, instantiated per call (4.3).
+identity(x) = x
+n: Number = identity(1)
+s: String = identity("a")
+bad: String = identity(1) // expect: E-TYPE-MISMATCH

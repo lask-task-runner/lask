@@ -1,0 +1,2 @@
+// Void is not a member of a union (4.2).
+x: Number | Void = 1 // expect: E-TYPE-ILLFORMED

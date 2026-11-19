@@ -30,7 +30,7 @@ module Language.Lask.Syntax.Printer
 where
 
 import Control.Monad (forM, unless)
-import Control.Monad.Reader (ReaderT, asks, runReaderT)
+import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (State, evalState, get, put)
 import Data.List (intersperse, partition, sortOn)
 import qualified Data.Map.Strict as Map
@@ -192,14 +192,11 @@ startOf NoSpan = (0, 0)
 endOf (Span _ (Position _ l c)) = (l, c)
 endOf NoSpan = (0, 0)
 
--- | The index in a line of the character at a column. Megaparsec
--- advances the column of a tab to the next multiple of eight, plus one.
+-- | The index in a line of the character at a column. A column counts
+-- characters from 1 (spec 14), so the line is not needed; it is taken
+-- to keep the index within it.
 colIndex :: Text -> Int -> Int
-colIndex ln target = go 0 1 (T.unpack ln)
-  where
-    go i col _ | col >= target = i
-    go i col (c : cs) = go (i + 1) (if c == '\t' then col + 8 - ((col - 1) `rem` 8) else col + 1) cs
-    go i _ [] = i
+colIndex ln target = max 0 (min (T.length ln) (target - 1))
 
 slice :: V.Vector Text -> Pos -> Pos -> Text
 slice ls (l1, c1) (l2, c2)
@@ -305,8 +302,11 @@ seqLines a b items = (\(d, _, _) -> d) <$> entries True "" "" a b items
 -- source the last thing it placed ends.
 entries :: Bool -> Text -> Text -> Pos -> Pos -> [Item] -> P (Doc, Bool, Pos)
 entries always lead sep a b items = do
-  -- Comments on the line that opens the sequence stay on it.
-  opening <- claimWhere (\c -> fst (cStart c) == fst a && cStart c >= a && cEnd c <= b)
+  -- Comments on the line that opens the sequence stay on it: those
+  -- before its first item. One after the start of an item is in that
+  -- item, or ends its line, and is placed with it.
+  let firstStart = maybe b itemStart (listToMaybe items)
+  opening <- claimWhere (\c -> fst (cStart c) == fst a && cStart c >= a && cEnd c <= firstStart)
   let gaps = zipWith (\p c -> snd (cStart c) - snd p) (a : map cEnd opening) opening
       start = maybe a cEnd (lastMay opening)
   (d, broken, end) <- go (null opening) start items
@@ -622,7 +622,7 @@ exprBody flat a b f = case f of
   EBool False -> pure "false"
   ENumber _ -> verbatim a b
   EString _ -> verbatim a b
-  ECommand {} -> verbatim a b
+  ECommand _ env ps -> command a b env ps
   EVar n -> pure (text n)
   EArray es -> do
     open <- tokFrom TLBracket a
@@ -694,7 +694,7 @@ exprBody flat a b f = case f of
       dv <- expr v
       pure (text k <> ": " <> dv)
 
--- | @#head(args){options}@: the lists hug the head, as they must
+-- | @#head(args){ options }@: the lists hug the head, as they must
 -- (spec 6.7).
 envExpr :: Pos -> Text -> Maybe [Arg] -> Maybe [Arg] -> P Doc
 envExpr a h as os = do
@@ -710,12 +710,105 @@ envExpr a h as os = do
     Nothing -> pure mempty
     Just xs -> do
       open <- tokFrom TLBrace argsEnd
-      list "{" "}" False open TRBrace (map option xs)
+      list "{" "}" True open TRBrace (map option xs)
   pure ("#" <> text h <> dargs <> dopts)
   where
     option (Arg sp f) = Item (startOf sp) (endOf sp) $ case f of
       AKw k v -> (\dv -> text k <> ": " <> dv) <$> expr v
       APos v -> expr v
+
+-- | A command expression (spec 6.6). Its command string is the command,
+-- so it is copied as written, but the environment in @[...]@ and the
+-- expressions of its holes are Lask and are formatted, each on the
+-- tokens the lexer nested in the command. A braced command on one
+-- line takes one space inside its braces, which the lexer trims: the
+-- command string is the same. An environment or hole that spans lines,
+-- or a command with a comment in it, is copied as written.
+command :: Pos -> Pos -> Maybe Expr -> [TextPart] -> P Doc
+command a b env ps = do
+  stray <- anyIn a b
+  tok <- tokAt a
+  ls <- asks ctxLines
+  case tok >>= commandToken of
+    Just (braced, envToks, sps) | not stray -> do
+      _ <- claim a b
+      let src = slice ls a b
+          len = T.length src
+          off p = T.length (slice ls a p)
+          sub i j = T.take (j - i) (T.drop i src)
+          holeToks = concatMap holeOf sps
+          nested =
+            Map.fromList
+              [(startOf sp, (endOf sp, t)) | ts <- maybe [] pure envToks <> holeToks, Spanned sp t <- ts, t /= TNewline]
+          piece (ts, e) = case (ts, reverse ts) of
+            (Spanned s0 _ : _, Spanned s1 _ : _)
+              | o1 <- off (startOf s0),
+                o2 <- off (endOf s1),
+                not (T.any (== '\n') (sub o1 o2)) ->
+                  Just (o1, o2, e)
+            _ -> Nothing
+          candidates =
+            catMaybes $
+              map piece ([(ts, e) | Just ts <- [envToks], Just e <- [env]] <> zip holeToks (concatMap exprOf ps))
+          -- Where the command string opens: after @$@, its stream and
+          -- its @[env]@.
+          headEnd = case envToks of
+            Just ts@(_ : _) | Spanned s _ <- last ts -> maybe len (+ (off (endOf s) + 1)) (T.findIndex (== ']') (T.drop (off (endOf s)) src))
+            _ -> if T.take 1 (T.drop 1 src) `elem` ["1", "2", "*"] then 2 else 1
+          bo = headEnd + T.length (T.takeWhile hspace (T.drop headEnd src))
+          content = T.strip (sub (bo + 1) (len - 1))
+          pad =
+            braced
+              && T.take 1 (T.drop bo src) == "{"
+              && not (T.any (== '\n') (T.drop bo src))
+              && not (T.null content)
+              && not ("\\" `T.isSuffixOf` content)
+      -- A piece whose formatting breaks a line, as a block of several
+      -- statements does, would end the command there: it is copied.
+      formatted <- local (\c -> c {ctxToks = nested}) (mapM (\(_, _, e) -> expr e) candidates)
+      let pieces = [(o1, o2, d) | ((o1, o2, _), d) <- zip candidates formatted, not (breaks d)]
+          bounds = [0] <> concat [[o1, o2] | (o1, o2, _) <- pieces] <> [len]
+          gaps = pairs bounds
+          n = length gaps
+          gap i (g1, g2) =
+            let (l, r)
+                  | pad && g1 <= bo && bo < g2 = (sub g1 (bo + 1), Just (" " <> T.dropWhile hspace (sub (bo + 1) g2)))
+                  | otherwise = (sub g1 g2, Nothing)
+                l' = if i > 0 then T.dropWhile hspace l else l
+                lastPart x =
+                  (if i < n - 1 then T.dropWhileEnd hspace else id)
+                    . (if i == n - 1 && pad then (<> " }") . T.dropWhileEnd hspace . T.dropEnd 1 else id)
+                    . (if i == n - 1 && not braced then T.dropWhileEnd hspace else id)
+                    $ x
+             in text (maybe (lastPart l') ((l' <>) . lastPart) r)
+          body = mconcat (interleave (zipWith gap [0 ..] gaps) [d | (_, _, d) <- pieces])
+      pure (if braced then body else body <> DEol)
+    _ -> verbatim a b
+  where
+    hspace c = c == ' ' || c == '\t'
+    commandToken t = case t of
+      TCommand _ e sps -> Just (False, e, sps)
+      TBracedCommand _ e sps -> Just (True, e, sps)
+      _ -> Nothing
+    holeOf p = case p of
+      Interp ts -> [ts]
+      RawInterp ts -> [ts]
+      Chunk {} -> []
+    exprOf p = case p of
+      TPInterp e -> [e]
+      TPRaw e -> [e]
+      TPChunk {} -> []
+    breaks d = case d of
+      DLine -> True
+      DEol -> True
+      DNest x -> breaks x
+      DCat xs -> any breaks xs
+      DText _ -> False
+    pairs (x : y : rest) = (x, y) : pairs rest
+    pairs _ = []
+    interleave (g : gs) (d : ds) = g : d : interleave gs ds
+    interleave gs [] = gs
+    interleave [] ds = ds
 
 -- | @case (s) { ... }@: arms one per line, or on the line of @case@,
 -- separated by @;@, when the source writes them there. Arms the source

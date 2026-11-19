@@ -1,0 +1,5 @@
+// Only the body decides: a call is checked against the inferred type (4.3).
+id(x) = x
+inc(x) = x + 1
+a: Number = id("a") // expect: E-TYPE-MISMATCH
+b = inc("a") // expect: E-TYPE-MISMATCH

@@ -63,9 +63,10 @@ import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.IO as TIO
 import Data.Time.Clock (getCurrentTime)
 import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner, SessionOpener)
+import Language.Lask.Builtins.Shell (shellWords)
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
-import Language.Lask.Runtime.Container (BaseMount, ContainerBackend (..), ExecSpec (..), MountError (..), RunSpec (..), engineName, resolveBaseMounts)
+import Language.Lask.Runtime.Container (BaseMount, ContainerBackend (..), ExecSpec (..), MountError (..), RunSpec (..), engineName, resolveBaseMounts, resolveVolumes)
 import Language.Lask.Runtime.Egress (Placement, denialMark, denialsSince, egressOf, placeEgress, placedOptions)
 import Language.Lask.Runtime.ProcessStop
   ( newContainerName,
@@ -199,7 +200,7 @@ runDeclaredCommand backend pins baseDir0 sink forceRelay envValue prog argv = do
     Left failure -> pure (Left failure)
     Right resolved -> do
       let (sm, ej) = envLogInfo envValue resolved
-          rendered = T.unwords (prog : argv)
+          rendered = shellWords (prog : argv)
           launch cp = launchWith (pure (cp, pure ()))
           launchWith acquire = do
             r <- try (bracket acquire snd (runAttachedProcess sink sm ej rendered interactive . fst))
@@ -609,10 +610,10 @@ materializedImage ::
 materializedImage backend pins baseDir resolved = do
   img <- imageOf
   case img of
-    Right (Just (image, opts)) -> do
-      mounts <- resolveBaseMounts baseDir opts
+    Right (Just (image, written)) -> do
+      mounts <- resolveVolumes baseDir written >>= either (pure . Left) (\opts -> fmap (\ms -> (opts, ms)) <$> resolveBaseMounts baseDir opts)
       case mounts of
-        Right ms -> do
+        Right (opts, ms) -> do
           -- A container given egress is placed beside its proxy
           -- (spec 10.12), which is made the first time it is needed.
           placed <- case egressOf opts of

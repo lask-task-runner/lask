@@ -46,7 +46,7 @@ node = tools.node.env(image = node_image, extra_env = quiet)
 
 playwright = tools.playwright.env(
   image = #mcr.microsoft.com/playwright:v1.63.0-noble,
-  extra_env = merge(quiet, {"CI": "1"})
+  extra_env = merge(quiet, { "CI": "1" })
 )
 ```
 

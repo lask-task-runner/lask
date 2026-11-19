@@ -1,0 +1,4 @@
+// Handles built by map and awaited by all.
+f() = map([1, 2], \(x) -> async x)
+g() = all(f())
+n: Array<Number> = g()

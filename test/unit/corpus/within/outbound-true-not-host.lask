@@ -1,0 +1,4 @@
+access Online = { outbound: true }
+
+ok() within Online = $[#alpine:3.22.2] true
+bad() within Online = $[#alpine:3.22.2{ network: "host" }] true  // expect: E-TYPE-WITHIN-EXCEEDED

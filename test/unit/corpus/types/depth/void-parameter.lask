@@ -1,0 +1,1 @@
+f(x: Void): Number = 1  // expect: E-TYPE-ILLFORMED

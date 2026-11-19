@@ -1,0 +1,5 @@
+// A parameter placed in a literal keeps its type in the literal's.
+arr(x) = [x]
+rec(x) = { a: x }
+a: Array<Number> = arr(1)
+r: Record<a: Number> = rec(1)

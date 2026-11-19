@@ -1,0 +1,9 @@
+// all and race (15.6).
+g(): Number = 1
+f() = do {
+  hs = [async g(), async g()]
+  rs: Array<Number> = all(hs)
+  r: Number = race(hs)
+  bad: String = race(hs) // expect: E-TYPE-MISMATCH
+  rs
+}

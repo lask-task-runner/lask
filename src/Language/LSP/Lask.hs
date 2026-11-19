@@ -20,6 +20,7 @@ module Language.LSP.Lask
     semanticTokens,
     hoverMarkdown,
     completionAt,
+    completionTriggered,
     documentDiagnostics,
     quickFixes,
     formattingEdits,
@@ -72,6 +73,7 @@ import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Printer (formatSource)
 import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
 import Language.Lask.Types (Type (..), renderBound, renderType)
+import System.Exit (ExitCode (ExitFailure), exitSuccess, exitWith)
 import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
 import Language.Lask.Deps.File (defaultDepsFileName)
 import Language.Lask.Confirm (describeRule, ruleFor)
@@ -122,8 +124,16 @@ reactor logger inp = do
     act
 
 lspHandlers :: (m ~ LspM Config) => L.LogAction m (WithSeverity T.Text) -> TChan ReactorInput -> Handlers m
-lspHandlers logger rin = mapHandlers goReq goNot (handle logger)
+lspHandlers logger rin = mapHandlers goReq goNot (handle logger) <> exitHandler
   where
+    -- The exit notification ends the process, so it is handled here
+    -- rather than on the reactor thread: the exit code is that of the
+    -- LSP specification, 0 after a shutdown request and 1 without
+    -- one. The lsp library's own handler always exits 0.
+    exitHandler =
+      notificationHandler LSP.SMethod_Exit $ \_ -> do
+        shutDown <- isShuttingDown
+        liftIO (if shutDown then exitSuccess else exitWith (ExitFailure 1))
     goReq :: forall (a :: LSP.Method LSP.ClientToServer LSP.Request). Handler (LspM Config) a -> Handler (LspM Config) a
     goReq f msg k = do
       env <- getLspEnv
@@ -137,7 +147,10 @@ lspOptions :: Options
 lspOptions =
   defaultOptions
     { optTextDocumentSync = Just syncOptions,
-      optCompletionTriggerCharacters = Just ['.', '-', '=']
+      -- A space only brings what a command string offers next
+      -- ('completionTriggered'); the rest open a list wherever they
+      -- are typed.
+      optCompletionTriggerCharacters = Just ['.', '-', '=', '(', ',', ' ']
     }
 
 syncOptions :: LSP.TextDocumentSyncOptions
@@ -198,11 +211,12 @@ handle logger =
             doc = LSP.toNormalizedUri uri
             path = uriPath uri
             pos = req ^. LSP.params . LSP.position
+            trigger = req ^. LSP.params . LSP.context >>= (^. LSP.triggerCharacter)
         mdoc <- getVirtualFile doc
         case mdoc of
           Nothing -> responder $ Right $ LSP.InL []
           Just file -> do
-            items <- liftIO $ completionAt path (virtualFileText file) pos
+            items <- liftIO $ completionTriggered trigger path (virtualFileText file) pos
             responder $ Right $ LSP.InL items,
       requestHandler LSP.SMethod_TextDocumentCodeAction $ \req responder -> do
         let uri = req ^. LSP.params . LSP.textDocument . LSP.uri
@@ -250,7 +264,7 @@ sendDocumentDiagnostics logger msg = do
 documentDiagnostics :: FilePath -> Text -> IO ([LSP.Diagnostic], [LSP.Diagnostic])
 documentDiagnostics path src = do
   r <- compileText path src
-  pure $ case r of
+  pure . over _1 (map (LSP.range %~ rangeToUtf16 (docLines src))) $ case r of
     Left ds ->
       let (inProject, inModule) = partition inProjectFile ds
        in (map placed inModule, map errorDiagnostic inProject)
@@ -355,7 +369,7 @@ quickFixes uri src diags =
   | d <- diags,
     d ^. LSP.source == Just "lask",
     Just (J.Success ss) <- [J.fromJSON <$> d ^. LSP.data_],
-    isName (rangeText (d ^. LSP.range)),
+    isName (rangeText (rangeFromUtf16 (docLines src) (d ^. LSP.range))),
     (i, s) <- zip [0 :: Int ..] ss
   ]
   where
@@ -393,7 +407,17 @@ lexSemanticTokens :: String -> Text -> Either Text [SemanticTokenAbsolute]
 lexSemanticTokens = lexSemanticTokensWith []
 
 lexSemanticTokensWith :: [S.Span] -> String -> Text -> Either Text [SemanticTokenAbsolute]
-lexSemanticTokensWith commandWordSpans fileName src =
+lexSemanticTokensWith commandWordSpans fileName src = map inUtf16 <$> inCharacters
+  where
+    ls = docLines src
+    inUtf16 (SemanticTokenAbsolute l c n typ mods) =
+      let Position _ c' = toUtf16 ls (Position l c)
+          Position _ e' = toUtf16 ls (Position l (c + n))
+       in SemanticTokenAbsolute l c' (e' - c') typ mods
+    inCharacters = lexSemanticTokensIn commandWordSpans fileName src
+
+lexSemanticTokensIn :: [S.Span] -> String -> Text -> Either Text [SemanticTokenAbsolute]
+lexSemanticTokensIn commandWordSpans fileName src =
   case lexTokensWithComments fileName src of
     Left e -> Left $ T.pack $ pretty e
     Right (ts, comments) ->
@@ -590,6 +614,54 @@ toRange (S.Span (S.Position _ l1 c1) (S.Position _ l2 c2)) =
     (fromIntegral c2 - 1)
 toRange S.NoSpan = Range (Position 0 0) (Position 0 0)
 
+-- Positions -------------------------------------------------------------------
+
+-- | The protocol counts the character of a position in UTF-16 code
+-- units, and a column (spec 14) in characters. They differ only at a
+-- character outside the Basic Multilingual Plane, which is two units.
+-- Everything in this module but the exported functions works in
+-- characters; those convert what comes in and what goes out.
+newtype DocLines = DocLines [Text]
+
+docLines :: Text -> DocLines
+docLines = DocLines . T.splitOn "\n"
+
+lineOf :: DocLines -> UInt -> Text
+lineOf (DocLines ls) l = fromMaybe "" (listToMaybe (drop (fromIntegral l) ls))
+
+utf16Width :: Text -> Int
+utf16Width = T.foldl' (\n c -> n + unitsOf c) 0
+
+unitsOf :: Char -> Int
+unitsOf c = if fromEnum c > 0xFFFF then 2 else 1
+
+-- | A position counted in characters, as the protocol counts it. One
+-- past the end of its line keeps its distance from the end.
+toUtf16 :: DocLines -> Position -> Position
+toUtf16 ls (Position l c) =
+  let ln = lineOf ls l
+      n = fromIntegral c
+   in Position l (fromIntegral (utf16Width (T.take n ln) + max 0 (n - T.length ln)))
+
+-- | A position the protocol gives, counted in characters. A position
+-- inside a character of two units is that character's.
+fromUtf16 :: DocLines -> Position -> Position
+fromUtf16 ls (Position l u) = Position l (fromIntegral (go 0 0 (T.unpack (lineOf ls l))))
+  where
+    target = fromIntegral u :: Int
+    go :: Int -> Int -> String -> Int
+    go i n _ | n >= target = i
+    go i n (c : cs)
+      | n + unitsOf c > target = i
+      | otherwise = go (i + 1) (n + unitsOf c) cs
+    go i n [] = i + (target - n)
+
+rangeToUtf16 :: DocLines -> Range -> Range
+rangeToUtf16 ls (Range a b) = Range (toUtf16 ls a) (toUtf16 ls b)
+
+rangeFromUtf16 :: DocLines -> Range -> Range
+rangeFromUtf16 ls (Range a b) = Range (fromUtf16 ls a) (fromUtf16 ls b)
+
 -- Hover -----------------------------------------------------------------------
 
 -- | The environment dispatch derived, shown in the notation the author
@@ -607,7 +679,7 @@ toRange S.NoSpan = Range (Position 0 0) (Position 0 0)
 inlayHintsIn :: FilePath -> Text -> LSP.Range -> IO [LSP.InlayHint]
 inlayHintsIn path src (LSP.Range (Position startLine _) (Position endLine _)) = do
   partial <- compileTextPartial path src
-  pure $ case partialCore partial of
+  pure . map (LSP.position %~ toUtf16 (docLines src)) $ case partialCore partial of
     Nothing -> []
     Just core -> mapMaybe hint (cpCommandUses core)
   where
@@ -646,7 +718,13 @@ inlayHintsIn path src (LSP.Range (Position startLine _) (Position endLine _)) = 
 -- the declaration name itself), plus the comment block directly above
 -- the referenced declaration as documentation.
 hoverAt :: FilePath -> Text -> Position -> IO (Maybe Hover)
-hoverAt path src (Position pl pc) = do
+hoverAt path src pos =
+  fmap (LSP.range . _Just %~ rangeToUtf16 ls) <$> hoverAtChar path src (fromUtf16 ls pos)
+  where
+    ls = docLines src
+
+hoverAtChar :: FilePath -> Text -> Position -> IO (Maybe Hover)
+hoverAtChar path src (Position pl pc) = do
   r <- compileText path src
   case r of
     Left _ -> pure Nothing
@@ -684,7 +762,11 @@ hoverAt path src (Position pl pc) = do
     spanSize S.NoSpan = (maxBound, maxBound)
 
     -- Hovering the declaration name itself (the definition site is
-    -- not a reference, so it is not in the hover records).
+    -- not a reference, so it is not in the hover records). Only a name
+    -- in declaration position counts: at the start of a line, or after
+    -- a leading @export@ / @internal@ marker. Any other word sharing a
+    -- declaration's name (an object key, a field) is not that
+    -- declaration.
     declNameHover compiled docPath docSrc line col =
       case lexTokens docPath docSrc of
         Left _ -> pure Nothing
@@ -693,8 +775,9 @@ hoverAt path src (Position pl pc) = do
               entry = cpEntry core
               named =
                 [ (sp, n)
-                | Tok.Spanned sp (Tok.TLowerId n) <- ts,
-                  spanContains sp line col
+                | (prev, Tok.Spanned sp (Tok.TLowerId n)) <- zip (Nothing : map Just ts) ts,
+                  spanContains sp line col,
+                  declPosition prev sp
                 ]
           case named of
             ((sp, n) : _) -> case Map.lookup (entry, n) (cpDecls core) of
@@ -703,6 +786,12 @@ hoverAt path src (Position pl pc) = do
                 pure (Just (mkHover n (renderType (cdType cd)) docs sp))
               Nothing -> pure Nothing
             [] -> pure Nothing
+
+    declPosition prev sp = case (prev, sp) of
+      (_, S.Span (S.Position _ _ 1) _) -> True
+      (Just (Tok.Spanned (S.Span (S.Position _ kl kc) _) (Tok.TKw k)), S.Span (S.Position _ l _) _) ->
+        k `elem` [Tok.KExport, Tok.KInternal] && kl == l && kc == 1
+      _ -> False
 
 -- | A declaration's hover documentation, with the confirmation the
 -- project file asks for before it runs, when it does (spec 5).
@@ -846,11 +935,24 @@ data Cand = Cand
 -- public members of a namespace or the fields of a record after a
 -- dot, and the keyword parameters of the call being written.
 completionAt :: FilePath -> Text -> Position -> IO [CompletionItem]
-completionAt path src pos = do
+completionAt path src pos0 = do
   offered <- commandCompletion path src pos
-  case offered of
+  map (LSP.textEdit . _Just %~ editInUtf16) <$> case offered of
     Just items -> pure items
     Nothing -> languageCompletion path src pos
+  where
+    ls = docLines src
+    pos = fromUtf16 ls pos0
+    editInUtf16 (LSP.InL e) = LSP.InL (e & LSP.range %~ rangeToUtf16 ls)
+    editInUtf16 (LSP.InR e) = LSP.InR (e & LSP.insert %~ rangeToUtf16 ls & LSP.replace %~ rangeToUtf16 ls)
+
+-- | 'completionAt' for a request the client made on its own, as the
+-- given trigger character was typed. A space is typed everywhere, so
+-- it brings only the options, subcommands and values of a command
+-- string: a list of every name after each space would be in the way.
+completionTriggered :: Maybe Text -> FilePath -> Text -> Position -> IO [CompletionItem]
+completionTriggered (Just " ") path src pos = fromMaybe [] <$> commandCompletion path src pos
+completionTriggered _ path src pos = completionAt path src pos
 
 -- | Completion inside a dispatched command string whose command word
 -- has a command schema (spec appendix A): the options and subcommands that

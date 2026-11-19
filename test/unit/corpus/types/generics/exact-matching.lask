@@ -1,0 +1,4 @@
+// A type variable inside a function type is matched exactly (4.4, example).
+show(x: Any): Void = log(to_json(x))
+f(xs: Array<String>) = for_each(xs, show) // expect: E-TYPE-MISMATCH
+g(xs: Array<String>) = for_each(xs, \(x) -> show(x))

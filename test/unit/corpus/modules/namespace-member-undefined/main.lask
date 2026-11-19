@@ -1,0 +1,3 @@
+// A member that is not a public symbol of the namespace's module (5).
+import * as m from "./lib.lask"
+x = m.ns.nope() // expect: E-NAME-UNDEFINED

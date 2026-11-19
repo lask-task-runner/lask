@@ -1,0 +1,1 @@
+f(): String = $[runnable(#alpine:3.22.2, "x")] true  // expect: E-TYPE-ENV-CONSTRUCT
