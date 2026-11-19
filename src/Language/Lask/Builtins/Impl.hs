@@ -20,6 +20,7 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (cancel, waitAnyCatch, waitCatch)
+import Control.Monad (foldM)
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
@@ -48,6 +49,7 @@ import Language.Lask.Obs.Events (summarizeValue)
 import Language.Lask.Runtime.AsyncTrack (AsyncTracker (..), siteOf)
 import Language.Lask.Runtime.CancelScope (cancelScope, spawnInScopes, withScope)
 import Language.Lask.Runtime.Secrets (maskSecrets, registerSecret)
+import Language.Lask.Number (fitNumber)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (failureMessage)
 import System.Entropy (getEntropy)
@@ -110,12 +112,12 @@ data RtHooks = RtHooks
 callBuiltin :: Apply -> RtHooks -> Text -> [Value] -> [(Text, Value)] -> IO Value
 callBuiltin apply hooks name args _kwArgs = case (name, args) of
   -- 15.2 numeric ---------------------------------------------------------
-  ("add", [VNumber a, VNumber b]) -> num (a + b)
-  ("sub", [VNumber a, VNumber b]) -> num (a - b)
-  ("mul", [VNumber a, VNumber b]) -> num (a * b)
+  ("add", [VNumber a, VNumber b]) -> VNumber <$> arithResult "add" (a + b)
+  ("sub", [VNumber a, VNumber b]) -> VNumber <$> arithResult "sub" (a - b)
+  ("mul", [VNumber a, VNumber b]) -> VNumber <$> arithResult "mul" (a * b)
   ("div", [VNumber a, VNumber b])
     | b == 0 -> throwIO (runtimeFailure ERuntimeDivByZero "division by zero")
-    | otherwise -> num (divS a b)
+    | otherwise -> VNumber <$> divNumber "div" a b
   ("mod", [VNumber a, VNumber b])
     | b == 0 -> throwIO (runtimeFailure ERuntimeDivByZero "modulo by zero")
     | otherwise -> num (modS a b)
@@ -125,7 +127,9 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
   ("round", [VNumber a]) -> num (fromInteger (round (toRealTo a)))
   ("min", [VNumber a, VNumber b]) -> num (min a b)
   ("max", [VNumber a, VNumber b]) -> num (max a b)
-  ("sum", [VArray xs]) -> num (sum [n | VNumber n <- V.toList xs])
+  -- Summed one at a time, so that a sum past the range of Number
+  -- fails before its digits grow without bound.
+  ("sum", [VArray xs]) -> VNumber <$> foldM (\acc n -> arithResult "sum" (acc + n)) 0 [n | VNumber n <- V.toList xs]
   ("pow", [VNumber a, VNumber b]) ->
     let r = toRealTo a ** toRealTo b
      in if isNaN r || isInfinite r
@@ -179,7 +183,9 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
       throwIO . domainError $
         "to_string cannot render " <> typeNameOf other <> "; use to_json for structured values"
   ("to_number", [VString s]) -> case A.eitherDecode (BL.fromStrict (TE.encodeUtf8 (T.strip s))) of
-    Right (A.Number n) -> num n
+    Right (A.Number n) -> case fitNumber n of
+      Just n' -> num n'
+      Nothing -> throwIO (ioFailure EIoDataDecode ("'" <> s <> "' is outside the range of Number (about 1.8e308)"))
     _ -> throwIO (ioFailure EIoDataDecode ("not a number: '" <> s <> "'"))
   ("regex_test", [VString s, VString pat]) -> withRegex pat (\re -> pure (VBool (Re.test re s)))
   ("regex_match", [VString s, VString pat]) ->
@@ -586,9 +592,6 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     toRealTo :: Scientific -> Double
     toRealTo = toRealFloat
 
-    -- Scientific division can diverge on repeating decimals; go
-    -- through Double (integer results stay exact via fromFloatDigits).
-    divS a b = fromFloatDigits (toRealTo a / toRealTo b)
     modS a b
       | isInteger a && isInteger b =
           fromInteger (floor (toRealTo a) `mod` floor (toRealTo b))

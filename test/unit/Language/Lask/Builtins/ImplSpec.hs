@@ -7,10 +7,6 @@
 -- example fails the first test, so a built-in added to the library
 -- without one is noticed here rather than never exercised. An example
 -- names the built-in it is for, and must call it.
---
--- An example marked 'pendingBecause' states what the specification says and
--- the implementation does not yet do. It runs all the same, and fails
--- once it passes, so that the mark is removed with the fix.
 module Language.Lask.Builtins.ImplSpec (spec) where
 
 import Control.Concurrent (threadDelay)
@@ -46,8 +42,6 @@ data Outcome
     Holds
   | -- | A failure with this code.
     Fails ErrorCode
-  | -- | What the specification says, and the reason it does not hold.
-    Pending String Outcome
 
 data Case = Case
   { exBuiltin :: Text,
@@ -63,9 +57,6 @@ holds b e = Case b e Holds
 
 fails :: Text -> Text -> ErrorCode -> Case
 fails b e c = Case b e (Fails c)
-
-pendingBecause :: String -> Case -> Case
-pendingBecause why ex = ex {exOutcome = Pending why (exOutcome ex)}
 
 -- | Declarations every example may use: values whose types a literal
 -- with no expected type would not give.
@@ -91,8 +82,17 @@ examples =
     -- add/sub/mul/div/mod mean what the operators of 6.2 do (15.2).
     holds "add" "add(0.1, 0.2) == 0.1 + 0.2",
     holds "mul" "mul(0.1, 3) == 0.1 * 3",
-    pendingBecause "div(10, 3) is 3.3333333333333335 while 10 / 3 is 3.333333333333333481363069950020872056484222412109375: the builtin rounds through fromFloatDigits, the operator through realToFrac" $
-      holds "div" "div(10, 3) == 10 / 3",
+    holds "div" "div(10, 3) == 10 / 3",
+    is "div" "div(10, 3)" "3.3333333333333335",
+    -- A result beyond the range of Number (4.1) is refused, and one
+    -- too small to tell from zero is zero.
+    fails "mul" "mul(to_number(\"1e308\"), 10)" ERuntimeValue,
+    fails "add" "add(to_number(\"1.7e308\"), to_number(\"1e308\"))" ERuntimeValue,
+    fails "sub" "sub(0, to_number(\"1.7e308\")) - to_number(\"1e308\")" ERuntimeValue,
+    fails "div" "div(to_number(\"1e308\"), 0.1)" ERuntimeValue,
+    fails "sum" "sum([to_number(\"1e308\"), to_number(\"1e308\")])" ERuntimeValue,
+    is "mul" "mul(to_number(\"1e-200\"), to_number(\"1e-200\"))" "0",
+    is "mul" "mul(to_number(\"1e300\"), 1000)" (T.pack ('1' : replicate 303 '0')),
     is "mod" "mod(7, 3)" "1",
     is "mod" "mod(7.5, 2)" "1.5",
     fails "mod" "mod(1, 0)" ERuntimeDivByZero,
@@ -184,6 +184,9 @@ examples =
     fails "to_number" "to_number(\"1.\")" EIoDataDecode,
     fails "to_number" "to_number(\"0x10\")" EIoDataDecode,
     fails "to_number" "to_number(\"NaN\")" EIoDataDecode,
+    fails "to_number" "to_number(\"1e1000000000\")" EIoDataDecode,
+    fails "to_number" "to_number(\"-1e309\")" EIoDataDecode,
+    is "to_number" "to_number(\"1e-1000000000\")" "0",
     is "regex_test" "regex_test(\"a1\", '\\d')" "true",
     is "regex_test" "regex_test(\"a1\", \"[[:digit:]]\")" "true",
     is "regex_test" "regex_test(\"abc\", \"^b\")" "false",
@@ -314,6 +317,10 @@ examples =
     is "to_json" "to_json(1.5 - 0.5)" "\"1\"",
     is "encode" "encode(1.5 - 0.5, \"yaml\")" "\"1\\n\"",
     fails "from_json" "from_json(\"\")" EIoDataDecode,
+    fails "from_json" "from_json(\"{\\\"a\\\": [1e1000000000]}\")" EIoDataDecode,
+    fails "decode" "decode(\"a: 1e400\", \"yaml\")" EIoDataDecode,
+    fails "decode" "decode(\"a = inf\", \"toml\")" EIoDataDecode,
+    is "decode" "decode(\"a = 0.1\", \"toml\")" "{\"a\":0.1}",
     is "encode" "encode({a: 1}, \"json\")" "\"{\\\"a\\\":1}\"",
     is "encode" "encode({b: [1, true], a: null}, \"yaml\")" "\"a: null\\nb:\\n- 1\\n- true\\n\"",
     is "encode" "encode({a: 1}, \"toml\")" "\"a = 1\\n\"",
@@ -458,14 +465,12 @@ check want got = case (want, got) of
   (Is v, Right v') | v == v' -> Nothing
   (Holds, Right "true") -> Nothing
   (Fails c, Left (Right (Just c'))) | c == c' -> Nothing
-  (Pending _ w, _) -> check w got
   _ -> Just ("expected " <> shown want <> ", got " <> either (either (("static " <>) . show) (("failure " <>) . show)) T.unpack got)
   where
     shown o = case o of
       Is v -> T.unpack v
       Holds -> "true"
       Fails c -> "failure " <> show c
-      Pending _ w -> shown w
 
 -- | The identifiers an expression mentions.
 identifiers :: Text -> Set.Set Text
@@ -488,8 +493,4 @@ spec = do
     forM_ examples $ \e ->
       it (T.unpack (exBuiltin e <> ": " <> T.replace "\n" " " (exExpr e))) $ do
         got <- evaluate (exExpr e)
-        case (exOutcome e, check (exOutcome e) got) of
-          (Pending why _, Nothing) -> expectationFailure ("passes now: remove its pending mark (" <> why <> ")")
-          (Pending why _, Just _) -> pendingWith why
-          (_, Nothing) -> pure ()
-          (_, Just problem) -> expectationFailure problem
+        maybe (pure ()) expectationFailure (check (exOutcome e) got)

@@ -293,6 +293,17 @@ spec = do
       failsWith "f() = div(1, 0)" "f" ERuntimeDivByZero
     it "computes mod, floor, ceil, abs" $
       evalsTo "f() = [mod(7, 3), floor(1.5), ceil(1.2), abs(0 - 4)]" "f" "[1,1,2,4]"
+    it "divides as div does, to the shortest decimal of the double" $
+      evalsTo "f() = 10 / 3" "f" "3.3333333333333335"
+    it "refuses a result beyond the range of Number (spec 4.1)" $ do
+      failsWith "f() = to_number(\"1e308\") * 10" "f" ERuntimeValue
+      failsWith "f() = to_number(\"1.7e308\") + to_number(\"1e308\")" "f" ERuntimeValue
+      failsWith "f() = 0 - to_number(\"1.7e308\") - to_number(\"1e308\")" "f" ERuntimeValue
+      failsWith "f() = to_number(\"1e308\") / 0.1" "f" ERuntimeValue
+    it "takes a result too small to tell from zero as 0" $
+      evalsTo "f() = to_number(\"1e-200\") * to_number(\"1e-200\")" "f" "0"
+    it "squares its way to the bound and stops there" $
+      failsWith "f() = reduce(range(0, 40), 10, \\(acc: Number, i: Number) -> acc * acc)" "f" ERuntimeValue
 
   describe "errors (spec 8.10, 15.7)" $ do
     it "catches user failures with try/catch" $
