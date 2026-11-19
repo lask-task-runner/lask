@@ -22,7 +22,7 @@ import Test.Hspec
 -- | A scratch root with @kit@, which depends on @leaf@, both local
 -- repositories tagged @v1@, and a project that imports @kit@ and has
 -- added it. The action gets the root, the project and a runner.
-data Kit = Kit {kRoot :: FilePath, kProj :: FilePath, kRun :: [String] -> IO Result, kRunEnv :: [(String, String)] -> [String] -> IO Result}
+data Kit = Kit {kRoot :: FilePath, kProj :: FilePath, kRun :: [String] -> IO Result}
 
 withKit :: FilePath -> (Kit -> IO a) -> IO a
 withKit lask action =
@@ -41,7 +41,7 @@ withKit lask action =
     writeFile (proj </> "main.lask") "import { hello } from \"kit\"\nf(): String = hello()\n"
     r <- runEnv [] ["deps", "add", "kit", "--git", kit, "--rev", "v1"]
     resExit r `shouldBe` 0
-    action (Kit root proj (runEnv []) runEnv)
+    action (Kit root proj (runEnv []))
 
 -- | A local repository of the files given, tagged @v1@, by its URL.
 repo :: FilePath -> String -> [(FilePath, String)] -> IO String
@@ -179,11 +179,11 @@ spec = beforeAll findLask $ do
       e <- runLask lask proj ["eval", "f"] ""
       resOut e `shouldBe` "\"one\"\n"
     it "rejects a name that is not a lower_id, writing nothing" $ \lask -> withKit lask $ \k -> do
-      before <- readFile (kProj k </> "lask.json")
-      length before `seq` pure ()
+      original <- readFile (kProj k </> "lask.json")
+      length original `seq` pure ()
       r <- kRun k ["deps", "add", "Kit-2", "--git", "file://" <> kRoot k </> "kit", "--rev", "v1"]
       resExit r `shouldBe` 4
-      readFile (kProj k </> "lask.json") `shouldReturn` before
+      readFile (kProj k </> "lask.json") `shouldReturn` original
     it "replaces an entry of the same name" $ \lask -> withKit lask $ \k -> do
       git (kRoot k </> "kit") ["tag", "v2"]
       r <- kRun k ["deps", "add", "kit", "--git", "file://" <> kRoot k </> "kit", "--rev", "v2"]
@@ -217,10 +217,10 @@ spec = beforeAll findLask $ do
       createDirectoryIfMissing True proj
       writeFile (proj </> "main.lask") "f(): String = \"x\"\n"
       resExit <$> runLaskEnv lask proj shared ["deps", "add", "leaf", "--git", leaf, "--rev", "v1"] "" `shouldReturn` 0
-      before <- cacheEntries (root </> "shared")
-      before `shouldSatisfy` (not . null)
+      original <- cacheEntries (root </> "shared")
+      original `shouldSatisfy` (not . null)
       resExit <$> runLaskEnv lask proj shared ["deps", "rm", "leaf"] "" `shouldReturn` 0
-      cacheEntries (root </> "shared") `shouldReturn` before
+      cacheEntries (root </> "shared") `shouldReturn` original
 
   describe "sync (spec 11.7)" $ do
     it "reaches no network for what the cache already holds" $ \lask -> withKit lask $ \k -> do
@@ -249,19 +249,19 @@ spec = beforeAll findLask $ do
       e <- kRun k ["eval", "f"]
       resExit e `shouldNotBe` 0
     it "leaves an up-to-date lock as it is under --frozen" $ \lask -> withKit lask $ \k -> do
-      before <- readFile (kProj k </> "lask.lock.json")
-      length before `seq` pure ()
+      original <- readFile (kProj k </> "lask.lock.json")
+      length original `seq` pure ()
       resExit <$> kRun k ["sync", "--frozen"] `shouldReturn` 0
-      readFile (kProj k </> "lask.lock.json") `shouldReturn` before
+      readFile (kProj k </> "lask.lock.json") `shouldReturn` original
     it "fails with 1 under --frozen when the lock is stale, writing nothing" $ \lask -> withKit lask $ \k -> do
       git (kRoot k </> "kit") ["tag", "v2"]
       edit (kProj k </> "lask.json") (replace "\"v1\"" "\"v2\"")
-      before <- readFile (kProj k </> "lask.lock.json")
-      length before `seq` pure ()
+      original <- readFile (kProj k </> "lask.lock.json")
+      length original `seq` pure ()
       r <- kRun k ["sync", "--frozen"]
       resExit r `shouldBe` 1
       resErr r `shouldSatisfy` isInfixOf "E-MODULE-LOCK-STALE"
-      readFile (kProj k </> "lask.lock.json") `shouldReturn` before
+      readFile (kProj k </> "lask.lock.json") `shouldReturn` original
     it "writes the Modules and Images tables and a count" $ \lask -> withKit lask $ \k -> do
       r <- kRun k ["sync"]
       resOut r `shouldSatisfy` isInfixOf "NAME"
