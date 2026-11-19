@@ -307,8 +307,11 @@ seqLines a b items = (\(d, _, _) -> d) <$> entries True "" "" a b items
 -- source the last thing it placed ends.
 entries :: Bool -> Text -> Text -> Pos -> Pos -> [Item] -> P (Doc, Bool, Pos)
 entries always lead sep a b items = do
-  -- Comments on the line that opens the sequence stay on it.
-  opening <- claimWhere (\c -> fst (cStart c) == fst a && cStart c >= a && cEnd c <= b)
+  -- Comments on the line that opens the sequence stay on it: those
+  -- before its first item. One after the start of an item is in that
+  -- item, or ends its line, and is placed with it.
+  let firstStart = maybe b itemStart (listToMaybe items)
+  opening <- claimWhere (\c -> fst (cStart c) == fst a && cStart c >= a && cEnd c <= firstStart)
   let gaps = zipWith (\p c -> snd (cStart c) - snd p) (a : map cEnd opening) opening
       start = maybe a cEnd (lastMay opening)
   (d, broken, end) <- go (null opening) start items
