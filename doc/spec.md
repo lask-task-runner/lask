@@ -3936,7 +3936,7 @@ Stream rules:
 - The program's stdin and stdout are always those of the `cmd` process. `cmd` produces no evaluation result, so its stdout belongs to the program (11.3), and `lask cmd` can therefore be piped exactly as the program it runs can.
 - When stdin, stdout and stderr are all terminals, stderr is attached to the program as well, and a terminal is allocated in the `container` profile so that prompts, pagers and progress rendering behave as they do when the program is run directly.
 - Otherwise the program's standard error is relayed as the command execution log (12.3). The relay is applied to standard error only: relaying standard output would either duplicate it or withhold it from the pipe, and interactivity and pipeability both take precedence over the completeness of the relay.
-- The start line and the exit line of 12.3 are emitted in every case, so every invocation is recorded with its environment, its argument vector and its exit status.
+- The start line and the exit line of 12.3 are emitted in every case, so every invocation is recorded with its environment, its argument vector and its exit status. The start line writes the argument vector as POSIX shell words separated by spaces: an entry made only of ASCII letters, digits and `_@%+=:,./-` is written as it stands, and any other entry, the empty one included, is single-quoted (`'` inside written `'\''`, as `shell_quote` does; 15.5). So `lask cmd echo 'a b'` is recorded as `echo 'a b'` and `lask cmd echo a b` as `echo a b`.
 - `INT` and `TERM` are forwarded to the program, and the container must be removed on exit, including on signal (11.12).
 
 Exit code rules:

@@ -9,10 +9,12 @@ module Language.Lask.Builtins.Shell
     shellEscapeBuiltin,
     shellEscapeBuiltins,
     shellQuote,
+    shellWords,
     rawBuiltin,
   )
 where
 
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Core.AST
@@ -69,6 +71,21 @@ shellEscape QuoteDouble = T.concatMap (\c -> if c `elem` ("\\\"$`" :: String) th
 -- | One POSIX shell word that expands to exactly the value.
 shellQuote :: Text -> Text
 shellQuote v = "'" <> shellEscape QuoteSingle v <> "'"
+
+-- | An argument vector as POSIX shell words, for a log line (spec
+-- 11.8, 12.3): a word a shell would take as it stands is written
+-- bare, and any other, the empty one included, is single-quoted, so
+-- that the line records where each argument begins and ends.
+--
+-- >>> shellWords ["echo", "a b", "", "it's", "--x=1"]
+-- "echo 'a b' '' 'it'\\''s' --x=1"
+shellWords :: [Text] -> Text
+shellWords = T.unwords . map word
+  where
+    word w
+      | not (T.null w), T.all plain w = w
+      | otherwise = shellQuote w
+    plain c = isAsciiUpper c || isAsciiLower c || isDigit c || c `elem` ("_@%+=:,./-" :: String)
 
 -- | The internal builtin the elaborator applies to a hole in this
 -- quoting. No program can write its name.
