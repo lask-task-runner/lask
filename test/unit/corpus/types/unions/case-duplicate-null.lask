@@ -1,0 +1,6 @@
+// A value head null takes Null, so a later type head Null is unreachable (6.4, 14.2).
+f(x: String | Null) = case (x) {
+  null -> 1
+  Null -> 2 // expect: E-TYPE-CASE-DUPLICATE
+  else -> 3
+}

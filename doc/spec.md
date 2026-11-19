@@ -3189,7 +3189,7 @@ Develop:
 
 - `check`: returns static validation results.
 - `fmt`: formats the project's `.lask` files in a single style, or checks that they are formatted (11.11).
-- `serve`: provides editor integration (Language Server Protocol) functionality.
+- `serve`: provides editor integration (Language Server Protocol) functionality. It ends on the `exit` notification with the exit code the Language Server Protocol gives: `0` after a `shutdown` request, and `1` without one.
 - `completion`: prints the shell completion script.
 - `version`: prints the version.
 
@@ -4347,7 +4347,7 @@ Format profiles:
 
 For `json` / `pretty-json`, the following mapping rules must be satisfied.
 
-- `Number`: maps to a JSON number.
+- `Number`: maps to a JSON number. One number has one text, however it was computed: an integer is written without a fraction, so `1.5 - 0.5` is written `1`, as `1` is.
 - `String`: maps to a JSON string.
 - `Bool`: maps to a JSON boolean.
 - `Null`: maps to JSON null.
@@ -5778,7 +5778,7 @@ Checking a command string against a schema:
   2. An option with `stops` ends the check once it and its value are read: `python -m pytest -k smoke` checks `-m` and its value, and leaves `-k` to pytest.
   3. A word that may expand to other than one field (an unquoted parameter expansion, command substitution or pattern) ends the check. So does any other word that is not literal, except an option whose name and `=` are written literally (`--count=#{n}`), whose name is checked.
   4. `--` ends the check.
-  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
+  5. A word beginning with `-`, other than `-` alone, is an option. In the `gnu` style `--name` and `--name=value` name a long option — with `abbreviations`, also any prefix of exactly one long name, a prefix of several being ambiguous — and `-abc` the single-letter options `-a`, `-b`, `-c`, where the first that takes a value takes the rest of the word as it. In the `single-dash` style `-name` and `-name=value` name an option, and `--name` names the option of that name if there is one and is otherwise read as `-name`: a program such as java has both `-cp` and `--class-path`. In either style, a word that names no option but begins with the name of an option with `prefix` is that option, the rest of the word its value; of several such names, the longest is taken. In the `gnu` style a word that begins with such a name of more than one letter after its dash is read so before it is read as single-letter options: with `-isystem` declared, `-isystem/usr/include` is `-isystem` with the value `/usr/include`, whether or not `-i` is an option. A word beginning with `+` is read the same way when it begins the name of such an option (`+` for rustup's and cargo's `+nightly`), and is otherwise a positional argument.
   6. Any other word is a positional argument. While no positional argument has been read in the current spec and it has subcommands, it selects the subcommand of that name: the check continues in it, whose options are its own and the global options of its ancestors. With `subcommand_optional`, a word that names no subcommand is a positional argument of the current spec instead of an unknown subcommand. Otherwise, with `stop_at_first_positional`, or when options do not intermix, it ends the check.
 - Each of the following is reported, and the check ends at the first:
   - an option the current spec does not have, or a subcommand it does not have, or an abbreviated option that is ambiguous;

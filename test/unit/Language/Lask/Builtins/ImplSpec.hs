@@ -7,10 +7,6 @@
 -- example fails the first test, so a built-in added to the library
 -- without one is noticed here rather than never exercised. An example
 -- names the built-in it is for, and must call it.
---
--- An example marked 'pendingBecause' states what the specification says and
--- the implementation does not yet do. It runs all the same, and fails
--- once it passes, so that the mark is removed with the fix.
 module Language.Lask.Builtins.ImplSpec (spec) where
 
 import Control.Concurrent (threadDelay)
@@ -46,8 +42,6 @@ data Outcome
     Holds
   | -- | A failure with this code.
     Fails ErrorCode
-  | -- | What the specification says, and the reason it does not hold.
-    Pending String Outcome
 
 data Case = Case
   { exBuiltin :: Text,
@@ -63,9 +57,6 @@ holds b e = Case b e Holds
 
 fails :: Text -> Text -> ErrorCode -> Case
 fails b e c = Case b e (Fails c)
-
-pendingBecause :: String -> Case -> Case
-pendingBecause why ex = ex {exOutcome = Pending why (exOutcome ex)}
 
 -- | Declarations every example may use: values whose types a literal
 -- with no expected type would not give.
@@ -323,8 +314,8 @@ examples =
     is "to_json" "to_json({b: 1, a: [true, null]})" "\"{\\\"a\\\":[true,null],\\\"b\\\":1}\"",
     is "to_json" "to_json(\"é\\u{1}\\\"\")" "\"\\\"é\\\\u0001\\\\\\\"\\\"\"",
     is "from_json" "from_json(\" 1 \")" "1",
-    pendingBecause "1.5 - 0.5 is written 1.0 and 1 is written 1: one value, two texts (13.1); valueToJson writes the Scientific as it is, while to_string normalizes it" $
-      is "to_json" "to_json(1.5 - 0.5)" "\"1\"",
+    is "to_json" "to_json(1.5 - 0.5)" "\"1\"",
+    is "encode" "encode(1.5 - 0.5, \"yaml\")" "\"1\\n\"",
     fails "from_json" "from_json(\"\")" EIoDataDecode,
     fails "from_json" "from_json(\"{\\\"a\\\": [1e1000000000]}\")" EIoDataDecode,
     fails "decode" "decode(\"a: 1e400\", \"yaml\")" EIoDataDecode,
@@ -474,14 +465,12 @@ check want got = case (want, got) of
   (Is v, Right v') | v == v' -> Nothing
   (Holds, Right "true") -> Nothing
   (Fails c, Left (Right (Just c'))) | c == c' -> Nothing
-  (Pending _ w, _) -> check w got
   _ -> Just ("expected " <> shown want <> ", got " <> either (either (("static " <>) . show) (("failure " <>) . show)) T.unpack got)
   where
     shown o = case o of
       Is v -> T.unpack v
       Holds -> "true"
       Fails c -> "failure " <> show c
-      Pending _ w -> shown w
 
 -- | The identifiers an expression mentions.
 identifiers :: Text -> Set.Set Text
@@ -504,8 +493,4 @@ spec = do
     forM_ examples $ \e ->
       it (T.unpack (exBuiltin e <> ": " <> T.replace "\n" " " (exExpr e))) $ do
         got <- evaluate (exExpr e)
-        case (exOutcome e, check (exOutcome e) got) of
-          (Pending why _, Nothing) -> expectationFailure ("passes now: remove its pending mark (" <> why <> ")")
-          (Pending why _, Just _) -> pendingWith why
-          (_, Nothing) -> pure ()
-          (_, Just problem) -> expectationFailure problem
+        maybe (pure ()) expectationFailure (check (exOutcome e) got)

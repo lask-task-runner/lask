@@ -1,2 +1,2 @@
-import { x } from "./main.lask"
+import { x } from "./main.lask" // expect: E-MODULE-CYCLE
 a = x

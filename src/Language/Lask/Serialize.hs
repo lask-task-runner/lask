@@ -23,7 +23,7 @@ import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Map.Strict as Map
-import Data.Scientific (Scientific)
+import Data.Scientific (Scientific, normalize)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -37,7 +37,9 @@ import Language.Lask.Types (renderType)
 -- | Convert a runtime value to its canonical JSON representation.
 valueToJson :: Value -> A.Value
 valueToJson v = case v of
-  VNumber n -> A.Number n
+  -- One number is one text (13.1): the 1 that 1.5 - 0.5 computes is
+  -- held as 10e-1, which aeson would write 1.0, and is written 1.
+  VNumber n -> A.Number (normalize n)
   VString t -> A.String t
   VBool b -> A.Bool b
   VNull -> A.Null

@@ -32,7 +32,6 @@ import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, valueFromJson)
 import Language.Lask.Types (Type, renderType)
 import Language.Lask.Utils (snakeToKebab)
-import Support.Pending (knownBug)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess, prop)
 import Test.QuickCheck
@@ -235,8 +234,7 @@ spec = do
     it "writes one value as one text, whatever its representation" $
       -- 1.5 - 0.5 is 1 as 1 is, and the two compare equal, but are
       -- written 1.0 and 1.
-      knownBug "a Number whose Scientific is not normalized is written with a fraction: 1.0 for the 1 that 1.5 - 0.5 computes" $
-        encodeValue (VNumber (scientific 10 (-1))) `shouldBe` encodeValue (VNumber 1)
+      encodeValue (VNumber (scientific 10 (-1))) `shouldBe` encodeValue (VNumber 1)
 
   describe "command line arguments (spec 11.2)" $ do
     prop "keeps a text argument as it is" $ \s ->

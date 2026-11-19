@@ -82,7 +82,7 @@ spec = do
             <> [ TLParen, TRParen, TLBracket, TRBracket, TLBrace, TRBrace, TComma, TColon, TSemi, TDot,
                  TArrow, TAssign, TBackslash, TDashDash, TBangBang, TEllipsis, TPipe, TQuestion,
                  TBool True, TBool False, TNull, TLowerId "go_2", TUpperId "Pair", TEnvHead "alpine:3.12",
-                 TRawString "a b", TNumber 1.5
+                 TRawString "a b", TNumber 1.5, TNumber 42, TNumber 0.001
                ]
 
     it "spells a token so that it lexes back to itself" $
@@ -90,3 +90,6 @@ spec = do
 
     it "names a token in a syntax error by its spelling" $
       errorAt "x = )" `shouldSatisfy` either (const False) (\(_, _, m) -> "unexpected )" `isInfixOf` T.unpack m)
+
+    it "names a number in a syntax error as a literal writes it, not as a Double" $
+      errorAt "42\n" `shouldSatisfy` either (const False) (\(_, _, m) -> "unexpected 42" `isInfixOf` T.unpack m && not ("42.0" `isInfixOf` T.unpack m))

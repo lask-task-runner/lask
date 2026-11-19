@@ -14,7 +14,6 @@ import Language.Lask.Module.Loader (loadProgramWith)
 import Language.Lask.Module.Resolve (validateProgram)
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Types (renderType)
-import Support.Pending (knownBug)
 import Test.Hspec
 
 -- | Full front-end pipeline over in-memory sources.
@@ -835,8 +834,12 @@ spec = do
       rejects "u = {name: \"a\"}\nk = \"name\"\nv = u[k]" ETypeAccess
     it "types array indexing" $
       hasType "xs = [1, 2]\nv = xs[0]" "v" "Number"
-    it "requires Number indexes for arrays" $
-      rejects "xs = [1, 2]\nv = xs[\"0\"]" ETypeMismatch
+    it "requires Number indexes for arrays (spec 6.8)" $
+      rejects "xs = [1, 2]\nv = xs[\"0\"]" ETypeAccess
+    it "requires String indexes for maps (spec 6.8)" $
+      rejects "m: Map<Number> = {\"a\": 1}\nv = m[0]" ETypeAccess
+    it "keeps a mismatch inside an index expression a mismatch" $
+      rejects "xs = [1, 2]\nv = xs[1 + \"a\"]" ETypeMismatch
     it "types map indexing" $
       hasType "m: Map<Number> = {\"a\": 1}\nv = m[\"a\"]" "v" "Number"
 
@@ -1491,12 +1494,8 @@ spec = do
       messagesOf "f<T: orderable>(a: T, b: T) = a < b\ng = f([1], [2])"
         >>= (`shouldSatisfy` any ("requires T to be orderable" `T.isInfixOf`))
     it "names an inferred type parameter T, as help shows it" $
-      -- The message reads "'show' requires T% to be stringifiable": the
-      -- bound message drops only the '@' suffix of a variable, where
-      -- varDisplay drops '%' as well.
-      knownBug "an inferred type parameter is named T% in the E-TYPE-BOUND message, the elaborator's name for it" $
-        messagesOf "show(x) = \"#{x}\"\ny = show(null)"
-          >>= (`shouldSatisfy` all (\m -> "requires T to be" `T.isInfixOf` m && not ("%" `T.isInfixOf` m)))
+      messagesOf "show(x) = \"#{x}\"\ny = show(null)"
+        >>= (`shouldSatisfy` all (\m -> "requires T to be" `T.isInfixOf` m && not ("%" `T.isInfixOf` m)))
     it "writes a union in canonical form (4.2)" $
       diagnosticsOf "x: Null | String = 1" >>= (`shouldBe` [Just "String | Null"]) . map diagExpected
 

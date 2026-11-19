@@ -1,4 +1,3 @@
-// pending: indexing a Map with a Number is reported as E-TYPE-MISMATCH; 6.8 and 14.2 make an invalid index type E-TYPE-ACCESS
 // Any other combination of target and index type is E-TYPE-ACCESS (6.8).
 m: Map<Number> = { a: 1 }
 ok: Number = m["a"]

@@ -1,4 +1,3 @@
-// pending: the duplicate type head is reported at the whole case expression, not at the arm that can never be selected, as a duplicate value head is
 // Two type heads denoting one type: the later arm is unreachable (6.4, 14.2).
 f(x: Any) = case (x) {
   String -> 1
