@@ -36,6 +36,7 @@ import Language.Lask.Module.Loader (Program (..))
 import Language.Lask.Module.Resolve (GlobalScope, entryPublicValues)
 import Language.Lask.Runtime.Eval (castValueEither, renderCastMismatch)
 import Language.Lask.Runtime.Value (Value (..))
+import Language.Lask.Number (numberText)
 import Language.Lask.Serialize (valueFromJson, valueToJson)
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Types (Type (..), applySubst)
@@ -100,13 +101,16 @@ validateConfirm prog scopes core = case progProject prog of
                   <> fn
                   <> "': 'when' value "
                   <> jsonText v
-                  <> " does not fit the type of '"
-                  <> param
-                  <> "'"
-                  <> renderCastMismatch cm
+                  <> problem
             | v <- values,
-              Left cm <- [castValueEither ty (valueFromJson v)]
+              Just problem <- [misfit ty v]
             ]
+          where
+            misfit ty v = case valueFromJson v of
+              Left n -> Just (" has the number " <> numberText n <> ", outside the range of Number (about 1.8e308)")
+              Right x -> case castValueEither ty x of
+                Left cm -> Just (" does not fit the type of '" <> param <> "'" <> renderCastMismatch cm)
+                Right _ -> Nothing
 
     diag rule = mkDiagnostic EModuleConfirmTarget StageStatic (spanOf rule)
     spanOf rule = case crAt rule of

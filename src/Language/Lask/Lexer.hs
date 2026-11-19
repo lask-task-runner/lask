@@ -28,6 +28,7 @@ import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic)
 import Language.Lask.ErrorCode (ErrorCode (ESyntaxUnexpectedToken), Stage (StageSyntax))
 import Language.Lask.Lexer.Layout (layout)
 import Language.Lask.Lexer.Token
+import Language.Lask.Number (fitNumber)
 import Language.Lask.Span (Span (Span), fromSourcePos)
 import Text.Megaparsec hiding (State, Token, Tokens)
 import Text.Megaparsec.Char (char)
@@ -119,15 +120,21 @@ pNewline = () <$ chunk "\r\n" <|> () <$ char '\n'
 -- Numbers ---------------------------------------------------------------
 
 -- | Unsigned decimal with optional fraction (spec 3.3). @1.foo@ lexes
--- as the number @1@ followed by an accessor dot.
+-- as the number @1@ followed by an accessor dot. A literal beyond the
+-- range of Number (4.1) is a syntax error, reported where it starts.
 pNumber :: Lexer Token
 pNumber = do
+  start <- getOffset
   intPart <- takeWhile1P (Just "digit") isDigit
   fracPart <- optional $ try $ do
     _ <- char '.'
     takeWhile1P (Just "digit") isDigit
   let txt = intPart <> maybe "" ("." <>) fracPart
-  pure (TNumber (read (T.unpack txt)))
+  case fitNumber (read (T.unpack txt)) of
+    Just n -> pure (TNumber n)
+    Nothing -> do
+      setOffset start
+      fail "number literal is outside the range of Number (about 1.8e308)"
 
 -- Strings ---------------------------------------------------------------
 

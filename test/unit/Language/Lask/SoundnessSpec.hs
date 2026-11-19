@@ -206,7 +206,7 @@ genScientific = scientific <$> choose (-100000, 100000) <*> choose (-6, 6)
 
 -- | The value a JSON text reads back as.
 readBack :: Text -> Maybe Value
-readBack t = valueFromJson <$> A.decode (BL.fromStrict (TE.encodeUtf8 t))
+readBack t = A.decode (BL.fromStrict (TE.encodeUtf8 t)) >>= either (const Nothing) Just . valueFromJson
 
 spec :: Spec
 spec = do

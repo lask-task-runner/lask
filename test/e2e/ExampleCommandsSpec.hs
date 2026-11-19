@@ -37,14 +37,14 @@ documented src = nub [c | l <- lines src, Just c <- [command l], ';' `notElem` c
   where
     command l = case dropWhile isSpace <$> stripPrefix' "//" (dropWhile isSpace l) of
       Just rest
-        | Just c <- after "@example " rest -> lask c
+        | Just c <- suffixAfter "@example " rest -> lask c
         | otherwise -> lask rest
       Nothing -> Nothing
-    after p s
+    suffixAfter p s
       | p `isPrefixOf` s = Just (drop (length p) s)
       | otherwise = case s of
           [] -> Nothing
-          _ : t -> after p t
+          _ : t -> suffixAfter p t
     lask c
       | any (`isPrefixOf` c) ["lask eval ", "lask run "] = Just (trim (takeWhile (/= '#') c))
       | otherwise = Nothing
