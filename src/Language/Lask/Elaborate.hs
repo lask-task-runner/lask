@@ -2272,10 +2272,10 @@ elabIndex ctx path locals sp inner idx = do
   cannotTell ETypeAccess sp "an index" t
   case t of
     TyArray elemTy -> do
-      i <- check ctx path locals idx TyNumber
+      i <- index "an Array" TyNumber
       pure (Core sp (CIndex IdxArray c i), elemTy)
     TyMap valTy -> do
-      i <- check ctx path locals idx TyString
+      i <- index "a Map" TyString
       pure (Core sp (CIndex IdxMap c i), valTy)
     TyRecord fields -> case literalString idx of
       Just k -> case Map.lookup k fields of
@@ -2292,6 +2292,18 @@ elabIndex ctx path locals sp inner idx = do
     literalString (Expr _ (EString [TPChunk _ t])) = Just t
     literalString (Expr _ (EString [])) = Just ""
     literalString _ = Nothing
+
+    -- An index of the wrong type is a combination of target and index
+    -- type 6.8 does not admit (E-TYPE-ACCESS). A mismatch inside the
+    -- index expression stays what it is.
+    index what want = do
+      r <- tryTC (check ctx path locals idx want)
+      case r of
+        Right i -> pure i
+        Left d
+          | diagCode d == ETypeMismatch && diagSpan d == exprSpan idx ->
+              abort d {diagCode = ETypeAccess, diagMessage = what <> " is indexed by a " <> renderType want}
+          | otherwise -> abort d
 
 -- Binary operators ---------------------------------------------------------------------
 
