@@ -396,6 +396,11 @@ walkCommand schema word = go (St "" False Nothing)
     option st t w rest = case styleAt schema (stPath st) of
       Gnu
         | "--" `T.isPrefixOf` t -> long st t w rest
+        -- A word that begins with a name of more than one letter of an
+        -- option with prefix is that option, before it is read as
+        -- single letters: -isystem/usr/include is -isystem, not -i
+        -- -s -y ... (appendix A, the longest name).
+        | Just (n, _, _) <- prefixOpt st t, T.length n > 2 -> long st t w rest
         | otherwise -> cluster st (T.drop 1 t) w rest
       SingleDash -> long st (normalised st t) w rest
 

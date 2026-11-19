@@ -72,6 +72,7 @@ import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Printer (formatSource)
 import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
 import Language.Lask.Types (Type (..), renderBound, renderType)
+import System.Exit (ExitCode (ExitFailure), exitSuccess, exitWith)
 import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
 import Language.Lask.Deps.File (defaultDepsFileName)
 import Language.Lask.Confirm (describeRule, ruleFor)
@@ -122,8 +123,16 @@ reactor logger inp = do
     act
 
 lspHandlers :: (m ~ LspM Config) => L.LogAction m (WithSeverity T.Text) -> TChan ReactorInput -> Handlers m
-lspHandlers logger rin = mapHandlers goReq goNot (handle logger)
+lspHandlers logger rin = mapHandlers goReq goNot (handle logger) <> exitHandler
   where
+    -- The exit notification ends the process, so it is handled here
+    -- rather than on the reactor thread: the exit code is that of the
+    -- LSP specification, 0 after a shutdown request and 1 without
+    -- one. The lsp library's own handler always exits 0.
+    exitHandler =
+      notificationHandler LSP.SMethod_Exit $ \_ -> do
+        shutDown <- isShuttingDown
+        liftIO (if shutDown then exitSuccess else exitWith (ExitFailure 1))
     goReq :: forall (a :: LSP.Method LSP.ClientToServer LSP.Request). Handler (LspM Config) a -> Handler (LspM Config) a
     goReq f msg k = do
       env <- getLspEnv

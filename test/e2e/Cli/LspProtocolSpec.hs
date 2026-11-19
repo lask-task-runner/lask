@@ -44,12 +44,14 @@ withServer lask action = withSystemTempDirectory "lask-lsp" $ \dir ->
   bracket
     (createProcess (proc lask ["serve"]) {cwd = Just dir, std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe})
     (\(_, _, _, ph) -> terminateProcess ph >> void (waitForProcess ph))
-    $ \(Just i, Just o, Just e, ph) -> do
-      mapM_ (`hSetBinaryMode` True) [i, o]
-      -- Drain stderr so that the server never blocks on it.
-      _ <- forkIO (BC.hGetContents e >>= \c -> BC.length c `seq` pure ())
-      s <- Server i o ph <$> newIORef 1 <*> newIORef [] <*> pure dir
-      action s
+    $ \handles -> case handles of
+      (Just i, Just o, Just e, ph) -> do
+        mapM_ (`hSetBinaryMode` True) [i, o]
+        -- Drain stderr so that the server never blocks on it.
+        _ <- forkIO (BC.hGetContents e >>= \c -> BC.length c `seq` pure ())
+        s <- Server i o ph <$> newIORef 1 <*> newIORef [] <*> pure dir
+        action s
+      _ -> fail "the server's streams were not piped"
 
 send :: Server -> A.Value -> IO ()
 send s v = do
@@ -78,7 +80,7 @@ await :: Server -> (A.Value -> Bool) -> IO A.Value
 await s p = do
   seen <- readIORef (sSeen s)
   case break p seen of
-    (before, m : after) -> writeIORef (sSeen s) (before <> after) >> pure m
+    (earlier, m : later) -> writeIORef (sSeen s) (earlier <> later) >> pure m
     _ -> do
       r <- timeout 10000000 loop
       maybe (expectationFailure "no such message from the server" >> fail "unreachable") pure r
@@ -146,9 +148,11 @@ spec = beforeAll findLask $ describe "the language server over its protocol" $ d
     _ <- initialize s
     open s "main.lask" "f(): Number = nope\n"
     ds <- diagnosticsOf s "main.lask"
-    length ds `shouldBe` 1
-    fmap show (field "code" (head ds)) `shouldSatisfy` maybe False (T.isInfixOf "E-NAME-UNDEFINED" . T.pack)
-    path ["range", "start"] (head ds) `shouldBe` Just (pos 0 14)
+    case ds of
+      [d] -> do
+        fmap show (field "code" d) `shouldSatisfy` maybe False (T.isInfixOf "E-NAME-UNDEFINED" . T.pack)
+        path ["range", "start"] d `shouldBe` Just (pos 0 14)
+      _ -> expectationFailure ("expected one diagnostic, got " <> show (length ds))
 
   it "keeps the document in step with incremental edits" $ \lask -> withServer lask $ \s -> do
     _ <- initialize s
@@ -247,7 +251,6 @@ spec = beforeAll findLask $ describe "the language server over its protocol" $ d
     code `shouldBe` Just ExitSuccess
 
   it "exits 1 on exit without shutdown" $ \lask -> withServer lask $ \s -> do
-    pendingWith "known gap: the server exits 0 on exit without shutdown; the LSP specification says it should exit 1 (exit notification). The exit is the lsp library's default handler"
     _ <- initialize s
     notify s "exit" A.Null
     code <- timeout 5000000 (waitForProcess (sProc s))
