@@ -900,7 +900,11 @@ elabDecl ctx0 path (Decl sp f) = case f of
       -- parameters, as a function declaration does (6.1).
       ELambda tps ps rt body -> do
         vs <- typeVarsOf ctx path tps
-        (lam, ty, params) <- elabLambda (withTypeVars vs ctx) path Map.empty (exprSpan rhs) (Just name) ps rt body
+        -- The annotation's result type is the body's expected type.
+        let expectedRet = case annTy of
+              Just (TyFun _ r) -> Just r
+              _ -> Nothing
+        (lam, ty, params) <- elabLambdaExpecting (withTypeVars vs ctx) path Map.empty (exprSpan rhs) (Just name) expectedRet ps rt body
         -- A function-typed binding can never be a secret (6.10 allows
         -- only String); report that before the annotation check.
         _ <- applySecrecy sp name sec ty lam
@@ -1136,13 +1140,31 @@ elabLambda ::
   Maybe SType ->
   Expr ->
   TC (Core, Type, StaticParams)
-elabLambda ctx path locals sp mName ps0 retAnn body = do
+elabLambda ctx path locals sp mName = elabLambdaExpecting ctx path locals sp mName Nothing
+
+-- | 'elabLambda', given the result type the lambda's expected type
+-- gives it, if any. A body without a result annotation is checked
+-- against it, as an annotation would have it checked (spec 4.3), so
+-- that what needs an expected type in its last expression (fail, cast,
+-- a literal [] or {...}) has one.
+elabLambdaExpecting ::
+  Ctx ->
+  FilePath ->
+  Locals ->
+  Span ->
+  Maybe Text ->
+  Maybe Type ->
+  [Param] ->
+  Maybe SType ->
+  Expr ->
+  TC (Core, Type, StaticParams)
+elabLambdaExpecting ctx path locals sp mName expectedRet ps0 retAnn body = do
   -- A lambda that is not bound to a name has no type parameters
   -- (4.4); one bound to a name has had its parameters inferred
   -- already, with them ('inferParams').
   (ps, _) <- inferParams ctx path locals False ps0 retAnn body
   (params, kwDefaults, bodyLocals, secretParams) <- elabParams ctx path locals ps
-  retTy <- traverse (typeFromS ctx path) retAnn
+  retTy <- maybe (pure expectedRet) (fmap Just . typeFromS ctx path) retAnn
   let body' = wrapSecretParams secretParams body
   (bodyCore, bodyTy) <- case retTy of
     Just t -> (,) <$> check ctx path bodyLocals body' t <*> pure t
@@ -1916,9 +1938,9 @@ check ctx path locals e@(Expr sp f) expected = case f of
         pure (Core sp (CArray cs))
   EObject kvs -> checkObject ctx path locals sp kvs expected
   ELambda tps ps rt body
-    | TyFun expPs _ <- expected -> do
+    | TyFun expPs expRet <- expected -> do
         monoLambda sp tps
-        (lam, ty, _) <- elabLambdaAgainst ctx path locals sp ps rt body expPs
+        (lam, ty, _) <- elabLambdaAgainst ctx path locals sp ps rt body expPs (Just expRet)
         conformsM ctx sp ty expected >>= \ok -> unless ok (mismatch sp expected ty)
         pure lam
   ECond c a b -> check ctx path locals (condAsIf sp c a b) expected
@@ -2024,15 +2046,16 @@ elabLambdaAgainst ::
   Maybe SType ->
   Expr ->
   [Type] ->
+  Maybe Type ->
   TC (Core, Type, StaticParams)
-elabLambdaAgainst ctx path locals sp ps rt body expPs = do
+elabLambdaAgainst ctx path locals sp ps rt body expPs expRet = do
   requiredAsValue sp "a lambda" ps
   let positionals = [p | p@(Param _ (PPositional _ _ _)) <- ps]
   ps' <-
     if length positionals == length expPs && length positionals == length ps
       then pure (zipWith adopt ps expPs)
       else pure ps
-  elabLambda ctx path locals sp Nothing ps' rt body
+  elabLambdaExpecting ctx path locals sp Nothing expRet ps' rt body
   where
     adopt (Param psp (PPositional n sec Nothing)) expTy =
       Param psp (PPositional n sec (Just (typeToS psp expTy)))
@@ -3878,9 +3901,12 @@ elabCall ctx path locals sp fn args mExpected = do
     -- A lambda argument adopts concrete parameter types from the
     -- (partially instantiated) pattern.
     inferWithHint argExpr p = case (exprF argExpr, p) of
-      (ELambda [] ps rt body, TyFun expPs _)
+      (ELambda [] ps rt body, TyFun expPs expRet)
         | all (settled ctx) expPs -> do
-            (lam, ty, _) <- elabLambdaAgainst ctx path locals (exprSpan argExpr) ps rt body expPs
+            -- The result too, once it is concrete: until then the
+            -- body is what determines it.
+            let ret = if settled ctx expRet then Just expRet else Nothing
+            (lam, ty, _) <- elabLambdaAgainst ctx path locals (exprSpan argExpr) ps rt body expPs ret
             pure (lam, ty)
       _ -> infer ctx path locals argExpr
 
