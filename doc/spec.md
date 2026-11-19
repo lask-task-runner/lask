@@ -3068,11 +3068,11 @@ kernel(): String within Contained = $[#local] uname -s
 sum(xs: Array<Number>): Number within Pure = reduce(xs, 0, \(a: Number, x: Number) -> a + x)
 
 serve(): String within Loopback =
-  $[#nginx:1.27{publish: ["127.0.0.1:8080:80", "[::1]:8080:80"], network: "none"}] nginx
+  $[#nginx:1.27{ publish: ["127.0.0.1:8080:80", "[::1]:8080:80"], network: "none" }] nginx
 
 // E-TYPE-WITHIN-EXCEEDED: a port is published on 0.0.0.0:8080, and on :: too.
 open_to_all(): String within Loopback =
-  $[#nginx:1.27{publish: ["8080:80"], network: "none"}] nginx
+  $[#nginx:1.27{ publish: ["8080:80"], network: "none" }] nginx
 ```
 
 ```lask fragment
@@ -3085,11 +3085,11 @@ whoami(--key!!: String = get_env("AWS_SECRET_ACCESS_KEY")): String within { secr
   $[aws(key)] aws sts get-caller-identity
 
 // Bound to v here, whatever the caller calls it.
-show(v!!: String): String within { secrets: [v] } = $[#alpine:3.22.2{env: {"V": v}}] true
+show(v!!: String): String within { secrets: [v] } = $[#alpine:3.22.2{ env: { "V": v } }] true
 ok(): String = show(token)
 
 // E-TYPE-WITHIN-EXCEEDED: main.lask: other is not one of the names given.
-pick(): String within { secrets: [token] } = $[#alpine:3.22.2{env: {"T": token, "O": other}}] true
+pick(): String within { secrets: [token] } = $[#alpine:3.22.2{ env: { "T": token, "O": other } }] true
 
 // E-TYPE-WITHIN-EXCEEDED: main.lask: leak --key is given in the command string.
 // It is W-SECRET-COMMAND-LINE as well, constraint or not.
