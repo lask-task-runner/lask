@@ -4607,7 +4607,7 @@ An implementation must include at least the following when reporting an error.
 - `message`: human-readable message
 - `stage`: `syntax` / `static` / `runtime` / `io` / `cli`
 - `traceId`: the identifier of 12.5, when available
-- `location`: line and column, or span, where possible
+- `location`: line and column, or span, where possible. Lines and columns count from 1. A column counts characters (Unicode scalar values): a tab, a wide character such as `字` and a character outside the Basic Multilingual Plane such as `😀` are each one column. `serve` (11.1) gives a position in the UTF-16 code units the Language Server Protocol counts, in which only a character outside the Basic Multilingual Plane differs, as two.
 
 Additional requirements related to types and names:
 

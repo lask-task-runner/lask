@@ -192,14 +192,11 @@ startOf NoSpan = (0, 0)
 endOf (Span _ (Position _ l c)) = (l, c)
 endOf NoSpan = (0, 0)
 
--- | The index in a line of the character at a column. Megaparsec
--- advances the column of a tab to the next multiple of eight, plus one.
+-- | The index in a line of the character at a column. A column counts
+-- characters from 1 (spec 14), so the line is not needed; it is taken
+-- to keep the index within it.
 colIndex :: Text -> Int -> Int
-colIndex ln target = go 0 1 (T.unpack ln)
-  where
-    go i col _ | col >= target = i
-    go i col (c : cs) = go (i + 1) (if c == '\t' then col + 8 - ((col - 1) `rem` 8) else col + 1) cs
-    go i _ [] = i
+colIndex ln target = max 0 (min (T.length ln) (target - 1))
 
 slice :: V.Vector Text -> Pos -> Pos -> Text
 slice ls (l1, c1) (l2, c2)

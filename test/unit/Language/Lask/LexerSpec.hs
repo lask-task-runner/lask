@@ -6,7 +6,7 @@ import Data.Either (isLeft)
 import Data.Text (Text)
 import Language.Lask.Lexer (lexLayout, lexTokens)
 import Language.Lask.Lexer.Token
-import Language.Lask.Span (Span (NoSpan))
+import Language.Lask.Span (Position (..), Span (..))
 import Test.Hspec
 
 -- | Tokenize (no layout) and strip spans.
@@ -42,6 +42,13 @@ spec = do
 
     it "does not take an accessor dot into a number" $
       lexed "1.foo" `shouldBe` Right [num 1, TDot, lid "foo"]
+
+    it "counts a column in characters, a tab or a wide character being one (spec 14)" $
+      fmap (map (\(Spanned sp _) -> sp)) (lexTokens "test.lask" "'字\t😀' x")
+        `shouldBe` Right
+          [ Span (Position "test.lask" 1 1) (Position "test.lask" 1 6),
+            Span (Position "test.lask" 1 7) (Position "test.lask" 1 8)
+          ]
 
     it "has no signed numbers: leading minus is an operator" $
       lexed "-1" `shouldBe` Right [TOp OpSub, num 1]

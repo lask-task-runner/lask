@@ -73,6 +73,13 @@ spec = do
         `shouldReturn` [(Just DiagnosticSeverity_Error, Just (InR "E-TYPE-MISMATCH"))]
     it "shows nothing for a clean document" $
       severities "a = 1" `shouldReturn` []
+    -- A position counts UTF-16 code units: a wide character is one, a
+    -- character outside the BMP two, and a tab one.
+    it "places an error after a wide character, a tab or an emoji in UTF-16 units" $ do
+      let rangeOf src = map (^. L.range) . fst <$> documentDiagnostics "main.lask" src
+      rangeOf "x = \"字字\" + zz\n" `shouldReturn` [Range (Position 0 11) (Position 0 13)]
+      rangeOf "x = \"\t\" + zz\n" `shouldReturn` [Range (Position 0 10) (Position 0 12)]
+      rangeOf "x = \"\128512\" + zz\n" `shouldReturn` [Range (Position 0 11) (Position 0 13)]
     it "shows every independent error (spec 14.3)" $
       map (^. L.range . L.start . L.line) . fst
         <$> documentDiagnostics "main.lask" "a(): Number = \"s\"\nb = nope\nc(): String = 1\n"
@@ -103,6 +110,10 @@ spec = do
     it "emits comment tokens for line comments" $
       -- "// hi" occupies columns 0-4 on line 0.
       hasAtom "// hi\na = 1" (0, 0, 5, SemanticTokenTypes_Comment)
+    it "counts a token's start and length in UTF-16 units" $ do
+      hasAtom "a = '\128512' + n\n" (0, 4, 4, SemanticTokenTypes_String)
+      hasAtom "a = '\128512' + n\n" (0, 9, 1, SemanticTokenTypes_Operator)
+      hasAtom "a = '字\t' + n\n" (0, 9, 1, SemanticTokenTypes_Operator)
     it "emits comment tokens for each line of a block comment" $ do
       let src = "/* a\nb */\nx = 1"
       hasAtom src (0, 0, 4, SemanticTokenTypes_Comment)
@@ -309,6 +320,10 @@ spec = do
       hasAtom "schema = 1" (0, 0, 6, SemanticTokenTypes_Variable)
 
   describe "hover" $ do
+    it "reads a position after an emoji in UTF-16 units" $ do
+      let emojiSrc = "inc(x: Number): Number = x + 1\ny = [\"\128512\", inc(2)]\n"
+      h <- hoverAt "test.lask" emojiSrc (Position 1 11) -- `inc`, after the two units of 😀
+      fmap (^. L.range) h `shouldBe` Just (Just (Range (Position 1 11) (Position 1 14)))
     let src =
           "// Adds one.\n\
           \// Second line.\n\
