@@ -84,15 +84,20 @@ aws = tools.aws.env(
 )
 ```
 
-`within` says how far a task may reach, and `lask check` holds it to that before anything runs. The unit tests are given no secret and run nothing on the host; `deploy` is given the two AWS keys and nothing else, and only as variables:
+`within` says how far a task may reach, and `lask check` holds it to that before anything runs. `access` gives such a limit a name. Written once at the top level, `within Contained` keeps every command of the file off the host; the unit tests are also given no secret, and `deploy` is given the two AWS keys and nothing else, and only as variables:
 
 ```lask
-test() within { secrets: false, runs: ["container"] } = do { ... }
+access Contained = { runs: ["container"] }
+within Contained
 
-deploy() within { secrets: [aws_access_key_id, aws_secret_access_key], runs: ["container"] } = do { ... }
+access NoSecrets = { secrets: false }
+
+test() within NoSecrets = do { ... }
+
+deploy() within { secrets: [aws_access_key_id, aws_secret_access_key] } = do { ... }
 ```
 
-Pass an AWS key to a test, or run one of its commands on `#local`, and `lask check` reports `E-TYPE-WITHIN-EXCEEDED` at that command.
+Pass an AWS key to a test, or run any command on `#local`, and `lask check` reports `E-TYPE-WITHIN-EXCEEDED` at that command.
 
 ## What you're building
 
