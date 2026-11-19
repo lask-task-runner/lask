@@ -86,10 +86,10 @@ spec = do
       parseModule "t.lask" "x = \"\\u{D7FF}\\u{E000}\\u{10FFFF}\"" `shouldSatisfy` either (const False) (const True)
 
   -- Shrunk from `internal f = { "Foo": '"😀', "Foo": null }`. The
-  -- printer copies a literal by its span, and megaparsec 9.7 counts a
-  -- wide character as two columns.
-  describe "a wide character (spec 11.11)" $ do
+  -- printer copies a literal by its span, which once counted a wide
+  -- character as two columns, as megaparsec 9.7 does.
+  describe "a wide character or a tab (spec 11.11, 14)" $ do
     it "is kept in a literal that more of the line follows" $ do
       formatSource "t.lask" "x = ['日']\n" `shouldBe` Right "x = ['日']\n"
       formatSource "t.lask" "x = { \"a\": '\"😀', \"b\": null }\n" `shouldBe` Right "x = { \"a\": '\"😀', \"b\": null }\n"
-
+      formatSource "t.lask" "x = ['\t', 1]\n" `shouldBe` Right "x = ['\t', 1]\n"

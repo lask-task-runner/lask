@@ -45,6 +45,13 @@ spec = do
     it "does not take an accessor dot into a number" $
       lexed "1.foo" `shouldBe` Right [num 1, TDot, lid "foo"]
 
+    it "counts a column in characters, a tab or a wide character being one (spec 14)" $
+      fmap (map (\(Spanned sp _) -> sp)) (lexTokens "test.lask" "'字\t😀' x")
+        `shouldBe` Right
+          [ Span (Position "test.lask" 1 1) (Position "test.lask" 1 6),
+            Span (Position "test.lask" 1 7) (Position "test.lask" 1 8)
+          ]
+
     it "refuses a number literal beyond the range of Number (spec 3.3, 4.1)" $ do
       lexed (T.replicate 309 "9") `shouldSatisfy` isLeft
       lexed (T.replicate 308 "9") `shouldBe` Right [TNumber (read (replicate 308 '9'))]
