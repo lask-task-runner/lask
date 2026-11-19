@@ -19,9 +19,7 @@ lambdaArgument = "f() = g(1, \\(x) -> do {  // note\n  x\n})\n"
 spec :: Spec
 spec = describe "comments the formatter moves (spec 11.11)" $ do
   it "keeps a trailing comment on the line of the lambda it follows" $ do
-    pendingWith "known bug: a comment after a lambda that opens a block in a call is moved to just after the call's '(', breaking the line there (spec 11.11)"
     fmt lambdaArgument `shouldBe` Right lambdaArgument
   it "formats that call to a fixed point" $ do
-    pendingWith "known bug: formatting the output again indents the arguments the first pass moved, so formatting is not idempotent (spec 11.11)"
     let once = fmt lambdaArgument
     (once >>= fmt) `shouldBe` once
