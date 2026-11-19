@@ -2603,12 +2603,12 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
         abort . diag ETypeBound (exprSpan scrut) $
           "values of type " <> renderType scrutTy <> " cannot be matched by case: it is not comparable"
       parts <- mapM (armPart scrutTy name scrutVar) matchArms
-      duplicateTypeHeads [m | (_, _, ms) <- parts, m <- ms]
+      duplicateTypeHeads [h | (_, _, _, hs) <- parts, h <- hs]
       pure
         ( Just (name, scrutCore),
-          [c | (c, _, _) <- parts],
-          [n | (_, n, _) <- parts],
-          [m | (_, _, ms) <- parts, m <- ms]
+          [c | (c, _, _, _) <- parts],
+          [n | (_, n, _, _) <- parts],
+          [m | (_, _, ms, _) <- parts, m <- ms]
         )
   let elseNarrow = case (mScrut, taken) of
         (Just (Expr _ (EVar n)), _ : _)
@@ -2669,11 +2669,14 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
         let members = [t | Just t <- tys, t `elem` unionMembers scrutTy]
             -- Only Null is exhausted by matching one of its values.
             takenHere = filter (== TyNull) members
-        pure (anyOf conds, narrowTo scrutTy members, takenHere)
+            -- Where each type taken here is written, for
+            -- 'duplicateTypeHeads'.
+            written = [(t, exprSpan h) | (h, Just t) <- zip hs tys, t == TyNull, t `elem` unionMembers scrutTy]
+        pure (anyOf conds, narrowTo scrutTy members, takenHere, written)
       TypeHeads sts -> do
         ms <- mapM (typeHead scrutTy) sts
         let conds = [Core (stypeSpan st) (CIsType scrutVar m) | (st, m) <- zip sts ms]
-        pure (anyOf conds, narrowTo scrutTy ms, ms)
+        pure (anyOf conds, narrowTo scrutTy ms, ms, zip ms (map stypeSpan sts))
 
     -- A type head is admissible for the two types whose runtime kind
     -- is not settled statically (spec 6.4).
@@ -2765,13 +2768,14 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
         }
 
     -- Two type heads denoting the same type make the later arm
-    -- unreachable (spec 6.4).
+    -- unreachable (spec 6.4); it is reported at the later head, as a
+    -- duplicate value head is.
     duplicateTypeHeads = goTy Set.empty
       where
         goTy _ [] = pure ()
-        goTy seen (m : rest)
+        goTy seen ((m, at) : rest)
           | Set.member m seen =
-              abort . diag ETypeCaseDuplicate sp $
+              abort . diag ETypeCaseDuplicate at $
                 "this case arm can never be selected: an earlier arm already matches "
                   <> renderType m
           | otherwise = goTy (Set.insert m seen) rest
