@@ -1,0 +1,12 @@
+// What an arm does with the parameter it dispatches on is done with
+// the narrowed value, and is no use of the parameter (4.3): x is Any.
+f(x) = case (x) {
+  String -> 2
+  Number -> x + 3
+  Bool -> -1
+  Record<> -> 2
+  else -> 0
+}
+a = f(1)
+b = f("s")
+c = f([true])

@@ -1342,7 +1342,10 @@ data IVar = IVar
     ivBounds :: [NamedBound],
     -- | The types of the values the body puts where it is, as the
     -- other branches of a choice: what it is when it is used at none.
-    ivLowers :: [Type]
+    ivLowers :: [Type],
+    -- | Where a case dispatches on it by type (spec 4.3, 6.4): it is
+    -- then to be Any or a union, which only can be dispatched on.
+    ivDispatch :: Maybe Span
   }
 
 -- | Inference variables are named @?x%n@: a @?@ cannot begin a type
@@ -1362,7 +1365,7 @@ newInferVar origin = do
   modify $ \s ->
     s
       { stInferNext = n + 1,
-        stInfer = Map.insert v (IVar origin n Nothing [] [] []) (stInfer s)
+        stInfer = Map.insert v (IVar origin n Nothing [] [] [] Nothing) (stInfer s)
       }
   pure (TyVar v)
 
@@ -1415,6 +1418,13 @@ addLower v t
 addVarBound :: Text -> NamedBound -> TC ()
 addVarBound v nb = modifyVar v (\iv -> iv {ivBounds = nub (ivBounds iv <> [nb])})
 
+-- | The scrutinee of a case with type heads (spec 4.3): a use at Any,
+-- and the variable is to be a type that can be dispatched on.
+addDispatch :: Span -> Text -> TC ()
+addDispatch sp v = do
+  addUse sp v TyAny
+  modifyVar v (\iv -> iv {ivDispatch = ivDispatch iv <|> Just sp})
+
 -- | Give an open variable a shape. The uses it had are uses of the
 -- shape now, and a variable it is made the same as takes its bounds.
 refineVar :: Ctx -> Text -> Type -> TC ()
@@ -1431,6 +1441,7 @@ refineVar ctx v sh = do
             Just w -> do
               mapM_ (addVarBound w) (ivBounds iv)
               mapM_ (addLower w) (ivLowers iv)
+              mapM_ (\dsp -> modifyVar w (\i -> i {ivDispatch = ivDispatch i <|> Just dsp})) (ivDispatch iv)
             Nothing -> pure ()
     _ -> pure ()
 
@@ -1719,7 +1730,28 @@ inferParams ctx path locals generalize ps retAnn body
                       <> renderType u
                       <> ", and no type is both; annotate the parameter"
           (_, m) <- foldM step (sp0, u0) rest
+          checkDispatch iv m
           pure (v, Right m)
+    -- A type is dispatched on only in Any or a union (spec 4.3, 6.4):
+    -- a use outside the case that narrows the parameter to one type
+    -- leaves nothing to dispatch on.
+    checkDispatch iv m = case ivDispatch iv of
+      Just dsp
+        | not (dispatchable m),
+          (sp, u) : _ <- [use | use@(_, u') <- ivUppers iv, not (dispatchable u')] ->
+            abort . withNote ("the case that dispatches on it is at " <> renderAt dsp) . diag ETypeMismatch sp $
+              "'"
+                <> ivOrigin iv
+                <> "' is dispatched on by type in a case, and used here as "
+                <> renderType u
+                <> "; a type is dispatched on only in Any or a union, so annotate the parameter"
+      _ -> pure ()
+    dispatchable t = case t of
+      TyAny -> True
+      TyUnion _ -> True
+      _ -> False
+    renderAt (Span (Position f l _) _) = T.pack f <> ":" <> T.pack (show l)
+    renderAt NoSpan = "its case"
     boundFor sp iv = case ivBounds iv of
       [] -> pure Nothing
       bs -> case [b | b <- bs, all (boundEntails (BoundNamed b)) bs] of
@@ -2667,6 +2699,36 @@ elabCase ::
   Bool ->
   TC (Core, Type)
 elabCase ctx path locals sp mScrut arms mExpected discarded = do
+  locals' <- dispatchedParam
+  elabCaseIn ctx path locals' sp mScrut arms mExpected discarded
+  where
+    -- A parameter whose type is still to be found (spec 4.3), which a
+    -- case dispatches on by type, is Any throughout the case: each arm
+    -- narrows it as it narrows an Any, so what an arm does with it is
+    -- done with the narrowed value and is no use of the parameter.
+    dispatchedParam = case mScrut of
+      Just (Expr ssp (EVar n))
+        | any typeHeaded arms,
+          Just t <- Map.lookup n locals -> do
+            vs <- gets stInfer
+            case openVar vs t of
+              Just v -> Map.insert n TyAny locals <$ addDispatch ssp v
+              Nothing -> pure locals
+      _ -> pure locals
+    typeHeaded (CaseArm _ (Just (TypeHeads _)) _) = True
+    typeHeaded _ = False
+
+elabCaseIn ::
+  Ctx ->
+  FilePath ->
+  Locals ->
+  Span ->
+  Maybe Expr ->
+  [CaseArm] ->
+  Maybe Type ->
+  Bool ->
+  TC (Core, Type)
+elabCaseIn ctx path locals sp mScrut arms mExpected discarded = do
   (matchArms, elseBody) <- splitCaseArms sp arms
   duplicateHeads [h | (ValueHeads hs, _) <- matchArms, h <- hs]
   (mBind, conds, narrows, taken) <- case mScrut of
@@ -2718,7 +2780,7 @@ elabCase ctx path locals sp mScrut arms mExpected discarded = do
       case openVar vs t of
         Nothing -> pure t
         Just v
-          | any (not . isValueHeads . fst) matchArms -> TyAny <$ addUse (exprSpan scrut) v TyAny
+          | any (not . isValueHeads . fst) matchArms -> TyAny <$ addDispatch (exprSpan scrut) v
           | otherwise -> do
               tys <- mapM (headType t) [h | (ValueHeads hs, _) <- matchArms, h <- hs]
               case [u | Just u <- tys] of

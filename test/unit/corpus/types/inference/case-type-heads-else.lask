@@ -1,0 +1,5 @@
+// In the else arm the parameter is Any, less the types taken (4.3).
+f(x) = case (x) {
+  Number -> x + 3
+  else -> x + 1 // expect: E-TYPE-MISMATCH
+}
