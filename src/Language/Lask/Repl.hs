@@ -6,9 +6,10 @@
 -- top-level declaration (accumulated for the rest of the session) or
 -- an expression (evaluated and printed). The whole session source is
 -- recompiled per input through the same pipeline as @run@\/@eval@, so
--- static errors are reported the same way. Note: @stdin@ is not
--- provided in the REPL (spec 9.3); here it is bound to the empty
--- string.
+-- static errors are reported the same way. @stdin@ is not provided
+-- in the REPL (spec 9.3): a reference typed at the prompt is an
+-- undefined name, while one in the module, or in a module it imports,
+-- still compiles, and reads the empty string.
 module Language.Lask.Repl
   ( runRepl,
     Session (..),
@@ -21,13 +22,17 @@ module Language.Lask.Repl
 where
 
 import Control.Exception (try)
+import qualified Data.Map.Strict as Map
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Language.Lask (Compiled (..), compileWith)
-import Language.Lask.Diagnostic (Diagnostic)
-import Language.Lask.Elaborate (CoreProgram (..))
+import Language.Lask.Core.AST (Core (..), CoreF (..), VarRef (..), coreChildren)
+import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
+import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
+import Language.Lask.ErrorCode (ErrorCode (ENameUndefined), Stage (StageStatic))
+import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Module.Loader (fileReader)
 import Language.Lask.Obs.CommandLog (newLineWriter, textCommandLog)
 import Language.Lask.Builtins.Impl (RtHooks (..))
@@ -46,7 +51,7 @@ import Language.Lask.Syntax.Parser (parseExpr)
 import Language.Lask.Utils (Pretty (pretty))
 import System.Console.Haskeline
 import System.Directory (doesFileExist)
-import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
+import System.FilePath (equalFilePath, normalise, takeDirectory, takeFileName, (</>))
 import System.IO (stderr)
 
 -- | The synthetic binding used to evaluate expression inputs.
@@ -117,7 +122,7 @@ reloadSession modulePath old = do
     then pure (Left ReloadMissing)
     else do
       base <- TIO.readFile modulePath
-      r <- compileSession modulePath base
+      r <- compileSession modulePath base base
       case r of
         Left ds -> pure (Left (ReloadInvalid ds))
         Right _ -> reapply (Session base []) (sessionDecls old)
@@ -126,7 +131,7 @@ reloadSession modulePath old = do
     reapply s [] = pure (Right s)
     reapply s (d : ds) = do
       let s' = s {sessionDecls = sessionDecls s <> [d]}
-      r <- compileSession modulePath (sessionSource s')
+      r <- compileSession modulePath (sessionBase s') (sessionSource s')
       case r of
         Left diags -> pure (Left (ReloadConflict d diags))
         Right _ -> reapply s' ds
@@ -176,7 +181,7 @@ loop modulePath session = do
         -- Expression: bind it to a synthetic name and evaluate. It is
         -- not kept, so a reload never runs it again.
         let source' = sessionSource session <> "\n" <> resultName <> " = " <> code <> "\n"
-        r <- liftIO (evalSession modulePath source')
+        r <- liftIO (evalSession modulePath (sessionBase session) source')
         case r of
           Left ds -> mapM_ (outputStrLn . pretty) ds
           Right (Left lf) -> liftIO (maskFailure lf) >>= outputStrLn . renderFailure
@@ -187,7 +192,7 @@ loop modulePath session = do
       Left _ -> do
         -- Declaration: accumulate it if the session still compiles.
         let session' = session {sessionDecls = sessionDecls session <> [code]}
-        r <- liftIO (compileSession modulePath (sessionSource session'))
+        r <- liftIO (compileSession modulePath (sessionBase session') (sessionSource session'))
         case r of
           Left ds -> do
             mapM_ (outputStrLn . pretty) ds
@@ -198,16 +203,43 @@ loop modulePath session = do
     reappliedNote 1 = " (1 REPL declaration re-applied)"
     reappliedNote n = " (" <> show n <> " REPL declarations re-applied)"
 
-compileSession :: FilePath -> Text -> IO (Either [Diagnostic] Compiled)
-compileSession modulePath source = compileWith reader modulePath
+-- | Compile the module text @base@ followed by what was typed at the
+-- prompt. A reference to @stdin@ in what was typed is refused: the
+-- REPL does not bind it (spec 9.3).
+compileSession :: FilePath -> Text -> Text -> IO (Either [Diagnostic] Compiled)
+compileSession modulePath base source = do
+  r <- compileWith reader modulePath
+  pure $ case r of
+    Right compiled
+      | ds@(_ : _) <- typedStdin modulePath (length (T.lines base)) (compiledCore compiled) -> Left ds
+    _ -> r
   where
     reader p
       | normalise p == normalise modulePath = pure (Right source)
       | otherwise = fileReader p
 
-evalSession :: FilePath -> Text -> IO (Either [Diagnostic] (Either LaskFailure Value))
-evalSession modulePath source = do
-  r <- compileSession modulePath source
+-- | An undefined-name diagnostic for each reference to @stdin@ in the
+-- entry module past its first @baseLines@ lines, which are what was
+-- typed at the prompt ('sessionSource').
+typedStdin :: FilePath -> Int -> CoreProgram -> [Diagnostic]
+typedStdin modulePath baseLines core =
+  [ withNote "the REPL reads its input from stdin, and binds no stdin (spec 9.3)" $
+      mkDiagnostic ENameUndefined StageStatic sp "undefined name: 'stdin'"
+  | c <- roots,
+    Core sp (CVar (BuiltinRef "stdin")) <- c : descendants c,
+    typed sp
+  ]
+  where
+    roots =
+      map cdCore (Map.elems (cpDecls core))
+        <> Map.elems (Map.findWithDefault Map.empty (cpEntry core) (cpCommands core))
+    descendants c = let cs = coreChildren c in cs <> concatMap descendants cs
+    typed (Span start _) = equalFilePath (normalise (fileName start)) (normalise modulePath) && line start > baseLines
+    typed NoSpan = False
+
+evalSession :: FilePath -> Text -> Text -> IO (Either [Diagnostic] (Either LaskFailure Value))
+evalSession modulePath base source = do
+  r <- compileSession modulePath base source
   case r of
     Left ds -> pure (Left ds)
     Right compiled -> do

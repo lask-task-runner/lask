@@ -2430,7 +2430,7 @@ Channel separation rules:
 
 ### 9.2 Ingestion of Standard Input
 
-Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure, when the function called can refer to `stdin`: when it, or a declaration it reaches, or the environment of one of the program's command declarations, names `stdin` (9.3). A function that cannot refer to it cannot observe its contents, so stdin is then not read at all, and the run does not wait for it to close. Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable (9.3).
+Ingestion of standard input targets `run` / `eval` and is performed before function evaluation begins by the following procedure, when the function called can refer to `stdin`: when it, or a declaration it reaches, or the environment of one of the program's command declarations, names `stdin` (9.3). A function that cannot refer to it cannot observe its contents, so stdin is then not read at all, and the run does not wait for it to close. Because `repl` uses stdin as an interactive input channel, it does not perform the ingestion of this section, nor does it bind the `stdin` reference variable at the prompt (9.3, 11.9).
 
 1. Read stdin until EOF.
 2. Fix the entire input that was read as a single input snapshot.
@@ -2453,7 +2453,7 @@ Rules:
 - The binding of `stdin` is established exactly once per execution unit.
 - The visibility of `stdin` takes effect from the top-level environment at the start of evaluation, and it is referenceable according to the ordinary name resolution rules (7.2).
 - `stdin` is treated as an immutable value; destructive updates are not permitted.
-- `stdin` cannot be used in `repl`. Because no binding is provided, a reference is an undefined reference error (`E-NAME-UNDEFINED`).
+- `stdin` cannot be used at the `repl` prompt. Because no binding is provided there, a reference in a declaration or an expression typed at the prompt is an undefined reference error (`E-NAME-UNDEFINED`). A reference in the target module, or in a module it imports, does not stop the session from loading it; evaluated in the session, it reads the empty string (11.9).
 
 Type rules:
 
@@ -3334,7 +3334,7 @@ Standard input contract:
 - stdin is always read as a UTF-8 string and bound to `stdin` as a `String` value (9.2–9.4). No option to select a decoding mode (`--stdin-decode` etc.) is provided.
 - Structuring such as line splitting or JSON interpretation is performed inside the function by applying `split` / `from_json` etc.
 - `run` / `eval` accept stdin.
-- `repl` uses stdin for interactive input, and therefore does not provide the `stdin` reference variable (9.2, 9.3).
+- `repl` uses stdin for interactive input, and therefore does not provide the `stdin` reference variable to what is typed at the prompt (9.2, 9.3, 11.9).
 - `check` / `serve` may accept stdin, but the meaning must be defined in the subcommand specification.
 - `cmd` connects stdin to the invoked program rather than binding it as a value (11.8). It evaluates no function, so the `stdin` reference variable of 9.3 does not arise.
 
@@ -3982,6 +3982,7 @@ Input rules:
 - A declaration is added to the session if the session still compiles with it; otherwise its diagnostics are reported and the session is unchanged.
 - An expression is evaluated against the session and its result printed. It is not kept in the session.
 - The target module's text is the one read at start or by the last successful `:reload`. Imported modules and the lock file are read from disk on every input, so a change to them takes effect without a reload.
+- Standard input is the session's input, not a value (9.2). A declaration or an expression typed at the prompt that names `stdin` is an undefined reference error (`E-NAME-UNDEFINED`) and changes nothing. A function of the target module, or of a module it imports, that names `stdin` is still loaded and can be called; there `stdin` is the empty string.
 
 Session commands:
 

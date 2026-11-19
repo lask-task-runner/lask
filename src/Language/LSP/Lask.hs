@@ -684,7 +684,11 @@ hoverAt path src (Position pl pc) = do
     spanSize S.NoSpan = (maxBound, maxBound)
 
     -- Hovering the declaration name itself (the definition site is
-    -- not a reference, so it is not in the hover records).
+    -- not a reference, so it is not in the hover records). Only a name
+    -- in declaration position counts: at the start of a line, or after
+    -- a leading @export@ / @internal@ marker. Any other word sharing a
+    -- declaration's name (an object key, a field) is not that
+    -- declaration.
     declNameHover compiled docPath docSrc line col =
       case lexTokens docPath docSrc of
         Left _ -> pure Nothing
@@ -693,8 +697,9 @@ hoverAt path src (Position pl pc) = do
               entry = cpEntry core
               named =
                 [ (sp, n)
-                | Tok.Spanned sp (Tok.TLowerId n) <- ts,
-                  spanContains sp line col
+                | (prev, Tok.Spanned sp (Tok.TLowerId n)) <- zip (Nothing : map Just ts) ts,
+                  spanContains sp line col,
+                  declPosition prev sp
                 ]
           case named of
             ((sp, n) : _) -> case Map.lookup (entry, n) (cpDecls core) of
@@ -703,6 +708,12 @@ hoverAt path src (Position pl pc) = do
                 pure (Just (mkHover n (renderType (cdType cd)) docs sp))
               Nothing -> pure Nothing
             [] -> pure Nothing
+
+    declPosition prev sp = case (prev, sp) of
+      (_, S.Span (S.Position _ _ 1) _) -> True
+      (Just (Tok.Spanned (S.Span (S.Position _ pl pc) _) (Tok.TKw k)), S.Span (S.Position _ l _) _) ->
+        k `elem` [Tok.KExport, Tok.KInternal] && pl == l && pc == 1
+      _ -> False
 
 -- | A declaration's hover documentation, with the confirmation the
 -- project file asks for before it runs, when it does (spec 5).
