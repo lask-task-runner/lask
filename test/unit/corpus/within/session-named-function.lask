@@ -1,3 +1,2 @@
-// pending: a named function given to with_container is not followed with the session it is given, so the #local it runs in is not seen (spec 10.11, Resolution)
 inside(box: Runnable): String = $[box] true
 f(): String within { runs: ["container"] } = with_container(#local, inside)  // expect: E-TYPE-WITHIN-EXCEEDED

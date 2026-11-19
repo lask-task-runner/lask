@@ -1,4 +1,3 @@
-// pending: a function with parametric uses, stored in a top-level value and called from there, is not followed (spec 10.11, Resolution)
 run_in(e: Runnable): String = $[e] true
 
 r = { go: run_in }  // expect: E-TYPE-WITHIN-UNPROVEN

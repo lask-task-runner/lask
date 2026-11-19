@@ -475,6 +475,20 @@ walk cons core guard scope here binds c = case coreF c of
         outer <- go envC
         inner <- walk cons core guard scope here (Map.insert box env binds) (lamBody lam)
         pure (use UseSession env Map.empty : outer <> inner)
+  -- A top-level function given by name is called the same way: its
+  -- first parameter is the session (spec 10.11, Resolution).
+  CApp (Core _ (CVar (BuiltinRef "with_container"))) [envC, Core _ (CVar (TopRef p n))] []
+    | Just callee <- Map.lookup (p, n) (cpDecls core),
+      CLam lam <- coreF (cdCore callee),
+      box : _ <- lamPositional lam -> do
+        let env = value envC
+            binds' = Map.fromList [(x, if x == box then env else unknownV) | x <- lamPositional lam]
+        outer <- go envC
+        inner <-
+          if (p, n) `elem` guard
+            then pure []
+            else walkDecl cons core guard scope (Just (here, coreSpan c)) callee (Just (Map.toAscList binds'))
+        pure (use UseSession env Map.empty : outer <> inner)
   -- A call of a top-level function: its body, with what this call
   -- gives its parameters. A function given as an argument is bound,
   -- not named as a value.
@@ -1109,8 +1123,19 @@ checkWithin cons core
     uses = walkRoots cons core (Map.keys (cpDecls core))
     -- A function whose covered uses wait on its parameters, named
     -- other than by a call: its constraint cannot be checked there.
-    owes u = not (null (usUnder u)) && (usParam u || any targetParametric (Set.toList (usTargets u)) || any (\(_, f, _) -> flParam f) (channelFlows u))
-    owing = Set.fromList [usRoot u | u <- uses, owes u]
+    parametric u = usParam u || any targetParametric (Set.toList (usTargets u)) || any (\(_, f, _) -> flParam f) (channelFlows u)
+    owing = Set.fromList [usRoot u | u <- uses, not (null (usUnder u)), parametric u]
+    -- A function whose own uses wait on its parameters, covered or
+    -- not, stored in a top-level value that a covered declaration
+    -- reaches: a call through the value is not followed, so those
+    -- uses are left unresolved where that constraint would have them
+    -- resolved (10.11, Resolution). A local binding of it is followed
+    -- to its calls, and is not this.
+    waitsOnParams k = any (\u -> usRoot u == k && parametric u) (walkRoots cons core [k])
+    inTopValue u = case Map.lookup (usModule u, usDecl u) (cpDecls core) of
+      Just cd | CLam _ <- coreF (cdCore cd) -> False
+      Just _ -> True
+      Nothing -> False
     escapes =
       [ ( (Nothing, usSpan u, "escape"),
           mkDiagnostic ETypeWithinUnproven StageStatic (usSpan u) $
@@ -1118,7 +1143,7 @@ checkWithin cons core
         )
       | u <- uses,
         UseEscape k@(_, n) <- [usKind u],
-        k `Set.member` owing
+        k `Set.member` owing || (not (null (usUnder u)) && inTopValue u && waitsOnParams k)
       ]
 
 -- | The findings of one use against each constraint covering it.
