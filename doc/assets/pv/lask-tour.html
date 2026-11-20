@@ -218,9 +218,10 @@ const copies = MX.map(() => {
   const g = el(L.box, "g", {});
   drawContainer(makeContainer(g), 99, 0);
   place(makeTask(110, g), 0, 0);
-  el(g, "g", { transform: `translate(0 ${-KH})` }).innerHTML = PLATE;
   return g;
 });
+// equals signs between the copies
+const EQ = [0, 1].map(() => add("=", `left:0;top:${CY - 30 - 44}px;width:1280px;text-align:center;font:300 80px/1 var(--sans);color:#f5f5f7`));
 const hosts = ["laptop", "cloud", "server"].map(k => G(L.icons, ICON[k]("#86868b")));
 
 // 3. types: a port on each side of the function; the wrong piece is turned away, the right one fits
@@ -273,11 +274,15 @@ R.push(t => {
   drawContainer(box, t, 17.8);
   A(box.g, { transform: `translate(${CX} ${CY})`, opacity: Math.min(t >= 17.8 ? 1 : 0, 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
   A(pin, { transform: `translate(${CX} ${CY - KH}) scale(${t < 20.9 ? 0 : lerp(1.8, 1, back(P(t, 20.9, 21.25)))})`,
-    opacity: Math.min(eo(P(t, 20.9, 21.0)), 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
+    opacity: Math.min(eo(P(t, 20.9, 21.0)), 1 - P(t, 23.1, 23.5)) });
   const spread = eio(P(t, 23.6, 24.6)) * (1 - eio(P(t, 26.6, 27.5)));
   copies.forEach((g, i) => {
     const o = away ? (i === 1 ? 1 : Math.min(eo(P(t, 23.6, 24.0)), 1 - P(t, 26.9, 27.4))) : 0;
     A(g, { transform: `translate(${lerp(CX, MX[i], spread)} ${CY - 30 * spread}) scale(${lerp(1, .72, spread)})`, opacity: o });
+  });
+  EQ.forEach((e, i) => {
+    const a = 24.5 + i * .15;
+    S(e, { o: Math.min(eo(P(t, a, a + .4)), 1 - P(t, 26.3, 26.7)), x: (MX[i] + MX[i + 1]) / 2 - CX, s: lerp(.6, 1, back(P(t, a, a + .45))) });
   });
   hosts.forEach((g, i) => {
     const io = Math.min(eo(P(t, 24.3 + i * .12, 24.9 + i * .12)), 1 - P(t, 26.4, 26.9));
