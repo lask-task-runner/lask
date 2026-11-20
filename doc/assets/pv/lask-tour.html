@@ -138,8 +138,30 @@ const place = (task, x, y, s = 1, o = 1) => A(task.g, { transform: `translate(${
 const LOCK = `<circle r="22" fill="#f5f5f7"/><path d="M-7 -1.5h14v11h-14zM-4.5 -1.5v-3.5a4.5 4.5 0 0 1 9 0v3.5" fill="none" stroke="#000" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>`;
 const TICK = r => `<circle r="${r}" fill="#30d158"/><path d="M${-r * .4} ${r * .03}l${r * .27} ${r * .27} ${r * .55}-${r * .55}" fill="none" stroke="#000" stroke-width="${r * .18}" stroke-linecap="round" stroke-linejoin="round"/>`;
 
-// what it reaches: dots streaming out, and the ring that stops them
-const DOTS = [...Array(60).keys()].map(i => ({ a: i * Math.PI * 2 / 60 + (i % 3) * .04, ph: (i * 97) % 520, e: el(sv, "circle", { r: 3 }) }));
+// what it reaches: the project's files, a package registry, and an attacker,
+// with dots streaming to each; the ring lets the first two through
+const GREY = "#86868b";
+const REACH = [
+  { x: CX - 340, y: CY, ok: true, icon: c => `<path d="M-38 -24a6 6 0 0 1 6-6h20l8 9h36a6 6 0 0 1 6 6v39a6 6 0 0 1-6 6h-64a6 6 0 0 1-6-6z" fill="none" stroke="${c}" stroke-width="3.2" stroke-linejoin="round"/>` },
+  { x: CX, y: CY - 210, ok: true, icon: c => `<path d="M0 -36 32 -19v38L0 36-32 19v-38zM-32 -19 0 -2 32 -19M0 -2v38" fill="none" stroke="${c}" stroke-width="3.2" stroke-linejoin="round"/>` },
+  { x: CX + 340, y: CY, ok: false, icon: c => `
+      <circle r="62" fill="#ff453a" opacity=".16" filter="url(#soft)"/>
+      <path d="M-50 52c5-17 22-25 50-25s45 8 50 25z" fill="#1c1c1e" stroke="${c}" stroke-width="3" stroke-linejoin="round"/>
+      <path d="M-33 30v-26a33 37 0 0 1 66 0v26z" fill="#1c1c1e" stroke="${c}" stroke-width="3" stroke-linejoin="round"/>
+      <ellipse cy="4" rx="19" ry="22" fill="#000"/>
+      <rect x="-13" y="-2" width="10" height="4" rx="2" fill="#ff453a"/><rect x="3" y="-2" width="10" height="4" rx="2" fill="#ff453a"/>
+      <path d="M-30 38h60l8 14h-76z" fill="#2c2c2e" stroke="${c}" stroke-width="2.4" stroke-linejoin="round"/>` },
+];
+REACH.forEach(n => {
+  n.len = Math.hypot(n.x - CX, n.y - CY);
+  n.ux = (n.x - CX) / n.len; n.uy = (n.y - CY) / n.len;
+  n.line = el(sv, "line", { x1: CX + n.ux * 70, y1: CY + n.uy * 70, "stroke-width": 2, "stroke-dasharray": "2 9", "stroke-linecap": "round" });
+  n.dots = [...Array(7).keys()].map(k => ({ k, e: el(sv, "circle", { r: 4.2 }) }));
+  n.grey = el(sv, "g", {}); n.grey.innerHTML = n.icon(GREY);
+  n.lit = el(sv, "g", {}); n.lit.innerHTML = n.icon(n.ok ? "#30d158" : "#ff453a");
+});
+const stop = el(sv, "g", {});
+stop.innerHTML = `<circle r="17" fill="#ff453a"/><path d="M-6 -6l12 12M6 -6l-12 12" stroke="#000" stroke-width="3.6" stroke-linecap="round"/>`;
 const ring = el(sv, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 3, filter: "url(#glow)" });
 const shock = el(sv, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 1.5 });
 
@@ -188,12 +210,29 @@ R.push(t => {
   // ---- what it reaches (6 - 13.2): the ring stops the dots at 9.6
   const RING = 9.6, R0 = 150, after = t >= RING + .15;
   const reachOn = env(t, 6.0, 13.2, .5, .6);
-  DOTS.forEach(d => {
-    const r = 70 + ((t * 150 + d.ph) % 520);
-    let o = reachOn * clamp((r - 70) / 40) * (1 - clamp((r - 420) / 100));
-    if (after) o = Math.abs(r - R0) < 14 ? reachOn : r > R0 ? 0 : o;
-    A(d.e, { cx: CX + Math.cos(d.a) * Math.min(r, after ? R0 : r), cy: CY + Math.sin(d.a) * Math.min(r, after ? R0 : r), opacity: o,
-      fill: after && r > R0 - 14 ? "#ffb340" : "#ff453a" });
+  REACH.forEach((n, i) => {
+    const appear = 6.1 + i * .25;
+    const no = Math.min(eo(P(t, appear, appear + .6)), 1 - P(t, 12.7, 13.3));
+    const end = n.len - 62;
+    // before the ring every destination looks the same; after it, allowed is green and the attacker red
+    const lit = eo(P(t, RING + .25, RING + .6));
+    const icon = `translate(${n.x} ${n.y + (1 - eo(P(t, appear, appear + .7))) * 14}) scale(${n.ok ? 1 : 1.25})`;
+    A(n.grey, { transform: icon, opacity: no * (n.ok ? 1 - lit : 1) });
+    A(n.lit, { transform: icon, opacity: no * (n.ok ? lit : (t < RING + .25 ? 1 : lerp(1, .35, eo(P(t, RING + .6, RING + 1.4))))) });
+    const reach = after && !n.ok ? R0 : end;
+    A(n.line, { x2: CX + n.ux * reach, y2: CY + n.uy * reach, opacity: no * .6,
+      stroke: after ? (n.ok ? "#30d158" : "#ff453a") : "#5a5a5e" });
+    n.dots.forEach(d => {
+      const r = 70 + ((t * .42 + d.k / 7) % 1) * (end - 70);
+      let o = reachOn * no * clamp((r - 70) / 30) * clamp((end - r) / 30);
+      if (after && !n.ok && r > R0) o = 0;
+      A(d.e, { cx: CX + n.ux * r, cy: CY + n.uy * r, opacity: o,
+        fill: !after ? "#f5f5f7" : n.ok ? "#30d158" : "#ff453a" });
+    });
+    if (!n.ok) {
+      const st = P(t, RING + .3, RING + .6);
+      A(stop, { transform: `translate(${CX + n.ux * R0} ${CY + n.uy * R0}) scale(${t < RING + .3 ? 0 : lerp(2, 1, back(st))})`, opacity: no });
+    }
   });
   A(ring, { r: R0 * lerp(1.9, 1, back(P(t, RING, RING + .38))), opacity: Math.min(eo(P(t, RING, RING + .1)), 1 - P(t, 12.8, 13.3)) });
   const sh = P(t, RING + .3, RING + 1.1);
