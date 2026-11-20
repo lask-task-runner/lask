@@ -6,7 +6,7 @@
 [![docs](https://img.shields.io/badge/docs-lask--task--runner.github.io-4f46e5)](https://lask-task-runner.github.io/)
 
 <div align="center">
-  <img alt="Lask in 20 seconds: write tasks in main.lask, with a typo flagged in the editor and fixed; lask run release runs each step in its own container on Docker; the same run on a laptop and on GitHub Actions, Jenkins, GitLab CI and CircleCI, on the same pinned images" src="doc/assets/lask-pv-short.gif" width="960">
+  <img alt="Lask in 20 seconds: a task an agent added reaches ~/.ssh, an AWS key, the internet and the Docker socket until within bounds it, and lask check refuses the rest; one main.lask whose commands run in images pinned by digest, with nothing installed on the host; lint and test side by side; the same digests on a laptop, GitHub Actions, GitLab CI and Jenkins; a typo and a command on the host caught before anything runs" src="doc/assets/lask-tour.gif" width="960">
   <br>
   <a href="https://lask-task-runner.github.io/">▶ Watch the full 1-minute tour on the documentation site</a>
 </div>
@@ -15,7 +15,7 @@ Lask (lambda + task) is a task runner with a small language behind it, giving au
 
 Lask is for anyone who finds Makefiles and Taskfiles not quite enough, and Dagger too much. The first are screwdrivers from the kitchen drawer; the second, a factory floor of your own to operate — its own engine, its own SDK, a general-purpose language and its entire ecosystem. Lask is the garage in between: install Docker and Lask, and you have everything you need.
 
-The recording above and the excerpt below come from [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws), which builds and deploys a full AWS stack from a machine with none of its tools installed.
+The excerpt below comes from [example/01-projects/02-webapp-on-aws](example/01-projects/02-webapp-on-aws), which builds and deploys a full AWS stack from a machine with none of its tools installed.
 
 <div align="center">
   <picture>
