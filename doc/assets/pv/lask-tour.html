@@ -6,9 +6,10 @@
 <!--
   The Lask tour video, drawn frame by frame.
 
-  One shape carries it: a task, drawn as the Lask logo's rounded square.
-  It opens on tasks flowing through a runner, and follows one of them;
-  there are only simple shapes and a few words.
+  It tells one change, in simple shapes and a few words: tasks that run
+  anywhere and touch anything become functions, then go into containers,
+  then get types, then get bounds on what they reach, and that is Lask.
+  The task is drawn as the logo's rounded square, and becomes the logo.
 
   window.render(t) draws the frame at t seconds from t alone, so frames can
   be drawn in any order. render.mjs captures them; open this file in a
@@ -17,7 +18,6 @@
 <style>
   :root {
     --bg: #000; --fg: #f5f5f7; --dim: #86868b;
-    --blue: #2997ff; --green: #30d158; --red: #ff453a; --amber: #ffb340;
     --mono: "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
   }
@@ -27,7 +27,6 @@
   .a { position: absolute; will-change: transform, opacity, filter; }
   .w { left: 0; width: 1280px; text-align: center; font-weight: 700; letter-spacing: -0.035em; line-height: 1.05; }
   svg { overflow: visible; }
-  .k { color: #ff7ab2; } .s { color: #fc6a5d; } .im { color: #5dd8ff; } .fn { color: #d0a8ff; } .am { color: #ffb340; }
 </style>
 </head>
 <body>
@@ -47,13 +46,15 @@ const eio = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
 const back = x => { const c = 1.6; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
 // fades in from a, out by b
 const env = (t, a, b, din = .6, dout = .5) => Math.min(eo(P(t, a, a + din)), 1 - eio(P(t, b - dout, b)));
+// a smooth wobble, the same for the same t
+const wob = (t, s) => Math.sin(t * 1.7 + s * 3.1) * .6 + Math.sin(t * 2.9 + s * 1.3) * .4;
 
-function add(html, css, parent = stage, cls = "") {
+function add(html, css, cls = "") {
   const d = document.createElement("div");
   d.className = "a " + cls;
   d.style.cssText = css;
   d.innerHTML = html;
-  parent.appendChild(d);
+  stage.appendChild(d);
   return d;
 }
 function S(e, o) {
@@ -71,74 +72,70 @@ function el(parent, tag, attrs) {
   return e;
 }
 const A = (e, attrs) => { for (const k in attrs) e.setAttribute(k, attrs[k]); };
+const G = (parent, html) => { const g = el(parent, "g", {}); g.innerHTML = html; return g; };
 
 const R = [];  // per-frame drawers, (t) => void
-const CX = 640, CY = 300;
+const CX = 640, CY = 290;
 
 // ---------- words: one line at a time, large, rising into focus ----------
-function words(html, a, b, y = 500, size = 64) {
-  const e = add(html, `top:${y}px;font-size:${size}px`, stage, "w");
+function words(html, a, b, y = 500, size = 62) {
+  const e = add(html, `top:${y}px;font-size:${size}px`, "w");
   R.push(t => {
     const o = env(t, a, b, .7, .45);
     S(e, { o, y: (1 - eo5(P(t, a, a + .9))) * 22, b: (1 - o) * 10 });
   });
 }
 const grad = (s, a, b) => `<span style="background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent">${s}</span>`;
+const WHITE = ["#f5f5f7", "#c7c7cc"], BLUE = ["#2997ff", "#5ac8fa"], GREEN = ["#30d158", "#a6f4c5"], AMBER = ["#ffb340", "#ffd60a"], RED = ["#ff453a", "#ff9f0a"];
 
 // ===================================================================
-// The shapes
+// shapes
 // ===================================================================
 const sv = el(stage, "svg", { width: 1280, height: 720 });
 sv.style.cssText = "position:absolute;left:0;top:0";
 el(sv, "defs", {}).innerHTML = `
   <linearGradient id="tg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4f46e5"/><stop offset="1" stop-color="#0ea5e9"/></linearGradient>
-  <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff453a"/><stop offset="1" stop-color="#ff9f0a"/></linearGradient>
   <filter id="soft" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="20"/></filter>
   <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+const layer = () => el(sv, "g", {});
+const L = { lines: layer(), icons: layer(), dots: layer(), box: layer(), task: layer(), front: layer() };
 
-// a task: the logo's square, its glow, a red state, and a λ that can be drawn
-function makeTask(size, parent = sv) {
+// a task: the logo's square, its glow, and a λ that can be drawn
+function makeTask(size, parent = L.task) {
   const g = el(parent, "g", {});
   const r = { x: -size / 2, y: -size / 2, width: size, height: size, rx: size * .22 };
   const halo = el(g, "rect", { ...r, fill: "url(#tg)", filter: "url(#soft)", opacity: .5 });
   el(g, "rect", { ...r, fill: "url(#tg)" });
-  const red = el(g, "rect", { ...r, fill: "url(#rg)", opacity: 0 });
   const k = size / 32;
   const lam = el(g, "path", {
     d: `M${-6.5 * k} ${-8.5 * k}h${3.2 * k}l${9.3 * k} ${17 * k}M${.1 * k} ${-.8 * k}l${-6.6 * k} ${9.3 * k}`,
     fill: "none", stroke: "#fff", "stroke-width": 3 * k, "stroke-linecap": "round", "stroke-linejoin": "round", pathLength: 1, "stroke-dasharray": "0 1", opacity: 0 });
-  return { g, halo, red, lam };
+  return { g, halo, lam };
 }
 const place = (task, x, y, s = 1, o = 1) => A(task.g, { transform: `translate(${x} ${y}) scale(${s})`, opacity: o });
+
+// icons, drawn in one colour
+const ICON = {
+  folder: c => `<path d="M-38 -24a6 6 0 0 1 6-6h20l8 9h36a6 6 0 0 1 6 6v39a6 6 0 0 1-6 6h-64a6 6 0 0 1-6-6z" fill="none" stroke="${c}" stroke-width="3.2" stroke-linejoin="round"/>`,
+  pkg: c => `<path d="M0 -36 32 -19v38L0 36-32 19v-38zM-32 -19 0 -2 32 -19M0 -2v38" fill="none" stroke="${c}" stroke-width="3.2" stroke-linejoin="round"/>`,
+  key: c => `<g fill="none" stroke="${c}" stroke-width="3.2" stroke-linecap="round"><circle cx="-16" r="14"/><path d="M-2 0h38M26 0v12M34 0v8"/></g>`,
+  globe: c => `<g fill="none" stroke="${c}" stroke-width="3.2"><circle r="32"/><ellipse rx="13" ry="32"/><path d="M-32 0h64"/></g>`,
+  plug: c => `<g fill="none" stroke="${c}" stroke-width="3.2"><rect x="-24" y="-32" width="48" height="64" rx="10"/><circle r="11"/><path d="M0 -11v-9M0 11v9"/></g>`,
+  db: c => `<g fill="none" stroke="${c}" stroke-width="3.2"><ellipse cy="-24" rx="30" ry="10"/><path d="M-30 -24v48a30 10 0 0 0 60 0v-48M-30 0a30 10 0 0 0 60 0"/></g>`,
+  server: c => `<g fill="none" stroke="${c}" stroke-width="3.2" stroke-linejoin="round"><rect x="-38" y="-30" width="76" height="26" rx="4"/><rect x="-38" y="4" width="76" height="26" rx="4"/></g><circle cx="-24" cy="-17" r="3.5" fill="${c}"/><circle cx="-24" cy="17" r="3.5" fill="${c}"/>`,
+  laptop: c => `<path d="M-44 -26h88v54h-88zM-60 38h120" fill="none" stroke="${c}" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>`,
+  cloud: c => `<path d="M-36 30h68a24 24 0 0 0 2-48 32 32 0 0 0-61-6 22 22 0 0 0-9 54z" fill="none" stroke="${c}" stroke-width="3.2" stroke-linejoin="round"/>`,
+  hacker: c => `
+    <circle r="62" fill="#ff453a" opacity=".16" filter="url(#soft)"/>
+    <path d="M-50 52c5-17 22-25 50-25s45 8 50 25z" fill="#1c1c1e" stroke="${c}" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M-33 30v-26a33 37 0 0 1 66 0v26z" fill="#1c1c1e" stroke="${c}" stroke-width="3" stroke-linejoin="round"/>
+    <ellipse cy="4" rx="19" ry="22" fill="#000"/>
+    <rect x="-13" y="-2" width="10" height="4" rx="2" fill="#ff453a"/><rect x="3" y="-2" width="10" height="4" rx="2" fill="#ff453a"/>
+    <path d="M-30 38h60l8 14h-76z" fill="#2c2c2e" stroke="${c}" stroke-width="2.4" stroke-linejoin="round"/>`,
+};
 const LOCK = `<circle r="22" fill="#f5f5f7"/><path d="M-7 -1.5h14v11h-14zM-4.5 -1.5v-3.5a4.5 4.5 0 0 1 9 0v3.5" fill="none" stroke="#000" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>`;
 const TICK = r => `<circle r="${r}" fill="#30d158"/><path d="M${-r * .4} ${r * .03}l${r * .27} ${r * .27} ${r * .55}-${r * .55}" fill="none" stroke="#000" stroke-width="${r * .18}" stroke-linecap="round" stroke-linejoin="round"/>`;
-
-// what it reaches: the project's files, a package registry, and an attacker,
-// with dots streaming to each; the ring lets the first two through
-const GREY = "#86868b";
-const REACH = [
-  { x: CX - 340, y: CY, ok: true, icon: c => `<path d="M-38 -24a6 6 0 0 1 6-6h20l8 9h36a6 6 0 0 1 6 6v39a6 6 0 0 1-6 6h-64a6 6 0 0 1-6-6z" fill="none" stroke="${c}" stroke-width="3.2" stroke-linejoin="round"/>` },
-  { x: CX, y: CY - 210, ok: true, icon: c => `<path d="M0 -36 32 -19v38L0 36-32 19v-38zM-32 -19 0 -2 32 -19M0 -2v38" fill="none" stroke="${c}" stroke-width="3.2" stroke-linejoin="round"/>` },
-  { x: CX + 340, y: CY, ok: false, icon: c => `
-      <circle r="62" fill="#ff453a" opacity=".16" filter="url(#soft)"/>
-      <path d="M-50 52c5-17 22-25 50-25s45 8 50 25z" fill="#1c1c1e" stroke="${c}" stroke-width="3" stroke-linejoin="round"/>
-      <path d="M-33 30v-26a33 37 0 0 1 66 0v26z" fill="#1c1c1e" stroke="${c}" stroke-width="3" stroke-linejoin="round"/>
-      <ellipse cy="4" rx="19" ry="22" fill="#000"/>
-      <rect x="-13" y="-2" width="10" height="4" rx="2" fill="#ff453a"/><rect x="3" y="-2" width="10" height="4" rx="2" fill="#ff453a"/>
-      <path d="M-30 38h60l8 14h-76z" fill="#2c2c2e" stroke="${c}" stroke-width="2.4" stroke-linejoin="round"/>` },
-];
-REACH.forEach(n => {
-  n.len = Math.hypot(n.x - CX, n.y - CY);
-  n.ux = (n.x - CX) / n.len; n.uy = (n.y - CY) / n.len;
-  n.line = el(sv, "line", { x1: CX + n.ux * 70, y1: CY + n.uy * 70, "stroke-width": 2, "stroke-dasharray": "2 9", "stroke-linecap": "round" });
-  n.dots = [...Array(7).keys()].map(k => ({ k, e: el(sv, "circle", { r: 4.2 }) }));
-  n.grey = el(sv, "g", {}); n.grey.innerHTML = n.icon(GREY);
-  n.lit = el(sv, "g", {}); n.lit.innerHTML = n.icon(n.ok ? "#30d158" : "#ff453a");
-});
-const stop = el(sv, "g", {});
-stop.innerHTML = `<circle r="17" fill="#ff453a"/><path d="M-6 -6l12 12M6 -6l-12 12" stroke="#000" stroke-width="3.6" stroke-linecap="round"/>`;
-const ring = el(sv, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 3, filter: "url(#glow)" });
-const shock = el(sv, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 1.5 });
+const CROSS = `<circle r="17" fill="#ff453a"/><path d="M-6 -6l12 12M6 -6l-12 12" stroke="#000" stroke-width="3.6" stroke-linecap="round"/>`;
 
 // a shipping container: corrugated sides, rails, corner castings
 const KW = 145, KH = 82;
@@ -146,209 +143,229 @@ function makeContainer(parent) {
   const g = el(parent, "g", {});
   const body = el(g, "rect", { x: -KW, y: -KH, width: 2 * KW, height: 2 * KH, rx: 5, fill: "rgba(41,151,255,.07)", stroke: "#2997ff", "stroke-width": 2.6, pathLength: 1 });
   const ribs = [];
-  for (let x = -KW + 16; x <= KW - 16; x += 14) ribs.push(el(g, "line", { x1: x, y1: -KH + 14, x2: x, y2: KH - 14, stroke: "#2997ff", "stroke-width": 2, opacity: .35 }));
+  for (let x = -KW + 16; x <= KW - 16; x += 14) ribs.push(el(g, "line", { x1: x, y1: -KH + 14, x2: x, y2: KH - 14, stroke: "#2997ff", "stroke-width": 2 }));
   const rails = [-KH + 7, KH - 7].map(y => el(g, "line", { x1: -KW + 2, y1: y, x2: KW - 2, y2: y, stroke: "#2997ff", "stroke-width": 1.6 }));
   const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) =>
     el(g, "rect", { x: sx * KW - 11 - sx * 5, y: sy * KH - 8 - sy * 4, width: 22, height: 16, rx: 2.5, fill: "#2997ff" }));
   return { g, body, ribs, rails, corners };
 }
-// draw a container in: outline, then the ribs and rails, then the corners
-function drawContainer(c, t, a, o = 1) {
+// draws a container in from a: the outline, then the ribs and rails, then the corners
+function drawContainer(c, t, a) {
   A(c.body, { "stroke-dasharray": `${eio(P(t, a, a + 1))} 1`, "fill-opacity": eo(P(t, a + .6, a + 1.2)) });
   c.ribs.forEach((r, i) => A(r, { opacity: .35 * eo(P(t, a + .55 + i * .025, a + .85 + i * .025)) }));
   c.rails.forEach(r => A(r, { opacity: eo(P(t, a + .6, a + 1)) }));
   c.corners.forEach((k, i) => A(k, { opacity: eo(P(t, a + .9 + i * .05, a + 1.05 + i * .05)) }));
-  A(c.g, { opacity: o });
 }
-const box = makeContainer(sv);
-const pin = el(sv, "g", {}); pin.innerHTML = LOCK;
 
-// the opening: tasks flowing along three lanes through the runner's steps
-const FL = [CY - 90, CY, CY + 90], FX0 = 150, FX1 = 1130, STEPS = [400, 640, 880];
-const flowLanes = FL.map(y => el(sv, "line", { x1: FX0, y1: y, x2: FX1, y2: y, stroke: "#2c2c2e", "stroke-width": 2 }));
-const flowSteps = FL.flatMap(y => STEPS.map(x => ({ x, y, e: el(sv, "circle", { cx: x, cy: y, r: 7, fill: "#1c1c1e", stroke: "#3a3a3c", "stroke-width": 2 }) })));
-const flow = FL.flatMap((y, j) => [...Array(5).keys()].map(k => ({ y, j, k, task: makeTask(40) })));
-const hero = makeTask(110);
+// ===================================================================
+// 1. Anywhere, anything (0 - 7.8)
+// ===================================================================
+const WILD = [
+  ["folder", 170, 110], ["key", 150, 300], ["globe", 300, 430], ["pkg", 420, 70],
+  ["server", 860, 70], ["plug", 1110, 110], ["db", 1130, 300], ["hacker", 980, 425],
+].map(([k, x, y], i) => ({ k, x, y, i, g: G(L.icons, ICON[k]("#86868b")), hot: G(L.icons, ICON[k]("#ff453a")) }));
+const SWARM = [...Array(6).keys()].map(i => ({ i, task: makeTask(42) }));
+// each task reaches for two of the places
+const LINKS = SWARM.flatMap(s => [s.i, s.i + 3].map(j => ({ s, d: WILD[(j * 5 + s.i) % WILD.length],
+  line: el(L.lines, "line", { stroke: "#ff453a", "stroke-width": 1.6, "stroke-dasharray": "3 7" }),
+  dots: [0, 1, 2].map(() => el(L.dots, "circle", { r: 3.2, fill: "#f5f5f7" })) })));
+const swarmAt = (s, t) => [CX + Math.cos(s.i * 1.05 + t * .5) * 110 + wob(t, s.i) * 26, CY + Math.sin(s.i * 1.05 + t * .5) * 62 + wob(t, s.i + 7) * 20];
+R.push(t => {
+  const on = eo(P(t, .2, 1.0));
+  const gather = eio(P(t, 6.8, 7.8));
+  const cut = 1 - eo(P(t, 6.6, 7.2));
+  SWARM.forEach(s => {
+    const [x, y] = swarmAt(s, t);
+    place(s.task, lerp(x, CX, gather), lerp(y, CY, gather), lerp(1, 1.6, gather), on * (t < 7.8 ? 1 : 0));
+  });
+  WILD.forEach(d => {
+    const io = Math.min(eo(P(t, .5 + d.i * .12, 1.1 + d.i * .12)), 1 - P(t, 6.6, 7.3));
+    // a place flares while something reaches it
+    const hit = .5 + .5 * Math.sin(t * 5 + d.i * 2.3);
+    const tr = `translate(${d.x} ${d.y}) scale(${d.k === "hacker" ? .9 : .8})`;
+    A(d.g, { transform: tr, opacity: io * (1 - hit * .8) });
+    A(d.hot, { transform: tr, opacity: io * hit * .8 });
+  });
+  LINKS.forEach((l, n) => {
+    const [x, y] = swarmAt(l.s, t);
+    const flick = .55 + .45 * Math.sin(t * 7 + n * 1.9);
+    const len = eo(P(t, .9 + n * .12, 1.6 + n * .12)) * cut;
+    A(l.line, { x1: x, y1: y, x2: lerp(x, l.d.x, len), y2: lerp(y, l.d.y, len), opacity: on * flick * .7 });
+    l.dots.forEach((dt, k) => {
+      const u = (t * .6 + k / 3 + n * .13) % 1;
+      A(dt, { cx: lerp(x, l.d.x, u), cy: lerp(y, l.d.y, u), opacity: len > .95 ? on * cut * Math.sin(u * Math.PI) : 0 });
+    });
+  });
+});
+words("Your tasks run anywhere.", .8, 3.6);
+words(`And touch ${grad("anything", ...RED)}.`, 3.8, 6.9);
+
+// ===================================================================
+// 2 - 6. One task, made safe step by step, and then it is the logo
+// ===================================================================
 const main = makeTask(110);
+// 2. a function: brackets close around it
+const paren = add(`<span style="display:inline-block">(</span><span style="display:inline-block;width:150px"></span><span style="display:inline-block">)</span>`,
+  `left:0;top:${CY - 100}px;width:1280px;text-align:center;font:200 170px/1 var(--sans);color:#86868b`);
+const [pl, , pr] = paren.children;
 
-// the same container on three machines
-const MX = [CX - 340, CX, CX + 340];
+// 3. a container, pinned, the same on three machines
+const box = makeContainer(L.box);
+const pin = G(L.front, LOCK);
+const MX = [CX - 360, CX, CX + 360];
 const copies = MX.map(() => {
-  const g = el(sv, "g", {});
+  const g = el(L.box, "g", {});
   drawContainer(makeContainer(g), 99, 0);
   place(makeTask(110, g), 0, 0);
   el(g, "g", { transform: `translate(${KW} ${-KH})` }).innerHTML = LOCK;
   return g;
 });
-const ICONS = [
-  `<path d="M-46 -26h92v56h-92zM-62 38h124" fill="none" stroke="#86868b" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`,
-  `<path d="M-36 30h68a24 24 0 0 0 2-48 32 32 0 0 0-61-6 22 22 0 0 0-9 54z" fill="none" stroke="#86868b" stroke-width="3" stroke-linejoin="round"/>`,
-  `<path d="M-42 -34h84v28h-84zM-42 6h84v28h-84z" fill="none" stroke="#86868b" stroke-width="3" stroke-linejoin="round"/><circle cx="-26" cy="-20" r="3.5" fill="#86868b"/><circle cx="-26" cy="20" r="3.5" fill="#86868b"/>`,
-].map(d => { const g = el(sv, "g", {}); g.innerHTML = d; return g; });
+const hosts = ["laptop", "cloud", "server"].map(k => G(L.icons, ICON[k]("#86868b")));
 
-// two lanes
-const LY = [CY - 70, CY + 70], LX0 = CX - 300, LX1 = CX + 300;
-const lanes = LY.map(y => el(sv, "line", { x1: LX0, y1: y, x2: LX1, y2: y, stroke: "#2c2c2e", "stroke-width": 4, "stroke-linecap": "round" }));
-const trails = LY.map(y => el(sv, "line", { x1: LX0, y1: y, y2: y, "stroke-width": 4, "stroke-linecap": "round" }));
-const runners = LY.map(() => makeTask(64));
-const ticks = LY.map(() => { const g = el(sv, "g", {}); g.innerHTML = TICK(22); return g; });
+// 4. types: a port on each side; the wrong piece is turned away, the right one fits
+const portL = el(L.front, "circle", { r: 19, fill: "#000", "stroke-width": 2.5 });
+const portR = el(L.front, "circle", { r: 19, fill: "#000", stroke: "#f5f5f7", "stroke-width": 2.5 });
+const wrong = el(L.front, "path", { d: "M-17 -19 21 0-17 19z" });
+const right = el(L.front, "circle", { r: 14 });
+const out = el(L.front, "circle", { r: 14, fill: "#30d158" });
+const typeTick = G(L.front, TICK(18));
 
-// three tasks, checked
-const QX = [CX - 220, CX, CX + 220];
-const checked = QX.map(() => makeTask(110));
-const scan = el(sv, "rect", { y: CY - 120, width: 3, height: 240, fill: "#30d158", filter: "url(#glow)" });
-const qTicks = QX.map(() => { const g = el(sv, "g", {}); g.innerHTML = TICK(20); return g; });
-
-// the close
-const FIN = makeTask(150);
+// 5. bounds: three places; the ring passes two and stops the attacker
+const R0 = 188;
+const REACH = [
+  { k: "folder", x: CX - 430, y: CY, ok: true },
+  { k: "pkg", x: CX, y: CY - 238, ok: true },
+  { k: "hacker", x: CX + 430, y: CY, ok: false },
+].map(n => {
+  n.len = Math.hypot(n.x - CX, n.y - CY);
+  n.ux = (n.x - CX) / n.len; n.uy = (n.y - CY) / n.len;
+  n.start = Math.abs(n.ux) * KW + Math.abs(n.uy) * KH + 8;
+  n.line = el(L.lines, "line", { "stroke-width": 2, "stroke-dasharray": "2 9", "stroke-linecap": "round" });
+  n.dots = [...Array(6).keys()].map(k => ({ k, e: el(L.dots, "circle", { r: 4.2 }) }));
+  n.grey = G(L.icons, ICON[n.k]("#86868b"));
+  n.lit = G(L.icons, ICON[n.k](n.ok ? "#30d158" : "#ff453a"));
+  return n;
+});
+const ring = el(L.front, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 3, filter: "url(#glow)" });
+const shock = el(L.front, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 1.5 });
+const stop = G(L.front, CROSS);
 
 R.push(t => {
-  // ---- the opening (0 - 4.2): tasks flow; one comes forward and becomes the task
-  const flo = Math.min(eo(P(t, .2, 1.0)), 1 - P(t, 3.3, 3.9));
-  const pos = f => FX0 - 60 + ((t * 230 + f.k * 220 + f.j * 73) % 1100);
-  flowLanes.forEach(l => A(l, { opacity: flo }));
-  flowSteps.forEach(st => {
-    const near = flow.some(f => f.y === st.y && Math.abs(pos(f) - st.x) < 26);
-    A(st.e, { fill: near ? "#30d158" : "#1c1c1e", stroke: near ? "#30d158" : "#3a3a3c", opacity: flo });
-  });
-  flow.forEach(f => {
-    const x = pos(f);
-    place(f.task, x, f.y, 1, flo * clamp((x - FX0 + 40) / 60) * clamp((FX1 + 40 - x) / 60));
-  });
-  // the hero rides the middle lane, then lifts out to the centre
-  const lift = eio(P(t, 2.9, 3.9));
-  const hx = lerp(FX0 + (t - .4) * 230, CX, lift);
-  place(hero, hx, CY, lerp(40 / 110, 1, lift), Math.min(eo(P(t, .4, .9)), t < 3.9 ? 1 : 0));
-  // the main task takes over where the hero lands
-  place(main, CX, CY, 1, Math.min(t >= 3.9 ? 1 : 0, 1 - P(t, 21.9, 22.2)));
+  const away = t >= 17.0 && t < 20.9;   // while the copies are out
+  // ---- the task: it gathers from the swarm, and stays to the end
+  const grow = eio(P(t, 36.6, 37.4));
+  const aside = eio(P(t, 38.0, 38.8));
+  place(main, lerp(CX, CX - 130, aside), lerp(CY, 240, aside), lerp(1, 150 / 110, grow),
+    Math.min(t >= 7.7 ? 1 : 0, 1 - P(t, 45.4, 46)) * (away ? 0 : 1));
   A(main.halo, { opacity: .42 + .14 * Math.sin(t * 2.4) });
+  const lam = eio(P(t, 37.1, 37.8));
+  A(main.lam, { "stroke-dasharray": `${lam} 1`, opacity: lam > .001 ? 1 : 0 });
 
-  // ---- what it reaches (6 - 13.2): the ring stops the dots at 9.6
-  const RING = 9.6, R0 = 150, after = t >= RING + .15;
-  const reachOn = env(t, 6.0, 13.2, .5, .6);
+  // ---- 2. a function (8 - 11)
+  const po = Math.min(eo(P(t, 8.3, 9.0)), 1 - P(t, 10.5, 11.0));
+  S(pl, { o: po, x: (1 - eo5(P(t, 8.3, 9.2))) * -70 });
+  S(pr, { o: po, x: (1 - eo5(P(t, 8.3, 9.2))) * 70 });
+
+  // ---- 3. a container (11.2 - 21): drawn, pinned, copied to three machines, back to one
+  drawContainer(box, t, 11.2);
+  A(box.g, { transform: `translate(${CX} ${CY})`, opacity: Math.min(t >= 11.2 ? 1 : 0, 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
+  A(pin, { transform: `translate(${CX + KW} ${CY - KH}) scale(${t < 14.3 ? 0 : lerp(2.2, 1, back(P(t, 14.3, 14.65)))})`,
+    opacity: Math.min(eo(P(t, 14.3, 14.4)), 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
+  const spread = eio(P(t, 17.0, 18.0)) * (1 - eio(P(t, 20.0, 20.9)));
+  copies.forEach((g, i) => {
+    const o = away ? (i === 1 ? 1 : Math.min(eo(P(t, 17.0, 17.4)), 1 - P(t, 20.3, 20.8))) : 0;
+    A(g, { transform: `translate(${lerp(CX, MX[i], spread)} ${CY - 30 * spread}) scale(${lerp(1, .72, spread)})`, opacity: o });
+  });
+  hosts.forEach((g, i) => {
+    const io = Math.min(eo(P(t, 17.7 + i * .12, 18.3 + i * .12)), 1 - P(t, 19.8, 20.3));
+    A(g, { transform: `translate(${MX[i]} ${CY + 110 + (1 - io) * 12})`, opacity: io });
+  });
+
+  // ---- 4. types (21.4 - 28)
+  const to = Math.min(eo(P(t, 21.4, 21.9)), 1 - P(t, 27.6, 28.1));
+  A(portL, { cx: CX - KW, cy: CY, opacity: to, stroke: t >= 25.0 ? "#30d158" : "#f5f5f7" });
+  A(portR, { cx: CX + KW, cy: CY, opacity: to });
+  // the wrong piece comes in, is turned away, and falls
+  const wi = eio(P(t, 22.3, 23.0));
+  const shake = t >= 23.0 && t < 23.5 ? Math.sin(t * 85) * 9 * (1 - P(t, 23.0, 23.5)) : 0;
+  const fall = eo(P(t, 23.5, 24.1));
+  A(wrong, { transform: `translate(${lerp(CX - 470, CX - KW - 34, wi) + shake - fall * 40} ${CY + fall * 70}) rotate(${fall * -30})`,
+    fill: t >= 23.0 ? "#ff453a" : "#f5f5f7", opacity: Math.min(to, eo(P(t, 22.3, 22.5)), 1 - fall) });
+  // the right piece fits, and a result comes out of the other side
+  const ri = eio(P(t, 24.3, 25.0));
+  A(right, { cx: lerp(CX - 470, CX - KW, ri), cy: CY, opacity: Math.min(to, eo(P(t, 24.3, 24.5))), fill: t >= 25.0 ? "#30d158" : "#2997ff" });
+  const oi = eio(P(t, 25.5, 26.3));
+  A(out, { cx: lerp(CX + KW, CX + KW + 150, oi), cy: CY, opacity: Math.min(to, t >= 25.5 ? 1 : 0) });
+  A(typeTick, { transform: `translate(${CX + KW + 196} ${CY}) scale(${t < 26.3 ? 0 : lerp(.3, 1, back(P(t, 26.3, 26.65)))})`, opacity: to });
+
+  // ---- 5. bounds (28.2 - 36)
+  const RING = 31.6, after = t >= RING + .15;
+  const reachOn = env(t, 28.4, 36.0, .5, .6);
   REACH.forEach((n, i) => {
-    const appear = 6.1 + i * .25;
-    const no = Math.min(eo(P(t, appear, appear + .6)), 1 - P(t, 12.7, 13.3));
+    const appear = 28.4 + i * .25;
+    const no = Math.min(eo(P(t, appear, appear + .6)), 1 - P(t, 35.5, 36.1));
     const end = n.len - 62;
-    // before the ring every destination looks the same; after it, allowed is green and the attacker red
     const lit = eo(P(t, RING + .25, RING + .6));
     const icon = `translate(${n.x} ${n.y + (1 - eo(P(t, appear, appear + .7))) * 14}) scale(${n.ok ? 1 : 1.25})`;
-    A(n.grey, { transform: icon, opacity: no * (n.ok ? 1 - lit : 1) });
+    A(n.grey, { transform: icon, opacity: no * (n.ok ? 1 - lit : 0) });
     A(n.lit, { transform: icon, opacity: no * (n.ok ? lit : (t < RING + .25 ? 1 : lerp(1, .35, eo(P(t, RING + .6, RING + 1.4))))) });
     const reach = after && !n.ok ? R0 : end;
-    A(n.line, { x2: CX + n.ux * reach, y2: CY + n.uy * reach, opacity: no * .6,
+    A(n.line, { x1: CX + n.ux * n.start, y1: CY + n.uy * n.start, x2: CX + n.ux * reach, y2: CY + n.uy * reach, opacity: no * .6,
       stroke: after ? (n.ok ? "#30d158" : "#ff453a") : "#5a5a5e" });
     n.dots.forEach(d => {
-      const r = 70 + ((t * .42 + d.k / 7) % 1) * (end - 70);
-      let o = reachOn * no * clamp((r - 70) / 30) * clamp((end - r) / 30);
+      const r = n.start + ((t * .42 + d.k / 6) % 1) * (end - n.start);
+      let o = reachOn * no * clamp((r - n.start) / 30) * clamp((end - r) / 30);
       if (after && !n.ok && r > R0) o = 0;
-      A(d.e, { cx: CX + n.ux * r, cy: CY + n.uy * r, opacity: o,
-        fill: !after ? "#f5f5f7" : n.ok ? "#30d158" : "#ff453a" });
+      A(d.e, { cx: CX + n.ux * r, cy: CY + n.uy * r, opacity: o, fill: !after ? "#f5f5f7" : n.ok ? "#30d158" : "#ff453a" });
     });
-    if (!n.ok) {
-      const st = P(t, RING + .3, RING + .6);
-      A(stop, { transform: `translate(${CX + n.ux * R0} ${CY + n.uy * R0}) scale(${t < RING + .3 ? 0 : lerp(2, 1, back(st))})`, opacity: no });
-    }
+    if (!n.ok) A(stop, { transform: `translate(${CX + n.ux * R0} ${CY + n.uy * R0}) scale(${t < RING + .3 ? 0 : lerp(2, 1, back(P(t, RING + .3, RING + .6)))})`, opacity: no });
   });
-  A(ring, { r: R0 * lerp(1.9, 1, back(P(t, RING, RING + .38))), opacity: Math.min(eo(P(t, RING, RING + .1)), 1 - P(t, 12.8, 13.3)) });
+  A(ring, { r: R0 * lerp(1.8, 1, back(P(t, RING, RING + .38))), opacity: Math.min(eo(P(t, RING, RING + .1)), 1 - P(t, 35.6, 36.1)) });
   const sh = P(t, RING + .3, RING + 1.1);
-  A(shock, { r: R0 * (1 + eo(sh) * .55), opacity: sh > 0 && sh < 1 ? (1 - sh) * .7 : 0 });
+  A(shock, { r: R0 * (1 + eo(sh) * .5), opacity: sh > 0 && sh < 1 ? (1 - sh) * .7 : 0 });
   const jolt = sh > 0 && sh < .35 ? (1 - sh / .35) * 6 : 0;
   sv.style.transform = `translate(${Math.sin(t * 90) * jolt}px,${Math.cos(t * 70) * jolt * .5}px)`;
-
-  // ---- in a container (13.6 - 22): the box draws, the pin snaps on
-  drawContainer(box, t, 13.6, t < 13.6 ? 0 : 1 - P(t, 21.9, 22.2));
-  A(box.g, { transform: `translate(${CX} ${CY})` });
-  A(pin, { transform: `translate(${CX + KW} ${CY - KH}) scale(${t < 18.8 ? 0 : lerp(2.2, 1, back(P(t, 18.8, 19.15)))})`,
-    opacity: Math.min(eo(P(t, 18.8, 18.9)), 1 - P(t, 21.9, 22.2)) });
-
-  // ---- the same everywhere (22 - 26.8)
-  const spread = eio(P(t, 22.0, 23.0));
-  copies.forEach((g, i) => {
-    A(g, { transform: `translate(${lerp(CX, MX[i], spread)} ${CY - 30}) scale(${lerp(1, .78, spread)})`,
-      opacity: Math.min(t >= 22 ? 1 : 0, 1 - P(t, 26.3, 26.8)) * (i === 1 ? 1 : eo(P(t, 22.0, 22.4))) });
-  });
-  ICONS.forEach((g, i) => {
-    const io = Math.min(eo(P(t, 22.7 + i * .12, 23.3 + i * .12)), 1 - P(t, 26.3, 26.8));
-    A(g, { transform: `translate(${MX[i]} ${CY + 125 + (1 - io) * 12})`, opacity: io });
-  });
-
-  // ---- side by side (26.9 - 31)
-  const lo = env(t, 26.9, 31.0, .5, .5);
-  const ENDS = [29.3, 29.7];
-  LY.forEach((y, i) => {
-    A(lanes[i], { opacity: lo });
-    const k = eio(P(t, 27.6, ENDS[i]));
-    const x = lerp(LX0, LX1, k);
-    A(trails[i], { x2: x, opacity: lo, stroke: k >= 1 ? "#30d158" : "#2997ff" });
-    place(runners[i], x, y, 1, lo);
-    A(ticks[i], { transform: `translate(${LX1 + 60} ${y}) scale(${t < ENDS[i] ? 0 : lerp(.3, 1, back(P(t, ENDS[i], ENDS[i] + .35)))})`,
-      opacity: Math.min(lo, eo(P(t, ENDS[i], ENDS[i] + .1))) });
-  });
-
-  // ---- checked before it runs (31.2 - 37.6)
-  A(scan, { x: lerp(CX - 360, CX + 360, eio(P(t, 32.0, 33.4))), opacity: t > 32.0 && t < 33.5 ? 1 : 0 });
-  QX.forEach((x, i) => {
-    const bad = i === 1;
-    const shake = bad && t >= 32.7 && t < 33.2 ? Math.sin(t * 80) * 10 * (1 - P(t, 32.7, 33.2)) : 0;
-    // the middle one becomes the close's task; the others go
-    const o = bad ? Math.min(eo(P(t, 31.3, 31.9)), t < 37.6 ? 1 : 0) : Math.min(eo(P(t, 31.2 + i * .1, 31.8 + i * .1)), 1 - P(t, 37.3, 37.8));
-    place(checked[i], x + shake, CY, 1, o);
-    A(checked[i].red, { opacity: bad && t >= 32.7 ? eo(P(t, 32.7, 32.85)) * (1 - P(t, 34.3, 34.6)) : 0 });
-    const a = 34.8 + i * .12;
-    A(qTicks[i], { transform: `translate(${x + 55} ${CY - 55}) scale(${t < a ? 0 : lerp(.3, 1, back(P(t, a, a + .35)))})`,
-      opacity: Math.min(o, eo(P(t, a, a + .1)), 1 - P(t, 37.3, 37.6)) });
-  });
-
-  // ---- the close (37.6 - 48): the task grows, its λ draws, it moves aside for the name
-  const fo = Math.min(t >= 37.6 ? 1 : 0, 1 - P(t, 47.4, 48));
-  const mv = eio(P(t, 39.0, 39.8));
-  place(FIN, lerp(CX, CX - 130, mv), lerp(CY, 250, mv), lerp(110 / 150, 1, eio(P(t, 37.6, 38.6))), fo);
-  const lam = eio(P(t, 38.3, 39.0));
-  A(FIN.lam, { "stroke-dasharray": `${lam} 1`, opacity: lam > .001 ? 1 : 0 });
 });
 
-// the name beside the logo, and the words under it
-const name = add("Lask", "left:610px;top:198px;font:700 108px/1 var(--sans);letter-spacing:-.04em");
-R.push(t => S(name, { o: Math.min(eo(P(t, 39.6, 40.3)), 1 - P(t, 47.4, 48)), x: (1 - eo5(P(t, 39.6, 40.5))) * -24, b: (1 - eo(P(t, 39.6, 40.3))) * 8 }));
-const tag = add(["Pinned.", "Checked.", "Bounded."].map(w => `<span style="display:inline-block;margin:0 10px">${w}</span>`).join(""),
-  "left:0;top:378px;width:1280px;text-align:center;font:600 46px var(--sans);letter-spacing:-.03em");
+// ---- 6. the close: the name, and the four steps it took
+const name = add("Lask", "left:610px;top:188px;font:700 108px/1 var(--sans);letter-spacing:-.04em");
+const tag = add(["Functions.", "Containers.", "Types.", "Bounds."].map(w => `<span style="display:inline-block;margin:0 9px">${w}</span>`).join(""),
+  "left:0;top:368px;width:1280px;text-align:center;font:600 42px var(--sans);letter-spacing:-.03em");
 const TW = [...tag.children];
-[["#2997ff", "#5ac8fa"], ["#30d158", "#a6f4c5"], ["#ffb340", "#ffd60a"]].forEach(([a, b], i) => {
+[WHITE, BLUE, GREEN, AMBER].forEach(([a, b], i) => {
   TW[i].style.cssText += `;background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent`;
 });
-const brew = add(`<span style="color:#86868b">$</span> brew install lask`, "left:0;top:500px;width:1280px;text-align:center;font:500 24px var(--mono)");
-const url = add("lask-task-runner.github.io", "left:0;top:548px;width:1280px;text-align:center;font:500 20px var(--sans);color:#86868b");
+const brew = add(`<span style="color:#86868b">$</span> brew install lask`, "left:0;top:490px;width:1280px;text-align:center;font:500 24px var(--mono)");
+const url = add("lask-task-runner.github.io", "left:0;top:538px;width:1280px;text-align:center;font:500 20px var(--sans);color:#86868b");
 R.push(t => {
-  const end = 1 - P(t, 47.4, 48);
+  const end = 1 - P(t, 45.4, 46);
+  S(name, { o: Math.min(eo(P(t, 38.4, 39.1)), end), x: (1 - eo5(P(t, 38.4, 39.3))) * -24, b: (1 - eo(P(t, 38.4, 39.1))) * 8 });
   TW.forEach((w, i) => {
-    const a = 40.6 + i * .45;
+    const a = 39.6 + i * .4;
     S(w, { o: Math.min(eo(P(t, a, a + .6)), end), y: (1 - eo5(P(t, a, a + .8))) * 18, b: (1 - eo(P(t, a, a + .6))) * 8 });
   });
-  S(brew, { o: Math.min(eo(P(t, 42.4, 43.1)), end) });
-  S(url, { o: Math.min(eo(P(t, 42.8, 43.5)), end) });
+  S(brew, { o: Math.min(eo(P(t, 41.8, 42.5)), end) });
+  S(url, { o: Math.min(eo(P(t, 42.2, 42.9)), end) });
 });
 
 // ---------- the words ----------
-words("Your tasks.", .8, 3.3);
-words("Take one.", 4.2, 6.0);
-words(`What can it ${grad("reach", "#ff453a", "#ff9f0a")}?`, 6.3, 9.4);
-words(`Only what you ${grad("allow", "#ffb340", "#ffd60a")}.`, 10.0, 13.2);
-words("Every tool, in a container.", 14.0, 16.3);
-words(`Nothing to ${grad("install", "#2997ff", "#5ac8fa")}.`, 16.5, 18.6);
-words(`${grad("Pinned", "#2997ff", "#5ac8fa")}. By digest.`, 18.9, 21.8);
-words("The same, everywhere.", 22.6, 26.6, 548);
-words("Side by side.", 27.2, 31.0, 548);
-words(`${grad("Checked", "#30d158", "#a6f4c5")}.`, 31.6, 34.2);
-words("Before anything runs.", 34.4, 37.5);
+words(`Make each one a ${grad("function", ...WHITE)}.`, 8.0, 10.9);
+words(`Put it in a ${grad("container", ...BLUE)}.`, 11.6, 14.1);
+words(`${grad("Pinned", ...BLUE)}. By digest.`, 14.4, 16.8);
+words("The same, everywhere.", 17.4, 20.5, 520);
+words(`Give it ${grad("types", ...GREEN)}.`, 21.6, 24.1);
+words("Mistakes caught before it runs.", 24.4, 28.0);
+words(`Bound what it can ${grad("reach", ...AMBER)}.`, 28.6, 31.4);
+words(`Only what you ${grad("allow", ...AMBER)}.`, 31.9, 35.8);
+words("That's Lask.", 36.3, 38.0, 500, 56);
 
 // ---------- timelines ----------
-const FULL = 48;
+const FULL = 46;
 // the README cut: [from, to, speed] of the full timeline, played in turn
-const CUTS = [[0, 13.3, 1.8], [13.6, 21.8, 2.0], [22.0, 26.6, 2.0], [31.2, 37.5, 2.2], [37.6, 46, 2.4]];
+const CUTS = [[0, 10.9, 1.8], [11.0, 20.5, 2.2], [21.3, 28.0, 2.2], [28.3, 35.8, 2.2], [36.0, 44, 2.4]];
 const CUT_LEN = CUTS.map(([a, b, s]) => (b - a) / s);
 window.DURATION = SHORT ? CUT_LEN.reduce((x, y) => x + y, 0) : FULL;
-window.POSTER = 45;
+window.POSTER = 44;
 function fullTime(t) {
   if (!SHORT) return [t, 1];
   let acc = 0;
