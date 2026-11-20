@@ -6,7 +6,7 @@
 [![docs](https://img.shields.io/badge/docs-lask--task--runner.github.io-4f46e5)](https://lask-task-runner.github.io/)
 
 <div align="center">
-  <img alt="Lask in 20 seconds: tasks run anywhere and touch anything, from files and keys to an attacker; one of them becomes a function, gets typed ports that turn the wrong input away, goes into a shipping container pinned by digest, the same on a laptop, in the cloud and on a server, and gets a ring that lets the project's files and a package registry through and stops the attacker; then it becomes the Lask logo: Functions. Types. Containers. Bounds." src="doc/assets/lask-tour.gif" width="960">
+  <img alt="Lask in 20 seconds: tasks run anywhere and touch anything, from files and keys to an attacker; one of them becomes a function, gets a square input and a triangle output that turn a round piece away, goes into a shipping container labelled with its digest, the same on a laptop, in the cloud and on a server, and gets a ring that lets the project's files and a package registry through and stops the attacker; then it becomes the Lask logo: Functions. Types. Containers. Bounds." src="doc/assets/lask-tour.gif" width="960">
   <br>
   <a href="https://lask-task-runner.github.io/">▶ Watch the full tour on the documentation site</a>
 </div>

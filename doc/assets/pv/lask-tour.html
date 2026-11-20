@@ -133,7 +133,8 @@ const ICON = {
     <rect x="-13" y="-2" width="10" height="4" rx="2" fill="#ff453a"/><rect x="3" y="-2" width="10" height="4" rx="2" fill="#ff453a"/>
     <path d="M-30 38h60l8 14h-76z" fill="#2c2c2e" stroke="${c}" stroke-width="2.4" stroke-linejoin="round"/>`,
 };
-const LOCK = `<circle r="22" fill="#f5f5f7"/><path d="M-7 -1.5h14v11h-14zM-4.5 -1.5v-3.5a4.5 4.5 0 0 1 9 0v3.5" fill="none" stroke="#000" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>`;
+// the digest plate a pinned container carries
+const PLATE = `<rect x="-86" y="-17" width="172" height="34" rx="17" fill="#f5f5f7"/><text y="6" text-anchor="middle" font-family="SF Mono, Menlo, monospace" font-size="17" font-weight="600" fill="#000">sha256:9ba6d8</text>`;
 const TICK = r => `<circle r="${r}" fill="#30d158"/><path d="M${-r * .4} ${r * .03}l${r * .27} ${r * .27} ${r * .55}-${r * .55}" fill="none" stroke="#000" stroke-width="${r * .18}" stroke-linecap="round" stroke-linejoin="round"/>`;
 const CROSS = `<circle r="17" fill="#ff453a"/><path d="M-6 -6l12 12M6 -6l-12 12" stroke="#000" stroke-width="3.6" stroke-linecap="round"/>`;
 
@@ -211,24 +212,25 @@ const [pl, , pr] = paren.children;
 
 // 4. a container, pinned, the same on three machines
 const box = makeContainer(L.box);
-const pin = G(L.front, LOCK);
+const pin = G(L.front, PLATE);
 const MX = [CX - 360, CX, CX + 360];
 const copies = MX.map(() => {
   const g = el(L.box, "g", {});
   drawContainer(makeContainer(g), 99, 0);
   place(makeTask(110, g), 0, 0);
-  el(g, "g", { transform: `translate(${KW} ${-KH})` }).innerHTML = LOCK;
+  el(g, "g", { transform: `translate(0 ${-KH})` }).innerHTML = PLATE;
   return g;
 });
 const hosts = ["laptop", "cloud", "server"].map(k => G(L.icons, ICON[k]("#86868b")));
 
 // 3. types: a port on each side of the function; the wrong piece is turned away, the right one fits
 const TS = 55;  // half the task's side
-const portL = el(L.front, "circle", { r: 19, fill: "#000", "stroke-width": 2.5 });
-const portR = el(L.front, "circle", { r: 19, fill: "#000", stroke: "#f5f5f7", "stroke-width": 2.5 });
-const wrong = el(L.front, "path", { d: "M-17 -19 21 0-17 19z" });
-const right = el(L.front, "circle", { r: 14 });
-const out = el(L.front, "circle", { r: 14, fill: "#30d158" });
+// the input takes a square, the output gives a triangle
+const portL = el(L.front, "rect", { x: -18, y: -18, width: 36, height: 36, rx: 4, fill: "#000", "stroke-width": 2.5 });
+const portR = el(L.front, "path", { d: "M-15 -20 22 0-15 20z", fill: "#000", stroke: "#f5f5f7", "stroke-width": 2.5, "stroke-linejoin": "round" });
+const wrong = el(L.front, "circle", { r: 15 });
+const right = el(L.front, "rect", { x: -13, y: -13, width: 26, height: 26, rx: 3 });
+const out = el(L.front, "path", { d: "M-11 -14 16 0-11 14z", fill: "#30d158", "stroke-linejoin": "round" });
 const typeTick = G(L.front, TICK(18));
 
 // 5. bounds: three places; the ring passes two and stops the attacker
@@ -270,7 +272,7 @@ R.push(t => {
   // ---- 4. a container (17.8 - 27.6): drawn, pinned, copied to three machines, back to one
   drawContainer(box, t, 17.8);
   A(box.g, { transform: `translate(${CX} ${CY})`, opacity: Math.min(t >= 17.8 ? 1 : 0, 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
-  A(pin, { transform: `translate(${CX + KW} ${CY - KH}) scale(${t < 20.9 ? 0 : lerp(2.2, 1, back(P(t, 20.9, 21.25)))})`,
+  A(pin, { transform: `translate(${CX} ${CY - KH}) scale(${t < 20.9 ? 0 : lerp(1.8, 1, back(P(t, 20.9, 21.25)))})`,
     opacity: Math.min(eo(P(t, 20.9, 21.0)), 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
   const spread = eio(P(t, 23.6, 24.6)) * (1 - eio(P(t, 26.6, 27.5)));
   copies.forEach((g, i) => {
@@ -284,19 +286,19 @@ R.push(t => {
 
   // ---- 3. types (11.0 - 17.7)
   const to = Math.min(eo(P(t, 11.0, 11.5)), 1 - P(t, 17.2, 17.7));
-  A(portL, { cx: CX - TS, cy: CY, opacity: to, stroke: t >= 14.6 ? "#30d158" : "#f5f5f7" });
-  A(portR, { cx: CX + TS, cy: CY, opacity: to });
+  A(portL, { transform: `translate(${CX - TS} ${CY})`, opacity: to, stroke: t >= 14.6 ? "#30d158" : "#f5f5f7" });
+  A(portR, { transform: `translate(${CX + TS} ${CY})`, opacity: to, stroke: t >= 15.1 ? "#30d158" : "#f5f5f7" });
   // the wrong piece comes in, is turned away, and falls
   const wi = eio(P(t, 11.9, 12.6));
   const shake = t >= 12.6 && t < 13.1 ? Math.sin(t * 85) * 9 * (1 - P(t, 12.6, 13.1)) : 0;
   const fall = eo(P(t, 13.1, 13.7));
-  A(wrong, { transform: `translate(${lerp(CX - 470, CX - TS - 34, wi) + shake - fall * 40} ${CY + fall * 70}) rotate(${fall * -30})`,
+  A(wrong, { transform: `translate(${lerp(CX - 470, CX - TS - 36, wi) + shake - fall * 40} ${CY + fall * 70})`,
     fill: t >= 12.6 ? "#ff453a" : "#f5f5f7", opacity: Math.min(to, eo(P(t, 11.9, 12.1)), 1 - fall) });
   // the right piece fits, and a result comes out of the other side
   const ri = eio(P(t, 13.9, 14.6));
-  A(right, { cx: lerp(CX - 470, CX - TS, ri), cy: CY, opacity: Math.min(to, eo(P(t, 13.9, 14.1))), fill: t >= 14.6 ? "#30d158" : "#2997ff" });
+  A(right, { transform: `translate(${lerp(CX - 470, CX - TS, ri)} ${CY})`, opacity: Math.min(to, eo(P(t, 13.9, 14.1))), fill: t >= 14.6 ? "#30d158" : "#2997ff" });
   const oi = eio(P(t, 15.1, 15.9));
-  A(out, { cx: lerp(CX + TS, CX + TS + 150, oi), cy: CY, opacity: Math.min(to, t >= 15.1 ? 1 : 0) });
+  A(out, { transform: `translate(${lerp(CX + TS, CX + TS + 150, oi)} ${CY})`, opacity: Math.min(to, t >= 15.1 ? 1 : 0) });
   A(typeTick, { transform: `translate(${CX + TS + 196} ${CY}) scale(${t < 15.9 ? 0 : lerp(.3, 1, back(P(t, 15.9, 16.2)))})`, opacity: to });
 
   // ---- 5. bounds (28.2 - 36)
