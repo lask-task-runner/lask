@@ -348,16 +348,19 @@ R.push(t => {
 });
 
 // ---- 6. many functions, in modules, with modules from elsewhere (36 - 46.7)
-const NODE = 48;
+const NODE = 44;
+// the graph is drawn at .78 of its layout, about (640, 250), to leave room around it
+const GS = .78, gx = x => 640 + (x - 640) * GS, gy = y => 250 + (y - 250) * GS;
 const NODES = [
   [270, 170, 0], [270, 330, 0], [430, 250, 0],   // a module
   [620, 170, 1], [620, 330, 1], [790, 250, 1],   // another
   [1000, 160, 2], [1000, 320, 2],                // a module from elsewhere
-].map(([x, y, m], i) => ({ x, y, m, i, task: makeTask(NODE) }));
+].map(([x, y, m], i) => ({ x: gx(x), y: gy(y), m, i, task: makeTask(NODE) }));
 const EDGES = [[0, 2], [1, 2], [2, 3], [2, 4], [3, 5], [4, 5], [6, 5], [7, 5]].map(([a, b], i) => ({ a: NODES[a], b: NODES[b], i,
   line: el(L.lines, "line", { stroke: "#48484a", "stroke-width": 2.4, "stroke-linecap": "round", pathLength: 1 }),
   dot: el(L.dots, "circle", { r: 4.5, fill: "#5ac8fa" }) }));
-const MODS = [[205, 110, 290, 280], [555, 110, 300, 280], [930, 90, 140, 300]].map(([x, y, w, h], i) => {
+const MODS = [[205, 110, 290, 280], [555, 110, 300, 280], [930, 90, 140, 300]].map(([x0, y0, w0, h0], i) => {
+  const x = gx(x0), y = gy(y0), w = w0 * GS, h = h0 * GS;
   const g = el(L.box, "g", {});
   const r = el(g, "rect", { x, y, width: w, height: h, rx: 26, fill: "rgba(41,151,255,.05)", stroke: i === 2 ? "#5ac8fa" : "#2997ff",
     "stroke-width": 2, "stroke-dasharray": i === 2 ? "8 7" : "none", pathLength: i === 2 ? null : 1 });
@@ -365,7 +368,6 @@ const MODS = [[205, 110, 290, 280], [555, 110, 300, 280], [930, 90, 140, 300]].m
 });
 MODS[2].r.removeAttribute("pathLength");
 const extPin = G(L.front, PUSHPIN);
-const extIcon = G(L.icons, ICON.cloud("#5ac8fa"));
 R.push(t => {
   const fall = eio(P(t, 48.2, 48.9));   // everything gathers into one task
   const ext = eio(P(t, 41.9, 42.9));    // the module from elsewhere slides in
@@ -399,47 +401,58 @@ R.push(t => {
     A(m.g, { transform: `translate(${dx} 0)`, opacity: Math.min(m.i === 2 ? ext : 1, 1 - P(t, 48.1, 48.5)) * (t >= a ? 1 : 0) });
     if (m.i !== 2) A(m.r, { "stroke-dasharray": `${eio(P(t, a, a + .8))} 1`, "fill-opacity": eo(P(t, a + .4, a + 1)) });
   });
-  A(extPin, { transform: `translate(${MODS[2].x + MODS[2].w + (1 - ext) * 340} ${MODS[2].y}) scale(${t < 42.8 ? 0 : lerp(2.2, 1, back(P(t, 42.8, 43.15)))})`,
+  A(extPin, { transform: `translate(${MODS[2].x + (1 - ext) * 340} ${MODS[2].y}) scale(${t < 42.8 ? 0 : lerp(2.2, 1, back(P(t, 42.8, 43.15)))})`,
     opacity: Math.min(eo(P(t, 42.8, 42.9)), 1 - P(t, 48.1, 48.5)) });
-  A(extIcon, { transform: `translate(${1000 + (1 - ext) * 340} ${MODS[2].y + MODS[2].h + 34}) scale(.6)`, opacity: Math.min(ext, 1 - P(t, 48.1, 48.5)) * .9 });
 });
 
-// what the graph reaches (45 - 48.4): the project's files, a database and a
-// registry pass; the attacker is refused at the module's edge
-const OUT = [
-  { k: "folder", x: 105, y: 170, from: 0, ok: true },
-  { k: "db", x: 105, y: 330, from: 1, ok: true },
-  { k: "pkg", x: 1185, y: 150, from: 6, ok: true },
-  { k: "hacker", x: 1190, y: 335, from: 7, ok: false },
-].map(o => ({ ...o,
-  grey: G(L.icons, ICON[o.k]("#86868b")), lit: G(L.icons, ICON[o.k](o.ok ? "#30d158" : "#ff453a")),
-  line: el(L.lines, "line", { "stroke-width": 2.2, "stroke-linecap": "round", "stroke-dasharray": "2 8" }),
-  dots: [0, 1, 2].map(k => ({ k, e: el(L.dots, "circle", { r: 4 }) })) }));
-const refused = G(L.front, CROSS);
+// what the graph reaches (45 - 48.4): the places the opening's tasks touched,
+// where they were. Files, packages, the internet, a server and a database
+// pass; the attacker, the secret and the host's Docker socket are refused
+// at the edge of the module that reached for them.
+const REFUSED = new Set(["hacker", "key", "plug"]);
+const OUT = WILD.map(w => {
+  // reached from the nearest function
+  const n = NODES.reduce((a, b) => Math.hypot(b.x - w.x, b.y - w.y) < Math.hypot(a.x - w.x, a.y - w.y) ? b : a);
+  return { k: w.k, x: w.x, y: w.y, n, ok: !REFUSED.has(w.k),
+    grey: G(L.icons, ICON[w.k]("#86868b")), lit: G(L.icons, ICON[w.k](REFUSED.has(w.k) ? "#ff453a" : "#30d158")),
+    line: el(L.lines, "line", { "stroke-width": 2.2, "stroke-linecap": "round", "stroke-dasharray": "2 8" }),
+    dots: [0, 1, 2].map(k => ({ k, e: el(L.dots, "circle", { r: 4 }) })),
+    cross: G(L.front, CROSS) };
+});
+// where a ray from (x, y) along (ux, uy) leaves a rectangle it starts in
+function exitAt(x, y, ux, uy, m) {
+  const us = [];
+  if (ux > 0) us.push((m.x + m.w - x) / ux); if (ux < 0) us.push((m.x - x) / ux);
+  if (uy > 0) us.push((m.y + m.h - y) / uy); if (uy < 0) us.push((m.y - y) / uy);
+  return Math.min(...us);
+}
 R.push(t => {
   const DEC = 45.9;  // when the bounds decide
-  const vis = Math.min(eo(P(t, 45.0, 45.5)), 1 - P(t, 48.1, 48.5));
   OUT.forEach((o, i) => {
-    const n = NODES[o.from];
-    const io = Math.min(eo(P(t, 45.0 + i * .1, 45.5 + i * .1)), 1 - P(t, 48.1, 48.5));
-    const sc = o.k === "hacker" ? 1 : .8;
+    const n = o.n, m = MODS[n.m];
+    const dx = n.m === 2 ? (1 - eio(P(t, 41.9, 42.9))) * 340 : 0;
+    const io = Math.min(eo(P(t, 45.0 + i * .07, 45.5 + i * .07)), 1 - P(t, 48.1, 48.5));
+    const sc = o.k === "hacker" ? .9 : .8;
     const lit = eo(P(t, DEC, DEC + .35));
-    A(o.grey, { transform: `translate(${o.x} ${o.y}) scale(${sc})`, opacity: o.ok ? io * (1 - lit) : 0 });
-    A(o.lit, { transform: `translate(${o.x} ${o.y}) scale(${sc})`, opacity: o.ok ? io * lit : io * (t < DEC + .5 ? 1 : lerp(1, .35, eo(P(t, DEC + .5, DEC + 1.2)))) });
-    const len = Math.hypot(o.x - n.x, o.y - n.y), ux = (o.x - n.x) / len, uy = (o.y - n.y) / len;
-    const x1 = n.x + ux * 30, y1 = n.y + uy * 30, x2 = o.x - ux * 46, y2 = o.y - uy * 46;
-    // the attacker's line stops at the edge of its module
-    const edgeX = MODS[2].x + MODS[2].w, stopU = clamp((edgeX - x1) / (x2 - x1));
-    const reach = eio(P(t, 45.2 + i * .1, 45.8 + i * .1));
+    const tr = `translate(${o.x} ${o.y}) scale(${sc})`;
+    A(o.grey, { transform: tr, opacity: io * (1 - lit) });
+    A(o.lit, { transform: tr, opacity: io * lit * (o.ok ? 1 : lerp(1, .4, eo(P(t, DEC + .6, DEC + 1.3)))) });
+    const nx = n.x + dx;
+    const len = Math.hypot(o.x - nx, o.y - n.y), ux = (o.x - nx) / len, uy = (o.y - n.y) / len;
+    const x1 = nx + ux * 30, y1 = n.y + uy * 30, x2 = o.x - ux * 44, y2 = o.y - uy * 44;
+    // a refused line stops where it leaves its module
+    const stopU = clamp(exitAt(x1, y1, ux, uy, { x: m.x + dx, y: m.y, w: m.w, h: m.h }) / Math.hypot(x2 - x1, y2 - y1));
+    const reach = eio(P(t, 45.2 + i * .07, 45.8 + i * .07));
     const lim = !o.ok && t >= DEC ? stopU : 1;
-    A(o.line, { x1, y1, x2: lerp(x1, x2, Math.min(reach, lim)), y2: lerp(y1, y2, Math.min(reach, lim)), opacity: io * .75,
+    const u2 = Math.min(reach, lim);
+    A(o.line, { x1, y1, x2: lerp(x1, x2, u2), y2: lerp(y1, y2, u2), opacity: io * .75,
       stroke: t < DEC ? "#5a5a5e" : o.ok ? "#30d158" : "#ff453a" });
     o.dots.forEach(d => {
-      const u = (t * .7 + d.k / 3) % 1;
+      const u = (t * .7 + d.k / 3 + i * .11) % 1;
       const on = t >= DEC && (o.ok || u < stopU);
       A(d.e, { cx: lerp(x1, x2, u), cy: lerp(y1, y2, u), opacity: on ? io * Math.sin(u * Math.PI) : 0, fill: o.ok ? "#30d158" : "#ff453a" });
     });
-    if (!o.ok) A(refused, { transform: `translate(${lerp(x1, x2, stopU)} ${lerp(y1, y2, stopU)}) scale(${t < DEC + .1 ? 0 : lerp(2, 1, back(P(t, DEC + .1, DEC + .45)))})`, opacity: vis });
+    A(o.cross, { transform: `translate(${lerp(x1, x2, stopU)} ${lerp(y1, y2, stopU)}) scale(${o.ok || t < DEC + .1 ? 0 : lerp(2, 1, back(P(t, DEC + .1, DEC + .45)))})`, opacity: io });
   });
 });
 
