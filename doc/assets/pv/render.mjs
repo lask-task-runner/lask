@@ -34,6 +34,14 @@ async function capture(query, times, out, name) {
   }
   await browser.close();
 }
+async function posterTime() {
+  const b = await puppeteer.launch({ executablePath: CHROME, headless: "new" });
+  const p = await b.newPage();
+  await p.goto("file://" + path.join(here, "lask-tour.html"));
+  const t = await p.evaluate(() => window.POSTER);
+  await b.close();
+  return t;
+}
 const every = fps => dur => [...Array(Math.round(dur * fps)).keys()].map(i => i / fps);
 const frame = i => `f_${String(i).padStart(5, "0")}.png`;
 
@@ -48,8 +56,9 @@ if (mode === "stills") {
   execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-framerate", "30", "-i", path.join(out, "f_%05d.png"),
     "-c:v", "libx264", "-preset", "slow", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     path.join(dest, "lask-tour.mp4")], { stdio: "inherit" });
-  // the poster is the title card
-  fs.copyFileSync(path.join(out, frame(Math.round(12.6 * 30))), path.join(dest, "lask-tour.png"));
+  // the poster is the frame the page names
+  const poster = await posterTime();
+  fs.copyFileSync(path.join(out, frame(Math.round(poster * 30))), path.join(dest, "lask-tour.png"));
   execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-i", path.join(dest, "lask-tour.png"), "-q:v", "3", path.join(dest, "lask-tour.jpg")], { stdio: "inherit" });
   fs.rmSync(path.join(dest, "lask-tour.png"));
 } else if (mode === "readme") {

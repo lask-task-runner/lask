@@ -6,57 +6,47 @@
 <!--
   The Lask tour video, drawn frame by frame.
 
-  window.render(t) draws the frame at t seconds, from t alone, so any frame
-  can be drawn in any order. render.mjs captures the frames; open this file
-  in a browser to watch it play. ?short plays the README cut.
+  One shape carries it: a task, drawn as the Lask logo's rounded square.
+  The code is shown once, at the start, and folds into that square; after
+  that there are only simple shapes and a few words.
+
+  window.render(t) draws the frame at t seconds from t alone, so frames can
+  be drawn in any order. render.mjs captures them; open this file in a
+  browser to watch it play. ?short plays the README cut.
 -->
 <style>
   :root {
-    --bg: #060a11; --fg: #e6edf3; --dim: #7d8590; --faint: #3a4556;
-    --blue: #58a6ff; --green: #3fb950; --red: #f85149; --amber: #f2b33d;
-    --purple: #d2a8ff; --pink: #ff7b72; --str: #a5d6ff; --com: #6e7681;
-    --card: rgba(13, 19, 28, .94); --line: #243042;
+    --bg: #000; --fg: #f5f5f7; --dim: #86868b;
+    --blue: #2997ff; --green: #30d158; --red: #ff453a; --amber: #ffb340;
     --mono: "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { width: 1280px; height: 720px; overflow: hidden; background: var(--bg); color: var(--fg); font-family: var(--sans); }
   #stage { position: absolute; inset: 0; overflow: hidden; }
-  #bg { position: absolute; inset: -80px; }
-  .a { position: absolute; will-change: transform, opacity; transform-origin: 0 0; }
-  .c { transform-origin: 50% 50%; }
-  .mono { font-family: var(--mono); }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 24px 70px rgba(0, 0, 0, .55); overflow: hidden; }
-  .bar { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .02); font: 600 14px var(--mono); color: var(--dim); }
-  .dot { width: 11px; height: 11px; border-radius: 50%; background: #2a3444; }
-  .cap { left: 0; width: 1280px; text-align: center; font: 800 46px/1.1 var(--sans); letter-spacing: -1px; }
-  .sub { left: 0; width: 1280px; text-align: center; font: 500 20px var(--mono); color: var(--dim); }
-  .row { position: absolute; left: 0; right: 0; white-space: pre; }
-  .pill { font: 600 19px var(--mono); padding: 10px 18px; border-radius: 12px; background: #0f1722; border: 1px solid #2a3647; white-space: pre; }
-  .k { color: var(--pink); } .s { color: var(--str); } .im { color: var(--blue); } .fn { color: var(--purple); }
-  .cm { color: var(--com); } .am { color: var(--amber); } .rd { color: var(--red); } .gr { color: var(--green); } .dm { color: var(--dim); }
-  .chip { display: flex; align-items: center; gap: 10px; font: 600 17px var(--mono); }
+  .a { position: absolute; will-change: transform, opacity, filter; }
+  .w { left: 0; width: 1280px; text-align: center; font-weight: 700; letter-spacing: -0.035em; line-height: 1.05; }
   svg { overflow: visible; }
+  .k { color: #ff7ab2; } .s { color: #fc6a5d; } .im { color: #5dd8ff; } .fn { color: #d0a8ff; } .am { color: #ffb340; }
 </style>
 </head>
 <body>
-<div id="stage"><div id="bg"></div></div>
+<div id="stage"></div>
 <script>
 "use strict";
 const SHORT = location.search.includes("short");
 const stage = document.getElementById("stage");
-const bg = document.getElementById("bg");
 
 // ---------- helpers ----------
 const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
 const P = (t, a, b) => clamp((t - a) / (b - a));
 const lerp = (a, b, x) => a + (b - a) * x;
 const eo = x => 1 - Math.pow(1 - x, 3);
+const eo5 = x => 1 - Math.pow(1 - x, 5);
 const eio = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
-const back = x => { const c = 1.9; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
-// in at a, out at b
-const env = (t, a, b, din = .45, dout = .4) => Math.min(eo(P(t, a, a + din)), 1 - eio(P(t, b - dout, b)));
-const typed = (s, t, a, cps = 26) => s.slice(0, Math.max(0, Math.min(s.length, Math.floor((t - a) * cps))));
+const back = x => { const c = 1.6; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+// fades in from a, out by b
+const env = (t, a, b, din = .6, dout = .5) => Math.min(eo(P(t, a, a + din)), 1 - eio(P(t, b - dout, b)));
 
 function add(html, css, parent = stage, cls = "") {
   const d = document.createElement("div");
@@ -66,511 +56,243 @@ function add(html, css, parent = stage, cls = "") {
   parent.appendChild(d);
   return d;
 }
-function S(el, o) {
+function S(e, o) {
   const op = o.o ?? 1;
-  el.style.opacity = op;
-  el.style.visibility = op <= .002 ? "hidden" : "visible";
-  el.style.transform = `translate(${o.x || 0}px,${o.y || 0}px) scale(${o.s ?? 1}) rotate(${o.r || 0}deg)`;
-  if (o.f !== undefined) el.style.filter = o.f;
+  e.style.opacity = op;
+  e.style.visibility = op <= .002 ? "hidden" : "visible";
+  e.style.transform = `translate(${o.x || 0}px,${o.y || 0}px) scale(${o.s ?? 1})`;
+  e.style.filter = o.b ? `blur(${o.b}px)` : "none";
 }
-function setHTML(el, h) { if (el._h !== h) { el.innerHTML = h; el._h = h; } }
-const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const NS = "http://www.w3.org/2000/svg";
+function el(parent, tag, attrs) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  parent.appendChild(e);
+  return e;
+}
+const A = (e, attrs) => { for (const k in attrs) e.setAttribute(k, attrs[k]); };
 
-// ---------- icons ----------
-const I = {
-  box: (c = "var(--blue)", w = 24) => `<svg width="${w}" height="${w * .72}" viewBox="0 0 26 18"><rect x="1" y="1" width="24" height="16" rx="2.5" fill="none" stroke="${c}" stroke-width="2"/><path d="M7 4.5v9M11 4.5v9M15 4.5v9M19 4.5v9" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/></svg>`,
-  key: (c, w = 26) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round"><circle cx="8" cy="15" r="4.5"/><path d="M11.3 11.7 20 3M16.5 6.5l2.5 2.5M14 9l2 2"/></svg>`,
-  folder: (c, w = 26) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"><path d="M3 6.5a1.5 1.5 0 0 1 1.5-1.5H9l2 2.2h8.5A1.5 1.5 0 0 1 21 8.7V18a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18z"/><circle cx="12" cy="13.3" r="1.7"/><path d="M12 15v2"/></svg>`,
-  globe: (c, w = 26) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg>`,
-  plug: (c, w = 26) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round"><rect x="5" y="3" width="14" height="18" rx="3"/><circle cx="12" cy="12" r="3.2"/><path d="M12 8.8V6M12 15.2V18"/></svg>`,
-  laptop: (c, w = 26) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>`,
-  server: (c, w = 26) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2"><rect x="4" y="4" width="16" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="16" height="6.5" rx="1.5"/><path d="M8 7.2h.01M8 16.8h.01" stroke-width="3" stroke-linecap="round"/></svg>`,
-  lock: (c, w = 16) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.4" stroke-linecap="round"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>`,
-  spark: (c, w = 16) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="${c}"><path d="M12 1.5 14.2 9.8 22.5 12 14.2 14.2 12 22.5 9.8 14.2 1.5 12 9.8 9.8z"/></svg>`,
-  ok: (w = 30) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#12301c" stroke="#3fb950" stroke-width="1.6"/><path d="M7 12.4l3.2 3.2L17.2 8.6" fill="none" stroke="#3fb950" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-  no: (w = 22) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#3a1418" stroke="#f85149" stroke-width="1.6"/><path d="M8 8l8 8M16 8l-8 8" stroke="#f85149" stroke-width="2.6" stroke-linecap="round"/></svg>`,
-  logo: (w = 64) => `<svg width="${w}" height="${w}" viewBox="0 0 32 32"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4f46e5"/><stop offset="1" stop-color="#0ea5e9"/></linearGradient></defs><rect width="32" height="32" rx="7" fill="url(#lg)"/><path d="M9.5 7.5h3.2l9.3 17M16.1 15.2l-6.6 9.3" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-};
+const R = [];  // per-frame drawers, (t) => void
+const CX = 640, CY = 300;
 
-// ---------- the shared layer: captions, shake, flashes ----------
-const R = []; // per-frame drawers, each (t) => void
-const world = add("", "left:0;top:0;width:1280px;height:720px");
-function caption(text, a, b, top = 46, cls = "cap") {
-  const el = add(text, `top:${top}px`, stage, cls);
+// ---------- words: one line at a time, large, rising into focus ----------
+function words(html, a, b, y = 500, size = 64) {
+  const e = add(html, `top:${y}px;font-size:${size}px`, stage, "w");
   R.push(t => {
-    const o = env(t, a, b, .5, .35);
-    S(el, { o, y: (1 - eo(P(t, a, a + .6))) * 18, f: `blur(${(1 - o) * 6}px)` });
+    const o = env(t, a, b, .7, .45);
+    S(e, { o, y: (1 - eo5(P(t, a, a + .9))) * 22, b: (1 - o) * 10 });
   });
-  return el;
 }
+const grad = (s, a, b) => `<span style="background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent">${s}</span>`;
 
 // ===================================================================
-// 0. Hook (0 - 11.6): a new task, what it can reach, and within
+// The code, once (0 - 4.3), folding into the task
 // ===================================================================
-const H = { x: 80, y: 196, w: 560, rowH: 34, pad: 18 };
-const hook = add("", "left:0;top:0;width:1280px;height:720px", world);
-const hookCard = add(`<div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp;main.lask</div>`,
-  `left:${H.x}px;top:${H.y}px;width:${H.w}px;`, hook, "card");
-const hookBody = add("", "left:0;top:38px;width:100%;font:500 20px var(--mono)", hookCard);
-const hRows = [0, 1, 2, 3, 4, 5].map(i => add("", `left:0;top:0;width:100%;height:${H.rowH}px;line-height:${H.rowH}px;padding-left:20px;white-space:pre`, hookBody));
-const hMove = add("", `left:0;top:0;line-height:${H.rowH}px;white-space:pre;font:500 20px var(--mono)`, hookBody);
-const agent = add(`${I.spark("#d2a8ff", 14)}<span>added by an agent</span>`,
-  `left:${H.x + H.w - 214}px;top:${H.y + 38 + H.rowH + 6}px;display:flex;gap:7px;align-items:center;font:600 14px var(--sans);color:#d2a8ff;background:#1d1530;border:1px solid #3c2d5c;border-radius:20px;padding:4px 12px`, hook);
-// measure one monospace character
-const probe = add("0000000000", "font:500 20px var(--mono);white-space:pre;left:-999px");
-const CW = probe.getBoundingClientRect().width / 10;
-probe.remove();
-
-const TARGETS = [
-  { icon: I.folder, label: "~/.ssh", y: 164 },
-  { icon: I.key, label: "AWS_SECRET_ACCESS_KEY", y: 280 },
-  { icon: I.globe, label: "the internet", y: 396 },
-  { icon: I.plug, label: "/var/run/docker.sock", y: 512 },
-];
-const TX = 850;
-const svgNS = "http://www.w3.org/2000/svg";
-const hookSvg = document.createElementNS(svgNS, "svg");
-hookSvg.setAttribute("width", 1280); hookSvg.setAttribute("height", 720);
-hookSvg.style.cssText = "position:absolute;left:0;top:0";
-hook.appendChild(hookSvg);
-hookSvg.innerHTML = `<defs><filter id="glow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="3.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`;
-TARGETS.forEach((g, i) => {
-  g.el = add(`<div style="display:flex;align-items:center;gap:14px;height:64px;padding:0 18px">${g.icon("var(--red)")}<span class="mono" style="font:600 18px var(--mono)">${g.label}</span></div>`,
-    `left:${TX}px;top:${g.y}px;width:360px;`, hook, "card");
-  g.dim = add(`<div style="display:flex;align-items:center;gap:14px;height:64px;padding:0 18px">${g.icon("#3a4556")}<span class="mono" style="font:600 18px var(--mono);color:#4a5568">${g.label}</span></div>`,
-    `left:${TX}px;top:${g.y}px;width:360px;`, hook, "card");
-  g.path = document.createElementNS(svgNS, "path");
-  g.path.setAttribute("fill", "none");
-  g.path.setAttribute("stroke", "#f85149");
-  g.path.setAttribute("stroke-width", "2.6");
-  g.path.setAttribute("stroke-linecap", "round");
-  g.path.setAttribute("filter", "url(#glow)");
-  g.path.setAttribute("pathLength", "1");
-  hookSvg.appendChild(g.path);
-  g.spark = add(`<div style="width:46px;height:46px;border-radius:50%;background:radial-gradient(circle,#fff 0,#f2b33d 30%,rgba(242,179,61,0) 70%)"></div>`, "left:-23px;top:-23px", hook);
-});
-const ring = add("", "border:3px solid var(--amber);border-radius:22px;box-shadow:0 0 0 1px rgba(242,179,61,.25),0 0 40px rgba(242,179,61,.35),inset 0 0 30px rgba(242,179,61,.12)", hook, "c");
-const shock = add("", "border:2px solid var(--amber);border-radius:26px", hook, "c");
-const err0 = add(`<div style="display:flex;align-items:center;gap:10px">${I.no(20)}<span style="font:700 16px var(--mono);color:var(--red)">E-TYPE-WITHIN-EXCEEDED</span></div><div style="font:500 14px var(--mono);color:#c9d1d9;margin-top:4px;padding-left:30px">npm reaches the network: not allowed (outbound)</div>`,
-  "background:#1b0f12;border:1px solid #5a2328;border-radius:12px;padding:10px 14px;white-space:nowrap", hook);
-const flash = add("", "left:0;top:0;width:1280px;height:720px;background:radial-gradient(circle at 40% 50%,rgba(242,179,61,.35),rgba(242,179,61,0) 60%)", stage);
-
-const HK = { rows: 8.0, ring: 9.0 };
-const ROW = (cls, text) => `<span class="${cls}">${esc(text)}</span>`;
-// a row of the diff, in its tokens
-const add_ = s => `<span class="gr">+ </span>${s}`;
-function bez(ax, ay, bx, by) { return [ax, ay, ax + 150, ay, bx - 170, by, bx, by]; }
-function bezAt(c, u) {
-  const m = 1 - u;
-  return [m * m * m * c[0] + 3 * m * m * u * c[2] + 3 * m * u * u * c[4] + u * u * u * c[6],
-    m * m * m * c[1] + 3 * m * m * u * c[3] + 3 * m * u * u * c[5] + u * u * u * c[7]];
-}
-R.push(t => {
-  const g0 = env(t, .25, 11.9, .6, .5);
-  S(hook, { o: g0, s: lerp(1, .94, eio(P(t, 11.3, 11.9))), x: lerp(0, 38, eio(P(t, 11.3, 11.9))), y: lerp(0, 22, eio(P(t, 11.3, 11.9))) });
-  if (g0 <= 0) return;
-  S(hookCard, { o: eo(P(t, .3, .9)), y: (1 - eo(P(t, .3, .9))) * 20 });
-  // rows open from 2 to 6
-  const open = eio(P(t, HK.rows, HK.rows + .35));
-  const r = H.rowH;
-  const ys = [0, r, r + r * open, r + 2 * r * open, r + 3 * r * open, r + 4 * r * open].map(y => y + 14);
-  hRows.forEach((el, i) => { el.style.top = ys[i] + "px"; });
-  hookCard.style.height = (38 + 28 + r * 2 + 4 * r * open) + "px";
-  setHTML(hRows[0], `<span class="dm">  test() = $ npm test</span>`);
-  const within = typed(" within {", t, HK.rows, 30);
-  setHTML(hRows[1], add_(`<span class="fn">setup</span>()<span class="am">${esc(within).replace("within", '<span class="k">within</span>')}</span>`));
-  const lines = ['  runs: ["container"],', "  secrets: false,", "  outbound: false,"];
-  lines.forEach((l, i) => {
-    const s = typed(l, t, HK.rows + .3 + i * .22, 60);
-    setHTML(hRows[2 + i], open > 0 ? add_(`<span class="am">${esc(s)}</span>`) : "");
-    S(hRows[2 + i], { o: open });
-  });
-  setHTML(hRows[5], open > 0 ? add_(`<span class="am">}</span>`) : "");
-  S(hRows[5], { o: open });
-  // " = $ npm install" moves from after "+ setup()" to after "+ }"
-  const mv = eio(P(t, HK.rows, HK.rows + .35));
-  const mx = 20 + lerp(9, 3, mv) * CW, my = lerp(ys[1], ys[5], mv);
-  hMove.style.left = mx + "px"; hMove.style.top = my + "px";
-  setHTML(hMove, ` = <span class="am">$</span> npm install`);
-  // the agent's tag
-  S(agent, { o: env(t, 1.5, HK.rows, .4, .3), x: (1 - eo(P(t, 1.5, 1.9))) * 16 });
-  // the end of "$ npm install" is where the lines start
-  const ax = H.x + mx + 16 * CW + 6, ay = H.y + 38 + my + r / 2;
-  const ringT = P(t, HK.ring, HK.ring + .32);
-  const cardH = 38 + 28 + r * 6;
-  const rg = { x: H.x - 20, y: H.y - 20, w: H.w + 40, h: cardH + 40 };
-  const ringX = rg.x + rg.w;
-  // shake after the ring lands
-  const sk = P(t, HK.ring + .28, HK.ring + .75);
-  const amp = sk > 0 && sk < 1 ? (1 - sk) * 9 : 0;
-  S(world, { x: Math.sin(t * 95) * amp, y: Math.cos(t * 77) * amp * .6 });
-  S(flash, { o: (sk > 0 ? 1 - sk : 0) * .9 });
-  TARGETS.forEach((g, i) => {
-    const appear = 3.5 + i * .5;
-    const tin = eo(P(t, appear, appear + .45));
-    const cut = P(t, HK.ring + .28, HK.ring + .7);
-    S(g.el, { o: tin * (1 - cut), x: (1 - tin) * 30 });
-    S(g.dim, { o: tin * cut, x: (1 - tin) * 30 });
-    const c = bez(ax, ay, TX, g.y + 32);
-    g.path.setAttribute("d", `M${c[0]},${c[1]} C${c[2]},${c[3]} ${c[4]},${c[5]} ${c[6]},${c[7]}`);
-    const draw = eo(P(t, appear - .1, appear + .4));
-    // where the line crosses the ring
-    let uc = 0;
-    for (let k = 0; k <= 60; k++) { if (bezAt(c, k / 60)[0] >= ringX) { uc = k / 60; break; } }
-    const net = i === 2;
-    let len = draw, op = 1;
-    if (t >= HK.ring + .28) {
-      // the internet line is checked: it stops at the ring; the others are gone
-      len = net ? lerp(1, uc, eo(P(t, HK.ring + .28, HK.ring + .5))) : 1;
-      op = net ? 1 : 1 - P(t, HK.ring + .28, HK.ring + .5);
-    }
-    g.path.setAttribute("stroke-dasharray", `${len} 1`);
-    g.path.setAttribute("opacity", op * (1 - P(t, 10.9, 11.4)));
-    const [sx, sy] = bezAt(c, uc);
-    const sp = P(t, HK.ring + .28, HK.ring + .55);
-    S(g.spark, { x: sx, y: sy, s: .4 + sp * 1.1, o: (sp > 0 && sp < 1 ? Math.pow(1 - sp, 2) : 0) });
-    if (net) S(err0, { x: rg.x + 30, y: rg.y + rg.h + 16, o: env(t, HK.ring + .55, 11.2, .35, .3) });
-  });
-  // the ring falls into place
-  ring.style.left = rg.x + "px"; ring.style.top = rg.y + "px"; ring.style.width = rg.w + "px"; ring.style.height = rg.h + "px";
-  S(ring, { o: eo(P(t, HK.ring, HK.ring + .12)), s: lerp(1.35, 1, back(ringT)) });
-  shock.style.left = rg.x + "px"; shock.style.top = rg.y + "px"; shock.style.width = rg.w + "px"; shock.style.height = rg.h + "px";
-  const sh = P(t, HK.ring + .28, HK.ring + .9);
-  S(shock, { o: sh > 0 && sh < 1 ? (1 - sh) * .8 : 0, s: 1 + eo(sh) * .25 });
-});
-caption("A new task.", .9, 3.5);
-caption(`What can it <span style="color:var(--red)">reach</span>?`, 3.7, 8.1);
-caption(`Only what you <span style="color:var(--amber)">allow</span>.`, 9.4, 11.4);
-const hookSub = add("Anything more fails <span style='color:#c9d1d9'>lask check</span>, before it runs.", "top:108px", stage, "sub");
-R.push(t => S(hookSub, { o: env(t, 9.9, 11.4, .4, .35) }));
-
-// ===================================================================
-// 1. Title (11.6 - 13.6)
-// ===================================================================
-const title = add(`<div style="display:flex;align-items:center;gap:22px;justify-content:center">${I.logo(76)}<span style="font:800 84px var(--sans);letter-spacing:-2px">Lask</span></div>
-  <div style="margin-top:18px;text-align:center;font:500 22px var(--sans);color:var(--dim)">Tasks in pinned containers, checked before they run.</div>`,
-  "left:0;top:268px;width:1280px", stage, "c");
-R.push(t => {
-  const o = env(t, 11.75, 13.6, .45, .4);
-  S(title, { o, s: lerp(.86, 1, back(P(t, 11.75, 12.3))) * lerp(1, 1.06, P(t, 12.3, 13.6)), f: `blur(${(1 - o) * 8}px)` });
-});
-
-// ===================================================================
-// 2. The code (13.4 - 18.6), then docked on the left until 33.6
-// ===================================================================
-const C = { x: 260, y: 150, w: 760, rowH: 29 };
 const CODE = [
-  [["cm", "// Each program comes from a pinned image."]],
-  [["k", "command"], ["", " { "], ["s", '"python"'], ["", " } "], ["k", "on"], ["", " "], ["im", "#python:3.13.7-alpine3.22"]],
-  [["k", "command"], ["", " { "], ["s", '"ruff"'], ["", " } "], ["k", "on"], ["", " "], ["im", "#ghcr.io/astral-sh/ruff:0.13.3-alpine"]],
-  [],
-  [["cm", "// What a check may reach: no secret, and nothing on the host."]],
-  [["k", "access"], ["", " "], ["am", "Sandboxed"], ["", " = { secrets: "], ["k", "false"], ["", ", runs: ["], ["s", '"container"'], ["", "] }"]],
-  [],
-  [["cm", "// Lint and test at the same time."]],
-  [["fn", "ci"], ["", "() "], ["k", "within"], ["", " "], ["am", "Sandboxed"], ["", " = "], ["k", "do"], ["", " {"]],
-  [["", "  lint = "], ["k", "async"], ["", " $ ruff check app"]],
-  [["", "  test = "], ["k", "async"], ["", " $ python -m unittest discover -s app"]],
-  [["", "  all([lint, test])"]],
-  [["", "}"]],
+  `<span class="k">command</span> { <span class="s">"python"</span> } <span class="k">on</span> <span class="im">#python:3.13.7-alpine3.22</span>`,
+  `<span class="k">command</span> { <span class="s">"ruff"</span> } <span class="k">on</span> <span class="im">#ghcr.io/astral-sh/ruff:0.13.3-alpine</span>`,
+  ``,
+  `<span class="k">access</span> <span class="am">Sandboxed</span> = { secrets: <span class="k">false</span>, runs: [<span class="s">"container"</span>] }`,
+  ``,
+  `<span class="fn">ci</span>() <span class="k">within</span> <span class="am">Sandboxed</span> = <span class="k">do</span> {`,
+  `  lint = <span class="k">async</span> $ ruff check app`,
+  `  test = <span class="k">async</span> $ python -m unittest discover -s app`,
+  `  all([lint, test])`,
+  `}`,
 ];
-const seg = l => l.map(([c, s]) => c ? `<span class="${c}">${esc(s)}</span>` : esc(s)).join("");
-const code = add(`<div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp;main.lask</div>`,
-  `left:${C.x}px;top:${C.y}px;width:${C.w}px;height:${38 + 26 + CODE.length * C.rowH}px`, world, "card");
-const codeBody = add("", `left:0;top:${38 + 13}px;width:100%;font:500 19px var(--mono)`, code);
-const cHi = CODE.map((_, i) => add("", `left:0;top:${i * C.rowH}px;width:100%;height:${C.rowH}px;background:rgba(88,166,255,.10);border-left:3px solid var(--blue)`, codeBody));
-const cRows = CODE.map((l, i) => add(seg(l), `left:0;top:${i * C.rowH}px;width:100%;height:${C.rowH}px;line-height:${C.rowH}px;padding-left:22px;white-space:pre`, codeBody));
-const beam = add("", `left:0;width:100%;height:3px;background:linear-gradient(90deg,rgba(63,185,80,0),#3fb950 20%,#3fb950 80%,rgba(63,185,80,0));box-shadow:0 0 18px #3fb950`, codeBody);
-const glowRow = add("", `left:0;width:100%;height:${C.rowH}px;background:linear-gradient(180deg,rgba(63,185,80,.0),rgba(63,185,80,.12))`, codeBody);
-// where the card sits: centred, docked on the left, or left for the check
-const DOCK = { x: 36, y: 168, s: .66 };
-const CHK = { x: 52, y: 150, s: .85 };
-const HI = [ // [rows, from, to]
-  [[1, 2], 18.9, 26.8],
-  [[9, 10, 11], 27.3, 33.0],
-];
-const rowY = (i, pl) => pl.y + (38 + 13 + i * C.rowH + C.rowH / 2) * pl.s;
-function placeAt(t) {
-  if (t < 42) {
-    const d = eio(P(t, 17.8, 18.7));
-    return { x: lerp(C.x, DOCK.x, d), y: lerp(C.y, DOCK.y, d), s: lerp(1, DOCK.s, d) };
-  }
-  return CHK;
+const code = add(CODE.map(l => `<div style="height:30px;line-height:30px;white-space:pre">${l || " "}</div>`).join(""),
+  "left:300px;top:200px;width:700px;font:500 19px var(--mono);color:#e5e5ea;transform-origin:340px 100px");
+const codeName = add("main.lask", "left:0;top:150px;width:1280px;text-align:center;font:600 15px var(--mono);color:#6c7986;letter-spacing:.08em");
+R.push(t => {
+  const fold = eio(P(t, 3.5, 4.3));
+  const o = Math.min(eo(P(t, .3, 1.3)), 1 - P(t, 3.7, 4.25));
+  S(code, { o, s: lerp(lerp(.97, 1.02, P(t, .3, 3.5)), .08, fold), y: (1 - eo(P(t, .3, 1.3))) * 14, b: fold * 6 });
+  S(codeName, { o: Math.min(eo(P(t, .5, 1.3)), 1 - P(t, 3.3, 3.7)) });
+});
+
+// ===================================================================
+// The shapes
+// ===================================================================
+const sv = el(stage, "svg", { width: 1280, height: 720 });
+sv.style.cssText = "position:absolute;left:0;top:0";
+el(sv, "defs", {}).innerHTML = `
+  <linearGradient id="tg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4f46e5"/><stop offset="1" stop-color="#0ea5e9"/></linearGradient>
+  <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff453a"/><stop offset="1" stop-color="#ff9f0a"/></linearGradient>
+  <filter id="soft" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="20"/></filter>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+
+// a task: the logo's square, its glow, a red state, and a λ that can be drawn
+function makeTask(size, parent = sv) {
+  const g = el(parent, "g", {});
+  const r = { x: -size / 2, y: -size / 2, width: size, height: size, rx: size * .22 };
+  const halo = el(g, "rect", { ...r, fill: "url(#tg)", filter: "url(#soft)", opacity: .5 });
+  el(g, "rect", { ...r, fill: "url(#tg)" });
+  const red = el(g, "rect", { ...r, fill: "url(#rg)", opacity: 0 });
+  const k = size / 32;
+  const lam = el(g, "path", {
+    d: `M${-6.5 * k} ${-8.5 * k}h${3.2 * k}l${9.3 * k} ${17 * k}M${.1 * k} ${-.8 * k}l${-6.6 * k} ${9.3 * k}`,
+    fill: "none", stroke: "#fff", "stroke-width": 3 * k, "stroke-linecap": "round", "stroke-linejoin": "round", pathLength: 1, "stroke-dasharray": "0 1", opacity: 0 });
+  return { g, halo, red, lam };
 }
+const place = (task, x, y, s = 1, o = 1) => A(task.g, { transform: `translate(${x} ${y}) scale(${s})`, opacity: o });
+const LOCK = `<circle r="22" fill="#f5f5f7"/><path d="M-7 -1.5h14v11h-14zM-4.5 -1.5v-3.5a4.5 4.5 0 0 1 9 0v3.5" fill="none" stroke="#000" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>`;
+const TICK = r => `<circle r="${r}" fill="#30d158"/><path d="M${-r * .4} ${r * .03}l${r * .27} ${r * .27} ${r * .55}-${r * .55}" fill="none" stroke="#000" stroke-width="${r * .18}" stroke-linecap="round" stroke-linejoin="round"/>`;
+
+// what it reaches: dots streaming out, and the ring that stops them
+const DOTS = [...Array(60).keys()].map(i => ({ a: i * Math.PI * 2 / 60 + (i % 3) * .04, ph: (i * 97) % 520, e: el(sv, "circle", { r: 3 }) }));
+const ring = el(sv, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 3, filter: "url(#glow)" });
+const shock = el(sv, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 1.5 });
+
+// a container drawn around the task, and the pin that fixes it
+const box = el(sv, "rect", { x: -95, y: -95, width: 190, height: 190, rx: 40, stroke: "#2997ff", "stroke-width": 2.5, pathLength: 1 });
+const pin = el(sv, "g", {}); pin.innerHTML = LOCK;
+const main = makeTask(110);
+
+// the same container on three machines
+const MX = [CX - 340, CX, CX + 340];
+const copies = MX.map(() => {
+  const g = el(sv, "g", {});
+  el(g, "rect", { x: -95, y: -95, width: 190, height: 190, rx: 40, fill: "rgba(41,151,255,.06)", stroke: "#2997ff", "stroke-width": 2.5 });
+  place(makeTask(110, g), 0, 0);
+  el(g, "g", { transform: "translate(95 -95)" }).innerHTML = LOCK;
+  return g;
+});
+const ICONS = [
+  `<path d="M-46 -26h92v56h-92zM-62 38h124" fill="none" stroke="#86868b" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`,
+  `<path d="M-36 30h68a24 24 0 0 0 2-48 32 32 0 0 0-61-6 22 22 0 0 0-9 54z" fill="none" stroke="#86868b" stroke-width="3" stroke-linejoin="round"/>`,
+  `<path d="M-42 -34h84v28h-84zM-42 6h84v28h-84z" fill="none" stroke="#86868b" stroke-width="3" stroke-linejoin="round"/><circle cx="-26" cy="-20" r="3.5" fill="#86868b"/><circle cx="-26" cy="20" r="3.5" fill="#86868b"/>`,
+].map(d => { const g = el(sv, "g", {}); g.innerHTML = d; return g; });
+
+// two lanes
+const LY = [CY - 70, CY + 70], LX0 = CX - 300, LX1 = CX + 300;
+const lanes = LY.map(y => el(sv, "line", { x1: LX0, y1: y, x2: LX1, y2: y, stroke: "#2c2c2e", "stroke-width": 4, "stroke-linecap": "round" }));
+const trails = LY.map(y => el(sv, "line", { x1: LX0, y1: y, y2: y, "stroke-width": 4, "stroke-linecap": "round" }));
+const runners = LY.map(() => makeTask(64));
+const ticks = LY.map(() => { const g = el(sv, "g", {}); g.innerHTML = TICK(22); return g; });
+
+// three tasks, checked
+const QX = [CX - 220, CX, CX + 220];
+const checked = QX.map(() => makeTask(110));
+const scan = el(sv, "rect", { y: CY - 120, width: 3, height: 240, fill: "#30d158", filter: "url(#glow)" });
+const qTicks = QX.map(() => { const g = el(sv, "g", {}); g.innerHTML = TICK(20); return g; });
+
+// the close
+const FIN = makeTask(150);
+
 R.push(t => {
-  const pl = placeAt(t);
-  let o = env(t, 13.5, 33.7, .5, .45);
-  if (t >= 42) o = env(t, 42.5, 52.6, .5, .45);
-  S(code, { x: pl.x - C.x, y: pl.y - C.y + (t < 42 ? (1 - eo(P(t, 13.5, 14.1))) * 24 : (1 - eo(P(t, 42.5, 43.1))) * 24), s: pl.s, o });
-  if (o <= 0) return;
-  // lines come in one after another
-  const docked = t > 18.4 && t < 34;
-  CODE.forEach((_, i) => {
-    const a = 13.75 + i * .085;
-    const lo = t < 42 ? eo(P(t, a, a + .35)) : 1;
-    let dimmed = 1;
-    if (docked) {
-      const hl = HI.find(([rows, a2, b2]) => t >= a2 - .2 && t <= b2 && rows.includes(i));
-      dimmed = hl ? 1 : .42;
-    }
-    S(cRows[i], { o: lo * dimmed, x: (1 - lo) * -16 });
-    const h = HI.find(([rows]) => rows.includes(i));
-    S(cHi[i], { o: h && t < 42 ? env(t, h[1], h[2], .3, .3) : 0 });
+  // the task appears where the code folded, and stays until the copies
+  const tin = P(t, 3.9, 4.7);
+  place(main, CX, CY, lerp(.15, 1, back(tin)), Math.min(eo(tin), 1 - P(t, 21.9, 22.2)));
+  A(main.halo, { opacity: .42 + .14 * Math.sin(t * 2.4) });
+
+  // ---- what it reaches (6 - 13.2): the ring stops the dots at 9.6
+  const RING = 9.6, R0 = 150, after = t >= RING + .15;
+  const reachOn = env(t, 6.0, 13.2, .5, .6);
+  DOTS.forEach(d => {
+    const r = 70 + ((t * 150 + d.ph) % 520);
+    let o = reachOn * clamp((r - 70) / 40) * (1 - clamp((r - 420) / 100));
+    if (after) o = Math.abs(r - R0) < 14 ? reachOn : r > R0 ? 0 : o;
+    A(d.e, { cx: CX + Math.cos(d.a) * Math.min(r, after ? R0 : r), cy: CY + Math.sin(d.a) * Math.min(r, after ? R0 : r), opacity: o,
+      fill: after && r > R0 - 14 ? "#ffb340" : "#ff453a" });
   });
-  // the check: python misspelt, ruff moved to the host, then both put back
-  const typo = t >= 43.6 && t < 49.6;
-  const jit = t >= 43.6 && t < 44.0 ? Math.sin(t * 140) * 3 : 0;
-  setHTML(cRows[10], seg([["", "  test = "], ["k", "async"], ["", " $ "]]) +
-    (typo ? `<span class="rd" style="text-decoration:underline wavy var(--red);text-underline-offset:5px;display:inline-block;transform:translateX(${jit}px);text-shadow:${jit ? "2px 0 #58a6ff,-2px 0 #f85149" : "none"}">pyhton</span>` : "python") +
-    esc(" -m unittest discover -s app"));
-  const keep = t < 49.6 ? typed("[#local]", t, 44.3, 22) : "[#local]".slice(0, Math.max(0, 8 - Math.floor((t - 49.6) * 30)));
-  setHTML(cRows[9], seg([["", "  lint = "], ["k", "async"], ["", " $"]]) + (keep ? `<span class="am">${esc(keep)}</span>` : "") + esc(" ruff check app"));
-  // the scan
-  const sc = P(t, 45.7, 47.3);
-  beam.style.top = (sc * CODE.length * C.rowH) + "px";
-  S(beam, { o: sc > 0 && sc < 1 ? 1 : 0 });
-  glowRow.style.top = Math.max(0, sc * CODE.length * C.rowH - C.rowH) + "px";
-  S(glowRow, { o: sc > 0 && sc < 1 ? 1 : 0 });
-  // rows the check flags
-  const flag = (i, at) => t >= at && t < 49.6;
-  cHi[9].style.background = cHi[10].style.background = "";
-  if (t >= 42) {
-    [[9, 46.95], [10, 47.1]].forEach(([i, at]) => {
-      cHi[i].style.background = "rgba(248,81,73,.13)"; cHi[i].style.borderLeftColor = "var(--red)";
-      S(cHi[i], { o: flag(i, at) ? 1 : 0 });
-    });
-  } else {
-    cHi[9].style.background = cHi[10].style.background = "rgba(88,166,255,.10)";
-    cHi[9].style.borderLeftColor = cHi[10].style.borderLeftColor = "var(--blue)";
-  }
-});
-caption(`Tasks in <span style="color:var(--blue)">one typed file</span>.`, 13.9, 18.3);
+  A(ring, { r: R0 * lerp(1.9, 1, back(P(t, RING, RING + .38))), opacity: Math.min(eo(P(t, RING, RING + .1)), 1 - P(t, 12.8, 13.3)) });
+  const sh = P(t, RING + .3, RING + 1.1);
+  A(shock, { r: R0 * (1 + eo(sh) * .55), opacity: sh > 0 && sh < 1 ? (1 - sh) * .7 : 0 });
+  const jolt = sh > 0 && sh < .35 ? (1 - sh / .35) * 6 : 0;
+  sv.style.transform = `translate(${Math.sin(t * 90) * jolt}px,${Math.cos(t * 70) * jolt * .5}px)`;
 
-// ===================================================================
-// 3. Pinned (18.6 - 27)
-// ===================================================================
-const RX = 640, RW = 560;
-const host = add(`<div class="bar" style="color:#c9d1d9">${I.laptop("#8b949e", 18)}&nbsp;your machine</div>
-  <div style="padding:12px 20px;font:600 19px var(--mono);line-height:36px">
-    <div id="h1" style="position:relative">python <span class="rd" style="margin-left:24px">not installed</span></div>
-    <div id="h2" style="position:relative">ruff&nbsp;&nbsp;&nbsp;<span class="rd" style="margin-left:24px">not installed</span></div></div>`,
-  `left:${RX}px;top:430px;width:${RW}px;`, world, "card");
-const strikes = [0, 1].map(i => add("", `left:20px;top:${38 + 12 + 18 + i * 36}px;height:2px;width:0;background:var(--red)`, host));
-const BOX = [
-  { name: "#python:3.13.7-alpine3.22", short: "python", dig: "9ba6d8cbebf0", y: 150, from: 1 },
-  { name: "#ghcr.io/astral-sh/ruff:0.13.3-alpine", short: "ruff", dig: "06ffc15c35cc", y: 262, from: 2 },
-];
-BOX.forEach((b, i) => {
-  b.el = add(`<div style="display:flex;align-items:center;gap:12px;height:88px;padding:0 20px">${I.box("var(--blue)", 30)}<span style="font:600 18px var(--mono);color:#cfe3ff">${b.name}</span></div>`,
-    `left:${RX}px;top:${b.y}px;width:${RW}px;border-color:#24466e;background:rgba(14,28,46,.95)`, world, "card");
-  b.seal = add(`<div style="display:flex;align-items:center;gap:7px">${I.lock("#0b1220", 15)}<span>sha256:${b.dig}</span></div>`,
-    `left:${RX + RW - 236}px;top:${b.y + 62}px;font:700 14px var(--mono);color:#0b1220;background:#8cc4ff;border-radius:8px;padding:5px 10px;box-shadow:0 0 22px rgba(88,166,255,.6)`, world, "c");
-  b.fly = add(`<span>sha256:${b.dig}</span>`, `left:0;top:0;font:700 14px var(--mono);color:#0b1220;background:#8cc4ff;border-radius:8px;padding:5px 10px`, world);
-});
-const sync = add("", `left:${RX}px;top:382px;`, world, "pill");
-const lock = add(`<div class="bar">${I.lock("#8b949e", 14)}&nbsp;lask.lock.json</div>
-  <div style="padding:10px 20px;font:600 17px var(--mono);line-height:32px">
-    <div id="l1"><span class="im">python</span>&nbsp;&nbsp;<span style="color:#8cc4ff">sha256:9ba6d8cbebf0</span></div>
-    <div id="l2"><span class="im">ruff</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8cc4ff">sha256:06ffc15c35cc</span></div></div>`,
-  `left:${RX}px;top:448px;width:${RW}px;`, world, "card");
-const lockRows = [lock.querySelector("#l1"), lock.querySelector("#l2")];
-R.push(t => {
-  const out = 1 - eio(P(t, 26.6, 27.2));
-  S(host, { o: env(t, 18.9, 21.7, .45, .4), y: (1 - eo(P(t, 18.9, 19.4))) * 20 });
-  strikes.forEach((s, i) => { s.style.width = (eo(P(t, 19.7 + i * .3, 20.0 + i * .3)) * [74, 50][i]) + "px"; });
-  BOX.forEach((b, i) => {
-    const a = 19.2 + i * .3;
-    const k = eo(P(t, a, a + .6));
-    const srcY = rowY(b.from, DOCK);
-    S(b.el, { o: Math.min(eo(P(t, a, a + .3)), out), x: (1 - k) * -330, y: (1 - k) * (srcY - b.y - 44), s: lerp(.45, 1, k) });
-    const st = 22.25 + i * .32;
-    const sp = P(t, st, st + .3);
-    S(b.seal, { o: eo(P(t, st, st + .08)) * out, s: lerp(1.9, 1, back(sp)), r: lerp(-14, -3, eo(sp)) });
-    // a copy of the digest flies into the lock file
-    const ft = 23.6 + i * .3, f = eio(P(t, ft, ft + .55));
-    const x0 = RX + RW - 236, y0 = b.y + 62, x1 = RX + 20 + (i ? 74 : 74), y1 = 448 + 38 + 10 + i * 32;
-    S(b.fly, { x: lerp(x0, x1 + 26, f), y: lerp(y0, y1, f) - Math.sin(f * Math.PI) * 40, o: t > ft && t < ft + .58 ? 1 : 0 });
-    S(lockRows[i], { o: eo(P(t, ft + .5, ft + .7)) });
+  // ---- in a container (13.6 - 22): the box draws, the pin snaps on
+  A(box, { transform: `translate(${CX} ${CY})`, "stroke-dasharray": `${eio(P(t, 13.6, 14.6))} 1`, opacity: t < 13.6 ? 0 : 1 - P(t, 21.9, 22.2),
+    fill: `rgba(41,151,255,${.06 * eo(P(t, 14.2, 14.8))})` });
+  A(pin, { transform: `translate(${CX + 95} ${CY - 95}) scale(${t < 18.8 ? 0 : lerp(2.2, 1, back(P(t, 18.8, 19.15)))})`,
+    opacity: Math.min(eo(P(t, 18.8, 18.9)), 1 - P(t, 21.9, 22.2)) });
+
+  // ---- the same everywhere (22 - 26.8)
+  const spread = eio(P(t, 22.0, 23.0));
+  copies.forEach((g, i) => {
+    A(g, { transform: `translate(${lerp(CX, MX[i], spread)} ${CY - 30}) scale(${lerp(1, .78, spread)})`,
+      opacity: Math.min(t >= 22 ? 1 : 0, 1 - P(t, 26.3, 26.8)) * (i === 1 ? 1 : eo(P(t, 22.0, 22.4))) });
   });
-  const cmd = typed("$ lask sync", t, 21.6, 22);
-  setHTML(sync, `<span class="am">${esc(cmd.slice(0, 1))}</span>${esc(cmd.slice(1))}` + (t > 22.2 ? `   <span class="gr">2 images pinned</span>` : ""));
-  S(sync, { o: env(t, 21.5, 27.1, .3, .45) });
-  S(lock, { o: env(t, 23.3, 27.1, .4, .45), y: (1 - eo(P(t, 23.3, 23.7))) * 16 });
-});
-caption(`Nothing to <span style="color:var(--blue)">install</span>.`, 18.9, 22.0);
-caption(`Pinned by <span style="color:var(--blue)">digest</span>.`, 22.3, 26.9);
-
-// ===================================================================
-// 4. Side by side (27 - 33.6)
-// ===================================================================
-const LANE = [
-  { label: "ruff check app", y: 176, a: 27.9, b: 29.5 },
-  { label: "python -m unittest", y: 280, a: 27.9, b: 30.5 },
-];
-const TR = { x: 936, w: 222 };
-const laneSvg = document.createElementNS(svgNS, "svg");
-laneSvg.setAttribute("width", 1280); laneSvg.setAttribute("height", 720);
-laneSvg.style.cssText = "position:absolute;left:0;top:0";
-world.appendChild(laneSvg);
-LANE.forEach((l, i) => {
-  l.chip = add(`<div class="chip" style="height:62px;padding:0 16px">${I.box("var(--blue)", 24)}<span>${l.label}</span></div>`, `left:${RX}px;top:${l.y}px;width:278px;`, world, "card");
-  l.track = add("", `left:${TR.x}px;top:${l.y + 26}px;width:${TR.w}px;height:10px;border-radius:5px;background:#18212e`, world);
-  l.fill = add("", `left:${TR.x}px;top:${l.y + 26}px;width:0;height:10px;border-radius:5px;background:linear-gradient(90deg,#1f6feb,#58a6ff);box-shadow:0 0 16px rgba(88,166,255,.6)`, world);
-  l.ok = add(I.ok(32), `left:${TR.x + TR.w + 14}px;top:${l.y + 15}px`, world, "c");
-  l.path = document.createElementNS(svgNS, "path");
-  l.path.setAttribute("fill", "none"); l.path.setAttribute("stroke", "#3fb950"); l.path.setAttribute("stroke-width", "2.4");
-  l.path.setAttribute("pathLength", "1");
-  l.path.setAttribute("d", `M${TR.x + TR.w + 46},${l.y + 31} C${1236 + i * 4},${l.y + 31} ${1236 + i * 4},408 1180,408`);
-  laneSvg.appendChild(l.path);
-});
-const allNode = add(`<span class="fn">all</span>([lint, test])`, `left:968px;top:388px;font:600 17px var(--mono);`, world, "pill");
-const passed = add(`<div style="display:flex;align-items:center;gap:10px">${I.ok(26)}<span style="font:700 20px var(--sans);color:var(--green)">ci passed</span></div>`, `left:982px;top:462px`, world);
-R.push(t => {
-  const o = env(t, 27.3, 33.6, .45, .45);
-  LANE.forEach((l, i) => {
-    const a = 27.35 + i * .15;
-    S(l.chip, { o: Math.min(eo(P(t, a, a + .4)), o), x: (1 - eo(P(t, a, a + .5))) * 24 });
-    S(l.track, { o });
-    const f = P(t, l.a, l.b);
-    l.fill.style.width = (eio(f) * TR.w) + "px";
-    l.fill.style.background = f >= 1 ? "linear-gradient(90deg,#238636,#3fb950)" : "linear-gradient(90deg,#1f6feb,#58a6ff)";
-    l.fill.style.boxShadow = f >= 1 ? "0 0 16px rgba(63,185,80,.6)" : "0 0 16px rgba(88,166,255,.6)";
-    S(l.fill, { o });
-    S(l.ok, { o: Math.min(eo(P(t, l.b, l.b + .15)), o), s: lerp(.4, 1, back(P(t, l.b, l.b + .35))) });
-    l.path.setAttribute("stroke-dasharray", `${eio(P(t, 30.6 + i * .05, 31.1))} 1`);
-    l.path.setAttribute("opacity", o);
+  ICONS.forEach((g, i) => {
+    const io = Math.min(eo(P(t, 22.7 + i * .12, 23.3 + i * .12)), 1 - P(t, 26.3, 26.8));
+    A(g, { transform: `translate(${MX[i]} ${CY + 125 + (1 - io) * 12})`, opacity: io });
   });
-  S(allNode, { o: Math.min(eo(P(t, 31.0, 31.3)), o), y: (1 - eo(P(t, 31.0, 31.4))) * 12 });
-  S(passed, { o: Math.min(eo(P(t, 31.45, 31.7)), o), s: lerp(.85, 1, back(P(t, 31.45, 31.8))) });
-});
-caption(`Run <span style="color:var(--blue)">side by side</span>.`, 27.4, 33.3);
 
-// ===================================================================
-// 5. The same everywhere (33.6 - 42.4)
-// ===================================================================
-const MACH = [
-  { name: "your laptop", icon: I.laptop },
-  { name: "GitHub Actions", icon: I.server },
-  { name: "GitLab CI", icon: I.server },
-  { name: "Jenkins", icon: I.server },
-].map((m, i) => ({ ...m, x: 80 + i * 290, y: 354 }));
-const lock2 = add(`<div class="bar">${I.lock("#8b949e", 14)}&nbsp;lask.lock.json</div>
-  <div style="padding:8px 20px;font:600 16px var(--mono);line-height:28px"><div><span class="im">python</span>&nbsp;&nbsp;<span style="color:#8cc4ff">9ba6d8cbebf0</span></div><div><span class="im">ruff</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8cc4ff">06ffc15c35cc</span></div></div>`,
-  `left:480px;top:140px;width:320px;`, world, "card");
-MACH.forEach((m, i) => {
-  m.el = add(`<div class="bar" style="color:#c9d1d9;font:600 15px var(--sans)">${m.icon("#8b949e", 18)}&nbsp;${m.name}</div>`,
-    `left:${m.x}px;top:${m.y}px;width:250px;height:188px`, world, "card");
-  m.rows = add(`<div style="font:600 15px var(--mono);line-height:28px"><div><span class="im">python</span>&nbsp;&nbsp;<span style="color:#8cc4ff">9ba6d8cbebf0</span></div><div><span class="im">ruff</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8cc4ff">06ffc15c35cc</span></div></div>`,
-    `left:${m.x + 18}px;top:${m.y + 52}px`, world);
-  m.ok = add(`<div style="display:flex;align-items:center;gap:8px">${I.ok(24)}<span style="font:700 16px var(--sans);color:var(--green)">passed</span></div>`, `left:${m.x + 18}px;top:${m.y + 132}px`, world);
-  m.fly = add(`${I.lock("#0b1220", 13)}`, `left:0;top:0;width:34px;height:26px;border-radius:7px;background:#8cc4ff;display:flex;align-items:center;justify-content:center;box-shadow:0 0 18px rgba(88,166,255,.7)`, world);
-});
-const sweep = add("", `left:80px;top:${354 + 52}px;height:56px;width:0;border-radius:8px;background:linear-gradient(90deg,rgba(140,196,255,0),rgba(140,196,255,.16) 70%,rgba(140,196,255,.35));border-right:2px solid #8cc4ff`, world);
-R.push(t => {
-  const o = env(t, 33.45, 42.4, .45, .45);
-  S(lock2, { o: Math.min(eo(P(t, 33.45, 33.85)), o), s: lerp(.9, 1, back(P(t, 33.45, 33.95))) });
-  MACH.forEach((m, i) => {
-    const a = 33.85 + i * .12;
-    const k = eo(P(t, a, a + .45));
-    S(m.el, { o: Math.min(k, o), y: (1 - k) * 30 });
-    const ft = 35.0 + i * .22, f = eio(P(t, ft, ft + .6));
-    S(m.fly, { x: lerp(623, m.x + 108, f), y: lerp(240, m.y + 70, f) - Math.sin(f * Math.PI) * 60, o: t > ft && t < ft + .62 ? 1 : 0, s: lerp(1, .8, f) });
-    S(m.rows, { o: Math.min(eo(P(t, ft + .55, ft + .8)), o) });
-    S(m.ok, { o: Math.min(eo(P(t, 38.7, 38.9)), o), s: lerp(.6, 1, back(P(t, 38.7, 39.1))) });
+  // ---- side by side (26.9 - 31)
+  const lo = env(t, 26.9, 31.0, .5, .5);
+  const ENDS = [29.3, 29.7];
+  LY.forEach((y, i) => {
+    A(lanes[i], { opacity: lo });
+    const k = eio(P(t, 27.6, ENDS[i]));
+    const x = lerp(LX0, LX1, k);
+    A(trails[i], { x2: x, opacity: lo, stroke: k >= 1 ? "#30d158" : "#2997ff" });
+    place(runners[i], x, y, 1, lo);
+    A(ticks[i], { transform: `translate(${LX1 + 60} ${y}) scale(${t < ENDS[i] ? 0 : lerp(.3, 1, back(P(t, ENDS[i], ENDS[i] + .35)))})`,
+      opacity: Math.min(lo, eo(P(t, ENDS[i], ENDS[i] + .1))) });
   });
-  const sw = eio(P(t, 37.4, 38.4));
-  sweep.style.width = (sw * 1120) + "px";
-  S(sweep, { o: Math.min(o, sw > 0 ? 1 - P(t, 38.4, 39.0) : 0) });
-});
-caption(`Same images on <span style="color:var(--blue)">every machine</span>.`, 33.7, 42.1);
 
-// ===================================================================
-// 6. Checked before it runs (42.4 - 52.6)
-// ===================================================================
-const CX = 726;
-const chk = add("", `left:${CX}px;top:150px;`, world, "pill");
-const ERRS = [
-  { row: 9, at: 46.95, y: 236, code: "E-TYPE-WITHIN-EXCEEDED", msg: "#local reaches the whole host, which<br>within Sandboxed does not allow", hint: "" },
-  { row: 10, at: 47.1, y: 360, code: "E-TYPE-COMMAND-NOENV", msg: "'pyhton' is not a declared command", hint: "did you mean 'python'?" },
-];
-const chkSvg = document.createElementNS(svgNS, "svg");
-chkSvg.setAttribute("width", 1280); chkSvg.setAttribute("height", 720);
-chkSvg.style.cssText = "position:absolute;left:0;top:0";
-world.appendChild(chkSvg);
-ERRS.forEach(e => {
-  e.el = add(`<div style="display:flex;align-items:center;gap:10px">${I.no(20)}<span style="font:700 16px var(--mono);color:var(--red)">${e.code}</span></div>
-    <div style="font:500 15px/1.45 var(--mono);color:#c9d1d9;margin-top:6px;padding-left:30px">${e.msg}</div>` +
-    (e.hint ? `<div style="font:600 15px var(--mono);color:var(--green);margin-top:4px;padding-left:30px">${e.hint}</div>` : ""),
-    `left:${CX}px;top:${e.y}px;width:500px;background:#170d10;border:1px solid #5a2328;border-radius:12px;padding:12px 16px`, world);
-  e.path = document.createElementNS(svgNS, "path");
-  e.path.setAttribute("fill", "none"); e.path.setAttribute("stroke", "#f85149"); e.path.setAttribute("stroke-width", "1.8");
-  e.path.setAttribute("stroke-dasharray", "4 4");
-  chkSvg.appendChild(e.path);
-});
-const notRun = add(["ruff", "python"].map(n => `<div style="display:flex;align-items:center;gap:10px;font:600 16px var(--mono);color:#6e7681">${I.box("#3a4556", 22)}<span>${n}</span><span style="color:#4a5568">— not started</span></div>`).join(`<div style="height:10px"></div>`),
-  `left:${CX + 4}px;top:500px`, world);
-const valid = add(`<div style="display:flex;align-items:center;gap:10px">${I.ok(26)}<span style="font:600 18px var(--mono);color:var(--green)">the module is valid</span></div>`, `left:${CX + 4}px;top:226px`, world);
-R.push(t => {
-  const o = env(t, 42.6, 52.6, .4, .45);
-  const cmd = typed("$ lask check", t, 45.0, 24);
-  setHTML(chk, `<span class="am">${esc(cmd.slice(0, 1))}</span>${esc(cmd.slice(1))}`);
-  S(chk, { o: Math.min(env(t, 44.9, 52.6, .25, .45), o) });
-  ERRS.forEach(e => {
-    const k = env(t, e.at, 49.8, .3, .35);
-    S(e.el, { o: Math.min(k, o), x: (1 - eo(P(t, e.at, e.at + .35))) * 20 });
-    const ry = rowY(e.row, CHK);
-    const rx = CHK.x + C.w * CHK.s + 4;
-    e.path.setAttribute("d", `M${rx},${ry} C${rx + 24},${ry} ${CX - 30},${e.y + 22} ${CX},${e.y + 22}`);
-    e.path.setAttribute("opacity", Math.min(k, o));
+  // ---- checked before it runs (31.2 - 37.6)
+  A(scan, { x: lerp(CX - 360, CX + 360, eio(P(t, 32.0, 33.4))), opacity: t > 32.0 && t < 33.5 ? 1 : 0 });
+  QX.forEach((x, i) => {
+    const bad = i === 1;
+    const shake = bad && t >= 32.7 && t < 33.2 ? Math.sin(t * 80) * 10 * (1 - P(t, 32.7, 33.2)) : 0;
+    // the middle one becomes the close's task; the others go
+    const o = bad ? Math.min(eo(P(t, 31.3, 31.9)), t < 37.6 ? 1 : 0) : Math.min(eo(P(t, 31.2 + i * .1, 31.8 + i * .1)), 1 - P(t, 37.3, 37.8));
+    place(checked[i], x + shake, CY, 1, o);
+    A(checked[i].red, { opacity: bad && t >= 32.7 ? eo(P(t, 32.7, 32.85)) * (1 - P(t, 34.3, 34.6)) : 0 });
+    const a = 34.8 + i * .12;
+    A(qTicks[i], { transform: `translate(${x + 55} ${CY - 55}) scale(${t < a ? 0 : lerp(.3, 1, back(P(t, a, a + .35)))})`,
+      opacity: Math.min(o, eo(P(t, a, a + .1)), 1 - P(t, 37.3, 37.6)) });
   });
-  S(notRun, { o: Math.min(env(t, 47.6, 49.8, .4, .35), o), y: (1 - eo(P(t, 47.6, 48))) * 12 });
-  S(valid, { o: Math.min(env(t, 50.4, 52.6, .3, .45), o), s: lerp(.9, 1, back(P(t, 50.4, 50.8))) });
-});
-caption(`Caught <span style="color:var(--green)">before</span> anything runs.`, 43.0, 52.3);
 
-// ===================================================================
-// 7. Close (52.6 - 60)
-// ===================================================================
-const endRing = add("", "left:330px;top:228px;width:620px;height:276px;border:3px solid var(--amber);border-radius:26px;box-shadow:0 0 0 1px rgba(242,179,61,.25),0 0 50px rgba(242,179,61,.35),inset 0 0 40px rgba(242,179,61,.10)", stage, "c");
-const endShock = add("", "left:330px;top:228px;width:620px;height:276px;border:2px solid var(--amber);border-radius:30px", stage, "c");
-const endLogo = add(`<div style="display:flex;align-items:center;gap:20px;justify-content:center">${I.logo(66)}<span style="font:800 76px var(--sans);letter-spacing:-2px">Lask</span></div>`, "left:0;top:262px;width:1280px", stage, "c");
-const WORDS = [["Pinned.", "var(--blue)", 54.3], ["Checked.", "var(--green)", 54.7], ["Bounded.", "var(--amber)", 55.1]];
-const endRow = add("", "left:0;top:382px;width:1280px;display:flex;justify-content:center;gap:16px;font:800 40px var(--sans);letter-spacing:-1px", stage);
-const endWords = WORDS.map(([w, c]) => { const sp = document.createElement("span"); sp.textContent = w; sp.style.cssText = `display:inline-block;color:${c}`; endRow.appendChild(sp); return sp; });
-const endBrew = add(`<span class="dm">$</span> brew install lask`, "left:0;top:548px;width:1280px;text-align:center;font:600 22px var(--mono)", stage);
-const endUrl = add("lask-task-runner.github.io", "left:0;top:598px;width:1280px;text-align:center;font:500 19px var(--sans);color:var(--dim)", stage);
+  // ---- the close (37.6 - 48): the task grows, its λ draws, it moves aside for the name
+  const fo = Math.min(t >= 37.6 ? 1 : 0, 1 - P(t, 47.4, 48));
+  const mv = eio(P(t, 39.0, 39.8));
+  place(FIN, lerp(CX, CX - 130, mv), lerp(CY, 250, mv), lerp(110 / 150, 1, eio(P(t, 37.6, 38.6))), fo);
+  const lam = eio(P(t, 38.3, 39.0));
+  A(FIN.lam, { "stroke-dasharray": `${lam} 1`, opacity: lam > .001 ? 1 : 0 });
+});
+
+// the name beside the logo, and the words under it
+const name = add("Lask", "left:610px;top:198px;font:700 108px/1 var(--sans);letter-spacing:-.04em");
+R.push(t => S(name, { o: Math.min(eo(P(t, 39.6, 40.3)), 1 - P(t, 47.4, 48)), x: (1 - eo5(P(t, 39.6, 40.5))) * -24, b: (1 - eo(P(t, 39.6, 40.3))) * 8 }));
+const tag = add(["Pinned.", "Checked.", "Bounded."].map(w => `<span style="display:inline-block;margin:0 10px">${w}</span>`).join(""),
+  "left:0;top:378px;width:1280px;text-align:center;font:600 46px var(--sans);letter-spacing:-.03em");
+const TW = [...tag.children];
+[["#2997ff", "#5ac8fa"], ["#30d158", "#a6f4c5"], ["#ffb340", "#ffd60a"]].forEach(([a, b], i) => {
+  TW[i].style.cssText += `;background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent`;
+});
+const brew = add(`<span style="color:#86868b">$</span> brew install lask`, "left:0;top:500px;width:1280px;text-align:center;font:500 24px var(--mono)");
+const url = add("lask-task-runner.github.io", "left:0;top:548px;width:1280px;text-align:center;font:500 20px var(--sans);color:#86868b");
 R.push(t => {
-  const end = 1 - P(t, 59.3, 60);
-  const rt = P(t, 53.0, 53.35);
-  S(endRing, { o: Math.min(eo(P(t, 53.0, 53.1)), end), s: lerp(1.7, 1, back(rt)) });
-  const sh = P(t, 53.3, 54.0);
-  S(endShock, { o: sh > 0 && sh < 1 ? (1 - sh) * .8 * end : 0, s: 1 + eo(sh) * .3 });
-  S(endLogo, { o: Math.min(eo(P(t, 53.5, 53.9)), end), s: lerp(.85, 1, back(P(t, 53.5, 54.0))) });
-  WORDS.forEach(([, , a], i) => S(endWords[i], { o: Math.min(eo(P(t, a, a + .3)), end), y: (1 - eo(P(t, a, a + .4))) * 16 }));
-  S(endBrew, { o: Math.min(eo(P(t, 56.0, 56.4)), end) });
-  S(endUrl, { o: Math.min(eo(P(t, 56.4, 56.8)), end) });
-  if (t > 53.3 && t < 53.8) {
-    const a = (1 - P(t, 53.3, 53.8)) * 6;
-    S(world, { x: Math.sin(t * 95) * a, y: Math.cos(t * 77) * a * .6 });
-  }
+  const end = 1 - P(t, 47.4, 48);
+  TW.forEach((w, i) => {
+    const a = 40.6 + i * .45;
+    S(w, { o: Math.min(eo(P(t, a, a + .6)), end), y: (1 - eo5(P(t, a, a + .8))) * 18, b: (1 - eo(P(t, a, a + .6))) * 8 });
+  });
+  S(brew, { o: Math.min(eo(P(t, 42.4, 43.1)), end) });
+  S(url, { o: Math.min(eo(P(t, 42.8, 43.5)), end) });
 });
 
-// ---------- the background: a slow grid ----------
-function drawBg(t) {
-  const off = (t * 6) % 40;
-  bg.style.background =
-    `radial-gradient(ellipse at 50% 42%, rgba(30,60,110,.30), rgba(6,10,17,0) 62%),` +
-    `linear-gradient(rgba(120,160,255,.045) 1px, transparent 1px) 0 ${off}px / 40px 40px,` +
-    `linear-gradient(90deg, rgba(120,160,255,.045) 1px, transparent 1px) ${off * .5}px 0 / 40px 40px, #060a11`;
-}
+// ---------- the words ----------
+words("A task.", 4.5, 6.0);
+words(`What can it ${grad("reach", "#ff453a", "#ff9f0a")}?`, 6.3, 9.4);
+words(`Only what you ${grad("allow", "#ffb340", "#ffd60a")}.`, 10.0, 13.2);
+words("Every tool, in a container.", 14.0, 16.3);
+words(`Nothing to ${grad("install", "#2997ff", "#5ac8fa")}.`, 16.5, 18.6);
+words(`${grad("Pinned", "#2997ff", "#5ac8fa")}. By digest.`, 18.9, 21.8);
+words("The same, everywhere.", 22.6, 26.6, 548);
+words("Side by side.", 27.2, 31.0, 548);
+words(`${grad("Checked", "#30d158", "#a6f4c5")}.`, 31.6, 34.2);
+words("Before anything runs.", 34.4, 37.5);
 
 // ---------- timelines ----------
-const FULL = 60;
+const FULL = 48;
 // the README cut: [from, to, speed] of the full timeline, played in turn
-const CUTS = [[0, 11.6, 2.0], [13.5, 17.6, 1.6], [18.7, 27.0, 2.2], [33.7, 41.2, 2.6], [42.6, 49.4, 2.4], [52.7, 60, 3.0]];
+const CUTS = [[0, 13.3, 1.8], [13.6, 21.8, 2.0], [22.0, 26.6, 2.0], [31.2, 37.5, 2.2], [37.6, 46, 2.4]];
 const CUT_LEN = CUTS.map(([a, b, s]) => (b - a) / s);
 window.DURATION = SHORT ? CUT_LEN.reduce((x, y) => x + y, 0) : FULL;
-window.VIEW = [1280, 720];
+window.POSTER = 45;
 function fullTime(t) {
   if (!SHORT) return [t, 1];
   let acc = 0;
@@ -578,9 +300,8 @@ function fullTime(t) {
     const [a, , s] = CUTS[i], len = CUT_LEN[i];
     if (t < acc + len || i === CUTS.length - 1) {
       const local = t - acc;
-      // dip to the background across each cut
-      const dip = i === 0 ? 1 : clamp(local / .12);
-      const out = i === CUTS.length - 1 ? 1 : clamp((len - local) / .12);
+      const dip = i === 0 ? 1 : clamp(local / .15);
+      const out = i === CUTS.length - 1 ? 1 : clamp((len - local) / .15);
       return [a + Math.min(local, len) * s, Math.min(dip, out)];
     }
     acc += len;
@@ -588,9 +309,6 @@ function fullTime(t) {
 }
 window.render = t => {
   const [ft, vis] = fullTime(t);
-  S(world, {});
-  // a still grid in the README cut keeps the GIF small
-  drawBg(SHORT ? 0 : ft);
   R.forEach(f => f(ft));
   stage.style.opacity = vis;
 };

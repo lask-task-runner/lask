@@ -6,9 +6,9 @@
 [![docs](https://img.shields.io/badge/docs-lask--task--runner.github.io-4f46e5)](https://lask-task-runner.github.io/)
 
 <div align="center">
-  <img alt="Lask in 20 seconds: a task an agent added reaches ~/.ssh, an AWS key, the internet and the Docker socket until within bounds it, and lask check refuses the rest; one main.lask whose commands run in images pinned by digest, with nothing installed on the host; lint and test side by side; the same digests on a laptop, GitHub Actions, GitLab CI and Jenkins; a typo and a command on the host caught before anything runs" src="doc/assets/lask-tour.gif" width="960">
+  <img alt="Lask in 20 seconds: a few lines of main.lask fold into a task; dots stream out to everything it could reach until a ring stops them, only what you allow; every tool in a container, pinned by digest, nothing to install; the same container on a laptop, in the cloud and on a server; three tasks checked, one caught before anything runs; then the Lask logo: Pinned. Checked. Bounded." src="doc/assets/lask-tour.gif" width="960">
   <br>
-  <a href="https://lask-task-runner.github.io/">▶ Watch the full 1-minute tour on the documentation site</a>
+  <a href="https://lask-task-runner.github.io/">▶ Watch the full tour on the documentation site</a>
 </div>
 
 Lask (lambda + task) is a task runner with a small language behind it, giving automation what shell scripts and CI YAML never had: portability, reproducibility, and verification before anything runs.
