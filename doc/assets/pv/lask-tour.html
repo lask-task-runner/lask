@@ -133,8 +133,12 @@ const ICON = {
     <rect x="-13" y="-2" width="10" height="4" rx="2" fill="#ff453a"/><rect x="3" y="-2" width="10" height="4" rx="2" fill="#ff453a"/>
     <path d="M-30 38h60l8 14h-76z" fill="#2c2c2e" stroke="${c}" stroke-width="2.4" stroke-linejoin="round"/>`,
 };
-// the digest plate a pinned container carries
-const PLATE = `<rect x="-86" y="-17" width="172" height="34" rx="17" fill="#f5f5f7"/><text y="6" text-anchor="middle" font-family="SF Mono, Menlo, monospace" font-size="17" font-weight="600" fill="#000">sha256:9ba6d8</text>`;
+// a push pin, its point at the origin
+const PUSHPIN = `<g transform="rotate(-18) scale(1.5)">
+  <path d="M0 2v-24" stroke="#aeaeb2" stroke-width="2.6" stroke-linecap="round"/>
+  <rect x="-17" y="-28" width="34" height="8" rx="4" fill="#f5f5f7"/>
+  <path d="M-8 -27-10 -47h20l-2 20z" fill="#d1d1d6"/>
+  <rect x="-19" y="-56" width="38" height="11" rx="5.5" fill="#f5f5f7"/></g>`;
 const TICK = r => `<circle r="${r}" fill="#30d158"/><path d="M${-r * .4} ${r * .03}l${r * .27} ${r * .27} ${r * .55}-${r * .55}" fill="none" stroke="#000" stroke-width="${r * .18}" stroke-linecap="round" stroke-linejoin="round"/>`;
 const CROSS = `<circle r="17" fill="#ff453a"/><path d="M-6 -6l12 12M6 -6l-12 12" stroke="#000" stroke-width="3.6" stroke-linecap="round"/>`;
 
@@ -212,7 +216,8 @@ const [pl, , pr] = paren.children;
 
 // 4. a container, pinned, the same on three machines
 const box = makeContainer(L.box);
-const pin = G(L.front, PLATE);
+const pin = G(L.front, PUSHPIN);
+const pinRipple = el(L.front, "ellipse", { fill: "none", stroke: "#f5f5f7", "stroke-width": 1.5 });
 const MX = [CX - 360, CX, CX + 360];
 const copies = MX.map(() => {
   const g = el(L.box, "g", {});
@@ -273,8 +278,12 @@ R.push(t => {
   // ---- 4. a container (17.8 - 27.6): drawn, pinned, copied to three machines, back to one
   drawContainer(box, t, 17.8);
   A(box.g, { transform: `translate(${CX} ${CY})`, opacity: Math.min(t >= 17.8 ? 1 : 0, 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
-  A(pin, { transform: `translate(${CX} ${CY - KH}) scale(${t < 20.9 ? 0 : lerp(1.8, 1, back(P(t, 20.9, 21.25)))})`,
+  // the pin drops onto the container's roof and goes in
+  const drop = P(t, 20.9, 21.25);
+  A(pin, { transform: `translate(${CX + 40} ${CY - KH + 6 - (1 - drop * drop) * 120}) rotate(${(1 - drop) * -25})`,
     opacity: Math.min(eo(P(t, 20.9, 21.0)), 1 - P(t, 23.1, 23.5)) });
+  const rp = P(t, 21.25, 21.9);
+  A(pinRipple, { cx: CX + 40, cy: CY - KH + 2, rx: 10 + eo(rp) * 50, ry: 3 + eo(rp) * 12, opacity: rp > 0 && rp < 1 ? (1 - rp) * .8 : 0 });
   const spread = eio(P(t, 23.6, 24.6)) * (1 - eio(P(t, 26.6, 27.5)));
   copies.forEach((g, i) => {
     const o = away ? (i === 1 ? 1 : Math.min(eo(P(t, 23.6, 24.0)), 1 - P(t, 26.9, 27.4))) : 0;
