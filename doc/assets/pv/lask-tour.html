@@ -263,17 +263,17 @@ const stop = G(L.front, CROSS);
 R.push(t => {
   const away = t >= 23.6 && t < 27.5;   // while the copies are out
   // ---- the task: it gathers from the swarm, and stays to the end
-  // it shrinks into the first node of the graph (36 - 36.6), and comes back out of it (46.7)
+  // it shrinks into the first node of the graph (36 - 36.6), and comes back out of it (48.9)
   const into = eio(P(t, 36.0, 36.6));
-  const grow = eio(P(t, 47.2, 48.0));
-  const aside = eio(P(t, 48.6, 49.4));
-  const inGraph = t >= 36.6 && t < 46.7;
-  const mx = t < 46.7 ? lerp(CX, NODES[0].x, into) : lerp(CX, CX - 130, aside);
-  const my = t < 46.7 ? lerp(CY, NODES[0].y, into) : lerp(CY, 240, aside);
-  const ms = t < 46.7 ? lerp(1, NODE / 110, into) : lerp(1, 150 / 110, grow);
-  place(main, mx, my, ms, Math.min(t >= 7.7 ? 1 : 0, 1 - P(t, 56.0, 56.6)) * (away || inGraph ? 0 : 1));
+  const grow = eio(P(t, 49.4, 50.2));
+  const aside = eio(P(t, 50.8, 51.6));
+  const inGraph = t >= 36.6 && t < 48.9;
+  const mx = t < 48.9 ? lerp(CX, NODES[0].x, into) : lerp(CX, CX - 130, aside);
+  const my = t < 48.9 ? lerp(CY, NODES[0].y, into) : lerp(CY, 240, aside);
+  const ms = t < 48.9 ? lerp(1, NODE / 110, into) : lerp(1, 150 / 110, grow);
+  place(main, mx, my, ms, Math.min(t >= 7.7 ? 1 : 0, 1 - P(t, 58.2, 58.8)) * (away || inGraph ? 0 : 1));
   A(main.halo, { opacity: .42 + .14 * Math.sin(t * 2.4) });
-  const lam = eio(P(t, 47.7, 48.4));
+  const lam = eio(P(t, 49.9, 50.6));
   A(main.lam, { "stroke-dasharray": `${lam} 1`, opacity: lam > .001 ? 1 : 0 });
 
   // ---- 2. a function (8 - 11)
@@ -367,7 +367,7 @@ MODS[2].r.removeAttribute("pathLength");
 const extPin = G(L.front, PUSHPIN);
 const extIcon = G(L.icons, ICON.cloud("#5ac8fa"));
 R.push(t => {
-  const fall = eio(P(t, 46.0, 46.7));   // everything gathers into one task
+  const fall = eio(P(t, 48.2, 48.9));   // everything gathers into one task
   const ext = eio(P(t, 41.9, 42.9));    // the module from elsewhere slides in
   NODES.forEach(n => {
     let a = 36.7 + n.i * .22;
@@ -377,7 +377,7 @@ R.push(t => {
     let o = n.i === 0 ? (t >= 36.6 ? 1 : 0) : (n.m === 2 ? ext : eo(k));
     x = lerp(x, CX, fall); y = lerp(y, CY, fall);
     const sc = (n.i === 0 || n.m === 2 ? 1 : lerp(.3, 1, back(k))) * lerp(1, 110 / NODE, fall);
-    place(n.task, x, y, sc, t >= 46.7 ? 0 : o);
+    place(n.task, x, y, sc, t >= 48.9 ? 0 : o);
   });
   EDGES.forEach(e => {
     const a = e.a.m === 2 ? 42.7 + e.i * .05 : 37.0 + e.i * .25;
@@ -387,21 +387,60 @@ R.push(t => {
     // trim the ends to the squares' edges
     const len = Math.hypot(bx - ax, e.b.y - e.a.y), ux = (bx - ax) / len, uy = (e.b.y - e.a.y) / len, gap = NODE / 2 + 6;
     const x1 = ax + ux * gap, y1 = e.a.y + uy * gap, x2 = bx - ux * gap, y2 = e.b.y - uy * gap;
-    A(e.line, { x1, y1, x2: lerp(x1, x2, d), y2: lerp(y1, y2, d), opacity: t < 36.9 ? 0 : 1 - P(t, 45.95, 46.2),
+    A(e.line, { x1, y1, x2: lerp(x1, x2, d), y2: lerp(y1, y2, d), opacity: t < 36.9 ? 0 : 1 - P(t, 48.15, 48.4),
       stroke: e.a.m === 2 ? "#5ac8fa" : "#48484a", "stroke-dasharray": e.a.m === 2 ? "6 6" : "none" });
     // the whole graph runs
     const u = (t * .9 + e.i * .17) % 1;
-    A(e.dot, { cx: lerp(x1, x2, u), cy: lerp(y1, y2, u), opacity: env(t, 44.6, 46.0, .4, .3) * Math.sin(u * Math.PI) });
+    A(e.dot, { cx: lerp(x1, x2, u), cy: lerp(y1, y2, u), opacity: env(t, 44.6, 48.2, .4, .3) * Math.sin(u * Math.PI) });
   });
   MODS.forEach(m => {
     const a = m.i === 2 ? 41.9 : 39.3 + m.i * .3;
     const dx = m.i === 2 ? (1 - ext) * 340 : 0;
-    A(m.g, { transform: `translate(${dx} 0)`, opacity: Math.min(m.i === 2 ? ext : 1, 1 - P(t, 45.9, 46.3)) * (t >= a ? 1 : 0) });
+    A(m.g, { transform: `translate(${dx} 0)`, opacity: Math.min(m.i === 2 ? ext : 1, 1 - P(t, 48.1, 48.5)) * (t >= a ? 1 : 0) });
     if (m.i !== 2) A(m.r, { "stroke-dasharray": `${eio(P(t, a, a + .8))} 1`, "fill-opacity": eo(P(t, a + .4, a + 1)) });
   });
   A(extPin, { transform: `translate(${MODS[2].x + MODS[2].w + (1 - ext) * 340} ${MODS[2].y}) scale(${t < 42.8 ? 0 : lerp(2.2, 1, back(P(t, 42.8, 43.15)))})`,
-    opacity: Math.min(eo(P(t, 42.8, 42.9)), 1 - P(t, 45.9, 46.3)) });
-  A(extIcon, { transform: `translate(${1000 + (1 - ext) * 340} ${MODS[2].y + MODS[2].h + 34}) scale(.6)`, opacity: Math.min(ext, 1 - P(t, 45.9, 46.3)) * .9 });
+    opacity: Math.min(eo(P(t, 42.8, 42.9)), 1 - P(t, 48.1, 48.5)) });
+  A(extIcon, { transform: `translate(${1000 + (1 - ext) * 340} ${MODS[2].y + MODS[2].h + 34}) scale(.6)`, opacity: Math.min(ext, 1 - P(t, 48.1, 48.5)) * .9 });
+});
+
+// what the graph reaches (45 - 48.4): the project's files, a database and a
+// registry pass; the attacker is refused at the module's edge
+const OUT = [
+  { k: "folder", x: 105, y: 170, from: 0, ok: true },
+  { k: "db", x: 105, y: 330, from: 1, ok: true },
+  { k: "pkg", x: 1185, y: 150, from: 6, ok: true },
+  { k: "hacker", x: 1190, y: 335, from: 7, ok: false },
+].map(o => ({ ...o,
+  grey: G(L.icons, ICON[o.k]("#86868b")), lit: G(L.icons, ICON[o.k](o.ok ? "#30d158" : "#ff453a")),
+  line: el(L.lines, "line", { "stroke-width": 2.2, "stroke-linecap": "round", "stroke-dasharray": "2 8" }),
+  dots: [0, 1, 2].map(k => ({ k, e: el(L.dots, "circle", { r: 4 }) })) }));
+const refused = G(L.front, CROSS);
+R.push(t => {
+  const DEC = 45.9;  // when the bounds decide
+  const vis = Math.min(eo(P(t, 45.0, 45.5)), 1 - P(t, 48.1, 48.5));
+  OUT.forEach((o, i) => {
+    const n = NODES[o.from];
+    const io = Math.min(eo(P(t, 45.0 + i * .1, 45.5 + i * .1)), 1 - P(t, 48.1, 48.5));
+    const sc = o.k === "hacker" ? 1 : .8;
+    const lit = eo(P(t, DEC, DEC + .35));
+    A(o.grey, { transform: `translate(${o.x} ${o.y}) scale(${sc})`, opacity: o.ok ? io * (1 - lit) : 0 });
+    A(o.lit, { transform: `translate(${o.x} ${o.y}) scale(${sc})`, opacity: o.ok ? io * lit : io * (t < DEC + .5 ? 1 : lerp(1, .35, eo(P(t, DEC + .5, DEC + 1.2)))) });
+    const len = Math.hypot(o.x - n.x, o.y - n.y), ux = (o.x - n.x) / len, uy = (o.y - n.y) / len;
+    const x1 = n.x + ux * 30, y1 = n.y + uy * 30, x2 = o.x - ux * 46, y2 = o.y - uy * 46;
+    // the attacker's line stops at the edge of its module
+    const edgeX = MODS[2].x + MODS[2].w, stopU = clamp((edgeX - x1) / (x2 - x1));
+    const reach = eio(P(t, 45.2 + i * .1, 45.8 + i * .1));
+    const lim = !o.ok && t >= DEC ? stopU : 1;
+    A(o.line, { x1, y1, x2: lerp(x1, x2, Math.min(reach, lim)), y2: lerp(y1, y2, Math.min(reach, lim)), opacity: io * .75,
+      stroke: t < DEC ? "#5a5a5e" : o.ok ? "#30d158" : "#ff453a" });
+    o.dots.forEach(d => {
+      const u = (t * .7 + d.k / 3) % 1;
+      const on = t >= DEC && (o.ok || u < stopU);
+      A(d.e, { cx: lerp(x1, x2, u), cy: lerp(y1, y2, u), opacity: on ? io * Math.sin(u * Math.PI) : 0, fill: o.ok ? "#30d158" : "#ff453a" });
+    });
+    if (!o.ok) A(refused, { transform: `translate(${lerp(x1, x2, stopU)} ${lerp(y1, y2, stopU)}) scale(${t < DEC + .1 ? 0 : lerp(2, 1, back(P(t, DEC + .1, DEC + .45)))})`, opacity: vis });
+  });
 });
 
 // ---- 7. the close: the name, and the four steps it took
@@ -415,14 +454,14 @@ const TW = [...tag.children];
 const brew = add(`<span style="color:#86868b">$</span> brew install lask`, "left:0;top:490px;width:1280px;text-align:center;font:500 24px var(--mono)");
 const url = add("lask-task-runner.github.io", "left:0;top:538px;width:1280px;text-align:center;font:500 20px var(--sans);color:#86868b");
 R.push(t => {
-  const end = 1 - P(t, 56.0, 56.6);
-  S(name, { o: Math.min(eo(P(t, 49.0, 49.7)), end), x: (1 - eo5(P(t, 49.0, 49.9))) * -24, b: (1 - eo(P(t, 49.0, 49.7))) * 8 });
+  const end = 1 - P(t, 58.2, 58.8);
+  S(name, { o: Math.min(eo(P(t, 51.2, 51.9)), end), x: (1 - eo5(P(t, 51.2, 52.1))) * -24, b: (1 - eo(P(t, 51.2, 51.9))) * 8 });
   TW.forEach((w, i) => {
-    const a = 50.2 + i * .4;
+    const a = 52.4 + i * .4;
     S(w, { o: Math.min(eo(P(t, a, a + .6)), end), y: (1 - eo5(P(t, a, a + .8))) * 18, b: (1 - eo(P(t, a, a + .6))) * 8 });
   });
-  S(brew, { o: Math.min(eo(P(t, 52.4, 53.1)), end) });
-  S(url, { o: Math.min(eo(P(t, 52.8, 53.5)), end) });
+  S(brew, { o: Math.min(eo(P(t, 54.6, 55.3)), end) });
+  S(url, { o: Math.min(eo(P(t, 55.0, 55.7)), end) });
 });
 
 // ---------- the words ----------
@@ -437,16 +476,17 @@ words(`Only what you ${grad("allow", ...AMBER)}.`, 31.9, 35.8);
 words(`${grad("Combine", ...BLUE)} them.`, 36.7, 39.0);
 words(`Group them into ${grad("modules", ...BLUE)}.`, 39.2, 41.6);
 words(`Bring in modules from ${grad("anywhere", ...BLUE)}.`, 41.8, 44.4);
-words("Build anything.", 44.6, 46.6);
-words("That's Lask.", 46.9, 48.6, 500, 56);
+words("Build anything.", 44.6, 46.5);
+words(`${grad("Safely", ...AMBER)}.`, 46.7, 48.7);
+words("That's Lask.", 49.1, 50.8, 500, 56);
 
 // ---------- timelines ----------
-const FULL = 56.6;
+const FULL = 58.8;
 // the README cut: [from, to, speed] of the full timeline, played in turn
-const CUTS = [[0, 10.9, 1.9], [11.0, 17.6, 2.3], [17.8, 27.1, 2.4], [28.3, 35.8, 2.3], [36.0, 46.6, 2.6], [46.8, 54.6, 2.6]];
+const CUTS = [[0, 10.9, 1.9], [11.0, 17.6, 2.3], [17.8, 27.1, 2.4], [28.3, 35.8, 2.3], [36.0, 48.8, 2.6], [49.0, 56.8, 2.6]];
 const CUT_LEN = CUTS.map(([a, b, s]) => (b - a) / s);
 window.DURATION = SHORT ? CUT_LEN.reduce((x, y) => x + y, 0) : FULL;
-window.POSTER = 54.6;
+window.POSTER = 56.8;
 function fullTime(t) {
   if (!SHORT) return [t, 1];
   let acc = 0;
