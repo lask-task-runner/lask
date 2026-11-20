@@ -7,8 +7,8 @@
   The Lask tour video, drawn frame by frame.
 
   One shape carries it: a task, drawn as the Lask logo's rounded square.
-  The code is shown once, at the start, and folds into that square; after
-  that there are only simple shapes and a few words.
+  It opens on tasks flowing through a runner, and follows one of them;
+  there are only simple shapes and a few words.
 
   window.render(t) draws the frame at t seconds from t alone, so frames can
   be drawn in any order. render.mjs captures them; open this file in a
@@ -86,31 +86,6 @@ function words(html, a, b, y = 500, size = 64) {
 const grad = (s, a, b) => `<span style="background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent">${s}</span>`;
 
 // ===================================================================
-// The code, once (0 - 4.3), folding into the task
-// ===================================================================
-const CODE = [
-  `<span class="k">command</span> { <span class="s">"python"</span> } <span class="k">on</span> <span class="im">#python:3.13.7-alpine3.22</span>`,
-  `<span class="k">command</span> { <span class="s">"ruff"</span> } <span class="k">on</span> <span class="im">#ghcr.io/astral-sh/ruff:0.13.3-alpine</span>`,
-  ``,
-  `<span class="k">access</span> <span class="am">Sandboxed</span> = { secrets: <span class="k">false</span>, runs: [<span class="s">"container"</span>] }`,
-  ``,
-  `<span class="fn">ci</span>() <span class="k">within</span> <span class="am">Sandboxed</span> = <span class="k">do</span> {`,
-  `  lint = <span class="k">async</span> $ ruff check app`,
-  `  test = <span class="k">async</span> $ python -m unittest discover -s app`,
-  `  all([lint, test])`,
-  `}`,
-];
-const code = add(CODE.map(l => `<div style="height:30px;line-height:30px;white-space:pre">${l || " "}</div>`).join(""),
-  "left:300px;top:200px;width:700px;font:500 19px var(--mono);color:#e5e5ea;transform-origin:340px 100px");
-const codeName = add("main.lask", "left:0;top:150px;width:1280px;text-align:center;font:600 15px var(--mono);color:#6c7986;letter-spacing:.08em");
-R.push(t => {
-  const fold = eio(P(t, 3.5, 4.3));
-  const o = Math.min(eo(P(t, .3, 1.3)), 1 - P(t, 3.7, 4.25));
-  S(code, { o, s: lerp(lerp(.97, 1.02, P(t, .3, 3.5)), .08, fold), y: (1 - eo(P(t, .3, 1.3))) * 14, b: fold * 6 });
-  S(codeName, { o: Math.min(eo(P(t, .5, 1.3)), 1 - P(t, 3.3, 3.7)) });
-});
-
-// ===================================================================
 // The shapes
 // ===================================================================
 const sv = el(stage, "svg", { width: 1280, height: 720 });
@@ -165,18 +140,44 @@ stop.innerHTML = `<circle r="17" fill="#ff453a"/><path d="M-6 -6l12 12M6 -6l-12 
 const ring = el(sv, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 3, filter: "url(#glow)" });
 const shock = el(sv, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ffb340", "stroke-width": 1.5 });
 
-// a container drawn around the task, and the pin that fixes it
-const box = el(sv, "rect", { x: -95, y: -95, width: 190, height: 190, rx: 40, stroke: "#2997ff", "stroke-width": 2.5, pathLength: 1 });
+// a shipping container: corrugated sides, rails, corner castings
+const KW = 145, KH = 82;
+function makeContainer(parent) {
+  const g = el(parent, "g", {});
+  const body = el(g, "rect", { x: -KW, y: -KH, width: 2 * KW, height: 2 * KH, rx: 5, fill: "rgba(41,151,255,.07)", stroke: "#2997ff", "stroke-width": 2.6, pathLength: 1 });
+  const ribs = [];
+  for (let x = -KW + 16; x <= KW - 16; x += 14) ribs.push(el(g, "line", { x1: x, y1: -KH + 14, x2: x, y2: KH - 14, stroke: "#2997ff", "stroke-width": 2, opacity: .35 }));
+  const rails = [-KH + 7, KH - 7].map(y => el(g, "line", { x1: -KW + 2, y1: y, x2: KW - 2, y2: y, stroke: "#2997ff", "stroke-width": 1.6 }));
+  const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) =>
+    el(g, "rect", { x: sx * KW - 11 - sx * 5, y: sy * KH - 8 - sy * 4, width: 22, height: 16, rx: 2.5, fill: "#2997ff" }));
+  return { g, body, ribs, rails, corners };
+}
+// draw a container in: outline, then the ribs and rails, then the corners
+function drawContainer(c, t, a, o = 1) {
+  A(c.body, { "stroke-dasharray": `${eio(P(t, a, a + 1))} 1`, "fill-opacity": eo(P(t, a + .6, a + 1.2)) });
+  c.ribs.forEach((r, i) => A(r, { opacity: .35 * eo(P(t, a + .55 + i * .025, a + .85 + i * .025)) }));
+  c.rails.forEach(r => A(r, { opacity: eo(P(t, a + .6, a + 1)) }));
+  c.corners.forEach((k, i) => A(k, { opacity: eo(P(t, a + .9 + i * .05, a + 1.05 + i * .05)) }));
+  A(c.g, { opacity: o });
+}
+const box = makeContainer(sv);
 const pin = el(sv, "g", {}); pin.innerHTML = LOCK;
+
+// the opening: tasks flowing along three lanes through the runner's steps
+const FL = [CY - 90, CY, CY + 90], FX0 = 150, FX1 = 1130, STEPS = [400, 640, 880];
+const flowLanes = FL.map(y => el(sv, "line", { x1: FX0, y1: y, x2: FX1, y2: y, stroke: "#2c2c2e", "stroke-width": 2 }));
+const flowSteps = FL.flatMap(y => STEPS.map(x => ({ x, y, e: el(sv, "circle", { cx: x, cy: y, r: 7, fill: "#1c1c1e", stroke: "#3a3a3c", "stroke-width": 2 }) })));
+const flow = FL.flatMap((y, j) => [...Array(5).keys()].map(k => ({ y, j, k, task: makeTask(40) })));
+const hero = makeTask(110);
 const main = makeTask(110);
 
 // the same container on three machines
 const MX = [CX - 340, CX, CX + 340];
 const copies = MX.map(() => {
   const g = el(sv, "g", {});
-  el(g, "rect", { x: -95, y: -95, width: 190, height: 190, rx: 40, fill: "rgba(41,151,255,.06)", stroke: "#2997ff", "stroke-width": 2.5 });
+  drawContainer(makeContainer(g), 99, 0);
   place(makeTask(110, g), 0, 0);
-  el(g, "g", { transform: "translate(95 -95)" }).innerHTML = LOCK;
+  el(g, "g", { transform: `translate(${KW} ${-KH})` }).innerHTML = LOCK;
   return g;
 });
 const ICONS = [
@@ -202,9 +203,24 @@ const qTicks = QX.map(() => { const g = el(sv, "g", {}); g.innerHTML = TICK(20);
 const FIN = makeTask(150);
 
 R.push(t => {
-  // the task appears where the code folded, and stays until the copies
-  const tin = P(t, 3.9, 4.7);
-  place(main, CX, CY, lerp(.15, 1, back(tin)), Math.min(eo(tin), 1 - P(t, 21.9, 22.2)));
+  // ---- the opening (0 - 4.2): tasks flow; one comes forward and becomes the task
+  const flo = Math.min(eo(P(t, .2, 1.0)), 1 - P(t, 3.3, 3.9));
+  const pos = f => FX0 - 60 + ((t * 230 + f.k * 220 + f.j * 73) % 1100);
+  flowLanes.forEach(l => A(l, { opacity: flo }));
+  flowSteps.forEach(st => {
+    const near = flow.some(f => f.y === st.y && Math.abs(pos(f) - st.x) < 26);
+    A(st.e, { fill: near ? "#30d158" : "#1c1c1e", stroke: near ? "#30d158" : "#3a3a3c", opacity: flo });
+  });
+  flow.forEach(f => {
+    const x = pos(f);
+    place(f.task, x, f.y, 1, flo * clamp((x - FX0 + 40) / 60) * clamp((FX1 + 40 - x) / 60));
+  });
+  // the hero rides the middle lane, then lifts out to the centre
+  const lift = eio(P(t, 2.9, 3.9));
+  const hx = lerp(FX0 + (t - .4) * 230, CX, lift);
+  place(hero, hx, CY, lerp(40 / 110, 1, lift), Math.min(eo(P(t, .4, .9)), t < 3.9 ? 1 : 0));
+  // the main task takes over where the hero lands
+  place(main, CX, CY, 1, Math.min(t >= 3.9 ? 1 : 0, 1 - P(t, 21.9, 22.2)));
   A(main.halo, { opacity: .42 + .14 * Math.sin(t * 2.4) });
 
   // ---- what it reaches (6 - 13.2): the ring stops the dots at 9.6
@@ -241,9 +257,9 @@ R.push(t => {
   sv.style.transform = `translate(${Math.sin(t * 90) * jolt}px,${Math.cos(t * 70) * jolt * .5}px)`;
 
   // ---- in a container (13.6 - 22): the box draws, the pin snaps on
-  A(box, { transform: `translate(${CX} ${CY})`, "stroke-dasharray": `${eio(P(t, 13.6, 14.6))} 1`, opacity: t < 13.6 ? 0 : 1 - P(t, 21.9, 22.2),
-    fill: `rgba(41,151,255,${.06 * eo(P(t, 14.2, 14.8))})` });
-  A(pin, { transform: `translate(${CX + 95} ${CY - 95}) scale(${t < 18.8 ? 0 : lerp(2.2, 1, back(P(t, 18.8, 19.15)))})`,
+  drawContainer(box, t, 13.6, t < 13.6 ? 0 : 1 - P(t, 21.9, 22.2));
+  A(box.g, { transform: `translate(${CX} ${CY})` });
+  A(pin, { transform: `translate(${CX + KW} ${CY - KH}) scale(${t < 18.8 ? 0 : lerp(2.2, 1, back(P(t, 18.8, 19.15)))})`,
     opacity: Math.min(eo(P(t, 18.8, 18.9)), 1 - P(t, 21.9, 22.2)) });
 
   // ---- the same everywhere (22 - 26.8)
@@ -314,7 +330,8 @@ R.push(t => {
 });
 
 // ---------- the words ----------
-words("A task.", 4.5, 6.0);
+words("Your tasks.", .8, 3.3);
+words("Take one.", 4.2, 6.0);
 words(`What can it ${grad("reach", "#ff453a", "#ff9f0a")}?`, 6.3, 9.4);
 words(`Only what you ${grad("allow", "#ffb340", "#ffd60a")}.`, 10.0, 13.2);
 words("Every tool, in a container.", 14.0, 16.3);
