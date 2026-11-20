@@ -7,8 +7,8 @@
   The Lask tour video, drawn frame by frame.
 
   It tells one change, in simple shapes and a few words: tasks that run
-  anywhere and touch anything become functions, then go into containers,
-  then get types, then get bounds on what they reach, and that is Lask.
+  anywhere and touch anything become functions, then get types, then go
+  into containers, then get bounds on what they reach, and that is Lask.
   The task is drawn as the logo's rounded square, and becomes the logo.
 
   window.render(t) draws the frame at t seconds from t alone, so frames can
@@ -209,7 +209,7 @@ const paren = add(`<span style="display:inline-block">(</span><span style="displ
   `left:0;top:${CY - 100}px;width:1280px;text-align:center;font:200 170px/1 var(--sans);color:#86868b`);
 const [pl, , pr] = paren.children;
 
-// 3. a container, pinned, the same on three machines
+// 4. a container, pinned, the same on three machines
 const box = makeContainer(L.box);
 const pin = G(L.front, LOCK);
 const MX = [CX - 360, CX, CX + 360];
@@ -222,7 +222,8 @@ const copies = MX.map(() => {
 });
 const hosts = ["laptop", "cloud", "server"].map(k => G(L.icons, ICON[k]("#86868b")));
 
-// 4. types: a port on each side; the wrong piece is turned away, the right one fits
+// 3. types: a port on each side of the function; the wrong piece is turned away, the right one fits
+const TS = 55;  // half the task's side
 const portL = el(L.front, "circle", { r: 19, fill: "#000", "stroke-width": 2.5 });
 const portR = el(L.front, "circle", { r: 19, fill: "#000", stroke: "#f5f5f7", "stroke-width": 2.5 });
 const wrong = el(L.front, "path", { d: "M-17 -19 21 0-17 19z" });
@@ -251,7 +252,7 @@ const shock = el(L.front, "circle", { cx: CX, cy: CY, fill: "none", stroke: "#ff
 const stop = G(L.front, CROSS);
 
 R.push(t => {
-  const away = t >= 17.0 && t < 20.9;   // while the copies are out
+  const away = t >= 23.6 && t < 27.5;   // while the copies are out
   // ---- the task: it gathers from the swarm, and stays to the end
   const grow = eio(P(t, 36.6, 37.4));
   const aside = eio(P(t, 38.0, 38.8));
@@ -266,37 +267,37 @@ R.push(t => {
   S(pl, { o: po, x: (1 - eo5(P(t, 8.3, 9.2))) * -70 });
   S(pr, { o: po, x: (1 - eo5(P(t, 8.3, 9.2))) * 70 });
 
-  // ---- 3. a container (11.2 - 21): drawn, pinned, copied to three machines, back to one
-  drawContainer(box, t, 11.2);
-  A(box.g, { transform: `translate(${CX} ${CY})`, opacity: Math.min(t >= 11.2 ? 1 : 0, 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
-  A(pin, { transform: `translate(${CX + KW} ${CY - KH}) scale(${t < 14.3 ? 0 : lerp(2.2, 1, back(P(t, 14.3, 14.65)))})`,
-    opacity: Math.min(eo(P(t, 14.3, 14.4)), 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
-  const spread = eio(P(t, 17.0, 18.0)) * (1 - eio(P(t, 20.0, 20.9)));
+  // ---- 4. a container (17.8 - 27.6): drawn, pinned, copied to three machines, back to one
+  drawContainer(box, t, 17.8);
+  A(box.g, { transform: `translate(${CX} ${CY})`, opacity: Math.min(t >= 17.8 ? 1 : 0, 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
+  A(pin, { transform: `translate(${CX + KW} ${CY - KH}) scale(${t < 20.9 ? 0 : lerp(2.2, 1, back(P(t, 20.9, 21.25)))})`,
+    opacity: Math.min(eo(P(t, 20.9, 21.0)), 1 - P(t, 36.0, 36.6)) * (away ? 0 : 1) });
+  const spread = eio(P(t, 23.6, 24.6)) * (1 - eio(P(t, 26.6, 27.5)));
   copies.forEach((g, i) => {
-    const o = away ? (i === 1 ? 1 : Math.min(eo(P(t, 17.0, 17.4)), 1 - P(t, 20.3, 20.8))) : 0;
+    const o = away ? (i === 1 ? 1 : Math.min(eo(P(t, 23.6, 24.0)), 1 - P(t, 26.9, 27.4))) : 0;
     A(g, { transform: `translate(${lerp(CX, MX[i], spread)} ${CY - 30 * spread}) scale(${lerp(1, .72, spread)})`, opacity: o });
   });
   hosts.forEach((g, i) => {
-    const io = Math.min(eo(P(t, 17.7 + i * .12, 18.3 + i * .12)), 1 - P(t, 19.8, 20.3));
+    const io = Math.min(eo(P(t, 24.3 + i * .12, 24.9 + i * .12)), 1 - P(t, 26.4, 26.9));
     A(g, { transform: `translate(${MX[i]} ${CY + 110 + (1 - io) * 12})`, opacity: io });
   });
 
-  // ---- 4. types (21.4 - 28)
-  const to = Math.min(eo(P(t, 21.4, 21.9)), 1 - P(t, 27.6, 28.1));
-  A(portL, { cx: CX - KW, cy: CY, opacity: to, stroke: t >= 25.0 ? "#30d158" : "#f5f5f7" });
-  A(portR, { cx: CX + KW, cy: CY, opacity: to });
+  // ---- 3. types (11.0 - 17.7)
+  const to = Math.min(eo(P(t, 11.0, 11.5)), 1 - P(t, 17.2, 17.7));
+  A(portL, { cx: CX - TS, cy: CY, opacity: to, stroke: t >= 14.6 ? "#30d158" : "#f5f5f7" });
+  A(portR, { cx: CX + TS, cy: CY, opacity: to });
   // the wrong piece comes in, is turned away, and falls
-  const wi = eio(P(t, 22.3, 23.0));
-  const shake = t >= 23.0 && t < 23.5 ? Math.sin(t * 85) * 9 * (1 - P(t, 23.0, 23.5)) : 0;
-  const fall = eo(P(t, 23.5, 24.1));
-  A(wrong, { transform: `translate(${lerp(CX - 470, CX - KW - 34, wi) + shake - fall * 40} ${CY + fall * 70}) rotate(${fall * -30})`,
-    fill: t >= 23.0 ? "#ff453a" : "#f5f5f7", opacity: Math.min(to, eo(P(t, 22.3, 22.5)), 1 - fall) });
+  const wi = eio(P(t, 11.9, 12.6));
+  const shake = t >= 12.6 && t < 13.1 ? Math.sin(t * 85) * 9 * (1 - P(t, 12.6, 13.1)) : 0;
+  const fall = eo(P(t, 13.1, 13.7));
+  A(wrong, { transform: `translate(${lerp(CX - 470, CX - TS - 34, wi) + shake - fall * 40} ${CY + fall * 70}) rotate(${fall * -30})`,
+    fill: t >= 12.6 ? "#ff453a" : "#f5f5f7", opacity: Math.min(to, eo(P(t, 11.9, 12.1)), 1 - fall) });
   // the right piece fits, and a result comes out of the other side
-  const ri = eio(P(t, 24.3, 25.0));
-  A(right, { cx: lerp(CX - 470, CX - KW, ri), cy: CY, opacity: Math.min(to, eo(P(t, 24.3, 24.5))), fill: t >= 25.0 ? "#30d158" : "#2997ff" });
-  const oi = eio(P(t, 25.5, 26.3));
-  A(out, { cx: lerp(CX + KW, CX + KW + 150, oi), cy: CY, opacity: Math.min(to, t >= 25.5 ? 1 : 0) });
-  A(typeTick, { transform: `translate(${CX + KW + 196} ${CY}) scale(${t < 26.3 ? 0 : lerp(.3, 1, back(P(t, 26.3, 26.65)))})`, opacity: to });
+  const ri = eio(P(t, 13.9, 14.6));
+  A(right, { cx: lerp(CX - 470, CX - TS, ri), cy: CY, opacity: Math.min(to, eo(P(t, 13.9, 14.1))), fill: t >= 14.6 ? "#30d158" : "#2997ff" });
+  const oi = eio(P(t, 15.1, 15.9));
+  A(out, { cx: lerp(CX + TS, CX + TS + 150, oi), cy: CY, opacity: Math.min(to, t >= 15.1 ? 1 : 0) });
+  A(typeTick, { transform: `translate(${CX + TS + 196} ${CY}) scale(${t < 15.9 ? 0 : lerp(.3, 1, back(P(t, 15.9, 16.2)))})`, opacity: to });
 
   // ---- 5. bounds (28.2 - 36)
   const RING = 31.6, after = t >= RING + .15;
@@ -329,10 +330,10 @@ R.push(t => {
 
 // ---- 6. the close: the name, and the four steps it took
 const name = add("Lask", "left:610px;top:188px;font:700 108px/1 var(--sans);letter-spacing:-.04em");
-const tag = add(["Functions.", "Containers.", "Types.", "Bounds."].map(w => `<span style="display:inline-block;margin:0 9px">${w}</span>`).join(""),
+const tag = add(["Functions.", "Types.", "Containers.", "Bounds."].map(w => `<span style="display:inline-block;margin:0 9px">${w}</span>`).join(""),
   "left:0;top:368px;width:1280px;text-align:center;font:600 42px var(--sans);letter-spacing:-.03em");
 const TW = [...tag.children];
-[WHITE, BLUE, GREEN, AMBER].forEach(([a, b], i) => {
+[WHITE, GREEN, BLUE, AMBER].forEach(([a, b], i) => {
   TW[i].style.cssText += `;background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent`;
 });
 const brew = add(`<span style="color:#86868b">$</span> brew install lask`, "left:0;top:490px;width:1280px;text-align:center;font:500 24px var(--mono)");
@@ -350,11 +351,11 @@ R.push(t => {
 
 // ---------- the words ----------
 words(`Make each one a ${grad("function", ...WHITE)}.`, 8.0, 10.9);
-words(`Put it in a ${grad("container", ...BLUE)}.`, 11.6, 14.1);
-words(`${grad("Pinned", ...BLUE)}. By digest.`, 14.4, 16.8);
-words("The same, everywhere.", 17.4, 20.5, 520);
-words(`Give it ${grad("types", ...GREEN)}.`, 21.6, 24.1);
-words("Mistakes caught before it runs.", 24.4, 28.0);
+words(`Put it in a ${grad("container", ...BLUE)}.`, 18.2, 20.7);
+words(`${grad("Pinned", ...BLUE)}. By digest.`, 21.0, 23.4);
+words("The same, everywhere.", 24.0, 27.1, 520);
+words(`Give it ${grad("types", ...GREEN)}.`, 11.2, 13.7);
+words("Mistakes caught before it runs.", 14.0, 17.6);
 words(`Bound what it can ${grad("reach", ...AMBER)}.`, 28.6, 31.4);
 words(`Only what you ${grad("allow", ...AMBER)}.`, 31.9, 35.8);
 words("That's Lask.", 36.3, 38.0, 500, 56);
@@ -362,7 +363,7 @@ words("That's Lask.", 36.3, 38.0, 500, 56);
 // ---------- timelines ----------
 const FULL = 46;
 // the README cut: [from, to, speed] of the full timeline, played in turn
-const CUTS = [[0, 10.9, 1.8], [11.0, 20.5, 2.2], [21.3, 28.0, 2.2], [28.3, 35.8, 2.2], [36.0, 44, 2.4]];
+const CUTS = [[0, 10.9, 1.8], [11.0, 17.6, 2.2], [17.8, 27.1, 2.2], [28.3, 35.8, 2.2], [36.0, 44, 2.4]];
 const CUT_LEN = CUTS.map(([a, b, s]) => (b - a) / s);
 window.DURATION = SHORT ? CUT_LEN.reduce((x, y) => x + y, 0) : FULL;
 window.POSTER = 44;
