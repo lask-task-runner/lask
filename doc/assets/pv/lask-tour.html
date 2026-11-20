@@ -273,7 +273,7 @@ R.push(t => {
   const mx = t < 48.9 ? lerp(CX, NODES[0].x, into) : lerp(CX, CX - 130, aside);
   const my = t < 48.9 ? lerp(CY, NODES[0].y, into) : lerp(CY, 240, aside);
   const ms = t < 48.9 ? lerp(1, NODE / 110, into) : lerp(1, 150 / 110, grow);
-  place(main, mx, my, ms, Math.min(t >= 7.7 ? 1 : 0, 1 - P(t, 58.2, 58.8)) * (away || inGraph ? 0 : 1));
+  place(main, mx, my, ms, Math.min(t >= 7.7 ? 1 : 0, 1 - P(t, 59.6, 60.2)) * (away || inGraph ? 0 : 1));
   A(main.halo, { opacity: .42 + .14 * Math.sin(t * 2.4) });
   const lam = eio(P(t, 49.9, 50.6));
   A(main.lam, { "stroke-dasharray": `${lam} 1`, opacity: lam > .001 ? 1 : 0 });
@@ -466,17 +466,31 @@ const TW = [...tag.children];
 [WHITE, GREEN, BLUE, AMBER].forEach(([a, b], i) => {
   TW[i].style.cssText += `;padding-bottom:.18em;margin-bottom:-.18em;background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent`;
 });
-const brew = add(`<span style="color:#86868b">$</span> brew install lask`, "left:0;top:490px;width:1280px;text-align:center;font:500 24px var(--mono)");
-const url = add("lask-task-runner.github.io", "left:0;top:538px;width:1280px;text-align:center;font:500 20px var(--sans);color:#86868b");
+// a prompt that types `lask run task`, then retypes it as `lask make it simple`
+const prompt = add(`<span style="color:#86868b">❯</span> <span></span><span style="display:inline-block;width:12px;height:26px;margin-left:3px;vertical-align:-4px;background:#f5f5f7"></span>`,
+  "left:0;right:0;margin:0 auto;top:452px;width:max-content;min-width:420px;font:500 26px var(--mono);padding:14px 26px;border-radius:16px;background:#1c1c1e;border:1px solid #3a3a3c;white-space:pre");
+const [, promptTx, promptCur] = prompt.children;
+function retype(prefix, from, to, p) {
+  const steps = from.length + to.length, k = Math.round(p * steps);
+  return k <= from.length ? prefix + from.slice(0, from.length - k) : prefix + to.slice(0, k - from.length);
+}
+const brew = add(`<span style="color:#86868b">$</span> brew install lask`, "left:0;top:560px;width:1280px;text-align:center;font:500 20px var(--mono);color:#c7c7cc");
+const url = add("lask-task-runner.github.io", "left:0;top:596px;width:1280px;text-align:center;font:500 18px var(--sans);color:#86868b");
 R.push(t => {
-  const end = 1 - P(t, 58.2, 58.8);
+  const end = 1 - P(t, 59.6, 60.2);
   S(name, { o: Math.min(eo(P(t, 51.2, 51.9)), end), x: (1 - eo5(P(t, 51.2, 52.1))) * -24, b: (1 - eo(P(t, 51.2, 51.9))) * 8 });
   TW.forEach((w, i) => {
     const a = 52.4 + i * .4;
     S(w, { o: Math.min(eo(P(t, a, a + .6)), end), y: (1 - eo5(P(t, a, a + .8))) * 18, b: (1 - eo(P(t, a, a + .6))) * 8 });
   });
-  S(brew, { o: Math.min(eo(P(t, 54.6, 55.3)), end) });
-  S(url, { o: Math.min(eo(P(t, 55.0, 55.7)), end) });
+  S(prompt, { o: Math.min(eo(P(t, 53.7, 54.2)), end), y: (1 - eo5(P(t, 53.7, 54.4))) * 16 });
+  const e0 = 54.3;
+  const txt = t < e0 + 1.1 ? "lask run task".slice(0, Math.round(13 * P(t, e0, e0 + .6)))
+    : retype("lask ", "run task", "make it simple", P(t, e0 + 1.1, e0 + 2.1));
+  if (promptTx.textContent !== txt) promptTx.textContent = txt;
+  promptCur.style.opacity = (t >= e0 && t < e0 + 2.3) || Math.floor(t * 2.2) % 2 === 0 ? 1 : 0;
+  S(brew, { o: Math.min(eo(P(t, 56.9, 57.5)), end) });
+  S(url, { o: Math.min(eo(P(t, 57.2, 57.8)), end) });
 });
 
 // ---------- the words ----------
@@ -496,12 +510,12 @@ words(`Powerful tasks, run ${grad("safely", ...AMBER)}.`, 46.7, 48.7);
 words("That's Lask.", 49.1, 50.8, 500, 56);
 
 // ---------- timelines ----------
-const FULL = 58.8;
+const FULL = 60.2;
 // the README cut: [from, to, speed] of the full timeline, played in turn
-const CUTS = [[0, 10.9, 1.9], [11.0, 17.6, 2.3], [17.8, 27.1, 2.4], [28.3, 35.8, 2.3], [36.0, 48.8, 2.6], [49.0, 56.8, 2.6]];
+const CUTS = [[0, 10.9, 1.9], [11.0, 17.6, 2.3], [17.8, 27.1, 2.4], [28.3, 35.8, 2.3], [36.0, 48.8, 2.6], [49.0, 53.7, 2.6], [53.7, 58.6, 1.25]];
 const CUT_LEN = CUTS.map(([a, b, s]) => (b - a) / s);
 window.DURATION = SHORT ? CUT_LEN.reduce((x, y) => x + y, 0) : FULL;
-window.POSTER = 56.8;
+window.POSTER = 58.6;
 function fullTime(t) {
   if (!SHORT) return [t, 1];
   let acc = 0;
