@@ -86,7 +86,9 @@ function words(html, a, b, y = 500, size = 62) {
     S(e, { o, y: (1 - eo5(P(t, a, a + .9))) * 22, b: (1 - o) * 10 });
   });
 }
-const grad = (s, a, b) => `<span style="background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent">${s}</span>`;
+// a gradient-filled word; the padding keeps descenders (y, g) inside the painted area
+const GRAD_BOX = "display:inline-block;padding:0 .04em .18em;margin:0 -.04em -.18em";
+const grad = (s, a, b) => `<span style="${GRAD_BOX};background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent">${s}</span>`;
 const WHITE = ["#f5f5f7", "#c7c7cc"], BLUE = ["#2997ff", "#5ac8fa"], GREEN = ["#30d158", "#a6f4c5"], AMBER = ["#ffb340", "#ffd60a"], RED = ["#ff453a", "#ff9f0a"];
 
 // ===================================================================
@@ -462,7 +464,7 @@ const tag = add(["Functions.", "Types.", "Containers.", "Bounds."].map(w => `<sp
   "left:0;top:368px;width:1280px;text-align:center;font:600 42px var(--sans);letter-spacing:-.03em");
 const TW = [...tag.children];
 [WHITE, GREEN, BLUE, AMBER].forEach(([a, b], i) => {
-  TW[i].style.cssText += `;background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent`;
+  TW[i].style.cssText += `;padding-bottom:.18em;margin-bottom:-.18em;background:linear-gradient(90deg,${a},${b});-webkit-background-clip:text;background-clip:text;color:transparent`;
 });
 const brew = add(`<span style="color:#86868b">$</span> brew install lask`, "left:0;top:490px;width:1280px;text-align:center;font:500 24px var(--mono)");
 const url = add("lask-task-runner.github.io", "left:0;top:538px;width:1280px;text-align:center;font:500 20px var(--sans);color:#86868b");
