@@ -1112,7 +1112,9 @@ languageCompletion path src (Position pl pc)
           <> keywordCands
           <> kwParamCands p scope
   where
-    context = whereAt path src lineIdx startCol
+    -- The source is lexed once, for the position and for 'tokenCands'.
+    lexed = either (const Nothing) Just (lexTokens path src)
+    context = whereAt path src lexed lineIdx startCol
 
     -- The word being typed is replaced by a placeholder; if that still
     -- does not parse (a half-written declaration, say) the whole line
@@ -1214,7 +1216,7 @@ languageCompletion path src (Position pl pc)
     -- 'dedup' when the analysed candidates do not already have it.
     tokenCands =
       [ Cand n CompletionItemKind_Function Nothing Nothing 2
-      | n <- tokenNames path src
+      | n <- maybe [] tokenNamesIn lexed
       ]
 
     valueCand p n (VTopLevel modPath declName) =
@@ -1475,10 +1477,8 @@ languageCompletion path src (Position pl pc)
 -- buffer as a whole is still half-written: a declaration is any
 -- identifier that is followed by @(@, @=@ or @:@ and either sits in
 -- column one or directly follows an @export@\/@internal@ marker.
-tokenNames :: FilePath -> Text -> [Text]
-tokenNames path src = case lexTokens path src of
-  Left _ -> []
-  Right ts -> declNames ts <> importNames ts
+tokenNamesIn :: [Tok.Spanned Tok.Token] -> [Text]
+tokenNamesIn ts = declNames ts <> importNames ts
   where
     declNames ts =
       [ n

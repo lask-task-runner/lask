@@ -18,10 +18,13 @@ module Main (main) where
 
 import Control.Lens ((^.))
 import Control.Monad (forM)
+import qualified Data.Aeson as J
+import qualified Data.ByteString.Lazy as BL
 import Data.Char (isAscii)
 import Data.List (findIndex, sort, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
+import GHC.Clock (getMonotonicTime)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -49,7 +52,8 @@ data Outcome = Outcome
   { outKind :: String,
     outRank :: Maybe Int, -- 0-based place in the editor's list
     outShown :: Int,
-    outWhere :: String
+    outWhere :: String,
+    outSeconds :: Double
   }
 
 -- | At most this many cases per file and prefix length, spread evenly
@@ -71,8 +75,22 @@ main = do
   case verbose of
     Just kind -> mapM_ putStrLn [outWhere o | (1, o) <- outcomes, outKind o == kind, outRank o == Nothing]
     Nothing -> pure ()
+  -- TIMES=<file> writes how long each answer took.
+  times <- lookupEnv "TIMES"
+  case times of
+    Just f -> writeFile f (unlines [printf "%d\t%.2f\t%s\t%s" k (1000 * outSeconds o) (outKind o) (outWhere o) | (k, o) <- outcomes])
+    Nothing -> pure ()
+  -- SLOW=<ms> lists the answers that took longer.
+  slow <- lookupEnv "SLOW"
+  case slow of
+    Just ms -> mapM_ (\o -> printf "%8.0f ms %s\n" (1000 * outSeconds o) (outWhere o)) [o | (_, o) <- outcomes, 1000 * outSeconds o > read ms]
+    Nothing -> pure ()
   printf "%d files\n" (length files)
   mapM_ (report outcomes) [1, 2]
+  -- How long one answer takes, the analysis of the buffer included.
+  let ms = sort [1000 * outSeconds o | (_, o) <- outcomes]
+      at q = ms !! min (length ms - 1) (floor (q * fromIntegral (length ms) :: Double))
+  printf "\nlatency of %d answers: median %.1f ms, p95 %.1f ms, max %.1f ms\n" (length ms) (at 0.5) (at 0.95) (last ms)
 
 laskFiles :: FilePath -> IO [FilePath]
 laskFiles root = do
@@ -152,18 +170,19 @@ run k src c = do
         | otherwise = l
       edited = T.intercalate "\n" (zipWith cut [0 ..] srcLines)
       typed = T.toLower (T.take k (caseName c))
+  t0 <- getMonotonicTime
   items <- completionAt (caseFile c) edited (Position (fromIntegral (caseLine c)) (fromIntegral (caseCol c + k)))
+  -- What the server sends is the answer encoded whole, so the time
+  -- counts encoding it, and nothing of the analysis is kept after.
+  t1 <- BL.length (J.encode items) `seq` getMonotonicTime
   let shown =
         sortOn
           (\i -> (fromMaybe (i ^. L.label) (i ^. L.sortText), i ^. L.label))
           [i | i <- items, typed `T.isPrefixOf` T.toLower (i ^. L.label)]
-  pure
-    ( Outcome
-        (caseKind c)
-        (findIndex (\i -> i ^. L.label == caseName c) shown)
-        (length shown)
-        (printf "%s:%d:%d %s | %s" (caseFile c) (caseLine c + 1) (caseCol c + 1) (caseName c) (T.strip (srcLines !! caseLine c)))
-    )
+      rank = findIndex (\i -> i ^. L.label == caseName c) shown
+      count = length shown
+      at = printf "%s:%d:%d %s | %s" (caseFile c) (caseLine c + 1) (caseCol c + 1) (caseName c) (T.strip (srcLines !! caseLine c))
+  pure $! rank `seq` count `seq` length at `seq` Outcome (caseKind c) rank count at (t1 - t0)
 
 report :: [(Int, Outcome)] -> Int -> IO ()
 report all' k = do

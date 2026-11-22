@@ -509,14 +509,14 @@ benchmark completion-accuracy
       bench
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      aeson >=2.0 && <3
+      aeson
     , aeson-pretty >=0.8 && <1
     , array >=0.5 && <1
     , async >=2.2 && <3
     , base >=4.19 && <5
     , base16-bytestring >=1.0 && <2
     , base64-bytestring >=1.2 && <2
-    , bytestring >=0.11 && <0.13
+    , bytestring
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-md5 >=0.11 && <1

@@ -140,3 +140,5 @@ benchmarks:
     dependencies:
       - lask
       - lsp-types >= 2.0 && < 3
+      - aeson
+      - bytestring

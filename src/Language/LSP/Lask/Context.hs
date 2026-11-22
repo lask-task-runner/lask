@@ -22,6 +22,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Lexer (lexTokens)
 import qualified Language.Lask.Lexer.Token as Tok
+import qualified Language.Lask.Span as S
 
 -- | The kind of thing that may be written at a position.
 data Where
@@ -52,12 +53,25 @@ data Fields
   deriving (Show, Eq)
 
 -- | What may be written at a 0-based line and column of a source: the
--- column where the word being written starts.
-whereAt :: FilePath -> Text -> Int -> Int -> Where
-whereAt path src line col =
-  whereAfter path (T.intercalate "\n" (take line ls <> [T.take col (mconcat (take 1 (drop line ls)))]))
+-- column where the word being written starts. The tokens of the whole
+-- source are given when the lexer gets through it, which spares
+-- lexing what comes before the position again: a module can be large
+-- (a library of command schemas runs to hundreds of kilobytes).
+whereAt :: FilePath -> Text -> Maybe [Tok.Spanned Tok.Token] -> Int -> Int -> Where
+whereAt path src lexed line col = case lexed of
+  Just ts
+    -- Inside a token, a string say: as when the text before does not lex.
+    | any (straddles . Tok.spannedSpan) ts -> InExpr
+    | otherwise -> decideAfter [t | Tok.Spanned sp t <- ts, before sp]
+  Nothing ->
+    whereAfter path (T.intercalate "\n" (take line ls <> [T.take col (mconcat (take 1 (drop line ls)))]))
   where
     ls = T.splitOn "\n" src
+    pos = (line + 1, col + 1)
+    before (S.Span (S.Position _ l c) _) = (l, c) < pos
+    before S.NoSpan = False
+    straddles (S.Span (S.Position _ l1 c1) (S.Position _ l2 c2)) = (l1, c1) < pos && pos < (l2, c2)
+    straddles S.NoSpan = False
 
 -- | What may be written right after a source, which ends where the
 -- word being written starts. A source the lexer does not get through
@@ -66,7 +80,10 @@ whereAt path src line col =
 whereAfter :: FilePath -> Text -> Where
 whereAfter path src = case lexTokens path src of
   Left _ -> InExpr
-  Right ts -> decide (foldl step start (map Tok.spannedValue ts))
+  Right ts -> decideAfter (map Tok.spannedValue ts)
+
+decideAfter :: [Tok.Token] -> Where
+decideAfter = decide . foldl step start
 
 -- | An open bracket.
 data Frame
