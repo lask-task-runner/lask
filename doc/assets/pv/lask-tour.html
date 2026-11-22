@@ -226,6 +226,8 @@ const copies = MX.map(() => {
   const g = el(L.box, "g", {});
   drawContainer(makeContainer(g), 99, 0);
   place(makeTask(110, g), 0, 0);
+  g.pin = G(g, PUSHPIN);
+  A(g.pin, { transform: `translate(${KW} ${-KH})` });
   return g;
 });
 // equals signs between the copies
@@ -288,11 +290,13 @@ R.push(t => {
   A(box.g, { transform: `translate(${CX} ${CY})`, opacity: Math.min(t >= 17.8 ? 1 : 0, 1 - P(t, 35.6, 36.1)) * (away ? 0 : 1) });
   // the pin snaps onto the container's corner
   A(pin, { transform: `translate(${CX + KW} ${CY - KH}) scale(${t < 20.9 ? 0 : lerp(2.2, 1, back(P(t, 20.9, 21.25)))})`,
-    opacity: Math.min(eo(P(t, 20.9, 21.0)), 1 - P(t, 23.1, 23.5)) });
+    opacity: eo(P(t, 20.9, 21.0)) * (t < 23.6 ? 1 : 0) });
   const spread = eio(P(t, 23.6, 24.6)) * (1 - eio(P(t, 26.6, 27.5)));
   copies.forEach((g, i) => {
     const o = away ? (i === 1 ? 1 : Math.min(eo(P(t, 23.6, 24.0)), 1 - P(t, 26.9, 27.4))) : 0;
     A(g, { transform: `translate(${lerp(CX, MX[i], spread)} ${CY - 30 * spread}) scale(${lerp(1, .72, spread)})`, opacity: o });
+    // each copy keeps the pin through the equals signs, then lets it go
+    A(g.pin, { opacity: 1 - P(t, 26.3, 26.7) });
   });
   EQ.forEach((e, i) => {
     const a = 24.5 + i * .15;
