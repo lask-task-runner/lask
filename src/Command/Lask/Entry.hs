@@ -17,7 +17,11 @@ import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
+import Command.Lask.Locate (locateEntry)
 import Command.Lask.Options
+import Data.Functor.Const (Const (..))
+import Data.Monoid (First (..))
+import System.Directory (doesFileExist)
 import Control.Exception (IOException, SomeException, fromException, toException, try)
 import Control.Monad (forM, unless, when, (>=>))
 import qualified Data.Aeson as A
@@ -74,7 +78,41 @@ import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.IO (hFlush, hIsTerminalDevice, hPutStrLn, stderr, stdin)
 
 runRootCommand :: RootCommand -> IO ()
-runRootCommand cmd = case cmd of
+runRootCommand given = do
+  cmd <- commonOpts locate given
+  mapM_ requireEntry (needsEntry cmd)
+  runResolved cmd
+  where
+    locate o
+      | optModuleGiven o = pure o
+      | otherwise = (\p -> o {optModule = p}) <$> locateEntry
+
+-- | The common options of a command that reads the entry module. @fmt@
+-- formats files whether or not one is there, @deps@ works on
+-- @lask.json@, and @secrets@ on the environment variables too.
+needsEntry :: RootCommand -> Maybe CommonOpts
+needsEntry cmd = case cmd of
+  CmdFmt _ -> Nothing
+  CmdDepsList _ -> Nothing
+  CmdDepsGraph {} -> Nothing
+  CmdDepsAdd {} -> Nothing
+  CmdDepsRm {} -> Nothing
+  CmdSecretsList _ -> Nothing
+  CmdSecretsCheck _ -> Nothing
+  _ -> getFirst (getConst (commonOpts (Const . First . Just) cmd))
+
+-- | A usage error when the entry module is not there (spec 11.1),
+-- before a command tries to read it.
+requireEntry :: CommonOpts -> IO ()
+requireEntry opts = do
+  present <- doesFileExist (optModule opts)
+  unless present . usageError opts $
+    if optModuleGiven opts
+      then "no such module: " <> T.pack (optModule opts)
+      else "no main.lask in this directory or any directory above it; a Lask project is a directory with a main.lask file, and --module names another entry module"
+
+runResolved :: RootCommand -> IO ()
+runResolved cmd = case cmd of
   CmdServe -> LSP.serve >> pure ()
   CmdCheck opts -> cmdCheck opts
   CmdFmt fmtOpts -> cmdFmt fmtOpts

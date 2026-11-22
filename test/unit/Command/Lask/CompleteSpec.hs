@@ -18,7 +18,8 @@ memResolver :: [(FilePath, Text)] -> Resolver
 memResolver files =
   Resolver
     { resolveRead = \p -> pure (lookup p files),
-      resolveList = \d -> pure (entriesOf d)
+      resolveList = \d -> pure (entriesOf d),
+      resolveEntry = pure "main.lask"
     }
   where
     entriesOf d =
@@ -285,6 +286,19 @@ spec = do
       let broken = ("main.lask", "export { deploy } from \"./lib/ops.lask\"\nf() = do {\n") : drop 1 reexporting
       vs <- ask broken ["run", ""]
       vs `shouldOffer` ["deploy"]
+
+  describe "the entry module (spec 11.1)" $ do
+    let above =
+          (memResolver [("../main.lask", "// Build it.\nbuild() = 1\n"), ("other.lask", "other() = 2\n")])
+            { resolveEntry = pure "../main.lask"
+            }
+        ask ws = map candValue . resCandidates <$> complete above ws
+
+    it "offers the functions of the main.lask the directories above hold" $
+      ask ["run", ""] `shouldReturn` ["build"]
+
+    it "reads the module --module names instead" $
+      ask ["run", "--module", "other.lask", ""] `shouldReturn` ["other"]
 
   describe "degradation (spec 11.7)" $ do
     it "still finds declaration heads and keyword parameters in a module that does not parse" $ do

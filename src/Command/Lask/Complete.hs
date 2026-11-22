@@ -58,6 +58,7 @@ module Command.Lask.Complete
 where
 
 import Command.Lask.Help (ParamKind (..), declParams, isFunctionDecl)
+import Command.Lask.Locate (defaultEntry, locateEntry)
 import Control.Exception (IOException, SomeException, try)
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isAlphaNum)
@@ -146,7 +147,10 @@ data Resolver = Resolver
     resolveRead :: FilePath -> IO (Maybe Text),
     -- | Directory entries as @(name, isDirectory)@; @[]@ when the
     -- directory cannot be listed.
-    resolveList :: FilePath -> IO [(FilePath, Bool)]
+    resolveList :: FilePath -> IO [(FilePath, Bool)],
+    -- | The entry module when the line gives no @--module@: @main.lask@
+    -- here or in the nearest directory above (spec 11.1).
+    resolveEntry :: IO FilePath
   }
 
 -- | Modules above this are not read; completion falls back to the
@@ -168,7 +172,8 @@ fileResolver =
         entries <- try' (listDirectory dir)
         case entries of
           Left _ -> pure []
-          Right names -> mapM (withKind dir) names
+          Right names -> mapM (withKind dir) names,
+      resolveEntry = locateEntry
     }
   where
     withKind dir n = do
@@ -185,11 +190,12 @@ complete r ws = do
   -- Whether a word after a keyword parameter is its value depends on
   -- the parameter's type (spec 11.2), so a line inside a function's
   -- arguments is walked again with the module's flags.
-  plan <- case planModule (classify ws) of
+  entry <- resolveEntry r
+  plan <- case planModule (classifyFrom entry (\_ _ -> False) ws) of
     Just modPath -> do
       idx <- loadIndex r modPath
-      pure (classifyWith (isFlagParam idx) ws)
-    Nothing -> pure (classify ws)
+      pure (classifyFrom entry (isFlagParam idx) ws)
+    Nothing -> pure (classifyFrom entry (\_ _ -> False) ws)
   answer r plan
 
 -- | The module whose function a plan is inside the arguments of.
@@ -728,17 +734,22 @@ classify = classifyWith (\_ _ -> False)
 -- | 'classify', knowing which keyword parameters of a function are
 -- flags.
 classifyWith :: (Text -> Text -> Bool) -> [Text] -> Plan
-classifyWith isFlag [] = atCursor initialSt {stIsFlag = isFlag} ""
-classifyWith isFlag ws = walk initialSt {stIsFlag = isFlag} (init ws) (last ws)
+classifyWith = classifyFrom defaultEntry
 
-initialSt :: St
-initialSt =
+-- | 'classifyWith', with the entry module a line that gives no
+-- @--module@ names.
+classifyFrom :: FilePath -> (Text -> Text -> Bool) -> [Text] -> Plan
+classifyFrom entry isFlag [] = atCursor (initialSt entry) {stIsFlag = isFlag} ""
+classifyFrom entry isFlag ws = walk (initialSt entry) {stIsFlag = isFlag} (init ws) (last ws)
+
+initialSt :: FilePath -> St
+initialSt entry =
   St
     { stCmds = rootCommands,
       stCmd = Nothing,
       stOpts = [helpOpt],
       stUsed = [],
-      stModule = "main.lask",
+      stModule = entry,
       stPos = 0,
       stPending = Nothing,
       stFn = Nothing,

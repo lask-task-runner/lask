@@ -3202,7 +3202,7 @@ lask <subcommand> [options]
 
 Common options:
 
-- `--module <path>`: specifies the target module for execution. When unspecified, `main.lask` in the execution directory is used.
+- `--module <path>`: specifies the target module for execution. When unspecified, it is `main.lask` in the execution directory or, when that has none, in the nearest directory above it that has one, so that a task can be run from any directory of its project. The directory of the entry module is the base directory, against which paths, the mount and `lask.json` resolve (10.5), not the execution directory, so a task behaves the same from anywhere in the project; diagnostics name the module relative to the execution directory (`../main.lask`). No `main.lask` up to the root is `E-CLI-USAGE`, as is a `--module` that names no file; `--module` is not looked for above. `fmt`, `deps` and `secrets` do not need the module: without one, `fmt` formats the execution directory, `deps` works on its `lask.json`, and `secrets` on the environment variables alone (11.10).
 - `--output <text|json|pretty-json>`: what is written to **stdout**: the evaluation result of `eval`, and the report of a command — the diagnostics of `check`, the tables of `envs`, `deps`, `secrets` and `sync`, the list of `fmt`, and help (11.6). `json` is compact JSON and `pretty-json` the same JSON indented. Its default is `json` for the evaluation result of `eval`, which is meant to be read by another program, and `text` for every report and for help. `run` and `cmd` write no result of their own (11.3), so it applies to them only for help.
 - `--log-format <text|json>`: what is written to **stderr**: logs, the command execution log, diagnostics and execution events (Chapter 12). `json` is JSON Lines, one object per line (12.2). The default is `text`.
 - The two are independent, one per stream, so that a CI job can read the logs of a run as JSON Lines while what it prints stays text, or the other way round.
@@ -4081,7 +4081,7 @@ lask fmt --stdin [--check]
 
 Targets:
 
-- Each `<path>` is a file, or a directory whose `.lask` files are formatted, recursively. Without one, the target is the directory of the entry module (`--module`, default `main.lask` in the execution directory): the whole project.
+- Each `<path>` is a file, or a directory whose `.lask` files are formatted, recursively. Without one, the target is the directory of the entry module (`--module`, default the `main.lask` found as 11.1 describes): the whole project.
 - A directory whose name begins with `.` is not entered — among them `.lask`, where external dependencies are cached (11.5) — and neither is a symbolic link to a directory.
 - With `--stdin`, standard input is formatted to standard output instead, and no `<path>` may be given.
 
