@@ -4,6 +4,7 @@
 module Language.Lask.Syntax.Scope
   ( localsAt,
     enclosingCall,
+    enclosingCallArgs,
     childExprs,
     paramDefaults,
   )
@@ -72,10 +73,15 @@ localsAt path (Module ds _ _) pos = nub (concat (reverse (concatMap goDecl ds)))
 -- | The dotted name of the callee of the innermost call whose
 -- argument list the position sits in, e.g. @["tf", "init"]@.
 enclosingCall :: FilePath -> Module -> Position -> Maybe [Text]
-enclosingCall path m pos =
+enclosingCall path m pos = fst <$> enclosingCallArgs path m pos
+
+-- | 'enclosingCall', with the keyword arguments the call already
+-- binds, other than one the position is in.
+enclosingCallArgs :: FilePath -> Module -> Position -> Maybe ([Text], [Text])
+enclosingCallArgs path m pos =
   listToMaybe
-    [ ns
-    | Expr _ (ECall fn _) <- reverse (enclosingExprs path m pos),
+    [ (ns, [n | Arg sp (AKw n _) <- args, not (spanContains path pos sp)])
+    | Expr _ (ECall fn args) <- reverse (enclosingExprs path m pos),
       afterCallee (exprSpan fn),
       ns <- maybeToList (calleePath fn)
     ]

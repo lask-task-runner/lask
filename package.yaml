@@ -126,3 +126,19 @@ tests:
     source-dirs: example/03-edsl/01-tour
     dependencies:
       - lask
+
+# How often completion offers the name being written, over the examples
+# (doc/development.md, Tests).
+benchmarks:
+  completion-accuracy:
+    main: CompletionAccuracy.hs
+    source-dirs: bench
+    ghc-options:
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
+    dependencies:
+      - lask
+      - lsp-types >= 2.0 && < 3
+      - aeson
+      - bytestring

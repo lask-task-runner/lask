@@ -523,6 +523,85 @@ spec = do
       ls <- labels "test.lask" "a = {x: {y: 1}}\nb = a.x." 1 8
       ls `shouldBe` []
 
+  describe "completion by position" $ do
+    it "offers types, and no values, in a type annotation" $ do
+      ls <- labels "test.lask" "type Pair = Record<a: Number>\nvalue = 1\nf(x: P) = x" 2 6
+      ls `shouldSatisfy` elem "Pair"
+      ls `shouldSatisfy` elem "String"
+      ls `shouldSatisfy` notElem "value"
+      ls `shouldSatisfy` notElem "to_lower"
+    it "offers types in a return type, a type argument and a union" $ do
+      ls1 <- labels "test.lask" "f(): S = \"\"" 0 6
+      ls1 `shouldSatisfy` elem "String"
+      ls2 <- labels "test.lask" "f(xs: Array<N>) = xs" 0 13
+      ls2 `shouldSatisfy` elem "Number"
+      ls3 <- labels "test.lask" "x: String | N = null" 0 13
+      ls3 `shouldSatisfy` elem "Null"
+      ls4 <- labels "test.lask" "type T = Record<a: N>" 0 20
+      ls4 `shouldSatisfy` elem "Number"
+    it "offers the type parameters of the declaration being written" $ do
+      ls <- labels "test.lask" "first<T>(xs: Array<T>): X = xs[0]" 0 25
+      ls `shouldSatisfy` elem "T"
+    it "offers values after the colon of a record literal" $ do
+      ls <- labels "test.lask" "value = 1\nr = { a: v }" 1 10
+      ls `shouldSatisfy` elem "value"
+      ls `shouldSatisfy` notElem "String"
+    it "offers values after the colon of a for loop" $ do
+      ls <- labels "test.lask" "xs = [1]\nf() = for (x: x) { x }" 1 15
+      ls `shouldSatisfy` elem "xs"
+    it "offers a namespace's types, and no values, after a dot in a type" $
+      withSystemTempDirectory "lask-completion" $ \dir -> do
+        writeFile (dir </> "lib.lask") "type Point = Record<x: Number>\nf(n: Number): Number = n\n"
+        let src = "import * as m from \"./lib.lask\"\ng(p: m.P) = p"
+        ls <- labels (dir </> "main.lask") src 1 8
+        ls `shouldBe` ["Point"]
+    it "offers types and else at the head of an arm of a case on a value" $ do
+      let src = "value = 1\nf(a) = case (a) {\n  S\n}"
+      ls <- labels "test.lask" src 2 3
+      ls `shouldSatisfy` elem "String"
+      ls `shouldSatisfy` elem "else"
+      ls `shouldSatisfy` notElem "value"
+    it "offers values in the guards of a case without a value" $ do
+      let src = "value = 1\nf() = case {\n  v\n}"
+      ls <- labels "test.lask" src 2 3
+      ls `shouldSatisfy` elem "value"
+    it "offers the access constraints after within" $ do
+      let src = "access Sealed = { secrets: false }\ntype Pair = Record<a: Number>\nf() within S = 1"
+      ls <- labels "test.lask" src 2 12
+      ls `shouldBe` ["Sealed"]
+    it "offers no access constraint as a type" $ do
+      let src = "access Sealed = { secrets: false }\nf(x: S) = x"
+      ls <- labels "test.lask" src 1 6
+      ls `shouldSatisfy` notElem "Sealed"
+    it "offers the fields of an access constraint not yet written" $ do
+      ls <- labels "test.lask" "access A = { secrets: false, o }" 0 30
+      ls `shouldSatisfy` elem "outbound"
+      ls `shouldSatisfy` elem "runs"
+      ls `shouldSatisfy` notElem "secrets"
+      ls `shouldSatisfy` notElem "to_lower"
+      ls2 <- labels "test.lask" "f() within { r } = 1" 0 14
+      ls2 `shouldSatisfy` elem "runs"
+    it "offers the run options of an environment, written as fields" $ do
+      items <- completionAt "test.lask" "e = #alpine:3.22{ network: \"none\", w }" (Position 0 36)
+      let ls = map (^. L.label) items
+      ls `shouldSatisfy` elem "workdir"
+      ls `shouldSatisfy` notElem "network"
+      [i ^. L.insertText | i <- items, i ^. L.label == "workdir"] `shouldBe` [Just "workdir: "]
+    it "offers the image options of an environment head, written as arguments" $ do
+      items <- completionAt "test.lask" "e = #alpine:3.22(p)" (Position 0 18)
+      [i ^. L.insertText | i <- items, i ^. L.label == "platform"] `shouldBe` [Just "platform = "]
+    it "offers the run options as the keyword parameters of runnable" $ do
+      ls <- labels "test.lask" "r = runnable(#alpine:3.22, w)" 0 28
+      ls `shouldSatisfy` elem "workdir"
+    it "leaves out a keyword parameter the call already binds" $ do
+      let src = "greet(--name: String = \"a\", --loud: Bool = false) = name\ny = greet(name = \"b\", )"
+      ls <- labels "test.lask" src 1 22
+      ls `shouldSatisfy` elem "loud"
+      ls `shouldSatisfy` notElem "name"
+    it "offers the contextual keywords" $ do
+      ls <- labels "test.lask" "f() w" 0 5
+      ls `shouldSatisfy` elem "within"
+
   describe "completion edge cases" $ do
     it "offers builtins in an empty document" $ do
       ls <- labels "test.lask" "" 0 0

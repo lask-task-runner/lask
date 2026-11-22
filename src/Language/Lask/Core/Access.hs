@@ -43,6 +43,7 @@ module Language.Lask.Core.Access
     programMarksSecrets,
 
     -- * Constraints
+    accessFieldNames,
     Covering (..),
     renderCovering,
     Constraints,
@@ -1016,6 +1017,11 @@ withinConstraints prog =
           )
 
 -- | An access constraint from its fields (spec 10.11), each a literal.
+-- | The fields of an access constraint (spec 10.11), in the order its
+-- messages list them.
+accessFieldNames :: [Text]
+accessFieldNames = ["files", "volumes", "outbound", "inbound", "secrets", "runs"]
+
 parseSpec :: AST.AccessSpec -> Either [Diagnostic] Constraint
 parseSpec w = case w of
   AST.AccessRef sp _ _ -> Left [mkDiagnostic ETypeWithinSpec StageStatic sp "an access declaration is written with braces"]
@@ -1077,7 +1083,7 @@ parseSpec w = case w of
           | Just names <- mapM (\x -> case AST.exprF x of AST.EVar n -> Just (n, AST.exprSpan x); _ -> Nothing) xs ->
               Right (\c -> c {conSecrets = Just (SecretsNamed names)})
         _ -> Left (err (AST.exprSpan v) "'secrets' takes false, or an array of the names of secret bindings, such as [token]")
-      _ -> Left (err ksp ("unknown field '" <> k <> "': a constraint takes files, volumes, outbound, inbound, secrets and runs"))
+      _ -> Left (err ksp ("unknown field '" <> k <> "': a constraint takes " <> T.intercalate ", " (init accessFieldNames) <> " and " <> last accessFieldNames))
     str (k, SStr s') = Just (k, s')
     str _ = Nothing
     strings = mapM (\x -> case x of SStr t -> Just t; _ -> Nothing)
