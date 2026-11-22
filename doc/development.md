@@ -29,6 +29,7 @@ $ lask run goldentest [--accept]         # the golden outputs, test/e2e/golden; 
 $ lask run spectest                      # the lask blocks of doc/spec.md
 $ lask run exampletest [--offline]       # every project under example/
 $ lask run errorcodetest                 # every error and advisory code, through the binary
+$ lask run completion-accuracy           # how often editor completion offers the name being written
 
 $ lask run install                       # build and install lask into ~/.local/bin
 $ lask run install --output /usr/local/bin
@@ -66,6 +67,8 @@ A new test goes in `lask-unit` unless it needs the binary. Two kinds of test are
 
 - A known bug, with its reproduction. A corpus case marks it with a first line `// pending: <reason>`, a spec with `knownBug`, which still runs it. It fails once it passes, so the mark goes with the fix.
 - A test that needs the network, left pending with `LASK_TEST_OFFLINE=1`, as the macOS job runs.
+
+**Completion accuracy** is measured, not tested: `lask run completion-accuracy` takes every name a file under `example/` has written before, cuts it back to one and then two characters, asks the language server for completion there, and narrows and sorts the answer as an editor does. It prints, for each kind of position (an expression, a type, a member after a dot, a field of a literal, after `within`), how often the name is offered, offered first, and offered among the first five. Run it before and after a change to completion, and put the two tables in the pull request.
 
 **Coverage** counts both suites, and with `LASK_TEST_TIX_DIR=<dir>` the runs of the binary the end-to-end tests start, each writing its own tix there; `ci-test` sets it, and `coverage-report` sums them.
 

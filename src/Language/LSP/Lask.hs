@@ -62,16 +62,18 @@ import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes, schemeType)
 import qualified Language.Lask.Diagnostic as D
 import Language.Lask.Doc (docBlockAbove)
 import Language.Lask.CommandSchema (Offer (..), OfferKind (..), Schema (..), Spec (..), Walk (..), describeRole, offersAfter, valuesOf, walkCommand)
-import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..), SchemaUse (..), readFieldType)
+import Language.Lask.Elaborate (CommandUse (..), CoreDecl (..), CoreProgram (..), HoverInfo (..), SchemaUse (..), dockerRunOptions, imageOptionNames, readFieldType)
 import Language.Lask.Syntax.Shell (ShellReading (..), ShellWord (..), SimpleCommand (..), readShell)
 import Language.Lask.ErrorCode (advisoryText, codeText)
 import Language.Lask.Lexer (lexTokens, lexTokensWithComments)
 import qualified Language.Lask.Lexer.Token as Tok
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
-import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), ValueTarget (..), modulePublics, namespaceMember)
+import Language.Lask.Module.Resolve (GlobalScope (..), Publics (..), TypeTarget (..), ValueTarget (..), modulePublics, namespaceMember)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Printer (formatSource)
-import Language.Lask.Syntax.Scope (enclosingCall, localsAt)
+import Language.Lask.Syntax.Scope (enclosingCallArgs, localsAt)
+import Language.LSP.Lask.Context (Fields (..), Where (..), whereAt)
+import Language.Lask.Core.Access (accessFieldNames)
 import Language.Lask.Types (Type (..), renderBound, renderType)
 import System.Exit (ExitCode (ExitFailure), exitSuccess, exitWith)
 import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
@@ -1080,22 +1082,28 @@ commandParts start = go start ""
     advance p t = p {S.column = S.column p + T.length t}
 
 -- | Completion of the language itself: what 'completionAt' offers
--- outside a command string with a schema.
+-- outside a command string with a schema. What is offered depends on
+-- what may be written at the position ('whereAt'): a type annotation
+-- offers types, @within@ the access constraints, and the braces of an
+-- environment or a constraint their fields.
 languageCompletion :: FilePath -> Text -> Position -> IO [CompletionItem]
 languageCompletion path src (Position pl pc)
   | afterDot = do
-      p <- compileTextPartial path healedDot
+      p <- compileTextPartial path (if context == InType then healedQualifiedType else healedDot)
       pure (items (dotCands p))
+  | InFields f seen <- context = pure (items (fieldCands f seen))
+  | InType <- context = do
+      p <- healed "Any"
+      pure (items (typeCands p (scopeFor p)))
+  | InCaseHead <- context = do
+      p <- healed "Any"
+      pure (items (typeCands p (scopeFor p) <> [Cand "else" CompletionItemKind_Keyword Nothing Nothing 6]))
+  | InWithin <- context = do
+      -- An inline constraint keeps the declaration whole.
+      p <- healed "{}"
+      pure (items (accessCands p (scopeFor p)))
   | otherwise = do
-      -- The word being typed is replaced by a placeholder identifier;
-      -- if that still does not parse (a half-written declaration, say)
-      -- the whole line is replaced by a trivial binding so that the
-      -- rest of the buffer is still analysed.
-      first <- compileTextPartial path healedWord
-      p <-
-        if hasSyntax first
-          then pure first
-          else compileTextPartial path healedLine
+      p <- healed "_"
       let scope = scopeFor p
       pure . items $
         localCands p
@@ -1104,6 +1112,18 @@ languageCompletion path src (Position pl pc)
           <> keywordCands
           <> kwParamCands p scope
   where
+    context = whereAt path src lineIdx startCol
+
+    -- The word being typed is replaced by a placeholder; if that still
+    -- does not parse (a half-written declaration, say) the whole line
+    -- is replaced by a trivial binding so that the rest of the buffer
+    -- is still analysed.
+    healed placeholder = do
+      first <- compileTextPartial path (healedWord placeholder)
+      if hasSyntax first
+        then pure first
+        else compileTextPartial path healedLine
+
     -- Narrowing is left to the client: it matches case-insensitively
     -- and fuzzily, so filtering here only ever removes candidates the
     -- user expects. It also keeps the result independent of how much
@@ -1149,11 +1169,14 @@ languageCompletion path src (Position pl pc)
           | i == (lineIdx :: Int) = f l
           | otherwise = l
 
-    healedWord = replaceLine (\l -> T.take startCol l <> "_" <> T.drop col l)
+    healedWord placeholder = replaceLine (\l -> T.take startCol l <> placeholder <> T.drop col l)
     healedLine = replaceLine (const (T.replicate startCol " " <> "_ = null"))
     -- The dot and the partial member name are dropped entirely, so the
     -- receiver keeps its own type instead of becoming a bad selection.
     healedDot = replaceLine (\l -> T.take dotCol l <> T.drop col l)
+    -- A namespace is no type: the qualified name as a whole is
+    -- replaced.
+    healedQualifiedType = replaceLine (\l -> T.take (dotCol - maybe 0 T.length qualifier) l <> "Any" <> T.drop col l)
 
     cursor = S.Position path (lineIdx + 1) (startCol + 1)
     -- The last character of the receiver, for the hover lookup.
@@ -1212,6 +1235,8 @@ languageCompletion path src (Position pl pc)
       | w <-
           map Tok.keywordText [minBound .. maxBound :: Tok.Keyword]
             <> ["true", "false", "null"]
+            -- Keywords only where they appear (spec 3.3).
+            <> ["access", "on", "schema", "within"]
       ]
 
     -- After a dot: the public members of a namespace, else the fields
@@ -1220,9 +1245,11 @@ languageCompletion path src (Position pl pc)
       | chained = []
       | otherwise = case qualifier of
           Nothing -> []
-          Just q -> case namespaceCands p (scopeFor p) q of
-            [] -> recordCands p
-            cs -> cs
+          Just q
+            | InType <- context -> [c | c <- namespaceCands p (scopeFor p) q, candKind c == CompletionItemKind_Interface]
+            | otherwise -> case namespaceCands p (scopeFor p) q of
+                [] -> recordCands p
+                cs -> cs
 
     namespaceCands p scope q =
       [ c
@@ -1267,16 +1294,21 @@ languageCompletion path src (Position pl pc)
     spanSize S.NoSpan = (maxBound, maxBound)
 
     -- Keyword parameters are written `name = value` at the call site.
+    -- Those the call already binds are left out.
     kwParamCands p scope =
       [ Cand n CompletionItemKind_Property Nothing (Just (n <> " = ")) 0
       | m <- maybeToList (partialModule p),
-        ns <- maybeToList (enclosingCall path m cursor),
-        n <- calleeKeywords p scope ns
+        (ns, written) <- maybeToList (enclosingCallArgs path m cursor),
+        n <- calleeKeywords p scope ns,
+        n `notElem` written
       ]
 
     calleeKeywords p scope ns = case ns of
       [n] -> case scope >>= Map.lookup n . gsValues of
         Just (VTopLevel modPath declName) -> keywordsOf p modPath declName
+        -- The run options are the keyword parameters of `runnable`
+        -- (spec 15.5).
+        Just (VBuiltin "runnable") -> map fst dockerRunOptions
         Just (VBuiltin _) -> []
         Nothing -> keywordsOf p (entryPath p) n
       [q, n] -> case scope >>= Map.lookup q . gsNamespaces of
@@ -1310,6 +1342,85 @@ languageCompletion path src (Position pl pc)
              | AST.Decl _ (AST.DValue n _ _ (AST.Expr _ (AST.ELambda _ ps _ _))) <- AST.moduleDecls m,
                n == declName
              ]
+
+    -- The fields of a literal whose fields are fixed, less those
+    -- already written. An image option is a named argument.
+    fieldCands f seen =
+      [ Cand n CompletionItemKind_Field Nothing (Just (n <> sep)) 0
+      | let (names, sep) = case f of
+              AccessFields -> (accessFieldNames, ": ")
+              RunOptionFields -> (map fst dockerRunOptions, ": ")
+              ImageOptionFields -> (imageOptionNames, " = "),
+        n <- names,
+        n `notElem` seen
+      ]
+
+    -- The types in scope, the type parameters of the declaration being
+    -- written, the namespaces a type may be qualified with, and the
+    -- types the grammar knows. An access constraint is not a type.
+    typeCands p scope =
+      [ Cand n CompletionItemKind_TypeParameter Nothing Nothing 1
+      | n <- typeParamsAt p
+      ]
+        <> case scope of
+          Just gs ->
+            [ Cand n CompletionItemKind_Interface Nothing Nothing (typeRank p tgt)
+            | (n, tgt) <- Map.toList (gsTypes gs),
+              not (isAccess p tgt)
+            ]
+              <> [ Cand n CompletionItemKind_Module Nothing Nothing 4
+                 | n <- Map.keys (gsNamespaces gs)
+                 ]
+          Nothing ->
+            [ Cand n CompletionItemKind_Interface Nothing Nothing 2
+            | m <- maybeToList (partialModule p),
+              AST.Decl _ (AST.DTypeAlias n _ _) <- AST.moduleDecls m
+            ]
+        <> [Cand n CompletionItemKind_Class Nothing Nothing 5 | n <- AST.builtinTypeNames]
+
+    typeRank p (TAlias modPath _) = if normalise modPath == normalise (entryPath p) then 2 else 3
+    typeRank _ (TBuiltinAlias _) = 5
+
+    isAccess p (TAlias modPath n) =
+      not $
+        null
+          [ ()
+          | m <- maybeToList (moduleAt p modPath),
+            AST.Decl _ (AST.DAccess n' _) <- AST.moduleDecls m,
+            n' == n
+          ]
+    isAccess _ (TBuiltinAlias _) = False
+
+    accessCands p scope = case scope of
+      Just gs ->
+        [ Cand n CompletionItemKind_Constant Nothing Nothing (typeRank p tgt)
+        | (n, tgt) <- Map.toList (gsTypes gs),
+          isAccess p tgt
+        ]
+      Nothing ->
+        [ Cand n CompletionItemKind_Constant Nothing Nothing 2
+        | m <- maybeToList (partialModule p),
+          AST.Decl _ (AST.DAccess n _) <- AST.moduleDecls m
+        ]
+
+    -- The type parameters of the declaration the cursor is in.
+    typeParamsAt p =
+      [ n
+      | m <- maybeToList (partialModule p),
+        AST.Decl sp f <- AST.moduleDecls m,
+        holds sp,
+        tps <- case f of
+          AST.DFunction _ tps _ _ _ _ -> [tps]
+          AST.DTypeAlias _ tps _ -> [tps]
+          _ -> [],
+        AST.TypeParam (Tok.Spanned _ n) _ <- tps
+      ]
+
+    holds (S.Span (S.Position f l1 c1) (S.Position _ l2 c2)) =
+      normalise f == normalise path
+        && (l1, c1) <= (S.line cursor, S.column cursor)
+        && (S.line cursor, S.column cursor) <= (l2, c2)
+    holds S.NoSpan = False
 
     topLevelNames m =
       [ n

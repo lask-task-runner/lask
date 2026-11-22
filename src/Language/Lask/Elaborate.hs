@@ -13,6 +13,8 @@ module Language.Lask.Elaborate
     CommandUse (..),
     CoreDecl (..),
     readFieldType,
+    dockerRunOptions,
+    imageOptionNames,
     Key,
     StaticParams (..),
     HoverInfo (..),
