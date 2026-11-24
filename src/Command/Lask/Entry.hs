@@ -749,18 +749,25 @@ commandRowsJson rows =
     | (name, kind, target, present) <- rows
     ]
 
+-- | The text form writes an environment as @run --help@ and @envs list@
+-- do (11.4, 11.6), its head and its kind, @#golang:1.25  registry@;
+-- the JSON form keeps the kind and target of the resolved environment.
 commandRowsText :: [CommandRow] -> [Text]
 commandRowsText rows =
-  [ T.justifyLeft width ' ' name
-      <> "  "
-      <> T.justifyLeft 6 ' ' kind
-      <> "  "
-      <> target
-      <> (if present then "" else "  MISSING (lask sync)")
-  | (name, kind, target, present) <- rows
-  ]
+  map
+    T.stripEnd
+    (columns [[name, envHead, label, if present then "" else "MISSING (lask sync)"] | (name, envHead, label, present) <- map asHead rows])
   where
-    width = maximum (8 : [T.length n | (n, _, _, _) <- rows])
+    asHead (name, kind, target, present) = case kind of
+      "local" -> (name, "#local", "local", present)
+      "docker"
+        | Just path <- T.stripPrefix "recipe " target -> (name, "#" <> path, "recipe", present)
+        | otherwise -> (name, "#" <> target, "registry", present)
+      _ -> (name, target, kind, present)
+    columns cells = map (T.concat . zipWith pad [0 :: Int ..]) cells
+      where
+        width i = maximum (0 : [T.length c | r <- cells, (j, c) <- zip [0 ..] r, j == i])
+        pad i c = c <> T.replicate (width i - T.length c + 2) " "
 
 -- | No network access and no build (spec 11.8). An environment that
 -- cannot be evaluated is a row with the failure rather than the end of

@@ -3957,7 +3957,7 @@ Exit code rules:
 Rules (`--help`):
 
 - `lask cmd --help` (or `-h`), with no command name, displays the CLI option help followed by the list of command words, in the way `lask run --help` lists functions (11.6).
-- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--output json`.
+- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. The environment is written as `lask run --help` and `envs list` write one (11.4, 11.6), its head and its kind. Structured output is available with `--output json`, which gives the kind of the resolved environment, `docker` or `local`, and its target.
 - An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
 - The list is produced with no network access and no build, on the same terms as `envs` (11.4).
 - The option help is displayed whatever state the target module is in. When the module does not compile, its diagnostics go to stderr, the list is omitted, and the exit code is `0`.
@@ -3971,10 +3971,10 @@ Usage: lask cmd [--module PATH] [--output text|json|pretty-json] [--log-format t
 ...
 
 Commands in main.lask:
-  go         docker  golang:1.25
-  npm        docker  node:20.20.2-alpine3.23
-  terraform  docker  hashicorp/terraform:1.16.2  MISSING (lask sync)
-  mv         local   local
+  go         #golang:1.25                 registry
+  npm        #node:20.20.2-alpine3.23     registry
+  terraform  #hashicorp/terraform:1.16.2  registry  MISSING (lask sync)
+  mv         #local                       local
 
 $ lask cmd go test ./... > report.txt
 2026-09-12T12:56:40.217Z [#golang:1.25:1] $ go test ./...

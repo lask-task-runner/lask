@@ -87,7 +87,7 @@ spec = beforeAll findLask $ do
         resExit r `shouldBe` 0
         resOut r `shouldSatisfy` isInfixOf "--module"
         resOut r `shouldSatisfy` isInfixOf "Commands in main.lask:"
-        resOut r `shouldSatisfy` isInfixOf "  echo      local   local"
+        resOut r `shouldSatisfy` isInfixOf "  echo    #local  local\n"
 
     it "lists commands as JSON under --output json --help" $ \lask ->
       withProject proj $ \dir -> do
