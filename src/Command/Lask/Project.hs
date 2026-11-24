@@ -253,8 +253,9 @@ cmdSync opts frozen prune = do
     exitWith (ExitFailure 1)
   pcolor <- colorFor (optNoColor opts) stderr
   withProgress (optLogJson opts) pcolor $ \pg -> do
-    -- Modules.
-    section pg "Modules"
+    -- Modules. A heading with nothing under it would only repeat the
+    -- summary's.
+    unless (Map.null declared) $ section pg "Modules"
     let kept = Map.filterWithKey (\k _ -> k `notElem` removing) declared
         df = maybe emptyDepsFile (\d -> d {depsEntries = kept}) mDf
         pruned =

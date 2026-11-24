@@ -26,6 +26,7 @@ import Command.Lask.Envs (HeadImage (..), HeadUse (..), Requirer (..), collectHe
 import Command.Lask.Progress (Progress, finish, section, start, update)
 import Command.Lask.Table (shortPath)
 import Control.Applicative ((<|>))
+import Control.Monad (when)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -180,7 +181,8 @@ materialize :: ContainerBackend -> Progress -> CoreProgram -> Map Text LockImage
 materialize backend pg core prior = do
   let rows = imageRows core Nothing
       total = length rows
-  section pg ("Images (" <> T.pack (show total) <> ")")
+  -- A heading with nothing under it would only repeat the summary's.
+  when (total > 0) $ section pg ("Images (" <> T.pack (show total) <> ")")
   results <- mapM (\(i, row) -> one (i, total) row) (zip [1 ..] rows)
   let entries =
         Map.fromList

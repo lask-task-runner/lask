@@ -474,7 +474,9 @@ cmdHelp subcommand runOpts = do
         Just h
           | isFunction (fnName, h) -> pure h
           | otherwise -> notAFunction opts rawName
-        Nothing -> noSuchFunction opts rawName [n | d@(n, _) <- declsByName, isFunction d]
+        Nothing
+          | fnName `Set.member` maybe Set.empty cpInternal core -> internalFunction opts rawName entry
+          | otherwise -> noSuchFunction opts rawName [n | d@(n, _) <- declsByName, isFunction d]
       let envs = case core of
             -- Ordered as envs list orders them (spec 11.4): the host
             -- first, then by notation.

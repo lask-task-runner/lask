@@ -2444,13 +2444,24 @@ elabBin ctx path locals sp op a b mExpected = case op of
   OpAnd -> logical CAnd
   OpOr -> logical COr
   -- e |> f  ==  f(e)   /   f <| e  ==  f(e)   (spec 6.2)
-  OpPipeR -> elabCall ctx path locals sp b [Arg (exprSpan a) (APos a)] mExpected
-  OpPipeL -> elabCall ctx path locals sp a [Arg (exprSpan b) (APos b)] mExpected
+  OpPipeR -> pipedInto b (elabCall ctx path locals sp b [Arg (exprSpan a) (APos a)] mExpected)
+  OpPipeL -> pipedInto a (elabCall ctx path locals sp a [Arg (exprSpan b) (APos b)] mExpected)
   -- f >> g  ==  \(x) -> g(f(x))   /   f << g  ==  \(x) -> f(g(x))
   OpCompR -> compose a b
   OpCompL -> compose b a
   OpNot -> abort (diag ETypeMismatch sp "internal: '!' is not a binary operator")
   where
+    -- `xs |> map(f)` reads as passing xs to map, but the call is made
+    -- first and its result is what xs is given to (spec 6.2): say so
+    -- where the call comes up short.
+    pipedInto fn act = do
+      r <- recoverTC act
+      case (r, exprF fn) of
+        (Right x, _) -> pure x
+        (Left (Failed d), ECall {})
+          | diagCode d == ETypeArity ->
+              abort . withNote "the operand of |> is not added to this call's arguments: the call is made first, and the operand is given to what it returns; write `x |> \\(v) -> f(v, a)`, or `f(x, a)`" $ d
+        (Left f, _) -> failWith f
     arith p = do
       ca <- check ctx path locals a TyNumber
       cb <- check ctx path locals b TyNumber
@@ -3925,11 +3936,18 @@ elabCall ctx path locals sp fn args mExpected = do
         )
         kwArgs
       let nPos = length positional
+      -- What the call should have looked like (spec 14.3).
+      let takes =
+            withNote $
+              "'" <> calleeName <> "' takes "
+                <> if null positional
+                  then "no positional arguments"
+                  else "(" <> T.intercalate ", " [pn <> ": " <> renderType pt | (pn, pt) <- positional] <> ")"
       when (length posExprs < nPos) $
-        () <$ abort (diag ETypeArity sp ("missing positional arguments: expected " <> tshow nPos <> ", got " <> tshow (length posExprs)))
+        () <$ abort (takes (diag ETypeArity sp ("missing positional arguments: expected " <> tshow nPos <> ", got " <> tshow (length posExprs))))
       let (bound, extra) = splitAt nPos posExprs
       when (isNothing variadic && not (null extra)) $
-        () <$ abort (diag ETypeArity sp ("too many positional arguments: expected " <> tshow nPos <> ", got " <> tshow (length posExprs)))
+        () <$ abort (takes (diag ETypeArity sp ("too many positional arguments: expected " <> tshow nPos <> ", got " <> tshow (length posExprs))))
       kwSlots <- keywordSlots keywords
       case [n | n <- required, n `notElem` [k | (k, _, _) <- kwSlots]] of
         n : _ -> () <$ abort (diag ETypeKeyword sp ("missing keyword argument: '" <> n <> "'"))
@@ -4111,7 +4129,10 @@ elabCall ctx path locals sp fn args mExpected = do
               params = map ren (schemeParams scheme)
               retPat = ren (schemeRet scheme)
           unless (length posExprs == length params) $
-            () <$ abort (diag ETypeArity sp ("'" <> name <> "' expects " <> tshow (length params) <> " arguments, got " <> tshow (length posExprs)))
+            () <$ abort
+              ( withNote ("its signature is " <> name <> "(" <> T.intercalate ", " (map renderType (schemeParams scheme)) <> "): " <> renderType (schemeRet scheme)) $
+                  diag ETypeArity sp ("'" <> name <> "' expects " <> tshow (length params) <> " arguments, got " <> tshow (length posExprs))
+              )
           -- Pre-bind type variables from the expected return type.
           let subst0 = case mExpected of
                 Just expT -> either (const Map.empty) id (unifyE retPat expT Map.empty)

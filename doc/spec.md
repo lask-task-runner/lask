@@ -3290,7 +3290,7 @@ Flags:
 Binding rules:
 
 1. Resolve the target module (`--module`, default `main.lask`) and obtain the function specified by the first positional argument, among the public symbols of that module: those it declares, and those it re-exports under the name it publishes them by (Chapter 5). A re-exported function is invoked as the declaration it names, with its parameter list intact. A declaration marked `internal` is not reachable.
-   The command line calls functions: a public symbol whose type is a function type, which is a function declaration or a value binding whose value is a function (`inc = \(x: Number) -> x + 1`). A plain value binding (`version = "1.0"`) is not called, and naming one is a usage error (`E-CLI-USAGE`) that says so; a value the command line is to print is written as a function of no parameters (`version() = "1.0"`). The same holds wherever a subcommand takes a function name: `run`, `eval`, their `--help` (11.6), `envs` (11.4) and `secrets` (11.10).
+   The command line calls functions: a public symbol whose type is a function type, which is a function declaration or a value binding whose value is a function (`inc = \(x: Number) -> x + 1`). A plain value binding (`version = "1.0"`) is not called, and naming one is a usage error (`E-CLI-USAGE`) that says so; a value the command line is to print is written as a function of no parameters (`version() = "1.0"`). An `internal` declaration of the entry module (Chapter 5) is not called either, and the usage error says it is internal rather than that there is no such function. The same holds wherever a subcommand takes a function name: `run`, `eval`, their `--help` (11.6), `envs` (11.4) and `secrets` (11.10).
 2. Bind the positional arguments after the function name, from left to right, to the positional parameters in declaration order. Positional arguments exceeding the number of positional parameters are collected into the variadic parameter (variadic collection in 7.5).
 3. Bind keyword arguments to parameters with matching names. Unknown names and duplicate bindings are pre-execution errors (corresponding to `E-TYPE-KEYWORD` in 7.5).
 4. Keyword parameters that were not bound are completed with the default values from the function definition (default-value completion in 7.5). A required keyword parameter (6.1) that was not bound is a pre-execution error (`missing keyword argument: '--target'`).
@@ -3847,7 +3847,7 @@ Output destination and exit codes:
 
 - Help is written to stdout (the exception in 11.3). Diagnostics are written to stderr as usual.
 - `0`: the help was displayed.
-- `4`: the specified name is not a function the command line can call (11.2): no public symbol of the module has it, or it names a plain value binding. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`.
+- `4`: the specified name is not a function the command line can call (11.2): no public symbol of the module has it, it names a plain value binding, or it names an `internal` declaration. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`.
 - `1`: the target module could not be parsed. Diagnostics are written to stderr and no help is displayed.
 - Static errors (14.4) do **not** prevent help display. The help is rendered from the information that is available, a type that could not be determined is displayed as `?`, the diagnostics are written to stderr, and the exit code is `0`. Help is most needed while a module is broken, so this is a deliberate exception to the rule of 14.4 that static errors stop `run` / `eval`; no function is evaluated in this case either.
 - For `lask run --help` / `lask eval --help` without a function name, the CLI option help must always be displayed with exit code `0`. If the target module cannot be loaded, the function list is omitted.
@@ -3898,7 +3898,7 @@ General rules:
 
 Progress and the summary:
 
-- While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
+- While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, each only when there is something under it, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
 - On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--log-format json` each of these is a JSON Lines event.
 - When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--output json` the summary is one object, `modules` and `images`.
 - The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the container engine.
@@ -3991,6 +3991,7 @@ Input rules:
 - An input starting with `:` is a session command. No declaration or expression starts with `:`, so an unknown command is reported as such (`unknown command ':foo'`) and is never parsed as code.
 - A declaration is added to the session if the session still compiles with it; otherwise its diagnostics are reported and the session is unchanged.
 - An expression is evaluated against the session and its result printed. It is not kept in the session.
+- A diagnostic in what was typed at the prompt is placed in that input, as `<repl>:<line>:<column>`, line 1 being the input's first line, and not in the target module, whose file does not hold it.
 - The target module's text is the one read at start or by the last successful `:reload`. Imported modules and the lock file are read from disk on every input, so a change to them takes effect without a reload.
 - Standard input is the session's input, not a value (9.2). A declaration or an expression typed at the prompt that names `stdin` is an undefined reference error (`E-NAME-UNDEFINED`) and changes nothing. A function of the target module, or of a module it imports, that names `stdin` is still loaded and can be called; there `stdin` is the empty string.
 
@@ -3998,6 +3999,7 @@ Session commands:
 
 | Command | Meaning |
 | --- | --- |
+| `:help`, `:h`, `:?` | List the session commands and what may be typed. |
 | `:reload`, `:r` | Read the target module again (below). |
 | `:quit`, `:q`, `:exit` | End the session. End of input does the same. |
 

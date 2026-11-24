@@ -1,0 +1,6 @@
+exit: 4
+--- stdout
+
+--- stderr
+E-CLI-USAGE: 'helper' is internal: the command line calls the public functions of main.lask; remove 'internal' from its declaration to call it
+
