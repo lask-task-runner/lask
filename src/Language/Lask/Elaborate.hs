@@ -196,7 +196,11 @@ data Ctx = Ctx
     -- written in. A recursive call reads its header from here.
     ctxDeclOverride :: Map Key Decl,
     -- | The program's classes and instances (spec 4.6).
-    ctxEnv :: ClassEnv
+    ctxEnv :: ClassEnv,
+    -- | The type parameters in scope that a local function declares
+    -- (spec 6.1): never specialized, so they are ordered as Number and
+    -- String are, by the language (4.6).
+    ctxLocalVars :: Set Text
   }
 
 -- | The classes and instances of a program (spec 4.6), read before any
@@ -255,6 +259,7 @@ addTypeVars :: [(Text, Maybe Bound)] -> Ctx -> Ctx
 addTypeVars vs ctx =
   ctx
     { ctxTypeVars = ctxTypeVars ctx <> Set.fromList (map fst vs),
+      ctxLocalVars = ctxLocalVars ctx <> Set.fromList (map fst vs),
       ctxBounds = ctxBounds ctx <> boundMap vs
     }
 
@@ -293,6 +298,12 @@ conforms ctx = conformsUnder upper
 holds :: Ctx -> NamedBound -> Type -> Bool
 holds ctx = satisfiesNamed (boundOf ctx)
 
+-- | 'holds', seen from a module: a type is orderable by an instance in
+-- effect there as well (spec 4.6).
+holdsAt :: Ctx -> FilePath -> NamedBound -> Type -> Bool
+holdsAt ctx path nb t =
+  holds ctx nb t || (nb == BOrderable && isGround t && isJust (instanceFor ctx (Just path) orderableKey t))
+
 -- | A use instantiated a bounded type variable at a type outside its
 -- bound (spec 4.4).
 boundViolation :: Ctx -> Span -> Text -> Text -> Bound -> Type -> Diagnostic
@@ -304,17 +315,19 @@ boundViolation ctx sp callee v b t =
       BoundNamed nb -> "be " <> renderNamedBound nb
       BoundType u -> "conform to " <> renderType u
       BoundClass c -> "have an instance of " <> crName c
+      BoundAll _ -> "be " <> renderBound b
     hint = case t of
       TyVar w
         | w `Set.member` ctxTypeVars ctx ->
             " (a type parameter has only what its bound gives it; declare it as <"
               <> w <> ": " <> renderBound b <> ">)"
       _ -> case b of
-        BoundNamed BOrderable -> " (only Number and String are orderable)"
+        BoundNamed BOrderable -> " (Number and String are orderable, and a type with an instance orderable<...> in effect here)"
         BoundNamed BStringifiable -> " (only String, Number, Bool and Any are stringifiable; use to_json for structured values)"
         BoundNamed BComparable -> " (functions, handles, Void and Any cannot be compared)"
         BoundType _ -> ""
         BoundClass c -> " (no instance " <> crName c <> "<" <> renderType t <> "> is in effect here)"
+        BoundAll _ -> ""
 
 data St = St
   { stDecls :: Map Key CoreDecl,
@@ -561,7 +574,7 @@ elaborateModules prog scopes nameErrors paths =
   where
     base = Set.fromList paths
     inBase p = p `Set.member` base
-    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv
+    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv Set.empty
     -- The units holding an error elsewhere are not these modules' to
     -- record: the result must not depend on the rest of the program.
     restrict (ds, as, ws) =
@@ -597,7 +610,7 @@ elaborateRecoveringFrom resumed prog scopes nameErrors =
           }
       )
   where
-    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv
+    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv Set.empty
     failedUnits@(failedDecls, failedAliases, failedWords) = unitsHolding prog nameErrors
     (done, start) = case resumed of
       Nothing -> (Set.empty, initialSt failedUnits)
@@ -806,6 +819,11 @@ typeVarsOf ctx path tps = do
       Just key -> pure (BoundClass (classRefOf ctx key))
       Nothing -> abort (diag ENameUndefined bsp ("'" <> q <> "." <> n <> "' is not a class"))
     bound (SBoundClass p n) = pure (BoundClass (classRefOf ctx (p, n)))
+    bound (SBoundAll sbs) = do
+      bs <- mapM part sbs
+      pure $ case nub (concatMap boundParts bs) of
+        [b] -> b
+        bs' -> BoundAll bs'
     bound (SBoundType st) = do
       case filter (`elem` names) (sTypeNames st) of
         (v : _) ->
@@ -815,6 +833,10 @@ typeVarsOf ctx path tps = do
       when (t == TyVoid || not (wellFormed t)) $
         () <$ abort (diag ETypeIllformed (stypeSpan st) ("'" <> renderType t <> "' cannot be a bound"))
       pure (BoundType t)
+    -- A part of @a + b@ is a named bound or a class (spec 4.2).
+    part sb = case sb of
+      SBoundType st -> abort (diag ETypeIllformed (stypeSpan st) "a type bound stands alone: only named bounds and classes are joined with +")
+      _ -> bound sb
 
 -- | The unqualified type names a type mentions.
 sTypeNames :: SType -> [Text]
@@ -1590,13 +1612,16 @@ constrain ctx sp a0 e0 = do
 holdsM :: Ctx -> NamedBound -> Type -> TC Bool
 holdsM ctx nb t0 = do
   active <- inferActive
+  path <- currentModule ctx
   if not active
-    then pure (holds ctx nb t0)
+    then pure (holdsAt ctx path nb t0)
     else do
       vs <- gets stInfer
       let t = zonkWith vs t0
           open = [v | v <- typeVars t, Just _ <- [openVar vs (TyVar v)]]
-          ok = satisfiesNamed (\v -> if v `elem` open then Just (BoundNamed nb) else boundOf ctx v) nb t
+          ok =
+            satisfiesNamed (\v -> if v `elem` open then Just (BoundNamed nb) else boundOf ctx v) nb t
+              || holdsAt ctx path nb t
       when ok (mapM_ (`addVarBound` BoundNamed nb) open)
       pure ok
 
@@ -1606,6 +1631,7 @@ satisfiesBoundM ctx sp b t = case b of
   BoundNamed nb -> holdsM ctx nb t
   BoundType u -> conformsM ctx sp t u
   BoundClass c -> classHoldsM ctx c t
+  BoundAll bs -> and <$> mapM (\b' -> satisfiesBoundM ctx sp b' t) bs
 
 -- | 'classHolds', where a value whose type is still to be found is
 -- taken as needing the class (spec 4.3), and one whose type is found
@@ -1859,18 +1885,15 @@ inferParams ctx path locals generalize ps retAnn body
     -- with the inferred parameters written in.
     writtenBound b = case b of
       BoundClass c -> SBoundClass (crModule c) (crName c)
+      BoundAll bs -> SBoundAll (map writtenBound bs)
       _ -> SBoundNamed (Spanned NoSpan (renderBound b))
-    boundFor sp iv = case ivBounds iv of
+    -- What the uses need, less what another of them entails: one
+    -- bound, or several joined with + (spec 4.2).
+    boundFor _ iv = case nub (concatMap boundParts (ivBounds iv)) of
       [] -> pure Nothing
-      bs -> case [b | b <- bs, all (entailsBound b) bs] of
-        b : _ -> pure (Just b)
-        [] ->
-          abort . diag ETypeBound sp $
-            "'"
-              <> ivOrigin iv
-              <> "' has to be "
-              <> T.intercalate " and " (map renderBound bs)
-              <> ", and a type parameter has one bound; annotate the parameter"
+      bs -> case [b | b <- bs, not (any (\b' -> b' /= b && entailsBound b' b) bs)] of
+        [b] -> pure (Just b)
+        bs' -> pure (Just (BoundAll bs'))
 
 -- Bidirectional elaboration --------------------------------------------------------
 
@@ -2184,11 +2207,11 @@ check ctx path locals e@(Expr sp f) expected = case f of
         (bounds, t) <- declTypeBounds ctx (defPath, defName)
         (t', inst) <-
           if settled ctx t
-            then pure (t, [(v, TyVar v) | (v, BoundClass _) <- Map.toList bounds])
+            then pure (t, [(v, TyVar v) | (v, b) <- Map.toList bounds, dictBound b])
             else do
               subst <- unifyM ctx sp t expected Map.empty
               refBounds ctx sp n bounds subst
-              pure (applySubst subst t, [(v, applySubst subst (TyVar v)) | (v, BoundClass _) <- Map.toList bounds])
+              pure (applySubst subst t, [(v, applySubst subst (TyVar v)) | (v, b) <- Map.toList bounds, dictBound b])
         ok <- conformsM ctx sp t' expected
         unless (settled ctx t' && ok) (mismatch sp expected t')
         recordVar sp n t' (Just (defPath, defName))
@@ -2207,7 +2230,7 @@ check ctx path locals e@(Expr sp f) expected = case f of
           mismatch sp expected t
         refBounds ctx sp n (schemeBounds scheme) subst
         recordBuiltin sp n t bn
-        pure (Core sp (CVar (BuiltinRef bn)))
+        builtinRef ctx sp bn (schemeBounds scheme) subst
   EBin op a b | isEqOp op || expected == TyBool -> do
     (c, t) <- elabBin ctx path locals sp op a b (Just expected)
     conformsM ctx sp t expected >>= \ok -> unless ok (mismatch sp expected t)
@@ -2585,8 +2608,13 @@ elabBin ctx path locals sp op a b mExpected = case op of
         (Left d, Left _) -> abort d
       ok <- holdsM ctx BOrderable t
       unless ok $
-        abort (diag ETypeBound sp ("values of type " <> renderType t <> " cannot be ordered with <, <=, > or >=: only Number and String are orderable"))
-      pure (Core sp (CBin p ca cb), TyBool)
+        abort (diag ETypeBound sp ("values of type " <> renderType t <> " cannot be ordered with <, <=, > or >=: Number and String are orderable, and a type with an instance orderable<...>"))
+      vs <- gets stInfer
+      let t' = zonkWith vs t
+      pure $
+        if orderNative ctx t'
+          then (Core sp (CBin p ca cb), TyBool)
+          else (Core sp (CApp (Core sp (CVar (InstRef builtinClassModule (orderOpName p) [("T", t')]))) [ca, cb] []), TyBool)
     -- A parameter whose type is still to be found, ordered (spec 4.3):
     -- against a value of a type, it is used at that type; against
     -- another such parameter, the two have one type. Either way it is
@@ -3919,6 +3947,12 @@ elabCall ctx path locals sp fn args mExpected = do
         TyFun _ r -> pure r
         other -> abort (diag ETypeCall (exprSpan fn) ("cannot call a value of type " <> renderType other))
       (posCores, kwCores, retTy, inst) <- bindStatic tvs bounds ret params
+      case fnCore of
+        Core _ (CVar (LocalRef ln))
+          | (v, t) : _ <- [(v, t) | (v, t) <- inst, not (orderNative ctx t)] ->
+              abort . diag ETypeBound sp $
+                "'" <> ln <> "' is a local function, so its " <> varDisplay (T.takeWhile (/= '@') v) <> " is ordered as Number and String are, and " <> renderType t <> " is neither; declare the function at the top level to order it by its instance"
+        _ -> pure ()
       pure (Core sp (CApp (instantiateRef fnCore inst) posCores kwCores), retTy)
     -- runnable's keyword parameters are the run options (spec 15.5).
     CalleeBuiltin "runnable" _ -> case args of
@@ -4088,7 +4122,7 @@ elabCall ctx path locals sp fn args mExpected = do
           vs <- gets stInfer
           let (posCores, kwCores) = splitAt (length posSlots) cores
               declared = Map.mapKeys (T.takeWhile (/= '#')) subst
-              inst = [(v, zonkWith vs t) | (v, BoundClass _) <- Map.toList bounds, Just t <- [Map.lookup v declared]]
+              inst = [(v, zonkWith vs t) | (v, b) <- Map.toList bounds, dictBound b, Just t <- [Map.lookup v declared]]
           pure (posCores, zip [n | (n, _, _) <- kwSlots] kwCores, retTy, inst)
 
     -- The keyword arguments a call gives, validated against the
@@ -4388,7 +4422,8 @@ elabCall ctx path locals sp fn args mExpected = do
           (cores, subst) <- goArgs retPat subst0 (zip posExprs params)
           retTy <- instantiateRet name schemeVs retPat subst
           checkBounds name (schemeBounds scheme) subst
-          pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) cores []), retTy)
+          fnRef <- builtinRef ctx sp name (schemeBounds scheme) (Map.mapKeys (T.takeWhile (/= '#')) subst)
+          pure (Core sp (CApp fnRef cores []), retTy)
       where
         castNeedsType =
           abort (diag ETypeMismatch sp "cast requires an expected type from context")
@@ -4524,9 +4559,11 @@ superBound ctx p b = case b of
   SBoundQualified (Spanned _ q) (Spanned _ n) -> Right <$> classNamed ctx p (Just q) n
   SBoundClass cp cn -> Just (Right (cp, cn))
   SBoundType _ -> Nothing
+  SBoundAll _ -> Nothing
 
 -- | The superclass of a class, as its type parameter's bound names it.
 classSuper :: Ctx -> Key -> Maybe (Either NamedBound Key)
+classSuper _ key | key == orderableKey = Just (Left BComparable)
 classSuper ctx key@(p, _) = do
   (_, TypeParam _ mb, _) <- classDeclAst ctx key
   mb >>= superBound ctx p
@@ -4558,6 +4595,8 @@ classHolds ctx path c t = case t of
 boundHolds :: Ctx -> FilePath -> Bound -> Type -> Bool
 boundHolds ctx path b t = case b of
   BoundClass c -> classHolds ctx path c t
+  BoundNamed nb -> holdsAt ctx path nb t
+  BoundAll bs -> all (\b' -> boundHolds ctx path b' t) bs
   _ -> satisfiesBound (boundOf ctx) b t
 
 -- | The instance of a class for a type: one in effect in the given
@@ -4614,8 +4653,64 @@ elabMethod ctx path (Decl sp f) = case f of
 
 -- | A declaration with a type parameter bounded by a class: generic,
 -- and run only as specialized (spec 4.6).
+--
+-- One bounded by @orderable@ alone is generic only where its body
+-- orders a value of its type parameter's type, which a value of an
+-- instance type is ordered by its instance to do.
 isTemplate :: CoreDecl -> Bool
-isTemplate cd = not (null [() | BoundClass _ <- Map.elems (cdBounds cd)])
+isTemplate cd =
+  any (any isClass . boundParts) (Map.elems (cdBounds cd))
+    || or
+      [ v `elem` cdTypeVars cd
+      | CVar (InstRef _ _ inst) <- map coreF (universeCore (cdCore cd)),
+        (_, t) <- inst,
+        v <- typeVars t
+      ]
+  where
+    isClass b = case b of
+      BoundClass _ -> True
+      _ -> False
+
+-- | A bound an instantiation has to be followed through: one with a
+-- class, or @orderable@, which an instance may give a type (spec 4.6).
+dictBound :: Bound -> Bool
+dictBound = any one . boundParts
+  where
+    one b = case b of
+      BoundClass _ -> True
+      BoundNamed BOrderable -> True
+      _ -> False
+
+-- | Whether values of a type are ordered by the language (spec 15.4)
+-- rather than by an instance: Number and String, a type still to be
+-- found while parameters are inferred (that check is not the one that
+-- runs), and a type parameter of a local function, which is never
+-- specialized.
+orderNative :: Ctx -> Type -> Bool
+orderNative ctx t = case t of
+  TyVar v -> isInferVar v || v `Set.member` ctxLocalVars ctx || T.isInfixOf "@" v
+  _ -> nativeOrderable t || hasInfer t
+
+-- | The name a built-in order operation is specialized under.
+orderOpName :: PrimOp -> Text
+orderOpName p = case p of
+  PLt -> "<"
+  PLe -> "<="
+  PGt -> ">"
+  _ -> ">="
+
+-- | A built-in at the types a call or reference instantiates it at:
+-- itself, unless an @orderable@ type parameter of it is at a type the
+-- language does not order, where it is the built-in specialized to the
+-- instance's order (spec 4.6).
+builtinRef :: Ctx -> Span -> Text -> Map Text Bound -> Subst -> TC Core
+builtinRef ctx sp name bounds subst = do
+  vs <- gets stInfer
+  let inst = [(v, zonkWith vs t) | (v, BoundNamed BOrderable) <- Map.toList bounds, Just t <- [Map.lookup v subst]]
+  pure $
+    if all (orderNative ctx . snd) inst
+      then Core sp (CVar (BuiltinRef name))
+      else Core sp (CVar (InstRef builtinClassModule name inst))
 
 -- | The name of a declaration specialized at the types of its type
 -- parameters with a class bound, in the order of their names.
@@ -4662,7 +4757,7 @@ buildClassEnv ctx = do
   instances <-
     catMaybes
       <$> sequence
-        [ case classNamed ctx path (spannedValue <$> qual) c of
+        [ case either (const Nothing) Just (instanceClass ctx path qual c) of
             Nothing -> pure Nothing
             Just ck -> do
               r <- recoverTC (typeFromS (withTypeVars [] ctx) path t)
@@ -4674,14 +4769,15 @@ buildClassEnv ctx = do
           Decl sp (DInstance qual (Spanned _ c) t ds) <- moduleDecls (lmModule lm)
         ]
   modify (\s -> s {stQuiet = q})
-  let synthetic =
+  let classes' = Map.insert orderableKey orderableInfo classes
+      synthetic =
         Map.fromList
           [ (implKey ii mn, implDecl ci ii d)
           | ii <- instances,
-            Just ci <- [Map.lookup (iiClass ii) classes],
+            Just ci <- [Map.lookup (iiClass ii) classes'],
             d@(Decl _ (DFunction mn [] _ _ Nothing _)) <- iiDecls ii
           ]
-  pure (ClassEnv classes instances synthetic)
+  pure (ClassEnv classes' instances synthetic)
   where
     -- A method written in an instance, with the types the class gives
     -- it written in where it leaves them out.
@@ -4697,6 +4793,30 @@ buildClassEnv ctx = do
                   other -> other
              in Decl dsp (DFunction mn [] (zipWith fill ps pts) (rt <|> Just (typeToS dsp (sub r))) w body)
       _ -> d
+
+-- | The built-in class @orderable@ (spec 4.6): its method @compare@,
+-- whose built-in instances are Number and String.
+orderableInfo :: ClassInfo
+orderableInfo =
+  ClassInfo
+    (TypeParam (Spanned NoSpan "T") (Just (SBoundNamed (Spanned NoSpan "comparable"))))
+    [ ( "compare",
+        MethodInfo
+          [Param NoSpan (PPositional n Public (Just (SType NoSpan (SNamed Nothing "T" [])))) | n <- ["a", "b"]]
+          Nothing
+          (Just (TyFun [TyVar "T", TyVar "T"] TyNumber))
+      )
+    ]
+
+-- | The class an instance declaration is of: a class in scope, or the
+-- built-in @orderable@. The other named bounds are closed classes,
+-- whose instances are the types the language gives them.
+instanceClass :: Ctx -> FilePath -> Maybe (Spanned Text) -> Text -> Either Text Key
+instanceClass ctx path qual c = case (qual, namedBoundFromText c) of
+  (Nothing, Just BOrderable) -> Right orderableKey
+  (Nothing, Just nb) ->
+    Left ("'" <> renderNamedBound nb <> "' is a closed class: its instances are the types the language makes " <> renderNamedBound nb <> ", and no others are declared")
+  _ -> maybe (Left ("'" <> maybe "" ((<> ".") . spannedValue) qual <> c <> "' is not a class")) Right (classNamed ctx path (spannedValue <$> qual) c)
 
 -- | Check a class declaration (spec 4.6), and the signatures and
 -- default bodies of its methods.
@@ -4743,7 +4863,11 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
   DInstance qual (Spanned csp c) st ds -> do
     let written = maybe "" ((<> ".") . spannedValue) qual <> c
         display = written <> "<" <> renderSType st <> ">"
-    ck <- maybe (abort (diag ENameUndefined csp ("'" <> written <> "' is not a class"))) pure (classNamed ctx path (spannedValue <$> qual) c)
+    ck <- case instanceClass ctx path qual c of
+      Right k -> pure k
+      Left msg
+        | isJust (namedBoundFromText c) && isNothing qual -> abort (diag ETypeInstance csp msg)
+        | otherwise -> abort (diag ENameUndefined csp msg)
     ci <- maybe dependencyFailed pure (Map.lookup ck (clsClasses (ctxEnv ctx)))
     ht <- typeFromS (withTypeVars [] ctx) path st
     when (ht == TyAny || ht == TyVoid || not (wellFormed ht)) $
@@ -4753,6 +4877,8 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
     let prog = ctxProg ctx
     unless (path == fst ck || isNothing (inCache (progCacheDir prog) path)) $
       abort (diag ETypeInstance sp ("an instance of '" <> written <> "' is declared in the module of the class or in the project, not in a dependency"))
+    when (ck == orderableKey && nativeOrderable ht) $
+      abort (diag ENameDuplicate sp (renderType ht <> " is orderable by the language, which is its one instance of orderable"))
     case [ii | ii <- clsInstances (ctxEnv ctx), iiClass ii == ck, iiHead ii == ht] of
       earlier : _
         | (iiModule earlier, iiSpan earlier) /= (path, sp) ->
@@ -4761,7 +4887,7 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
       _ -> pure ()
     case classSuper ctx ck of
       Just (Left nb)
-        | not (satisfiesNamed (const Nothing) nb ht) ->
+        | not (holdsAt (withTypeVars [] ctx) path nb ht) ->
             abort (diag ETypeInstance sp ("'" <> written <> "' is a class of " <> renderNamedBound nb <> " types, and " <> renderType ht <> " is not " <> renderNamedBound nb))
       Just (Right sk)
         | isNothing (instanceFor ctx (Just path) sk ht) ->
@@ -4812,7 +4938,7 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
       where
         lookup' n = case f of
           DInstance qual (Spanned _ c) _ _ -> do
-            ck <- classNamed ctx path (spannedValue <$> qual) c
+            ck <- either (const Nothing) Just (instanceClass ctx path qual c)
             ci <- Map.lookup ck (clsClasses (ctxEnv ctx))
             lookup n (ciMethods ci)
           _ -> Nothing
@@ -4840,7 +4966,7 @@ specializeEntry ctx lms =
             | isTemplate cd ->
                 sequence_
                   [ () <$ recoverTC (ensureSpec ctx 0 key inst)
-                  | inst <- take 64 (choices [(v, heads (classKey c)) | (v, BoundClass c) <- Map.toList (cdBounds cd)])
+                  | inst <- take 64 (choices [(v, candidates b) | (v, b) <- Map.toList (cdBounds cd), dictBound b])
                   ]
           _ -> pure ()
     | lm <- lms,
@@ -4854,6 +4980,17 @@ specializeEntry ctx lms =
     ]
   where
     heads ck = [iiHead ii | ii <- clsInstances (ctxEnv ctx), iiClass ii == ck]
+    -- The types the CLI may instantiate a variable with the bound at:
+    -- those with an instance of each of its classes, orderable or not.
+    candidates b =
+      [ t
+      | t <- nub (concat [partHeads p' | p' <- boundParts b]),
+        all (\p' -> boundHolds ctx (progEntry (ctxProg ctx)) p' t) (boundParts b)
+      ]
+    partHeads p' = case p' of
+      BoundClass c -> heads (classKey c)
+      BoundNamed BOrderable -> [TyNumber, TyString] <> heads orderableKey
+      _ -> []
     choices [] = [[]]
     choices ((v, ts) : rest) = [(v, t) : more | t <- ts, more <- choices rest]
 
@@ -4861,9 +4998,17 @@ specializeEntry ctx lms =
 rewriteDecl :: Ctx -> Int -> Key -> CoreDecl -> TC ()
 rewriteDecl ctx depth key cd = do
   let refs = nub [(p, n, inst) | CVar (InstRef p n inst) <- map coreF (universeCore (cdCore cd))]
-  targets <- mapM (\(p, n, inst) -> (,) (p, n, inst) <$> resolveInst ctx depth (p, n) inst) refs
+  targets <-
+    mapM
+      ( \(p, n, inst) ->
+          (,) (p, n, inst)
+            <$> if p == builtinClassModule
+              then resolveBuiltinOp ctx n inst
+              else uncurry TopRef <$> resolveInst ctx depth (p, n) inst
+      )
+      refs
   let replace c@(Core sp cf) = case cf of
-        CVar (InstRef p n inst) | Just k <- lookup (p, n, inst) targets -> Core sp (CVar (uncurry TopRef k))
+        CVar (InstRef p n inst) | Just r <- lookup (p, n, inst) targets -> Core sp (CVar r)
         _ -> c
   modify (\s -> s {stDecls = Map.insert key cd {cdCore = transformCore replace (cdCore cd)} (stDecls s)})
 
@@ -4874,6 +5019,10 @@ resolveInst :: Ctx -> Int -> Key -> [(Text, Type)] -> TC Key
 resolveInst ctx depth key@(p, n) inst
   | not (all (isGround . snd) inst) =
       abort (diag ETypeBound NoSpan ("internal: '" <> n <> "' is referred to at a type that is not concrete"))
+  | Nothing <- methodDeclAst ctx key = do
+      -- A declaration that orders nothing by an instance runs as it is.
+      cd <- demandDecl ctx key
+      if isTemplate cd then ensureSpec ctx depth key inst else pure key
   | Just (True, _) <- methodDeclAst ctx key,
     Just (ck, ci) <- classOfMethod,
     [(_, t)] <- inst =
@@ -4937,3 +5086,51 @@ ensureSpec ctx depth key@(p, n) inst = do
 -- | A core expression and everything in it.
 universeCore :: Core -> [Core]
 universeCore c = c : concatMap universeCore (coreChildren c)
+
+-- | A built-in order operation -- @sort@, @sort_by@, @compare@ or an
+-- ordering operator -- at a concrete type (spec 4.6): the built-in
+-- itself for a type the language orders, and otherwise the operation
+-- ordering by the @compare@ of the type's instance.
+resolveBuiltinOp :: Ctx -> Text -> [(Text, Type)] -> TC VarRef
+resolveBuiltinOp ctx op inst = case inst of
+  [(_, t)]
+    | nativeOrderable t -> case op of
+        _ | op `elem` ["sort", "sort_by", "compare"] -> pure (BuiltinRef op)
+        _ -> synthesize builtinClassModule t (\a b -> Core NoSpan (CBin (primOf op) a b))
+    | Just ii <- instanceFor ctx Nothing orderableKey t -> do
+        let cmp = Core NoSpan (CVar (uncurry TopRef (implKey ii "compare")))
+            call f args = Core NoSpan (CApp f args [])
+        case op of
+          "compare" -> pure (uncurry TopRef (implKey ii "compare"))
+          "sort" -> synthesizeWith (iiModule ii) ["xs"] (TyFun [TyArray t] (TyArray t)) (\args -> call (builtin "%sort_with") (args <> [cmp]))
+          "sort_by" -> synthesizeWith (iiModule ii) ["xs", "key"] (TyFun [TyArray TyAny, TyFun [TyAny] t] (TyArray TyAny)) (\args -> call (builtin "%sort_by_with") (args <> [cmp]))
+          _ -> synthesize (iiModule ii) t (\a b -> Core NoSpan (CBin (primOf op) (call cmp [a, b]) (Core NoSpan (CNumber 0))))
+    | otherwise -> abort (diag ETypeBound NoSpan ("there is no instance orderable<" <> renderType t <> ">"))
+  _ -> abort (diag ETypeBound NoSpan ("internal: '" <> op <> "' is ordered at no one type"))
+  where
+    builtin b = Core NoSpan (CVar (BuiltinRef b))
+    local x = Core NoSpan (CVar (LocalRef x))
+    primOf o = case o of
+      "<" -> PLt
+      "<=" -> PLe
+      ">" -> PGt
+      _ -> PGe
+    synthesize :: FilePath -> Type -> (Core -> Core -> Core) -> TC VarRef
+    synthesize path t mk =
+      synthesizeWith path ["a", "b"] (TyFun [t, t] TyBool) (\args -> case args of
+        [a, b] -> mk a b
+        _ -> Core NoSpan CNull)
+    -- A declaration made for the operation at the type, under a name
+    -- no source can write, once.
+    synthesizeWith :: FilePath -> [Text] -> Type -> ([Core] -> Core) -> TC VarRef
+    synthesizeWith path ps ty mk = do
+      let t = maybe TyAny snd (listToMaybe inst)
+          key = (path, "%" <> op <> "<" <> renderType t <> ">")
+          params = case ty of
+            TyFun pts _ -> StaticParams (zip ps pts) Nothing [] []
+            _ -> StaticParams [] Nothing [] []
+          lam = Lam op path ps Nothing [] (mk (map local ps)) ty
+      done <- gets (Map.member key . stDecls)
+      unless done $
+        modify (\s -> s {stDecls = Map.insert key (CoreDecl path (snd key) [] ty (Core NoSpan (CLam lam)) (Just params) Map.empty) (stDecls s)})
+      pure (uncurry TopRef key)

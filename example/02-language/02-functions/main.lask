@@ -102,8 +102,9 @@ words(): Array<String> = prepend("a", ["b"], extra = ["z"])
 // The largest element, for any type that has an order.
 //
 // Inside its body a type parameter can only be passed around, unless a
-// bound says more. `orderable` admits Number and String, so the body
-// may sort — and a call with an array of Bool is rejected at the call,
+// bound says more. `orderable` admits Number and String, and any type
+// given an order by an `instance orderable<...>`, so the body may
+// sort — and a call with an array of Bool is rejected at the call,
 // as `sort` itself would be. `comparable` and `stringifiable` give `==`
 // and `#{...}` the same way, and a type bound `<T: Number | String>`
 // admits whatever conforms to that type.

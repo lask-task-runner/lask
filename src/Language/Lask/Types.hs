@@ -22,6 +22,10 @@ module Language.Lask.Types
     Bound (..),
     ClassRef (..),
     classKey,
+    builtinClassModule,
+    orderableKey,
+    boundParts,
+    nativeOrderable,
     namedBoundFromText,
     renderNamedBound,
     renderBound,
@@ -325,8 +329,26 @@ data NamedBound = BComparable | BOrderable | BStringifiable
 -- | The bound of a type parameter (spec 4.2): a named predicate, a
 -- type that an instantiation has to conform to, or a class it has to
 -- have an instance of (4.6).
-data Bound = BoundNamed NamedBound | BoundType Type | BoundClass ClassRef
+--
+-- 'BoundAll' is several named bounds and classes at once, written
+-- @a + b@: it admits the types that satisfy each of them. It never
+-- holds a type bound, nor another 'BoundAll'.
+data Bound = BoundNamed NamedBound | BoundType Type | BoundClass ClassRef | BoundAll [Bound]
   deriving (Show, Eq)
+
+-- | The bounds a bound is made of: itself, or each part of a 'BoundAll'.
+boundParts :: Bound -> [Bound]
+boundParts (BoundAll bs) = bs
+boundParts b = [b]
+
+-- | The module a built-in class is declared in, which no file is
+-- (spec 4.6): @orderable@ is a class, and its instances are found
+-- under this key as those of any class are.
+builtinClassModule :: FilePath
+builtinClassModule = "<builtin>"
+
+orderableKey :: (FilePath, Text)
+orderableKey = (builtinClassModule, "orderable")
 
 -- | A class (spec 4.6) where it is a bound: the module that declares
 -- it and its name, with what it entails through its superclasses --
@@ -356,6 +378,7 @@ renderBound :: Bound -> Text
 renderBound (BoundNamed b) = renderNamedBound b
 renderBound (BoundType t) = renderType t
 renderBound (BoundClass c) = crName c
+renderBound (BoundAll bs) = T.intercalate " + " (map renderBound bs)
 
 -- | Whether a type satisfies a named predicate (spec 4.4), given the
 -- bounds of the type parameters in scope: a parameter satisfies it
@@ -380,8 +403,9 @@ satisfiesBound boundOf b t = case b of
   BoundNamed nb -> satisfiesNamed boundOf nb t
   BoundType u -> conformsUnder upper t u
   BoundClass c -> case t of
-    TyVar v | Just (BoundClass c') <- boundOf v -> classKey c == classKey c' || classKey c `elem` crSupers c'
+    TyVar v | Just b' <- boundOf v -> entailsBound b' (BoundClass c)
     _ -> False
+  BoundAll bs -> all (\b' -> satisfiesBound boundOf b' t) bs
   where
     upper v = case boundOf v of
       Just (BoundType u) -> Just u
@@ -394,15 +418,18 @@ satisfiesBound boundOf b t = case b of
 -- bound mentions no type parameter (4.2), so it is checked alone.
 boundEntails :: Bound -> NamedBound -> Bool
 boundEntails b nb = case b of
-  BoundNamed n -> n == nb || n == BOrderable
+  BoundNamed n -> n == nb || (n == BOrderable && nb == BComparable)
   BoundType TyAny -> False
   BoundType t -> satisfiesNamed (const Nothing) nb t
   BoundClass c -> nb `elem` crEntailsNamed c
+  BoundAll bs -> any (`boundEntails` nb) bs
 
 -- | Whether every type one bound admits satisfies another (spec 4.4,
 -- 4.6): a named bound or a class the first entails, or the same bound.
 entailsBound :: Bound -> Bound -> Bool
 entailsBound a b = case (a, b) of
+  (_, BoundAll bs) -> all (entailsBound a) bs
+  (BoundAll as, _) -> any (`entailsBound` b) as
   (_, BoundNamed nb) -> boundEntails a nb
   (BoundClass c, BoundClass d) -> classKey c == classKey d || classKey d `elem` crSupers c
   _ -> a == b
@@ -429,6 +456,11 @@ comparableWith var = go
       TyUnion ts -> all go ts
       TyVar v -> var v
       _ -> False
+
+-- | The types the language orders itself (spec 15.4): any other type
+-- is orderable by an instance (4.6).
+nativeOrderable :: Type -> Bool
+nativeOrderable t = t == TyNumber || t == TyString
 
 -- | Types that @sort@ \/ @sort_by@ can order (spec 15.4).
 --

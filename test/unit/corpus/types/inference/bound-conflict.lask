@@ -1,2 +1,5 @@
-// comparable and stringifiable: neither entails the other (4.3).
-f(a, b) = a == b ? "#{a}" : "" // expect: E-TYPE-BOUND
+// comparable and stringifiable: neither entails the other, so the
+// parameter has both, joined with + (4.3).
+f(a, b) = a == b ? "#{a}" : ""
+ok(): String = f(1, 1)
+bad(): String = f([1], [1]) // expect: E-TYPE-BOUND

@@ -238,6 +238,7 @@ examples =
     is "sort" "sort([\"b\", \"a\", \"B\", \"é\"])" "[\"B\",\"a\",\"b\",\"é\"]",
     is "sort" "sort(none)" "[]",
     is "sort_by" "map(sort_by([{n: 2, k: \"a\"}, {n: 1, k: \"b\"}, {n: 2, k: \"c\"}], \\(r: Record<n: Number, k: String>) -> r.n), \\(r: Record<n: Number, k: String>) -> r.k)" "[\"b\",\"a\",\"c\"]",
+    is "compare" "[compare(1, 2), compare(\"b\", \"a\"), compare(3, 3)]" "[-1,1,0]",
     is "contains_array" "contains_array([[1], [2]], [2])" "true",
     is "contains_array" "contains_array(none, 1)" "false",
     is "index_of_array" "index_of_array([1, 2, 1], 1)" "0",

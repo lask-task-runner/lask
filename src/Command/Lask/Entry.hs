@@ -46,7 +46,7 @@ import Language.Lask.Module.Resolve (entryPublicValues)
 import Language.Lask.Diagnostic (Advisory (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Core.Access (SVal (..), checkCommandEnv, checkInvocation, withinConstraints)
-import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..), specName)
+import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..), isTemplate, specName)
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer (lexTokensWithComments)
 import Language.Lask.Obs.CommandLog
@@ -218,7 +218,8 @@ cmdRunEval printResult runOpts = do
   -- A declaration with a class bound runs as specialized at the types
   -- the arguments gave its bounded parameters (spec 4.6, 11.2).
   (key, cd) <- case inst of
-    [] -> pure (key0, cd0)
+    _ | not (isTemplate cd0) -> pure (key0, cd0)
+    [] -> usageError opts ("'" <> fnName <> "' orders by an instance, and the arguments do not say at which type")
     _ ->
       let key' = (fst key0, specName (snd key0) inst)
        in maybe (usageError opts ("'" <> fnName <> "' has no specialization at " <> T.intercalate ", " (map (renderType . snd) inst))) (pure . (,) key') (Map.lookup key' (cpDecls core))

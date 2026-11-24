@@ -372,6 +372,11 @@ spec = do
       pModule "export instance ord<Number> {}" `shouldSatisfy` isLeft
       pModule "internal instance ord<Number> {}" `shouldSatisfy` isLeft
 
+    it "parses bounds joined with + (spec 4.2)" $
+      pModule "f<T: orderable + m.ord>(x: T) = x"
+        `shouldBe` Right
+          [DFunction "f" [TypeParam (Spanned NoSpan "T") (Just (SBoundAll [SBoundNamed (Spanned NoSpan "orderable"), SBoundQualified (Spanned NoSpan "m") (Spanned NoSpan "ord")]))] [Param NoSpan (PPositional "x" Public (Just (ty (SNamed Nothing "T" []))))] Nothing Nothing (var "x")]
+
     it "parses a bound that names a class through a namespace" $
       pModule "f<T: m.ord>(x: T) = x"
         `shouldBe` Right

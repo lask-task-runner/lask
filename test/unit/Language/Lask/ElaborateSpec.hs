@@ -217,8 +217,9 @@ spec = do
       rejects "sorted(xs) = sort(xs)\nf() = sorted([true])" ETypeBound
     it "keeps the stronger of two bounds one entails" $
       accepts "f(xs, x) = contains_array(sort(xs), x)\ng() = f([1], 2)"
-    it "rejects a parameter that needs two bounds neither entails" $
-      rejects "f(a, b) = a == b ? \"#{a}\" : \"\"" ETypeBound
+    it "joins two bounds neither entails with + (spec 4.2)" $ do
+      accepts "f(a, b) = a == b ? \"#{a}\" : \"\"\ng() = f(1, 1)"
+      rejects "f(a, b) = a == b ? \"#{a}\" : \"\"\ng() = f([1], [1])" ETypeBound
     it "takes the type of the values a parameter is joined with, when used at none" $ do
       hasType "f(c: Bool, n) = c ? 0 : n" "f" "Function<Bool, Number, Number>"
       hasType "f(xs, x) = contains_array(xs, \"a\") ? x : 1" "f" "Function<Array<String>, Number, Number>"
@@ -374,8 +375,11 @@ spec = do
       accepts "show<T: stringifiable>(x: T): String = \"v=#{x}\""
       accepts "render<T: stringifiable>(x: T): String = to_string(x)"
       accepts "sorted<T: orderable>(xs: Array<T>): Array<T> = sort(xs)"
-      -- orderable entails comparable and stringifiable.
-      accepts "f<T: orderable>(xs: Array<T>): String = \"#{contains_array(xs, xs[0])} #{xs[0]}\""
+      -- orderable entails comparable, and not stringifiable: that is
+      -- joined with + (spec 4.4).
+      accepts "f<T: orderable>(xs: Array<T>): Bool = contains_array(xs, xs[0])"
+      rejects "f<T: orderable>(x: T): String = \"#{x}\"" ETypeBound
+      accepts "f<T: orderable + stringifiable>(xs: Array<T>): String = \"#{contains_array(xs, xs[0])} #{xs[0]}\""
       -- A type bound entails what the type satisfies, and conforms to it.
       accepts "g<T: Number | String>(a: T, b: T): String = if (a == b) { \"#{a}\" } else { \"\" }"
       accepts "inc<T: Number>(x: T): Number = x + 1"

@@ -606,6 +606,7 @@ typeParams tps = "<" <> commas (map one tps) <> ">"
     bound (SBoundQualified (Spanned _ q) (Spanned _ n)) = q <> "." <> n
     bound (SBoundType t) = typ t
     bound (SBoundClass _ n) = n
+    bound (SBoundAll bs) = T.intercalate " + " (map bound bs)
 
 params :: Mode -> [Param] -> Text
 params m ps = "(" <> commas (map one ps) <> ")"

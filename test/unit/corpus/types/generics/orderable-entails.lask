@@ -1,4 +1,5 @@
-// orderable entails comparable and stringifiable (4.4).
-f<T: orderable>(x: T): String = "#{x}"
+// orderable entails comparable, and not stringifiable (4.4).
+f<T: orderable>(x: T): String = "#{x}" // expect: E-TYPE-BOUND
 g<T: orderable>(x: T, y: T): Bool = x == y
 h<T: orderable>(xs: Array<T>): Array<T> = sort(xs)
+k<T: orderable + stringifiable>(x: T): String = "#{x}"
