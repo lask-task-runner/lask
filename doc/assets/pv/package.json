@@ -3,6 +3,6 @@
   "description": "Renders the Lask tour video from lask-tour.html",
   "type": "module",
   "devDependencies": {
-    "puppeteer-core": "24.10.0"
+    "puppeteer-core": "25.18.1"
   }
 }
