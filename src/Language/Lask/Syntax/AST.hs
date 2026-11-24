@@ -104,11 +104,12 @@ data DeclF
     -- one type parameter, with the signatures of its methods and the
     -- bodies of those that have a default.
     DClass Text TypeParam [ClassMethod]
-  | -- | @instance [ns.]name\<Type\> { methods }@ (spec 4.6): the class,
+  | -- | @instance[\<T: bound\>] [ns.]name\<Type\> { methods }@ (spec
+    -- 4.6): the type parameters of a parametric instance, the class,
     -- with the namespace it is qualified by, the type it is an
     -- instance for, and its methods, each a function declaration
     -- without type parameters.
-    DInstance (Maybe (Spanned Text)) (Spanned Text) SType [Decl]
+    DInstance [TypeParam] (Maybe (Spanned Text)) (Spanned Text) SType [Decl]
   deriving (Show, Eq)
 
 -- | A method of a class as declared (spec 4.6): its signature, written
@@ -382,7 +383,7 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DImportCommands ns path -> DImportCommands (map stripWord ns) path
   DExportCommandsFrom ns path -> DExportCommandsFrom (map stripWord ns) path
   DClass n tp ms -> DClass n (stripTypeParam tp) (map stripMethod ms)
-  DInstance q c t ds -> DInstance (fmap stripWord q) (stripWord c) (stripSpansType t) (map stripSpansDecl ds)
+  DInstance tps q c t ds -> DInstance (map stripTypeParam tps) (fmap stripWord q) (stripWord c) (stripSpansType t) (map stripSpansDecl ds)
   where
     stripMethod (ClassMethod _ n ps r d) =
       ClassMethod NoSpan (stripWord n) (map stripParam ps) (stripSpansType r) (fmap stripSpansExpr d)

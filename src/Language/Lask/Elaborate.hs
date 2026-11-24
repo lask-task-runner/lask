@@ -235,8 +235,14 @@ data InstanceInfo = InstanceInfo
   { iiModule :: FilePath,
     iiSpan :: Span,
     iiClass :: Key,
+    -- | The type it is for, which mentions its type parameters when it
+    -- is parametric.
     iiHead :: Type,
-    iiDecls :: [Decl]
+    iiDecls :: [Decl],
+    -- | The type parameters of a parametric instance, with their bounds
+    -- as written and as read (spec 4.6).
+    iiTypeParams :: [TypeParam],
+    iiParams :: [(Text, Maybe Bound)]
   }
 
 -- | A type is settled at this point when every variable it still
@@ -302,7 +308,7 @@ holds ctx = satisfiesNamed (boundOf ctx)
 -- effect there as well (spec 4.6).
 holdsAt :: Ctx -> FilePath -> NamedBound -> Type -> Bool
 holdsAt ctx path nb t =
-  holds ctx nb t || (nb == BOrderable && isGround t && isJust (instanceFor ctx (Just path) orderableKey t))
+  holds ctx nb t || (nb == BOrderable && isJust (instanceFor ctx (Just path) orderableKey t))
 
 -- | A use instantiated a bounded type variable at a type outside its
 -- bound (spec 4.4).
@@ -665,7 +671,7 @@ elabUnits ctx0 selected = do
   env <- buildClassEnv ctx0
   let ctx = ctx0 {ctxEnv = env}
       modules = filter (selected . lmPath) (Map.elems (progModules (ctxProg ctx)))
-  modify (\s -> s {stInstanceHeads = Map.fromListWith (flip (<>)) [(iiClass ii, [iiHead ii]) | ii <- clsInstances env]})
+  modify (\s -> s {stInstanceHeads = instanceHeads ctx})
   elabUnitsWith ctx modules
   mapM_ (unit . checkClassDecl ctx) [(lmPath lm, d) | lm <- modules, d@(Decl _ DClass {}) <- moduleDecls (lmModule lm)]
   mapM_ (unit . checkInstanceDecl ctx) [(lmPath lm, d) | lm <- modules, d@(Decl _ DInstance {}) <- moduleDecls (lmModule lm)]
@@ -4589,7 +4595,7 @@ classRefOf ctx = go []
 classHolds :: Ctx -> FilePath -> ClassRef -> Type -> Bool
 classHolds ctx path c t = case t of
   TyVar v -> maybe False (`entailsBound` BoundClass c) (boundOf ctx v)
-  _ -> isGround t && isJust (instanceFor ctx (Just path) (classKey c) t)
+  _ -> isJust (instanceFor ctx (Just path) (classKey c) t)
 
 -- | 'satisfiesBound', with the program's instances.
 boundHolds :: Ctx -> FilePath -> Bound -> Type -> Bool
@@ -4603,14 +4609,78 @@ boundHolds ctx path b t = case b of
 -- module -- declared there or in a module it imports, directly or not
 -- -- or, without one, anywhere in the program.
 instanceFor :: Ctx -> Maybe FilePath -> Key -> Type -> Maybe InstanceInfo
-instanceFor ctx from cls t =
+instanceFor ctx from cls t = fst <$> instanceMatch ctx from cls t
+
+-- | 'instanceFor', with the types the type parameters of a parametric
+-- instance take for the type (spec 4.6). Its type is matched against
+-- the instance's, and each type a parameter takes has to satisfy the
+-- parameter's bound in turn: a part of the type, so the search ends.
+instanceMatch :: Ctx -> Maybe FilePath -> Key -> Type -> Maybe (InstanceInfo, Map Text Type)
+instanceMatch ctx from cls t =
   listToMaybe
-    [ ii
+    [ (ii, sub)
     | ii <- clsInstances (ctxEnv ctx),
       iiClass ii == cls,
-      iiHead ii == t,
-      maybe True (\p -> iiModule ii `Set.member` importClosure (ctxProg ctx) p) from
+      maybe True (\p -> iiModule ii `Set.member` importClosure (ctxProg ctx) p) from,
+      Just sub <- [matchHead (map fst (iiParams ii)) (iiHead ii) t],
+      and
+        [ boundHolds ctx (fromMaybe (iiModule ii) from) b (Map.findWithDefault TyAny v sub)
+        | (v, Just b) <- iiParams ii
+        ]
     ]
+
+-- | Match a type against the type of an instance, whose variables
+-- among the given ones stand for any type: the types they stand for.
+matchHead :: [Text] -> Type -> Type -> Maybe (Map Text Type)
+matchHead vars pat0 t0 = go pat0 t0 Map.empty
+  where
+    go pat t sub = case pat of
+      TyVar v
+        | v `elem` vars -> case Map.lookup v sub of
+            Just u -> if u == t then Just sub else Nothing
+            Nothing -> Just (Map.insert v t sub)
+      _ -> case (pat, t) of
+        (TyArray a, TyArray b) -> go a b sub
+        (TyMap a, TyMap b) -> go a b sub
+        (TyAsync a, TyAsync b) -> go a b sub
+        (TyRecord fa, TyRecord fb)
+          | Map.keysSet fa == Map.keysSet fb,
+            map fieldOptional (Map.elems fa) == map fieldOptional (Map.elems fb) ->
+              foldM (\s' (x, y) -> go (fieldType x) (fieldType y) s') sub (zip (Map.elems fa) (Map.elems fb))
+        (TyFun ps r, TyFun qs r')
+          | length ps == length qs -> foldM (\s' (x, y) -> go x y s') sub (zip (ps <> [r]) (qs <> [r']))
+        _
+          | pat == t -> Just sub
+          | otherwise -> Nothing
+
+-- | Whether two instances' types have a type in common (spec 4.6):
+-- each one's variables among the given ones may stand for any type.
+headsOverlap :: [Text] -> Type -> [Text] -> Type -> Bool
+headsOverlap vs a ws b = isJust (unify (applySubst ren a) b Map.empty)
+  where
+    ren = Map.fromList [(v, TyVar (v <> "'")) | v <- vs]
+    free = Set.fromList (map (<> "'") vs <> ws)
+    walk sub t = case t of
+      TyVar v | Just u <- Map.lookup v sub -> walk sub u
+      _ -> t
+    unify x0 y0 sub =
+      let x = walk sub x0
+          y = walk sub y0
+       in case (x, y) of
+            (TyVar v, _) | v `Set.member` free -> if x == y then Just sub else Just (Map.insert v y sub)
+            (_, TyVar w) | w `Set.member` free -> Just (Map.insert w x sub)
+            (TyArray p, TyArray q) -> unify p q sub
+            (TyMap p, TyMap q) -> unify p q sub
+            (TyAsync p, TyAsync q) -> unify p q sub
+            (TyRecord fa, TyRecord fb)
+              | Map.keysSet fa == Map.keysSet fb,
+                map fieldOptional (Map.elems fa) == map fieldOptional (Map.elems fb) ->
+                  foldM (\s' (f1, f2) -> unify (fieldType f1) (fieldType f2) s') sub (zip (Map.elems fa) (Map.elems fb))
+            (TyFun ps r, TyFun qs r')
+              | length ps == length qs -> foldM (\s' (p', q') -> unify p' q' s') sub (zip (ps <> [r]) (qs <> [r']))
+            _
+              | x == y -> Just sub
+              | otherwise -> Nothing
 
 -- | A module and every module it imports, directly or not.
 importClosure :: Program -> FilePath -> Set FilePath
@@ -4760,13 +4830,15 @@ buildClassEnv ctx = do
         [ case either (const Nothing) Just (instanceClass ctx path qual c) of
             Nothing -> pure Nothing
             Just ck -> do
-              r <- recoverTC (typeFromS (withTypeVars [] ctx) path t)
-              pure (either (const Nothing) (\ht -> Just (InstanceInfo path sp ck ht ds)) r)
+              r <- recoverTC $ do
+                vs <- typeVarsOf ctx path tps
+                (,) vs <$> typeFromS (withTypeVars vs ctx) path t
+              pure (either (const Nothing) (\(vs, ht) -> Just (InstanceInfo path sp ck ht ds tps vs)) r)
         | -- Dependencies first (progOrder), so that of two instances
           -- for one type, the later is the one reported.
           path <- progOrder (ctxProg ctx),
           Just lm <- [Map.lookup path (progModules (ctxProg ctx))],
-          Decl sp (DInstance qual (Spanned _ c) t ds) <- moduleDecls (lmModule lm)
+          Decl sp (DInstance tps qual (Spanned _ c) t ds) <- moduleDecls (lmModule lm)
         ]
   modify (\s -> s {stQuiet = q})
   let classes' = Map.insert orderableKey orderableInfo classes
@@ -4791,7 +4863,7 @@ buildClassEnv ctx = do
                 fill (Param psp pf) pt = Param psp $ case pf of
                   PPositional n sec Nothing -> PPositional n sec (Just (typeToS psp (sub pt)))
                   other -> other
-             in Decl dsp (DFunction mn [] (zipWith fill ps pts) (rt <|> Just (typeToS dsp (sub r))) w body)
+             in Decl dsp (DFunction mn (iiTypeParams ii) (zipWith fill ps pts) (rt <|> Just (typeToS dsp (sub r))) w body)
       _ -> d
 
 -- | The built-in class @orderable@ (spec 4.6): its method @compare@,
@@ -4860,7 +4932,7 @@ checkClassDecl ctx (path, Decl sp f) = case f of
 -- methods against the class's signatures.
 checkInstanceDecl :: Ctx -> (FilePath, Decl) -> TC ()
 checkInstanceDecl ctx (path, Decl sp f) = case f of
-  DInstance qual (Spanned csp c) st ds -> do
+  DInstance tps qual (Spanned csp c) st ds -> do
     let written = maybe "" ((<> ".") . spannedValue) qual <> c
         display = written <> "<" <> renderSType st <> ">"
     ck <- case instanceClass ctx path qual c of
@@ -4869,9 +4941,21 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
         | isJust (namedBoundFromText c) && isNothing qual -> abort (diag ETypeInstance csp msg)
         | otherwise -> abort (diag ENameUndefined csp msg)
     ci <- maybe dependencyFailed pure (Map.lookup ck (clsClasses (ctxEnv ctx)))
-    ht <- typeFromS (withTypeVars [] ctx) path st
+    vs <- typeVarsOf ctx path tps
+    let ictx = withTypeVars vs ctx
+    ht <- typeFromS ictx path st
     when (ht == TyAny || ht == TyVoid || not (wellFormed ht)) $
       abort (diag ETypeIllformed (stypeSpan st) ("there is no instance for " <> renderType ht <> ": an instance is for a type other than Any and Void"))
+    -- A parametric instance is for the types its type has, each of its
+    -- type parameters standing for a part of them (spec 4.6).
+    case ht of
+      TyVar _ -> abort (diag ETypeIllformed (stypeSpan st) "an instance is for a type that is more than a type parameter")
+      _ -> pure ()
+    case [v | (v, _) <- vs, v `notElem` typeVars ht] of
+      v : _ -> abort (diag ETypeIllformed (stypeSpan st) ("the type parameter '" <> v <> "' of the instance is not in its type, so nothing says what it is"))
+      [] -> pure ()
+    when (varInUnion ht) $
+      abort (diag ETypeIllformed (stypeSpan st) "a type parameter of an instance is not a member of a union: its type matches a type part by part")
     -- Instances are of the class's module, or of the project: a
     -- dependency cannot declare one for another's class (spec 4.6).
     let prog = ctxProg ctx
@@ -4879,18 +4963,21 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
       abort (diag ETypeInstance sp ("an instance of '" <> written <> "' is declared in the module of the class or in the project, not in a dependency"))
     when (ck == orderableKey && nativeOrderable ht) $
       abort (diag ENameDuplicate sp (renderType ht <> " is orderable by the language, which is its one instance of orderable"))
-    case [ii | ii <- clsInstances (ctxEnv ctx), iiClass ii == ck, iiHead ii == ht] of
+    -- Instances whose types have one in common, after this one in the
+    -- order of the modules, are reported where they are.
+    let others = [ii | ii <- clsInstances (ctxEnv ctx), iiClass ii == ck, headsOverlap (map fst (iiParams ii)) (iiHead ii) (map fst vs) ht]
+    case others of
       earlier : _
         | (iiModule earlier, iiSpan earlier) /= (path, sp) ->
             abort . withNote ("the other is at " <> renderAt (iiSpan earlier)) $
-              diag ENameDuplicate sp ("duplicate instance " <> display <> ": a type has one instance of a class")
+              diag ENameDuplicate sp ("duplicate instance " <> display <> ": a type has one instance of a class, and this one is for a type that another is for")
       _ -> pure ()
     case classSuper ctx ck of
       Just (Left nb)
-        | not (holdsAt (withTypeVars [] ctx) path nb ht) ->
+        | not (holdsAt ictx path nb ht) ->
             abort (diag ETypeInstance sp ("'" <> written <> "' is a class of " <> renderNamedBound nb <> " types, and " <> renderType ht <> " is not " <> renderNamedBound nb))
       Just (Right sk)
-        | isNothing (instanceFor ctx (Just path) sk ht) ->
+        | isNothing (instanceFor ictx (Just path) sk ht) ->
             abort (diag ETypeInstance sp ("an instance " <> display <> " needs an instance " <> snd sk <> "<" <> renderSType st <> "> in effect here"))
       _ -> pure ()
     let methods = ciMethods ci
@@ -4903,7 +4990,7 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
       [] -> pure ()
       missing ->
         abort (diag ETypeInstance sp ("the instance " <> display <> " does not define " <> T.intercalate ", " ["'" <> m <> "'" | m <- missing] <> ", which " <> written <> " has no default for"))
-    let ii = InstanceInfo path sp ck ht ds
+    let ii = InstanceInfo path sp ck ht ds tps vs
         TypeParam (Spanned _ v) _ = ciParam ci
     sequence_
       [ do
@@ -4921,6 +5008,14 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
   _ -> pure ()
   where
     group' xs = [[x | x' <- xs, x' == x] | x <- nub xs]
+    varInUnion t = case t of
+      TyUnion ms -> any (not . null . typeVars) ms
+      TyArray e -> varInUnion e
+      TyMap e -> varInUnion e
+      TyAsync e -> varInUnion e
+      TyRecord fs -> any (varInUnion . fieldType) (Map.elems fs)
+      TyFun ps r -> any varInUnion (r : ps)
+      _ -> False
     renderAt (Span (Position fl l _) _) = T.pack fl <> ":" <> T.pack (show l)
     renderAt NoSpan = "another module"
     methodShape known (Decl dsp df) = case df of
@@ -4937,7 +5032,7 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
       _ -> pure ()
       where
         lookup' n = case f of
-          DInstance qual (Spanned _ c) _ _ -> do
+          DInstance _ qual (Spanned _ c) _ _ -> do
             ck <- either (const Nothing) Just (instanceClass ctx path qual c)
             ci <- Map.lookup ck (clsClasses (ctxEnv ctx))
             lookup n (ciMethods ci)
@@ -4979,7 +5074,7 @@ specializeEntry ctx lms =
       let key = (lmPath lm, n)
     ]
   where
-    heads ck = [iiHead ii | ii <- clsInstances (ctxEnv ctx), iiClass ii == ck]
+    heads ck = Map.findWithDefault [] ck (instanceHeads ctx)
     -- The types the CLI may instantiate a variable with the bound at:
     -- those with an instance of each of its classes, orderable or not.
     candidates b =
@@ -5003,7 +5098,7 @@ rewriteDecl ctx depth key cd = do
       ( \(p, n, inst) ->
           (,) (p, n, inst)
             <$> if p == builtinClassModule
-              then resolveBuiltinOp ctx n inst
+              then resolveBuiltinOp ctx depth n inst
               else uncurry TopRef <$> resolveInst ctx depth (p, n) inst
       )
       refs
@@ -5026,10 +5121,10 @@ resolveInst ctx depth key@(p, n) inst
   | Just (True, _) <- methodDeclAst ctx key,
     Just (ck, ci) <- classOfMethod,
     [(_, t)] <- inst =
-      case instanceFor ctx Nothing ck t of
+      case instanceMatch ctx Nothing ck t of
         Nothing -> abort (diag ETypeBound NoSpan ("there is no instance " <> snd ck <> "<" <> renderType t <> ">"))
-        Just ii
-          | n `elem` [m | Decl _ (DFunction m _ _ _ _ _) <- iiDecls ii] -> pure (implKey ii n)
+        Just (ii, sub)
+          | n `elem` [m | Decl _ (DFunction m _ _ _ _ _) <- iiDecls ii] -> instanceMethod ctx depth ii sub n
           | isJust (lookup n (ciMethods ci) >>= miDefault) -> ensureSpec ctx depth (p, n <> "#default") inst
           | otherwise -> abort (diag ETypeInstance (iiSpan ii) ("the instance does not define '" <> n <> "'"))
   | otherwise = ensureSpec ctx depth key inst
@@ -5051,9 +5146,9 @@ ensureSpec ctx depth key@(p, n) inst = do
   if done
     then pure key'
     else do
-      when (depth > 32) $
-        abort (diag ETypeBound NoSpan ("'" <> n <> "' is specialized at ever larger types, which never ends"))
       cd <- demandDecl ctx key
+      when (depth > 32) $
+        abort (diag ETypeBound (coreSpan (cdCore cd)) ("'" <> n <> "' calls itself, through its instances, at ever larger types, so it is never specialized at all of them; call it at the types it is given"))
       let vs = map fst inst
           sub = applySubst (Map.fromList inst)
           -- A recursive call refers to the declaration itself, at the
@@ -5091,17 +5186,18 @@ universeCore c = c : concatMap universeCore (coreChildren c)
 -- ordering operator -- at a concrete type (spec 4.6): the built-in
 -- itself for a type the language orders, and otherwise the operation
 -- ordering by the @compare@ of the type's instance.
-resolveBuiltinOp :: Ctx -> Text -> [(Text, Type)] -> TC VarRef
-resolveBuiltinOp ctx op inst = case inst of
+resolveBuiltinOp :: Ctx -> Int -> Text -> [(Text, Type)] -> TC VarRef
+resolveBuiltinOp ctx depth op inst = case inst of
   [(_, t)]
     | nativeOrderable t -> case op of
         _ | op `elem` ["sort", "sort_by", "compare"] -> pure (BuiltinRef op)
         _ -> synthesize builtinClassModule t (\a b -> Core NoSpan (CBin (primOf op) a b))
-    | Just ii <- instanceFor ctx Nothing orderableKey t -> do
-        let cmp = Core NoSpan (CVar (uncurry TopRef (implKey ii "compare")))
+    | Just (ii, sub) <- instanceMatch ctx Nothing orderableKey t -> do
+        cmpKey <- instanceMethod ctx depth ii sub "compare"
+        let cmp = Core NoSpan (CVar (uncurry TopRef cmpKey))
             call f args = Core NoSpan (CApp f args [])
         case op of
-          "compare" -> pure (uncurry TopRef (implKey ii "compare"))
+          "compare" -> pure (uncurry TopRef cmpKey)
           "sort" -> synthesizeWith (iiModule ii) ["xs"] (TyFun [TyArray t] (TyArray t)) (\args -> call (builtin "%sort_with") (args <> [cmp]))
           "sort_by" -> synthesizeWith (iiModule ii) ["xs", "key"] (TyFun [TyArray TyAny, TyFun [TyAny] t] (TyArray TyAny)) (\args -> call (builtin "%sort_by_with") (args <> [cmp]))
           _ -> synthesize (iiModule ii) t (\a b -> Core NoSpan (CBin (primOf op) (call cmp [a, b]) (Core NoSpan (CNumber 0))))
@@ -5134,3 +5230,37 @@ resolveBuiltinOp ctx op inst = case inst of
       unless done $
         modify (\s -> s {stDecls = Map.insert key (CoreDecl path (snd key) [] ty (Core NoSpan (CLam lam)) (Just params) Map.empty) (stDecls s)})
       pure (uncurry TopRef key)
+
+-- | The declaration a method of an instance runs as, at the types its
+-- type parameters take: the method as written, or, for a parametric
+-- instance whose method orders or calls by them, specialized there.
+instanceMethod :: Ctx -> Int -> InstanceInfo -> Map Text Type -> Text -> TC Key
+instanceMethod ctx depth ii sub n = do
+  let key = implKey ii n
+  cd <- demandDecl ctx key
+  if isTemplate cd
+    then ensureSpec ctx depth key [(v, t) | (v, Just b) <- iiParams ii, dictBound b, Just t <- [Map.lookup v sub]]
+    else pure key
+
+-- | The types each class has an instance for that the CLI can name
+-- (spec 11.2): those of the instances that are not parametric, and
+-- each a parametric one gives with one of those, a built-in base type
+-- or Number or String put in for each of its type parameters -- one
+-- level deep, since a parametric instance gives types without end.
+instanceHeads :: Ctx -> Map Key [Type]
+instanceHeads ctx =
+  Map.map nub . Map.fromListWith (flip (<>)) $
+    [(iiClass ii, [iiHead ii]) | ii <- plain]
+      <> [ (iiClass ii, [t])
+         | ii <- parametric,
+           sub <- take 32 (choices [(v, base) | (v, _) <- iiParams ii]),
+           let t = applySubst (Map.fromList sub) (iiHead ii),
+           isJust (instanceMatch ctx Nothing (iiClass ii) t)
+         ]
+  where
+    instances = clsInstances (ctxEnv ctx)
+    plain = [ii | ii <- instances, null (iiParams ii)]
+    parametric = [ii | ii <- instances, not (null (iiParams ii))]
+    base = nub ([TyNumber, TyString, TyBool] <> map iiHead plain)
+    choices [] = [[]]
+    choices ((v, ts) : rest) = [(v, t) : more | t <- ts, more <- choices rest]

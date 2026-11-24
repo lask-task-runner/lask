@@ -578,7 +578,7 @@ decl (Decl _ f) = case f of
   DExportCommandsFrom ws p -> "export command " <> commandNames ws <> " from " <> quoted p
   -- Not generated: written only so that every declaration has a form.
   DClass n tp _ -> "class " <> n <> typeParams [tp] <> " {}"
-  DInstance q (Spanned _ c) t _ -> "instance " <> maybe "" ((<> ".") . spannedValue) q <> c <> "<" <> typ t <> "> {}"
+  DInstance tps q (Spanned _ c) t _ -> "instance" <> typeParams tps <> " " <> maybe "" ((<> ".") . spannedValue) q <> c <> "<" <> typ t <> "> {}"
   where
     top = Lines 0
     importSpecs specs = "{ " <> commas [n <> maybe "" (" as " <>) a | ImportSpec _ n a <- specs] <> " }"

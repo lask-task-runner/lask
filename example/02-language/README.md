@@ -9,8 +9,9 @@ The numbers are a reading order, not a dependency order. Starting from nothing, 
 3. [06](#06-concurrency) · [07](#07-errors) · [08](#08-modules) · [09](#09-dependencies) — what makes it hold up.
 4. [10](#10-standard-library) · [11](#11-data) · [12](#12-io-and-secrets) · [13](#13-files-and-paths) — the library, as it is actually used.
 5. [14](#14-docs-and-cli) — how the same file becomes a command line and a help page.
+6. [15](#15-classes) — bounds of your own, and an order for your own types; after 02.
 
-Six of the topics run nothing but the language and need no Docker (marked **Pure** below). The rest run real commands in real containers:
+Seven of the topics run nothing but the language and need no Docker (marked **Pure** below). The rest run real commands in real containers:
 
 ```bash
 cd example/02-language/<topic>
@@ -210,3 +211,15 @@ lask eval --output pretty-json matrix
 ```
 
 The thing to take away: `-` maps to `_`, so `publish(--dry_run = false)` is `--dry-run` on the command line, and the comment above a task is the only place its help is written.
+
+## 15-classes
+
+**Pure.** A class with a method and a default, instances for a record type and for `Number`, a parametric instance for arrays, an `orderable` instance that `sort` and `<` then use, and bounds joined with `+`.
+
+```bash
+lask eval report
+lask eval --arg-decode json latest '[{"major": 1, "minor": 2}, {"major": 1, "minor": 10}]'
+lask eval --arg-decode json label-all '[[1, 2], [3]]'
+```
+
+The thing to take away: an instance is for a type, not for a name — `Version` is a record type, so any alias of that record has the same instance — and which instance runs is decided when the program is checked, from the types, never from the values.

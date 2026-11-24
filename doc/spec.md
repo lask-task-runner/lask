@@ -745,7 +745,7 @@ Type parameters within the body of their declaration (rigidity):
 ClassDecl     = "class" lower_id "<" TypeParam ">" "{" { ClassMethod decl_end } "}" .
 ClassMethod   = lower_id "(" [ MethodParam { "," MethodParam } ] ")" ":" Type [ "=" Expression ] .
 MethodParam   = lower_id ":" Type .
-InstanceDecl  = "instance" ClassName "<" Type ">" "{" { FunctionDecl decl_end } "}" .
+InstanceDecl  = "instance" [ TypeParams ] ClassName "<" Type ">" "{" { FunctionDecl decl_end } "}" .
 ClassName     = [ lower_id "." ] lower_id .
 ```
 
@@ -776,13 +776,14 @@ Classes:
 
 Instances:
 
-- An `InstanceDecl` declares that a type has an instance of a class, and defines its methods: `instance ord<Version> { ... }`. The class is written as in a bound. The type is any type other than `Any` and `Void` that mentions no type parameter (`E-TYPE-ILLFORMED`).
+- An `InstanceDecl` declares that a type has an instance of a class, and defines its methods: `instance ord<Version> { ... }`. The class is written as in a bound. The type is any type other than `Any` and `Void` that mentions no type parameter but those of the instance (`E-TYPE-ILLFORMED`); an instance with type parameters is parametric (below).
 - An instance is for a type, not for the name it is written with: a type alias is expanded (4.3), so `Version` above and any other alias of `Record<major: Number, minor: Number>` name the one type with the one instance.
 - A method of an instance is a `FunctionDecl` named after a method of the class, with no type parameters and no `WithinClause` (`E-TYPE-ILLFORMED`), and with the positional parameters of the signature, as many as it has (`E-TYPE-ARITY`). Its types are those of the signature with the instance's type put in for the class's type parameter: a parameter or a return type written without an annotation takes them, and one written with an annotation must give them exactly (`E-TYPE-MISMATCH`). It is covered by the module constraint of the module it is in (5, 10.11).
 - A name that is not a method of the class is undefined (`E-NAME-UNDEFINED`); a method defined twice is a duplicate definition (`E-NAME-DUPLICATE`); a method with no default that the instance does not define is `E-TYPE-INSTANCE`.
 - The type must satisfy the superclass: a named bound by what the type is, and a class by an instance of it in effect where the instance is declared. Otherwise it is `E-TYPE-INSTANCE`.
 - A program has at most one instance of a class for a type. A second, wherever it is declared, is a duplicate definition (`E-NAME-DUPLICATE`), so which instance a use means never depends on where the use is.
 - An instance is declared in the module that declares the class, or in a module of the project; a module of a dependency (11.5) cannot declare one for a class of another module (`E-TYPE-INSTANCE`). Two dependencies therefore never bring the same instance between them, which no one who imports both could repair.
+- A program has at most one instance of a class for a type, a type that a parametric instance is for included: two instances of a class whose types have one in common are a duplicate definition (`E-NAME-DUPLICATE`), however much one of them says more than the other.
 - An instance has no name. It is not imported or exported, and takes no visibility marker. It is **in effect** in the module it is declared in and in every module that imports that module, directly or not.
 
 The built-in classes:
@@ -810,9 +811,30 @@ The built-in classes:
 
 - A type parameter of a local function (6.1) bounded by `orderable` is ordered as `Number` and `String` are, the local function being instantiated where it is called and not specialized: a call of it at a type ordered by an instance is `E-TYPE-BOUND`.
 
+Parametric instances:
+
+- An instance that declares type parameters, after `instance` as a declaration does (4.2), is an instance for each type its type matches, each type parameter standing for the part of the type in its place. Each part has to satisfy the bound of the type parameter it stands for, which may be a class: the instance is then for those types alone.
+
+  ```lask
+  instance<T: orderable> orderable<Array<T>> {
+    compare(a, b) = do {
+      n = min(size(a), size(b))
+      diffs = filter(map(range(0, n), \(i) -> compare(a[i], b[i])), \(d) -> d != 0)
+      is_empty(diffs) ? size(a) - size(b) : first(diffs)
+    }
+  }
+
+  ordered(): Bool = [1, 2] < [1, 3]
+  ```
+
+  Arrays of an orderable type are then orderable, by the element first, so are arrays of those, and so on; an array of `Bool` is not.
+- Every type parameter appears in the instance's type, which is more than a type parameter, and none of them is a member of a union in it, since a type is matched part by part. Anything else is ill-formed (`E-TYPE-ILLFORMED`). A part a type parameter stands for is smaller than the type, so looking for an instance always ends.
+- Within its methods the type parameters are opaque as a declaration's are (4.4), with what their bounds give. A method that calls a method of its class at a type that grows with each call, so that the types it would be specialized at have no end, is a type error (`E-TYPE-BOUND`).
+- The superclass is checked as for any instance, a type parameter satisfying it by its bound: `orderable<Array<T>>` needs `T` bounded by `comparable` or a bound that entails it, which `orderable` does.
+
 Using a class:
 
-- A type satisfies a class bound (4.4) when it has an instance of the class in effect where the bound is checked, or when it is a type parameter whose bound entails the class. The instance is found by the type exactly, after alias expansion and reduction of unions to canonical form (4.2): conformance takes no part, so `Number | String` and `Number` are distinct types, and an instance for `Array<Number>` is not one for `Array<Any>`.
+- A type satisfies a class bound (4.4) when it has an instance of the class in effect where the bound is checked, or when it is a type parameter whose bound entails the class. The instance is found by the type exactly, after alias expansion and reduction of unions to canonical form (4.2), or by the type matching that of a parametric instance: conformance takes no part, so `Number | String` and `Number` are distinct types, and an instance for `Array<Number>` is not one for `Array<Any>`.
 - A class bound is written on a type parameter of a top-level declaration: a function declaration, a binding of a lambda (6.1), or a type alias. A lambda bound by a block takes no class bound (`E-TYPE-ILLFORMED`); a class bound is resolved where the declaration is instantiated at concrete types, which a local function, being a value of the body it is in, never is.
 - Which instance a call uses is decided statically, by the type its type parameter is instantiated at (4.4). The value's own content plays no part, and `Any`, having no instances, satisfies no class bound.
 - A declaration generic over a class behaves as if written again for each type it is instantiated at, with the methods of that type's instances in place of its class's: so it is checked against the access constraints that cover it (10.11) at each of those types, and a recursive call of it stays at the types it was called with (4.3).
@@ -3412,7 +3434,7 @@ Type conformance rules:
   - An unbounded one is instantiated at `Any`. This is sound because it is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
   - One with a type bound `B` is instantiated at `B`, the widest type it admits.
   - One with a named bound is decoded at `Any`, then instantiated from the types of the decoded values, as a call instantiates it from the types of its arguments (4.4). Each value in a position of the parameter's type contributes the type a literal of it would have (4.3). The values must agree on one type, and that type must satisfy the bound; otherwise it is a usage error (`E-CLI-USAGE`) before evaluation begins. A body may compare, sort or interpolate such a value, so it cannot be handed one outside its bound.
-  - One with a class bound (4.6), `orderable` included, is decoded and instantiated in the same way, and the type the values agree on must be one with an instance of the class: for `orderable`, `Number`, `String` or a type with an instance declared. The instance it selects is the one the function runs with, so the values must give a type: when they give none, as an empty array gives none for its elements, it is a usage error (`E-CLI-USAGE`) as well. A JSON object gives a record type, so `--arg-decode json` can select the instance for a record type such as `Version` (4.6).
+  - One with a class bound (4.6), `orderable` included, is decoded and instantiated in the same way, and the type the values agree on must be one with an instance of the class: for `orderable`, `Number`, `String` or a type with an instance declared. The instance it selects is the one the function runs with, so the values must give a type: when they give none, as an empty array gives none for its elements, it is a usage error (`E-CLI-USAGE`) as well. A JSON object gives a record type, so `--arg-decode json` can select the instance for a record type such as `Version` (4.6). A parametric instance gives types without end, and the CLI selects among those it gives with a type the program has an instance for, or `Number`, `String` or `Bool`, put in for each of its type parameters: `Array<Version>` and `Array<Number>`, but not `Array<Array<Number>>`, for the instance above. Another type is a usage error (`E-CLI-USAGE`).
   - One that a parameter written without an annotation gave rise to (4.3), with a named bound that admits `String`, is instantiated at `String`, and its values are taken as the text written. A body that does no more with a value than interpolate or compare it does not say it wants a number, so `--version 1.0` stays `"1.0"` and is not read as the number `1`. Annotating the parameter, or writing the type parameter, chooses another decoding.
 - Functions with positional parameters of type `Environment` or `Runnable` are excluded from direct CLI invocation (since no decoding mode can construct such a value, this is a pre-execution error). Keyword parameters of these types are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive a `String` etc. and choose inside the function among environments written there (`case (target) { "amd64" -> #alpine:3.20(platform = "linux/amd64") ... }`); every image stays written as a head (6.7). A run option may be taken from such a value directly, and given to `runnable` (15.5).
 

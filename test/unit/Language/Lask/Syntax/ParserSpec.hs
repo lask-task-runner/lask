@@ -356,6 +356,7 @@ spec = do
                 ClassMethod NoSpan (Spanned NoSpan "lt") [pa "a" tT, pa "b" tT] (ty SBool) (Just (ex (EBool True)))
               ],
             DInstance
+              []
               (Just (Spanned NoSpan "m"))
               (Spanned NoSpan "ord")
               (ty SNumber)
@@ -371,6 +372,20 @@ spec = do
           ]
       pModule "export instance ord<Number> {}" `shouldSatisfy` isLeft
       pModule "internal instance ord<Number> {}" `shouldSatisfy` isLeft
+
+    it "parses the type parameters of a parametric instance, and keeps instance<T>(...) a function (spec 4.6)" $ do
+      pModule "instance<T: orderable> orderable<Array<T>> {}"
+        `shouldBe` Right
+          [ DInstance
+              [TypeParam (Spanned NoSpan "T") (Just (SBoundNamed (Spanned NoSpan "orderable")))]
+              Nothing
+              (Spanned NoSpan "orderable")
+              (ty (SArray (ty (SNamed Nothing "T" []))))
+              []
+          ]
+      pModule "instance<T>(x: T): T = x"
+        `shouldBe` Right
+          [DFunction "instance" [TypeParam (Spanned NoSpan "T") Nothing] [Param NoSpan (PPositional "x" Public (Just (ty (SNamed Nothing "T" []))))] (Just (ty (SNamed Nothing "T" []))) Nothing (var "x")]
 
     it "parses bounds joined with + (spec 4.2)" $
       pModule "f<T: orderable + m.ord>(x: T) = x"
