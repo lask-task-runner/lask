@@ -1,0 +1,8 @@
+// The shape of a call, said where a call does not fit it.
+greet(name: String, times: Number) = name
+
+few() = greet("a")
+
+builtin() = read_file("notes.txt")
+
+piped() = [1, 2] |> map(\(x: Number) -> x * 2)

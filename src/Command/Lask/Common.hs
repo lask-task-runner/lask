@@ -12,6 +12,7 @@ module Command.Lask.Common
     cliFunctionNames,
     cliFunction,
     notAFunction,
+    internalFunction,
     renderDiags,
     renderDiagsLines,
     diagJson,
@@ -117,7 +118,19 @@ cliFunction opts compiled raw = do
     Nothing
       | n `elem` map fst (entryPublicValues (compiledProgram compiled) (compiledScopes compiled)) ->
           notAFunction opts raw
+      -- Declared, but not public: say so rather than that it is not
+      -- there (spec 11.2).
+      | Map.member (cpEntry core, n) (cpDecls core) -> internalFunction opts raw (cpEntry core)
       | otherwise -> noSuchFunction opts raw (cliFunctionNames compiled)
+  where
+    core = compiledCore compiled
+
+-- | A name on the command line that names an @internal@ declaration
+-- of the entry module, which the CLI does not call (spec 11.2).
+internalFunction :: CommonOpts -> Text -> FilePath -> IO a
+internalFunction opts raw entry =
+  usageError opts $
+    "'" <> raw <> "' is internal: the command line calls the public functions of " <> T.pack entry <> "; remove 'internal' from its declaration to call it"
 
 -- | A name on the command line that names a plain value binding, which
 -- the CLI does not call (spec 11.2).

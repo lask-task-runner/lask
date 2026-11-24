@@ -193,7 +193,7 @@ spec = beforeAll findLask $ do
     it "calls a value binding whose value is a function" $ \lask ->
       evals lask ["inc", "2"] "3"
     it "does not reach an internal declaration" $ \lask ->
-      usage lask ["eval", "hidden-fn"] "no such function"
+      usage lask ["eval", "hidden-fn"] "'hidden-fn' is internal"
     it "does not map a camelCase name, which is called as written" $ \lask -> do
       evals lask ["camelCase"] "\"camel\""
       usage lask ["eval", "camel-case"] "no such function"

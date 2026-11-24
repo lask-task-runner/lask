@@ -59,6 +59,15 @@ spec = beforeAll findLask $ describe "repl (spec 11.9)" $ do
     said r `shouldSatisfy` isInfixOf "unknown command ':foo'"
     said r `shouldNotSatisfy` isInfixOf "E-SYNTAX"
     printed r `shouldSatisfy` elem "3"
+  it "lists its commands at :help" $ \lask -> do
+    r <- session lask [":help", "size()"]
+    said r `shouldSatisfy` isInfixOf ":reload, :r"
+    printed r `shouldSatisfy` elem "3"
+  it "places an error in what was typed by the input, not the module" $ \lask -> do
+    r <- session lask ["twice(n: Number): Number = n + \"x\"", "size() + \"y\""]
+    said r `shouldSatisfy` isInfixOf "<repl>:1:32-1:35: E-TYPE-MISMATCH"
+    said r `shouldSatisfy` isInfixOf "<repl>:1:10-1:13: E-TYPE-MISMATCH"
+    said r `shouldNotSatisfy` isInfixOf "main.lask:"
   it "refuses arguments to a session command, and goes on" $ \lask -> do
     r <- session lask [":q now", "size()"]
     said r `shouldSatisfy` isInfixOf "takes no arguments"
