@@ -293,7 +293,7 @@ pTopLevel =
     -- An instance has no name for a marker to make public or internal
     -- (spec 4.6).
     marked p = do
-      _ <- notFollowedBy (lookAhead (contextual "instance" *> lowerId))
+      _ <- notFollowedBy (lookAhead (try instanceStart))
       p
 
     -- @export command { "go" } on e@ is the explicit form of a public
@@ -364,8 +364,9 @@ pClassDecl = do
 -- is written as a function declaration is.
 pInstanceDecl :: P Decl
 pInstanceDecl = do
-  _ <- try (lookAhead (contextual "instance" *> lowerId))
+  _ <- try (lookAhead instanceStart)
   Spanned s () <- contextual "instance"
+  tps <- pTypeParams
   q <- optional (try (lowerId <* sym TDot))
   cls <- lowerId
   _ <- op OpLt
@@ -375,7 +376,14 @@ pInstanceDecl = do
   skipMany terminator
   ds <- sepEndBy pValueOrFunction (skipSome terminator)
   e <- sym TRBrace
-  pure (Decl (s <> e) (DInstance q cls t ds))
+  pure (Decl (s <> e) (DInstance tps q cls t ds))
+
+-- | What begins an instance declaration (spec 4.6): @instance@, its type
+-- parameters if it has them, and the name of the class. A declaration
+-- named @instance@ is followed by @(@, @=@, @:@ or @!!@ instead, after
+-- its type parameters if it has them.
+instanceStart :: P ()
+instanceStart = void (contextual "instance" *> pTypeParams *> lowerId)
 
 -- | A word that is a keyword only where it is read here.
 contextual :: Text -> P (Spanned ())

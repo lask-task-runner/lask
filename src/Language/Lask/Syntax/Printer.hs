@@ -475,10 +475,11 @@ decl sp f = case f of
     dtp <- typeParams [tp]
     body <- braced [Item (startOf msp) (endOf msp) (method m) | m@(ClassMethod msp _ _ _ _) <- ms]
     pure ("class " <> text n <> dtp <> " " <> body)
-  DInstance q (Spanned _ c) t ds -> do
+  DInstance tps q (Spanned _ c) t ds -> do
+    dtp <- typeParams tps
     dt <- ty t
     body <- braced [Item (startOf dsp) (endOf dsp) (decl dsp df) | Decl dsp df <- ds]
-    pure ("instance " <> text (maybe "" ((<> ".") . spannedValue) q <> c) <> "<" <> dt <> "> " <> body)
+    pure ("instance" <> dtp <> " " <> text (maybe "" ((<> ".") . spannedValue) q <> c) <> "<" <> dt <> "> " <> body)
   where
     start = startOf sp
     -- The braces of a class or an instance: its members one per line.

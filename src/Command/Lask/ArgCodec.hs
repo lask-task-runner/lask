@@ -304,9 +304,11 @@ checkCliBounds instances bounds params posVals kwVals = do
       BoundClass c -> t `elem` Map.findWithDefault [] (classKey c) instances
       BoundNamed BOrderable -> nativeOrderable t || t `elem` Map.findWithDefault [] orderableKey instances
       _ -> True
+    -- The CLI names the types of the instances, and those a parametric
+    -- one gives one level deep (spec 11.2).
     lacking p = case p of
-      BoundClass c -> "has no instance of " <> crName c
-      _ -> "is not " <> renderBound p
+      BoundClass c -> "has no instance of " <> crName c <> " the command line can select"
+      _ -> "is not " <> renderBound p <> " at a type the command line can select"
     dictAt (v, b) =
       let parts = filter isDict (boundParts b)
        in case nub (concat [evidence v t x | (t, x) <- slots]) of

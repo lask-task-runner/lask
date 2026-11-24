@@ -77,6 +77,13 @@ spec = do
                       "f<T: m.ord>(x: T) = x"
                     ]
 
+    it "keeps the type parameters of a parametric instance (spec 4.6)" $
+      ["instance<T:orderable> orderable<Array<T>> { compare(a,b)=0 }"]
+        `formatsTo` [ "instance<T: orderable> orderable<Array<T>> {",
+                      "  compare(a, b) = 0",
+                      "}"
+                    ]
+
     it "keeps the type parameters of a lambda (spec 6.1)" $
       ["ident = \\<T>(x:T):T->x"] `formatsTo` ["ident = \\<T>(x: T): T -> x"]
 

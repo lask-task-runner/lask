@@ -393,7 +393,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
             DTypeAlias _ tps _ -> typeParamNames tps
             DValue _ _ _ e -> lambdaParams [e]
             DClass _ tp ms -> typeParamNames [tp] <> lambdaParams ([d | ClassMethod _ _ _ _ (Just d) <- ms] <> concat [paramDefaults ps | ClassMethod _ _ ps _ _ <- ms])
-            DInstance _ _ _ ds -> lambdaParams (concat [paramDefaults ps <> [b] | Decl _ (DFunction _ _ ps _ _ b) <- ds] <> [e | Decl _ (DValue _ _ _ e) <- ds])
+            DInstance tps _ _ _ ds -> typeParamNames tps <> lambdaParams (concat [paramDefaults ps <> [b] | Decl _ (DFunction _ _ ps _ _ b) <- ds] <> [e | Decl _ (DValue _ _ _ e) <- ds])
             _ -> []
         ]
     -- Those of the lambdas written anywhere in these expressions.
@@ -425,7 +425,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
             [ checkParams [] ps <> checkType rt <> maybe [] (checkExpr [paramNames ps]) d
             | ClassMethod _ _ ps rt d <- ms
             ]
-      DInstance _ _ t ds -> checkType t <> concatMap checkDecl ds
+      DInstance tps _ _ t ds -> concatMap checkBound tps <> checkType t <> concatMap checkDecl ds
       -- The environment of a command declaration is checked for
       -- static resolvability in "Language.Lask.Elaborate" (spec ch. 5);
       -- here only its name references are resolved.

@@ -1,0 +1,72 @@
+// A parametric instance is for each type its type matches, a type
+// parameter taking the part it stands for, which has to satisfy the
+// parameter's bound in turn (4.6).
+type Version = Record<major: Number, minor: Number>
+
+instance orderable<Version> {
+  compare(a, b) = if (a.major != b.major) { a.major - b.major } else { a.minor - b.minor }
+}
+
+instance<T: orderable> orderable<Array<T>> {
+  compare(a, b) = do {
+    n = min(size(a), size(b))
+    diffs = filter(map(range(0, n), \(i) -> compare(a[i], b[i])), \(d) -> d != 0)
+    is_empty(diffs) ? size(a) - size(b) : first(diffs)
+  }
+}
+
+class pretty<T> {
+  show(x: T): String
+}
+
+instance pretty<Number> {
+  show(x) = "#{x}"
+}
+
+instance<T: pretty> pretty<Array<T>> {
+  show(xs) = "[#{join(map(xs, \(x) -> show(x)), ", ")}]"
+}
+
+sorted<T: orderable>(xss: Array<Array<T>>): Array<Array<T>> = sort(xss)
+
+uses(): String = do {
+  a = sort([[2, 1], [1, 9]])
+  b = sorted([[{ major: 1, minor: 0 }], [{ major: 0, minor: 5 }]])
+  "#{show([[1, 2], [3]])} #{size(a)} #{size(b)} #{[1, 2] < [1, 3]}"
+}
+
+instance orderable<Array<Number>> { // expect: E-NAME-DUPLICATE
+  compare(a, b) = 0
+}
+
+unordered(): Array<Array<Bool>> = sort([[true]]) // expect: E-TYPE-BOUND
+
+instance<U> pretty<Bool> { // expect: E-TYPE-ILLFORMED
+  show(x) = "b"
+}
+
+instance<U> pretty<U> { // expect: E-TYPE-ILLFORMED
+  show(x) = "u"
+}
+
+instance<U> pretty<Array<U | Null>> { // expect: E-TYPE-ILLFORMED
+  show(x) = "n"
+}
+
+instance<U> orderable<Map<U>> { // expect: E-TYPE-INSTANCE
+  compare(a, b) = 0
+}
+
+class grow<T> {
+  depth(x: T): Number
+}
+
+instance grow<Number> {
+  depth(x) = 0
+}
+
+instance<T: grow> grow<Array<T>> {
+  depth(x) = depth([x]) // expect: E-TYPE-BOUND
+}
+
+deep(): Number = depth([1])
