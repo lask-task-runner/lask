@@ -4253,6 +4253,7 @@ Implementations must be able to generate and record stack traces at all times up
 - Contain at least function names, call order, and, where possible, source positions (line/column or span).
 - When crossing asynchronous boundaries (`spawn` / `await`), the parent-child relationship must be traceable.
 - Failures involving command execution (`run`) may include the environment kind and a summary of the executed command.
+- This implementation writes one frame per function the failure leaves, innermost first, as `at <name> (<module>:<line>:<column>)`. The position is where in that function the failure was: the expression that failed in the innermost frame, and the call the failure came out of in each frame after it. A function the language makes rather than the user names is shown by what made it: `lambda` for `\(x) -> e`, `async` for the computation of `async e` (6.3), and `try` and `finally` for the blocks of `try` (6.9). Its generated name, such as `<async@4:7>`, is what names it in a `FunctionRef` (13.2).
 
 Omission rules:
 

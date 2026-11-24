@@ -308,6 +308,7 @@ cmdRunEval printResult runOpts = do
           (Just ERuntimeInterrupted)
           (errorValue (fromIntegral (128 + fromIntegral sig :: Int)) ("the run was stopped by " <> signalName sig))
           []
+          Nothing
   case result of
     Left lf -> failureExit opts traceId lf
     Right v -> do
@@ -341,7 +342,7 @@ maskOutcome outcome = pure outcome
 unawaitedFailure :: SomeException -> LaskFailure
 unawaitedFailure ex = case fromException ex of
   Just lf -> lf
-  Nothing -> LaskFailure Nothing (errorValue 1 (T.pack (show ex))) []
+  Nothing -> LaskFailure Nothing (errorValue 1 (T.pack (show ex))) [] Nothing
 
 -- | The advisory @W-ASYNC-UNAWAITED@ (spec 6.3, 14.2) for one
 -- computation that was never awaited, with how it ended.
