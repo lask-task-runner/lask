@@ -1,0 +1,7 @@
+// An expected type of Any says nothing of a type variable: the
+// arguments instantiate it (4.4).
+largest<T: orderable>(xs: Array<T>): T = last(sort(xs))
+into_any(): String = to_json(largest([1, 2]))
+wider(): Array<Any> = sort([2, 1])
+as_any(): Any = largest(["x", "y"])
+still_bounded(): String = to_json(largest([true])) // expect: E-TYPE-BOUND

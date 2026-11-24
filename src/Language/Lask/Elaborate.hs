@@ -4112,9 +4112,7 @@ elabCall ctx path locals sp fn args mExpected = do
           -- argument -- positional, variadic and keyword alike --
           -- contribute, in no particular order (spec 4.4).
           let retPat = ren ret
-              subst0 = case mExpected of
-                Just expT -> either (const Map.empty) id (unifyE retPat expT Map.empty)
-                Nothing -> Map.empty
+              subst0 = expectedBindings retPat
           (cores, subst) <-
             goArgs retPat subst0 (posSlots <> [(e, ren t) | (_, e, t) <- kwSlots])
           retTy <- instantiateRet calleeName declVs retPat subst
@@ -4385,6 +4383,14 @@ elabCall ctx path locals sp fn args mExpected = do
           Just t <- [Map.lookup v (Map.mapKeys (T.takeWhile (/= '#')) subst)]
         ]
 
+    -- What the expected type says of the type variables of a result
+    -- before the arguments are looked at (spec 4.4). A variable it
+    -- would make Any is left to them: every type conforms to Any, so a
+    -- position that takes Any says nothing of what is placed there.
+    expectedBindings retPat = case mExpected of
+      Just expT -> Map.filter (/= TyAny) (either (const Map.empty) id (unifyE retPat expT Map.empty))
+      Nothing -> Map.empty
+
     -- The name of the callee, for diagnostics about its instantiation.
     calleeName = case exprF fn of
       EVar n -> n
@@ -4416,9 +4422,7 @@ elabCall ctx path locals sp fn args mExpected = do
                   diag ETypeArity sp ("'" <> name <> "' expects " <> tshow (length params) <> " arguments, got " <> tshow (length posExprs))
               )
           -- Pre-bind type variables from the expected return type.
-          let subst0 = case mExpected of
-                Just expT -> either (const Map.empty) id (unifyE retPat expT Map.empty)
-                Nothing -> Map.empty
+          let subst0 = expectedBindings retPat
           (cores, subst) <- goArgs retPat subst0 (zip posExprs params)
           retTy <- instantiateRet name schemeVs retPat subst
           checkBounds name (schemeBounds scheme) subst
