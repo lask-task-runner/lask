@@ -44,7 +44,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Language.Lask (Compiled (..), compileFile)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
-import Language.Lask.Module.Resolve (entryPublicValues)
+import Language.Lask.Module.Resolve (entryPublicValues, internalDeclaredIn)
 import Language.Lask.Types (Type (TyFun))
 import Language.Lask.Deps.Lock
 import Language.Lask.Diagnostic (Diagnostic (..), didYouMean)
@@ -148,11 +148,11 @@ cliFunction opts compiled fp = do
       | n `elem` map fst (entryPublicValues (compiledProgram compiled) (compiledScopes compiled)) ->
           notAFunction opts raw
       -- Declared, but not public: say so rather than that it is not
-      -- there (spec 11.2).
-      | Map.member (cpEntry core, n) (cpDecls core) -> internalFunction opts raw (cpEntry core)
+      -- there (spec 11.2), in the module a namespace refers to as much
+      -- as in the entry module.
+      | Just declaredIn <- internalDeclaredIn (compiledProgram compiled) n -> internalFunction opts raw declaredIn
       | otherwise -> noSuchFunction opts raw (cliFunctionNames compiled)
   where
-    core = compiledCore compiled
     raw = T.unwords (fpWords fp)
 
 -- | The function the words given in place of one name, where nothing

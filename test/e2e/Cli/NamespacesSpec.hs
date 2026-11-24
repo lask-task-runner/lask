@@ -27,7 +27,8 @@ project =
           "migrate(--dry_run: Bool = false): String = dry_run ? \"dry\" : \"migrated\"",
           "// Load seed data.",
           "seed(): String = \"seeded\"",
-          "version = \"1\""
+          "version = \"1\"",
+          "internal reset(): String = \"reset\""
         ]
     ),
     ( "tools.lask",
@@ -86,6 +87,15 @@ spec = beforeAll findLask $ do
       r <- lask' lask ["run", "db", "version"]
       resExit r `shouldBe` 4
       resErr r `shouldSatisfy` isInfixOf "'db version' is a value, not a function"
+
+    it "says an internal function in a namespace is internal, naming its module" $ \lask ->
+      mapM_
+        ( \args -> do
+            r <- lask' lask args
+            (args, resExit r) `shouldBe` (args, 4)
+            resErr r `shouldSatisfy` isInfixOf "'db reset' is internal: the command line calls the public functions of db.lask"
+        )
+        [["run", "db", "reset"], ["run", "db", "reset", "--help"], ["envs", "list", "db", "reset"]]
 
   describe "the help (spec 11.6)" $ do
     it "lists the functions of a namespace, as words" $ \lask -> do

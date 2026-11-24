@@ -15,6 +15,7 @@ module Language.Lask.Module.Resolve
     modulePublics,
     namespaceMember,
     entryPublicValues,
+    internalDeclaredIn,
     buildScopes,
     resolveProgram,
     ResolvedModule,
@@ -26,7 +27,7 @@ where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -228,6 +229,27 @@ entryPublicValues prog scopes = publicValuesOf (0 :: Int) "" (progEntry prog)
             ]
       _ -> []
     startsUpper t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
+
+-- | The module that declares a name, qualified by the namespaces the
+-- entry module publishes (as 'entryPublicValues' names it), when the
+-- declaration there is marked @internal@: what the CLI tells apart
+-- from a name no module has (spec 11.2).
+internalDeclaredIn :: Program -> Text -> Maybe FilePath
+internalDeclaredIn prog qualified = do
+  key <- moduleOf (0 :: Int) (progEntry prog) namespaces
+  lm <- Map.lookup key (progModules prog)
+  if name `Set.member` moduleInternal (lmModule lm) then Just key else Nothing
+  where
+    segs = T.splitOn "." qualified
+    namespaces = init segs
+    name = last segs
+    moduleOf _ key [] = Just key
+    moduleOf depth key (alias : rest)
+      | depth >= 16 = Nothing
+      | otherwise = do
+          lm <- Map.lookup key (progModules prog)
+          p <- listToMaybe [p' | Decl _ (DExportNamespace a p') <- moduleDecls (lmModule lm), a == alias]
+          moduleOf (depth + 1) (Map.findWithDefault (T.unpack p) p (lmImportKeys lm)) rest
 
 -- Scope construction ---------------------------------------------------------
 

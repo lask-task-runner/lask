@@ -42,7 +42,7 @@ import Data.Version (showVersion)
 import qualified Language.LSP.Lask as LSP
 import Language.Lask (Compiled (..), Partial (..), compileFile, compileFilePartial)
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
-import Language.Lask.Module.Resolve (entryPublicValues)
+import Language.Lask.Module.Resolve (entryPublicValues, internalDeclaredIn)
 import Language.Lask.Diagnostic (Advisory (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Core.Access (SVal (..), checkCommandEnv, checkInvocation, withinConstraints)
@@ -484,6 +484,13 @@ cmdHelp subcommand runOpts = do
       -- Help is for what the command line can call: a plain value
       -- binding has none (spec 11.2, 11.6).
       let isFunction (n, h) = fhFunction (helpOf [] (n, h))
+          -- Without a loaded program only the entry module's own
+          -- internal names are known.
+          internalDeclaredIn' n = case partialProgram partial of
+            Just prog -> internalDeclaredIn prog n
+            Nothing
+              | n `Set.member` maybe Set.empty cpInternal core -> Just entry
+              | otherwise -> Nothing
       -- A namespace has the list of the functions it holds, as the
       -- module has the list of its own (spec 11.6).
       when (fnName `Set.member` namespaces) $ do
@@ -497,7 +504,7 @@ cmdHelp subcommand runOpts = do
           | isFunction (fnName, h) -> pure h
           | otherwise -> notAFunction opts shown
         Nothing
-          | fnName `Set.member` maybe Set.empty cpInternal core -> internalFunction opts shown entry
+          | Just declaredIn <- internalDeclaredIn' fnName -> internalFunction opts shown declaredIn
           | otherwise -> noSuchFunction opts shown [n | d@(n, _) <- declsByName, isFunction d]
       let envs = case core of
             -- Ordered as envs list orders them (spec 11.4): the host
