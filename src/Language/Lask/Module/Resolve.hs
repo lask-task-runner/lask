@@ -427,10 +427,33 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       ]
     universe e = e : concatMap universe (childExprs e)
 
-    -- A type bound names types like any annotation; a named bound is
-    -- checked by the elaborator, which knows the set (spec 4.2).
-    checkBound (TypeParam _ (Just (SBoundType t))) = checkType t
-    checkBound _ = []
+    -- A type bound names types like any annotation, and a class named
+    -- through a namespace is resolved as a member of it; a named bound
+    -- is checked by the elaborator, which knows the set (spec 4.2).
+    checkBound (TypeParam _ mb) = maybe [] checkSBound mb
+
+    checkSBound b = case b of
+      SBoundType t -> checkType t
+      SBoundAll bs -> concatMap checkSBound bs
+      SBoundQualified q n -> checkQualifiedClass q n
+      _ -> []
+
+    -- A class named through a namespace is one of its public symbols
+    -- (spec 4.6): an internal class, and its methods, stay in its
+    -- module, however they are written.
+    checkQualifiedClass (Spanned qsp ns) (Spanned nsp n) = case Map.lookup ns (gsNamespaces gs) of
+      Just key -> case Map.lookup key publics of
+        Just pub
+          | n `Set.member` pubValues pub -> []
+        pub ->
+          [ suggesting n (maybe [] (Set.toList . pubValues) pub) $
+              mkDiagnostic ENameUndefined StageStatic nsp $
+                "namespace '" <> ns <> "' has no public class '" <> n <> "'"
+          ]
+      Nothing ->
+        [ suggesting ns (Map.keys (gsNamespaces gs)) $
+            mkDiagnostic ENameUndefined StageStatic qsp ("undefined namespace: '" <> ns <> "'")
+        ]
 
     checkDecl (Decl _ f) = case f of
       DValue _ _ t e -> maybe [] checkType t <> checkExpr [] e
@@ -447,7 +470,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
             [ checkParams [] ps <> checkType rt <> maybe [] (checkExpr [paramNames ps]) d
             | ClassMethod _ _ ps rt d <- ms
             ]
-      DInstance tps _ _ t ds -> concatMap checkBound tps <> checkType t <> concatMap checkDecl ds
+      DInstance tps q c t ds -> concatMap checkBound tps <> maybe [] (`checkQualifiedClass` c) q <> checkType t <> concatMap checkDecl ds
       -- The environment of a command declaration is checked for
       -- static resolvability in "Language.Lask.Elaborate" (spec ch. 5);
       -- here only its name references are resolved.
@@ -581,8 +604,9 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       EArray es -> concatMap (checkExpr sc) es
       EObject kvs -> concatMap (checkExpr sc . snd) kvs
       EString ps -> concatMap (checkPart sc) ps
-      ELambda _ ps t body ->
-        checkParams sc ps
+      ELambda tps ps t body ->
+        concatMap checkBound tps
+          <> checkParams sc ps
           <> maybe [] checkType t
           <> checkExpr (paramNames ps : sc) body
       EBin _ a b -> checkExpr sc a <> checkExpr sc b

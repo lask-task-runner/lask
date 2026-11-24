@@ -1,0 +1,29 @@
+// Instantiation does not depend on the order of the arguments (4.4):
+// arguments that give a variable different types, one of which every
+// other conforms to, make it that one, whichever comes first. A union
+// is still not built of them.
+same<T>(a: T, b: T): T = a
+
+instance orderable<Number | Null> {
+  compare(a, b) = a == null ? (b == null ? 0 : -1) : (b == null ? 1 : 0)
+}
+
+lt<T: orderable>(a: T, b: T): Bool = a < b
+
+maybe(): Number | Null = null
+
+uses(): Array<Number | Null> = [same(maybe(), 1), same(1, maybe())]
+
+ordered(): Array<Bool> = [lt(maybe(), 1), lt(1, maybe()), maybe() < 1, 1 < maybe()]
+
+lists(xs: Array<String>, ys: Array<String | Null>): Array<Array<String | Null>> = [same(xs, ys), same(ys, xs)]
+
+anys(xs: Array<String>, ys: Array<Any>): Array<Array<Any>> = [concat_array(xs, ys), concat_array(ys, xs)]
+
+appended(xs: Array<Any>): Array<Any> = append(xs, 1)
+
+apart(): String = same("a", 1) // expect: E-TYPE-MISMATCH
+
+reversed(): Number = same(1, "a") // expect: E-TYPE-MISMATCH
+
+nulls(names: Array<String>): Array<String> = append(names, null) // expect: E-TYPE-MISMATCH

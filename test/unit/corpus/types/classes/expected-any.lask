@@ -1,0 +1,21 @@
+// An expected type of Any makes a variable the arguments leave open
+// Any (4.4), and Any has no instance: that is a bound error where the
+// call is, not a value missing when it runs (4.6).
+class monoid<T> {
+  empty(): T
+}
+
+instance monoid<Number> {
+  empty() = 0
+}
+
+typed(): Number = empty()
+
+shown(): String = to_json(empty()) // expect: E-TYPE-BOUND
+
+bound(): Any = do {
+  x: Any = empty() // expect: E-TYPE-BOUND
+  x
+}
+
+listed(): Array<Any> = [empty()] // expect: E-TYPE-BOUND

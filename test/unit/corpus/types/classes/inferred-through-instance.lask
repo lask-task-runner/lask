@@ -1,0 +1,26 @@
+// A parameter whose type is inferred, used where an instance of a
+// parametric instance's type is needed, takes the bounds that
+// instance asks of its parts (4.3, 4.6).
+instance<T: orderable> orderable<Array<T>> {
+  compare(a, b) = size(a) - size(b)
+}
+
+class shown<T> {
+  show(x: T): String
+}
+
+instance shown<Number> {
+  show(n) = "#{n}"
+}
+
+instance<T: shown> shown<Array<T>> {
+  show(xs) = join(map(xs, \(x) -> show(x)), ",")
+}
+
+ordered(x) = [x] < [x]
+
+listed(x) = show([x])
+
+uses(): String = "#{ordered(1)}#{listed(2)}#{ordered("a")}"
+
+none(): String = listed(true) // expect: E-TYPE-BOUND

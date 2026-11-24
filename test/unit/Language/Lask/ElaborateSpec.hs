@@ -618,7 +618,10 @@ spec = do
       rejects "c<T>(g: Function<T, Bool>, h: Function<T, Bool>): Number = 1\nf(a: Function<Number, Bool>, b: Function<String, Bool>): Number = c(a, b)" ETypeMismatch
     it "still matches value arguments exactly (spec 4.4)" $ do
       rejects "f(names: Array<String>) = append(names, null)" ETypeMismatch
-      rejects "f(a: Array<String>, b: Array<Any>) = concat_array(a, b)" ETypeMismatch
+      -- Arguments of conforming types give the wider (4.4), in
+      -- either order, as the branches of one expression do (4.3).
+      hasType "f(a: Array<String>, b: Array<Any>) = concat_array(a, b)" "f" "Function<Array<String>, Array<Any>, Array<Any>>"
+      hasType "f(a: Array<String>, b: Array<Any>) = concat_array(b, a)" "f" "Function<Array<String>, Array<Any>, Array<Any>>"
       accepts "f(xs: Array<String>): String | Null = reduce(xs, null, \\(acc, x) -> x)"
     it "types branches of conforming types at the wider, in either order (spec 4.3)" $ do
       hasType "n(): Array<String> = [\"a\"]\nw(): Array<String | Null> = [null]\nf(c: Bool) = c ? n() : w()" "f" "Function<Bool, Array<String | Null>>"

@@ -1,0 +1,16 @@
+// A default method that calls itself at an ever larger type is the
+// one reported (4.6), not the instance its calls go through.
+class shown<T> {
+  show(x: T): String
+  deep(x: T, n: Number): String = n == 0 ? show(x) : deep([x], n - 1) // expect: E-TYPE-BOUND
+}
+
+instance shown<Number> {
+  show(n) = "#{n}"
+}
+
+instance<T: shown> shown<Array<T>> {
+  show(xs) = "[..]"
+}
+
+uses(): String = deep(1, 2)

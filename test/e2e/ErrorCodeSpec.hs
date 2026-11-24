@@ -262,6 +262,7 @@ advises c lask = withProject [("main.lask", src)] $ \dir -> do
       WDocParamUnknown -> ("// Greets.\n// @param nmae who\ngreet(name: String): String = name\n", ["check"])
       WCliParamShadowed -> ("show(--help: Bool = false): Bool = help\n", ["check"])
       WExportInconsistent -> ("export a() = 1\nb() = 2\n", ["check"])
+      WBoundRedundant -> ("f<T: orderable + orderable>(x: T): T = x\n", ["check"])
 
 raises :: ErrorCode -> FilePath -> Expectation
 raises c lask = case trigger c of
