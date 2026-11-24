@@ -414,7 +414,8 @@ QualifiedNamedType = lower_id "." upper_id .
 TypeArgs          = "<" Type { "," Type } ">" .
 TypeParams        = "<" TypeParam { "," TypeParam } ">" .
 TypeParam         = upper_id [ ":" Bound ] .
-Bound             = NamedBound | ClassName | Type .
+Bound             = BoundPart { "+" BoundPart } | Type .
+BoundPart         = NamedBound | ClassName .
 NamedBound        = "comparable" | "orderable" | "stringifiable" .
 TypeAliasDecl     = "type" upper_id [ TypeParams ] "=" Type .
 ```
@@ -445,10 +446,10 @@ Type parameters:
 
 Bounds:
 
-- A type parameter may carry a **bound**, written after a `:`, which limits the types it may be instantiated to (4.4). One parameter has at most one bound.
+- A type parameter may carry a **bound**, written after a `:`, which limits the types it may be instantiated to (4.4). One parameter has at most one bound, and that bound may join named bounds and classes with `+`: `<T: orderable + stringifiable>` admits the types that satisfy both, and gives what each gives. A type bound stands alone: one joined with `+` is ill-formed (`E-TYPE-ILLFORMED`).
 - A **named bound** is one of three predicates, written in lower case:
   - `comparable`: the comparable types of 6.2.
-  - `orderable`: `Number` and `String`, the types `sort` orders (15.4).
+  - `orderable`: the types `sort` orders (15.4): `Number` and `String`, and each type with an instance of `orderable` (4.6), which is a class.
   - `stringifiable`: the stringifiable types of 6.6.
 - The set of named bounds is closed: a program cannot declare one. A named bound is recognized only in bound position. There it cannot be mistaken for a type, since no type is written in lower case, and elsewhere the words are ordinary identifiers.
 - A **class bound** names a class (4.6), by a `lower_id` that is not a named bound or by a namespace member `m.ord`, and admits the types that have an instance of it. Any other lower-case word in bound position is an undefined reference error (`E-NAME-UNDEFINED`).
@@ -607,7 +608,7 @@ A parameter written without a type annotation is not `Any`: its type is the one 
 - **Uses.** Each place the body puts the parameter in a position that requires a type `U` — an argument of a callee whose parameter is `U`, an operand of an operator (6.2), the condition of `if` or `case`, the scrutinee of a `case` with value patterns (6.4) at the type of those patterns, an operand of `==`, `!=`, `<`, `<=`, `>` or `>=` (6.2) at the type of the other operand, the environment of a command (6.6), a binding or a return with an annotation, a field of a record literal with an expected type — is a *use* at `U`. A position that requires `Any`, such as the argument of `to_json` or `cast` (15.8), constrains nothing, since every type conforms to `Any`, and is not a use. The scrutinee of a `case` with type heads (6.4) is a use at `Any`: a type is dispatched on only in an `Any` or a union. When the scrutinee is the parameter itself, it is `Any` throughout the `case`, and each arm narrows it as it narrows an `Any` (6.4), so what an arm does with it is done with the narrowed value and is no use of the parameter: in `f(x) = case (x) { Number -> x + 1; else -> 0 }`, `x` is `Any`. A use outside the `case` that leaves the parameter a type other than `Any` or a union, such as `Number`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names the `case` and suggests an annotation. Compared with `null`, a parameter is used at no type; compared or ordered with another parameter whose type is inferred, the two have one type.
 - **The inferred type** is the most general type that conforms (4.4) to every type the parameter is used at: the one a caller can pass the most values of. Used at `String` and at `String | Null`, a parameter is `String`; put at `Number` and at `Any`, it is `Number`; put only at `Any`, it is a type parameter (below), so that `wrap(x) = [to_json(x), x]` keeps the type of `x` in its result. A parameter used at two types that no type conforms to both of, such as `Number` and `String`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names both uses and suggests an annotation.
 - **A use at a type that has a type variable** in it, as an argument of a generic function (4.4) or as the element of an array the function takes, gives the parameter that shape, with the variable left to be inferred in turn: `size(xs)` makes `xs` an `Array<a>` for an `a` still to be found. A use inside a lambda the parameter is passed to counts as any other use.
-- **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (6.2, 15.4), and a class when it is passed where a type parameter bounded by the class is (4.6). Where its uses need two of them, it has the one that entails the other (`orderable` entails both others); two of which neither entails the other, such as `comparable` and `stringifiable`, are a type error (`E-TYPE-BOUND`) that asks for an annotation: a type parameter has at most one bound, written or inferred. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
+- **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (6.2, 15.4), and a class when it is passed where a type parameter bounded by the class is (4.6). Where its uses need more than one, it has each of them that no other of them entails, joined with `+` (4.2): `orderable` entails `comparable`, so a parameter both sorted and compared is `orderable`, and one sorted and interpolated is `orderable + stringifiable`. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
 - **A value put where the parameter is.** A parameter used at no type, which the body joins with values of one type, as the other branches of an `if` or a `case` (4.3) or as arguments a generic function needs to be of one type with it (4.4), has that type: `f(c: Bool, n) = c ? 0 : n` is `f(c: Bool, n: Number): Number`. `null` joins with any type and says nothing of it, so `c ? x : null` keeps `x` a type parameter.
 - **What the body cannot tell.** A field access (`u.name`) or an index (`u[0]`, `u["X"]`) on a parameter whose type is not otherwise known, or a function value called with arguments, does not say what the whole type is: Lask has no record type open to further fields. It is a type error that asks for an annotation (`E-TYPE-ACCESS`, `E-TYPE-CALL`).
 - **A parameter marked `!!`** (6.10) is used at `String | Null` by its marker, so it is `String` or `String | Null`.
@@ -711,13 +712,14 @@ Entailment:
 
 - A bound **entails** a named bound, or a class, when every type it admits satisfies it.
 - A class entails itself, its superclass (4.6), and what its superclass entails: `<T: ord>` for `class ord<T: comparable>` entails `ord` and `comparable`. Nothing else entails a class.
-- `orderable` entails `comparable` and `stringifiable`, as well as itself. `comparable` and `stringifiable` entail only themselves.
+- `orderable` entails `comparable`, as well as itself: it is a class whose superclass is `comparable` (4.6). It does not entail `stringifiable`, since a type ordered by its instance need not be one. `comparable` and `stringifiable` entail only themselves.
+- A bound joined with `+` entails what any of its parts entails, and a bound entails one joined with `+` when it entails each part.
 - A type bound `B` entails a named bound that `B` itself satisfies, except that `Any` entails nothing: every type conforms to `Any`. So `<T: Number | String>` entails `comparable` and `stringifiable`, but not `orderable`, since the union admits itself and a union is not orderable.
 
 Type parameters within the body of their declaration (rigidity):
 
 - Within the body of a declaration that declares type parameters, each type parameter is an opaque type, distinct from every other type including every other type parameter. It conforms to itself, to `Any`, and, when it has a type bound `B`, to whatever `B` conforms to.
-- It satisfies a named bound exactly when its own bound entails it (4.4, bounds). An unbounded type parameter is therefore not a comparable type (6.2), not ordered (15.4), and not stringifiable (6.6); `<T: comparable>` can be compared with `==`, `<T: stringifiable>` interpolated, and `<T: orderable>` sorted, compared and interpolated. No bound makes it a legal target of `cast` (15.8) or a legal `case` type head (6.4), being neither a union nor `Any`.
+- It satisfies a named bound exactly when its own bound entails it (4.4, bounds). An unbounded type parameter is therefore not a comparable type (6.2), not ordered (15.4), and not stringifiable (6.6); `<T: comparable>` can be compared with `==`, `<T: stringifiable>` interpolated, `<T: orderable>` sorted and compared, and `<T: orderable + stringifiable>` all of these. No bound makes it a legal target of `cast` (15.8) or a legal `case` type head (6.4), being neither a union nor `Any`.
 - A value of an unbounded type parameter's type can be bound, passed, returned, placed in an `Array` / `Map` / `Record`, and serialized through `Any` — and nothing else. A body that needs an operation beyond what a bound gives takes the operation as an argument (`Function<T, Number>` as a sort key, `Function<T, T, Bool>` as an equality).
 - A bounded type parameter is still distinct from its bound: `<T: Number>` may be passed where `Number` is required, but `x + 1` is a `Number` and not a `T`.
 - A type parameter is opaque only inside the body. At a call site it is instantiated to a concrete type, and the result is that concrete type.
@@ -782,6 +784,31 @@ Instances:
 - A program has at most one instance of a class for a type. A second, wherever it is declared, is a duplicate definition (`E-NAME-DUPLICATE`), so which instance a use means never depends on where the use is.
 - An instance is declared in the module that declares the class, or in a module of the project; a module of a dependency (11.5) cannot declare one for a class of another module (`E-TYPE-INSTANCE`). Two dependencies therefore never bring the same instance between them, which no one who imports both could repair.
 - An instance has no name. It is not imported or exported, and takes no visibility marker. It is **in effect** in the module it is declared in and in every module that imports that module, directly or not.
+
+The built-in classes:
+
+- The named bounds (4.2) are classes of the language. `comparable` and `stringifiable` are **closed**: their instances are the types 6.2 and 6.6 make comparable and stringifiable, and an instance declared for either is `E-TYPE-INSTANCE`. Equality and interpolation therefore mean the same for every type.
+- `orderable` is **open**. It is the class
+
+  ```lask fragment
+  class orderable<T: comparable> {
+    compare(a: T, b: T): Number
+  }
+  ```
+
+  whose instances for `Number` and `String` are the language's own (15.4): declaring one of those is a duplicate definition (`E-NAME-DUPLICATE`). An instance for another type gives it an order, by `compare`, which `sort`, `sort_by`, `compare` and the ordering operators (6.2) use for it. Its module is no module of the program, so such an instance is declared in the project (above).
+
+  ```lask
+  type Version = Record<major: Number, minor: Number>
+
+  instance orderable<Version> {
+    compare(a, b) = if (a.major != b.major) { a.major - b.major } else { a.minor - b.minor }
+  }
+
+  latest(vs: Array<Version>): Version = last(sort(vs))
+  ```
+
+- A type parameter of a local function (6.1) bounded by `orderable` is ordered as `Number` and `String` are, the local function being instantiated where it is called and not specialized: a call of it at a type ordered by an instance is `E-TYPE-BOUND`.
 
 Using a class:
 
@@ -1309,7 +1336,7 @@ The types of the operators are as follows.
 
 - `!` is typed as `Function<Bool, Bool>`, and unary `-` as `Function<Number, Number>`: `-e` is `0 - e`.
 - `*`, `/`, `+`, `-` are typed as `Function<Number, Number, Number>`.
-- `<`, `<=`, `>`, `>=` are `<T: orderable> Function<T, T, Bool>` (4.4): both operands have one type, `Number` or `String` (or a type parameter whose bound entails `orderable`), and a type that is not orderable is `E-TYPE-BOUND`. Numbers are ordered by value, and strings by Unicode code point, as `sort` orders them (15.4).
+- `<`, `<=`, `>`, `>=` are `<T: orderable> Function<T, T, Bool>` (4.4): both operands have one orderable type -- `Number`, `String`, a type with an instance of `orderable` (4.6), or a type parameter whose bound entails `orderable` -- and a type that is not orderable is `E-TYPE-BOUND`. Numbers are ordered by value, and strings by Unicode code point, as `sort` orders them (15.4); a value of another type by the `compare` of its instance, `a < b` being `compare(a, b) < 0`.
 - `&&`, `||` are typed as `Function<Bool, Bool, Bool>`.
 - `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. In the terms of 4.4 they are `<T: comparable> Function<T, T, Bool>`, instantiated at the wider type, and a type that is not comparable is `E-TYPE-BOUND`. So `xs == ys` with `xs: Array<String>` and `ys: Array<String | Null>` compares at `Array<String | Null>`. A comparison with an `Any` side is never well-typed, since `Any` is not comparable.
 - The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Runnable`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, a union all of whose members are comparable types, and a type parameter whose bound entails `comparable` (4.4). This is the named bound `comparable` (4.2).
@@ -3385,7 +3412,7 @@ Type conformance rules:
   - An unbounded one is instantiated at `Any`. This is sound because it is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
   - One with a type bound `B` is instantiated at `B`, the widest type it admits.
   - One with a named bound is decoded at `Any`, then instantiated from the types of the decoded values, as a call instantiates it from the types of its arguments (4.4). Each value in a position of the parameter's type contributes the type a literal of it would have (4.3). The values must agree on one type, and that type must satisfy the bound; otherwise it is a usage error (`E-CLI-USAGE`) before evaluation begins. A body may compare, sort or interpolate such a value, so it cannot be handed one outside its bound.
-  - One with a class bound (4.6) is decoded and instantiated in the same way, and the type the values agree on must be one with an instance of the class. The instance it selects is the one the function runs with, so the values must give a type: when they give none, as an empty array gives none for its elements, it is a usage error (`E-CLI-USAGE`) as well. A JSON object gives a record type, so `--arg-decode json` can select the instance for a record type such as `Version` (4.6).
+  - One with a class bound (4.6), `orderable` included, is decoded and instantiated in the same way, and the type the values agree on must be one with an instance of the class: for `orderable`, `Number`, `String` or a type with an instance declared. The instance it selects is the one the function runs with, so the values must give a type: when they give none, as an empty array gives none for its elements, it is a usage error (`E-CLI-USAGE`) as well. A JSON object gives a record type, so `--arg-decode json` can select the instance for a record type such as `Version` (4.6).
   - One that a parameter written without an annotation gave rise to (4.3), with a named bound that admits `String`, is instantiated at `String`, and its values are taken as the text written. A body that does no more with a value than interpolate or compare it does not say it wants a number, so `--version 1.0` stays `"1.0"` and is not read as the number `1`. Annotating the parameter, or writing the type parameter, chooses another decoding.
 - Functions with positional parameters of type `Environment` or `Runnable` are excluded from direct CLI invocation (since no decoding mode can construct such a value, this is a pre-execution error). Keyword parameters of these types are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive a `String` etc. and choose inside the function among environments written there (`case (target) { "amd64" -> #alpine:3.20(platform = "linux/amd64") ... }`); every image stays written as a head (6.7). A run option may be taken from such a value directly, and given to `runnable` (15.5).
 
@@ -4637,7 +4664,7 @@ The table below is the complete list of codes. An implementation reports every o
 | `E-TYPE-ILLFORMED` | static | `1` | violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`, a class or an instance outside the forms of 4.6, a class bound on a local function; 4.2, 4.6, 6.4, 15.8) |
 | `E-TYPE-SECRET-NON-STRING` | static | `1` | `!!` applied to a binding whose type is not `String` (6.10) |
 | `E-TYPE-BOUND` | static | `1` | a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 4.6, 6.2, 6.4, 6.6) |
-| `E-TYPE-INSTANCE` | static | `1` | an instance declaration that leaves a method without a default undefined, is for a type outside its class's superclass, or is declared in a dependency for a class of another module (4.6) |
+| `E-TYPE-INSTANCE` | static | `1` | an instance declaration that leaves a method without a default undefined, is for a type outside its class's superclass, is of a closed class, or is declared in a dependency for a class of another module (4.6) |
 | `E-MODULE-CYCLE` | static | `1` | module circular dependency |
 | `E-MODULE-UNRESOLVED` | static | `1` | unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5) |
 | `E-MODULE-DEEP-IMPORT` | static | `1` | an external import naming a path inside a dependency tree rather than its entry module (Chapter 5) |
@@ -4965,6 +4992,7 @@ The built-in library provides at least the following functions.
 - `reverse`: `Function<Array<T>, Array<T>>`
 - `sort<T: orderable>`: `Function<Array<T>, Array<T>>`
 - `sort_by<T, U: orderable>`: `Function<Array<T>, Function<T, U>, Array<T>>`
+- `compare<T: orderable>`: `Function<T, T, Number>`
 - `contains_array<T: comparable>`: `Function<Array<T>, T, Bool>`
 - `index_of_array<T: comparable>`: `Function<Array<T>, T, Number>`
 - `find`: `Function<Array<T>, Function<T, Bool>, T | Null>`
@@ -5006,8 +5034,9 @@ Element access:
 
 Ordering:
 
-- `sort(xs)` returns the elements in ascending order. The element type is bounded by `orderable`, so it is `Number` or `String`; any other element type is a static error (`E-TYPE-BOUND`).
+- `sort(xs)` returns the elements in ascending order. The element type is bounded by `orderable`: `Number`, `String`, or a type with an instance of `orderable` (4.6), which it orders by its instance's `compare`. Any other element type is a static error (`E-TYPE-BOUND`). Elements that `compare` puts at `0` keep their input order.
 - `sort_by(xs, key)` sorts by the value of `key` applied once to each element, under the same bound on the key type `U`, and is stable: elements with equal keys keep their input order.
+- `compare(a, b)`, the method of the class `orderable` (4.6), is negative when `a` comes before `b`, `0` when neither comes first, and positive when `b` does: for `Number` and `String` in the order of `sort`, `-1`, `0` or `1`, and for another type what the `compare` of its instance returns.
 - `String` ordering is lexicographic by Unicode code point. The ordering operators `<` `<=` `>` `>=` (6.2) order strings the same way.
 
 Searching:

@@ -170,6 +170,8 @@ data SBound
   | SBoundQualified (Spanned Text) (Spanned Text)
   | SBoundType SType
   | SBoundClass FilePath Text
+  | -- | @a + b@: several named bounds and classes at once (spec 4.2).
+    SBoundAll [SBound]
   deriving (Show, Eq)
 
 typeParamNames :: [TypeParam] -> [Text]
@@ -186,6 +188,7 @@ renderTypeParams tps = "<" <> T.intercalate ", " (map one tps) <> ">"
     bound (SBoundQualified (Spanned _ q) (Spanned _ n)) = q <> "." <> n
     bound (SBoundType t) = renderSType t
     bound (SBoundClass _ n) = n
+    bound (SBoundAll bs) = T.intercalate " + " (map bound bs)
 
 -- | The type names the grammar itself recognises (spec 4.2), which no
 -- alias declares.
@@ -355,6 +358,7 @@ stripTypeParam (TypeParam (Spanned _ v) b) = TypeParam (Spanned NoSpan v) (fmap 
     stripBound (SBoundQualified (Spanned _ q) (Spanned _ n)) = SBoundQualified (Spanned NoSpan q) (Spanned NoSpan n)
     stripBound (SBoundType t) = SBoundType (stripSpansType t)
     stripBound (SBoundClass p n) = SBoundClass p n
+    stripBound (SBoundAll bs) = SBoundAll (map stripBound bs)
 
 stripSpansDecl :: Decl -> Decl
 stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of

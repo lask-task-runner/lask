@@ -120,6 +120,7 @@ builtinValueNames =
       "reverse",
       "sort",
       "sort_by",
+      "compare",
       "contains_array",
       "index_of_array",
       "find",

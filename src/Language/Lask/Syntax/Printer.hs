@@ -543,11 +543,15 @@ typeParams [] = pure mempty
 typeParams tps = do
   ds <- forM tps $ \(TypeParam (Spanned _ v) b) -> case b of
     Nothing -> pure (text v)
-    Just (SBoundNamed (Spanned _ n)) -> pure (text (v <> ": " <> n))
-    Just (SBoundQualified (Spanned _ q) (Spanned _ n)) -> pure (text (v <> ": " <> q <> "." <> n))
-    Just (SBoundType t) -> (\dt -> text v <> ": " <> dt) <$> ty t
-    Just (SBoundClass _ n) -> pure (text (v <> ": " <> n))
+    Just sb -> (\db -> text (v <> ": ") <> db) <$> bound sb
   pure ("<" <> sepBy ", " ds <> ">")
+  where
+    bound sb = case sb of
+      SBoundNamed (Spanned _ n) -> pure (text n)
+      SBoundQualified (Spanned _ q) (Spanned _ n) -> pure (text (q <> "." <> n))
+      SBoundType t -> ty t
+      SBoundClass _ n -> pure (text n)
+      SBoundAll bs -> sepBy " + " <$> mapM bound bs
 
 -- Types ---------------------------------------------------------------------------------
 

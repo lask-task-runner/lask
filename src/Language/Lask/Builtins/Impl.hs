@@ -217,6 +217,14 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
     pure (VArray (sliceV xs n (fromIntegral (V.length xs))))
   ("reverse", [VArray xs]) -> pure (VArray (V.reverse xs))
   ("sort", [VArray xs]) -> pure (VArray (V.fromList (sortBy compareOrdered (V.toList xs))))
+  ("compare", [a, b]) -> num (case compareOrdered a b of LT -> -1; EQ -> 0; GT -> 1)
+  -- The sorts at a type ordered by its instance (spec 4.6): the
+  -- instance's compare decides, a merge sort keeping equal elements in
+  -- their input order (15.4).
+  ("%sort_with", [VArray xs, cmp]) -> VArray . V.fromList <$> mergeSortM (noLater cmp) (V.toList xs)
+  ("%sort_by_with", [VArray xs, f, cmp]) -> do
+    keyed <- mapM (\x -> (\k -> (k, x)) <$> apply f [x] []) (V.toList xs)
+    VArray . V.fromList . map snd <$> mergeSortM (\a b -> noLater cmp (fst a) (fst b)) keyed
   ("sort_by", [VArray xs, f]) -> do
     keyed <- mapM (\x -> (\k -> (k, x)) <$> apply f [x] []) (V.toList xs)
     -- sortOn is stable, so equal keys keep their input order (15.4).
@@ -534,6 +542,28 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
            in if atStart then fill <> s else s <> fill
       where
         width = max 0 (truncate (toRealTo w))
+
+    -- Whether a comes no later than b, by an instance's compare.
+    noLater cmp a b = do
+      r <- apply cmp [a, b] []
+      pure $ case r of
+        VNumber n -> n <= 0
+        _ -> True
+
+    mergeSortM le = go'
+      where
+        go' [] = pure []
+        go' [x] = pure [x]
+        go' ys = do
+          let (l, r) = splitAt (length ys `div` 2) ys
+          l' <- go' l
+          r' <- go' r
+          merge l' r'
+        merge [] r = pure r
+        merge l [] = pure l
+        merge (a : as) (b : bs) = do
+          ok <- le a b
+          if ok then (a :) <$> merge as (b : bs) else (b :) <$> merge (a : as) bs
 
     -- Only Number and String reach here: the element type of sort is
     -- restricted statically (spec 15.4).

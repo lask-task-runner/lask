@@ -386,13 +386,21 @@ contextual w = matchTok (T.unpack w) $ \t -> case t of
 -- | A bound (spec 4.2): a lower-case word names a predicate or a
 -- class, @m.ord@ a class of the module @m@ names, and anything else is
 -- a type, since no type is written in lower case.
+--
+-- Several are joined with @+@ (@orderable + stringifiable@); the
+-- elaborator says which of them may be.
 pBound :: P SBound
-pBound =
-  choice
-    [ try (SBoundQualified <$> (lowerId <* sym TDot) <*> lowerId),
-      try (SBoundNamed <$> lowerId <* notFollowedBy (sym TDot)),
-      SBoundType <$> pType
-    ]
+pBound = do
+  b <- one
+  more <- many (op OpAdd *> one)
+  pure (if null more then b else SBoundAll (b : more))
+  where
+    one =
+      choice
+        [ try (SBoundQualified <$> (lowerId <* sym TDot) <*> lowerId),
+          try (SBoundNamed <$> lowerId <* notFollowedBy (sym TDot)),
+          SBoundType <$> pType
+        ]
 
 -- | @command { "go", "gofmt" } on #golang:1.25@ (spec ch. 5).
 pCommandDecl :: P Decl

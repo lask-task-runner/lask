@@ -1,0 +1,19 @@
+// Named bounds and classes are joined with +, a type bound stands
+// alone, and an inferred parameter has each bound its uses need (4.2).
+class keyed<T> {
+  key(x: T): String
+}
+
+instance keyed<Number> {
+  key(x) = "k#{x}"
+}
+
+both<T: orderable + stringifiable>(xs: Array<T>): String = "#{first(sort(xs))}"
+
+with_class<T: keyed + orderable>(xs: Array<T>): String = key(last(sort(xs)))
+
+inferred(xs) = "#{first(sort(xs))}"
+
+uses(): String = "#{both([2, 1])}#{with_class([1, 3])}#{inferred(["b", "a"])}"
+
+typed<T: Number + orderable>(x: T): T = x // expect: E-TYPE-ILLFORMED
