@@ -12,6 +12,7 @@ module Language.Lask.Runtime.Value
     Scope,
     LaskFailure (..),
     pushFrame,
+    failedAt,
     valueEq,
     stringify,
     formatNumber,
@@ -37,6 +38,7 @@ import qualified Data.Vector as V
 import Language.Lask.Core.AST (Lam)
 import Language.Lask.ErrorCode (ErrorCode (..))
 import Language.Lask.Number (fitNumber)
+import Language.Lask.Span (Span (..))
 
 data Value
   = VNumber !Scientific
@@ -189,16 +191,28 @@ typeNameOf v = case v of
 data LaskFailure = LaskFailure
   { lfCode :: Maybe ErrorCode,
     lfError :: Value,
-    -- | Innermost first: @name (module)@ labels.
-    lfFrames :: [Text]
+    -- | Innermost first: @name (module:line:col)@ labels.
+    lfFrames :: [Text],
+    -- | Where in the innermost function not yet in 'lfFrames' the
+    -- failure arose or passed through: the failing expression, or the
+    -- call it came out of. The frame of that function takes it.
+    lfAt :: Maybe Span
   }
   deriving (Show, Eq)
 
 instance Exception LaskFailure
 
--- | Record a propagation frame on a failure (spec 12.3).
+-- | Record a propagation frame on a failure (spec 12.3), which takes
+-- the position the failure is at; the caller's frame gets its own.
 pushFrame :: Text -> LaskFailure -> LaskFailure
-pushFrame frame lf = lf {lfFrames = lfFrames lf <> [frame]}
+pushFrame frame lf = lf {lfFrames = lfFrames lf <> [frame], lfAt = Nothing}
+
+-- | The expression a failure comes out of, unless one inside it was
+-- already recorded (spec 12.4).
+failedAt :: Span -> LaskFailure -> LaskFailure
+failedAt sp lf = case (lfAt lf, sp) of
+  (Nothing, Span {}) -> lf {lfAt = Just sp}
+  _ -> lf
 
 -- | Construct an @Error@ record value.
 errorValue :: Scientific -> Text -> Value
@@ -207,12 +221,12 @@ errorValue code msg =
 
 -- | Runtime error: default code 2 (spec 8.10).
 runtimeFailure :: ErrorCode -> Text -> LaskFailure
-runtimeFailure code msg = LaskFailure (Just code) (errorValue 2 msg) []
+runtimeFailure code msg = LaskFailure (Just code) (errorValue 2 msg) [] Nothing
 
 -- | External I\/O error: default code 3 (spec 8.10).
 ioFailure :: ErrorCode -> Text -> LaskFailure
-ioFailure code msg = LaskFailure (Just code) (errorValue 3 msg) []
+ioFailure code msg = LaskFailure (Just code) (errorValue 3 msg) [] Nothing
 
 -- | @fail(err)@: the error value is used as-is.
 userFailure :: Value -> LaskFailure
-userFailure v = LaskFailure Nothing v []
+userFailure v = LaskFailure Nothing v [] Nothing

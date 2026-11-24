@@ -120,8 +120,28 @@ spec = beforeAll findLask $ do
       withProject [("main.lask", src)] $ \dir -> do
         r <- runLask lask dir ["run", "outer"] ""
         resExit r `shouldBe` 9
-        resErr r `shouldSatisfy` isInfixOf "at inner (main.lask)"
-        resErr r `shouldSatisfy` isInfixOf "at outer (main.lask)"
+        resErr r `shouldSatisfy` isInfixOf "  at inner (main.lask:1:19)\n  at outer (main.lask:2:19)\n"
+    it "puts in each frame where in its function the failure was, and names anonymous ones by what made them (12.4)" $ \lask ->
+      withProject
+        [ ( "main.lask",
+            "ratio(a: Number, b: Number) = a / b\n\
+            \halves(xs: Array<Number>) = map(xs, \\(x: Number) -> ratio(x, 0))\n\
+            \late() = do {\n\
+            \  h = async halves([1])\n\
+            \  await h\n\
+            \}\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["run", "late"] ""
+          resExit r `shouldBe` 2
+          resErr r
+            `shouldSatisfy` isInfixOf
+              "  at ratio (main.lask:1:31)\n\
+              \  at lambda (main.lask:2:53)\n\
+              \  at halves (main.lask:2:29)\n\
+              \  at async (main.lask:4:13)\n\
+              \  at late (main.lask:5:3)\n"
     it "emits call/return events with the given trace id" $ \lask ->
       withProject [("main.lask", "f(x: Number): Number = x + 1\n")] $ \dir -> do
         r <- runLask lask dir ["eval", "--log-format", "json", "--trace-id", "t-1", "f", "41"] ""

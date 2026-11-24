@@ -96,7 +96,7 @@ spec = do
       withFakeVault $ \fv -> do
         field <- resolveWith (vaultEnv fv <> [("X", "{vault://secret/app#nope}")]) "X"
         field `shouldFailWith` EIoSecretNotFound
-        either (\(LaskFailure _ v _) -> show v) (const "") field `shouldContain` "fields: password, user"
+        either (\(LaskFailure _ v _ _) -> show v) (const "") field `shouldContain` "fields: password, user"
         path <- resolveWith (vaultEnv fv <> [("X", "{vault://secret/nope#k}")]) "X"
         path `shouldFailWith` EIoSecretNotFound
         version <- resolveWith (vaultEnv fv <> [("X", "{vault://secret/app?version=9#password}")]) "X"
@@ -198,5 +198,5 @@ resolveWith env name = do
 
 shouldFailWith :: (Show a) => Either LaskFailure a -> ErrorCode -> Expectation
 shouldFailWith r code = case r of
-  Left (LaskFailure c _ _) -> c `shouldBe` Just code
+  Left (LaskFailure c _ _ _) -> c `shouldBe` Just code
   Right v -> expectationFailure ("expected " <> show code <> ", got " <> show v)

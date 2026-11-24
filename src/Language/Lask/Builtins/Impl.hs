@@ -372,7 +372,7 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
         | otherwise -> apply cleanup [] [] >> throwIO ex
   -- Internal: command-sugar failure (spec 6.6), tagged with
   -- E-RUNTIME-COMMAND-NONZERO for diagnostics (14.5).
-  ("%commandFail", [err]) -> throwIO (LaskFailure (Just ERuntimeCommandNonzero) err [])
+  ("%commandFail", [err]) -> throwIO (LaskFailure (Just ERuntimeCommandNonzero) err [] Nothing)
   ("error", [VNumber code, VString msg]) -> pure (errorValue code msg)
   -- Retrying and waiting (15.7). A strategy is the array of delays
   -- before each further attempt, so its length bounds the attempts.
@@ -661,7 +661,7 @@ callBuiltin apply hooks name args _kwArgs = case (name, args) of
       | otherwise = threadDelay (micros d)
 
     waitFailure :: ErrorCode -> Text -> LaskFailure
-    waitFailure code msg = LaskFailure (Just code) (errorValue 124 msg) []
+    waitFailure code msg = LaskFailure (Just code) (errorValue 124 msg) [] Nothing
 
     retryLoop :: [Scientific] -> Maybe Value -> Value -> IO Value
     retryLoop delays when body = go (1 :: Int) delays

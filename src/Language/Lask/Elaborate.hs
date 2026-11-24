@@ -1249,9 +1249,15 @@ elabLambdaExpecting ctx path locals sp mName expectedRet ps0 retAnn body = do
   pure (Core sp (CLam lam), funTy, params)
 
 lambdaName :: Span -> Text
-lambdaName (Span (Position _ l c) _) =
-  "<lambda@" <> T.pack (show l) <> ":" <> T.pack (show c) <> ">"
-lambdaName NoSpan = "<lambda>"
+lambdaName = generatedName "lambda"
+
+-- | The name of a function the language makes rather than the user
+-- writes, after what made it and where: @<async\@3:7>@ (13.2). A stack
+-- trace shows it by what made it (12.4).
+generatedName :: Text -> Span -> Text
+generatedName what (Span (Position _ l c) _) =
+  "<" <> what <> "@" <> T.pack (show l) <> ":" <> T.pack (show c) <> ">"
+generatedName what NoSpan = "<" <> what <> ">"
 
 -- | Elaborate the parameter list: types, keyword defaults (evaluated
 -- in the scope of preceding parameters, spec 8.3), the body scope, and
@@ -1836,7 +1842,7 @@ infer ctx path locals (Expr sp f) = case f of
   ETry body mCatch mFin -> elabTry ctx path locals sp body mCatch mFin Nothing False
   EAsync inner -> do
     (c, t) <- infer ctx path locals inner
-    let thunk = mkThunk path sp c t
+    let thunk = mkThunk "async" path sp c t
     pure (Core sp (CApp (Core sp (CVar (BuiltinRef "spawn"))) [thunk] []), TyAsync t)
   EAwait inner -> do
     (c, t0) <- infer ctx path locals inner
@@ -1856,11 +1862,11 @@ spanStart :: Span -> Position
 spanStart (Span s _) = s
 spanStart NoSpan = Position "" 0 0
 
-mkThunk :: FilePath -> Span -> Core -> Type -> Core
-mkThunk path sp body ty =
+mkThunk :: Text -> FilePath -> Span -> Core -> Type -> Core
+mkThunk what path sp body ty =
   Core sp . CLam $
     Lam
-      { lamName = lambdaName sp,
+      { lamName = generatedName what sp,
         lamModule = path,
         lamPositional = [],
         lamVariadic = Nothing,
@@ -3026,7 +3032,7 @@ elabTry ctx path locals sp body mCatch mFin mExpected discarded = do
             Core sp $
               CApp
                 (builtin "%ensure")
-                [mkThunk path sp caught caughtTy, mkThunk path (blockSpan fin) finCore finTy]
+                [mkThunk "try" path sp caught caughtTy, mkThunk "finally" path (blockSpan fin) finCore finTy]
                 []
       pure (whole, caughtTy)
   where
@@ -3034,7 +3040,7 @@ elabTry ctx path locals sp body mCatch mFin mExpected discarded = do
     coreOf blk stmts = Core (blockSpan blk) (CDo stmts)
     recoverCall bodyCore ename handlerCore ty = recoverCallWith bodyCore ename handlerCore ty
     recoverCallWith bodyCore ename handlerCore ty =
-      let thunk = mkThunk path sp bodyCore ty
+      let thunk = mkThunk "try" path sp bodyCore ty
           handlerLam =
             Core sp . CLam $
               Lam
