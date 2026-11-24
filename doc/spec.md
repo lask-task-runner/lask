@@ -25,6 +25,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [4.3 Type Annotations and Inference](#43-type-annotations-and-inference)
     - [4.4 Type Semantics](#44-type-semantics)
     - [4.5 Serializable and Non-serializable Types](#45-serializable-and-non-serializable-types)
+    - [4.6 Classes and Instances](#46-classes-and-instances)
   - [5. Declarations and Modules](#5-declarations-and-modules)
   - [6. Expressions](#6-expressions)
     - [6.1 Function Parameters, Lambda Expressions, and Higher-Order Functions](#61-function-parameters-lambda-expressions-and-higher-order-functions)
@@ -347,6 +348,7 @@ Reserved words:
 - `on` is not a reserved word. It is a contextual keyword recognized only within a command declaration (Chapter 5), directly after the closing brace of its command words, where no other token may appear; it remains usable as an identifier elsewhere. Because the position is lexical, an editor can show `on` as a keyword there without elaborating the module.
 - `within` is not a reserved word either. It is a contextual keyword recognized in two positions only (Chapter 5): at the start of a top-level declaration, directly followed by `{`, by an `upper_id`, or by a `lower_id` and `.`, and in a function declaration, after its parameter list and return type and before its `=`. Neither position admits an identifier, so `within` remains usable as an identifier everywhere else.
 - `access` is a contextual keyword of the same kind, recognized only at the start of a top-level declaration, after its visibility marker if it has one, directly followed by an `upper_id` (Chapter 5). No declaration named `access` is followed by one, so `access` remains usable as an identifier everywhere else.
+- `class` and `instance` are contextual keywords of the same kind, recognized only at the start of a top-level declaration directly followed by a `lower_id` (4.6). No declaration named `class` or `instance` is followed by one, so both remain usable as identifiers everywhere else.
 - `stdin` is not a reserved word but is a reserved identifier (9.3), and must not be declared or rebound in user code.
 
 String interpolation:
@@ -412,7 +414,7 @@ QualifiedNamedType = lower_id "." upper_id .
 TypeArgs          = "<" Type { "," Type } ">" .
 TypeParams        = "<" TypeParam { "," TypeParam } ">" .
 TypeParam         = upper_id [ ":" Bound ] .
-Bound             = NamedBound | Type .
+Bound             = NamedBound | ClassName | Type .
 NamedBound        = "comparable" | "orderable" | "stringifiable" .
 TypeAliasDecl     = "type" upper_id [ TypeParams ] "=" Type .
 ```
@@ -448,7 +450,8 @@ Bounds:
   - `comparable`: the comparable types of 6.2.
   - `orderable`: `Number` and `String`, the types `sort` orders (15.4).
   - `stringifiable`: the stringifiable types of 6.6.
-- The set of named bounds is closed: a program cannot declare one. A named bound is recognized only in bound position. There it cannot be mistaken for a type, since no type is written in lower case, and elsewhere the words are ordinary identifiers. Any other lower-case word there is an undefined reference error (`E-NAME-UNDEFINED`).
+- The set of named bounds is closed: a program cannot declare one. A named bound is recognized only in bound position. There it cannot be mistaken for a type, since no type is written in lower case, and elsewhere the words are ordinary identifiers.
+- A **class bound** names a class (4.6), by a `lower_id` that is not a named bound or by a namespace member `m.ord`, and admits the types that have an instance of it. Any other lower-case word in bound position is an undefined reference error (`E-NAME-UNDEFINED`).
 - A **type bound** is any other type. It admits the types that conform to it (4.4), so `<T: Number | String>` admits `Number`, `String` and `Number | String`. It may be written through a type alias, which is how a program defines a bound of its own:
 
   ```lask
@@ -458,7 +461,7 @@ Bounds:
   ```
 
 - A type bound must not mention a type parameter, and must not be `Void`. Either is a static error (`E-TYPE-ILLFORMED`).
-- A bound is a restriction on use sites, not a type class. There are no instances to declare, and a type satisfies a named bound by what it is, by the rules of the section that defines the predicate.
+- A named bound and a type bound are restrictions on use sites: a type satisfies one by what it is, by the rules of the section that defines the predicate, and there is nothing to declare for it. A class bound is satisfied by an instance declared for the type (4.6).
 
 ```lask
 largest<T: orderable>(xs: Array<T>): T = last(sort(xs))
@@ -604,7 +607,7 @@ A parameter written without a type annotation is not `Any`: its type is the one 
 - **Uses.** Each place the body puts the parameter in a position that requires a type `U` — an argument of a callee whose parameter is `U`, an operand of an operator (6.2), the condition of `if` or `case`, the scrutinee of a `case` with value patterns (6.4) at the type of those patterns, an operand of `==`, `!=`, `<`, `<=`, `>` or `>=` (6.2) at the type of the other operand, the environment of a command (6.6), a binding or a return with an annotation, a field of a record literal with an expected type — is a *use* at `U`. A position that requires `Any`, such as the argument of `to_json` or `cast` (15.8), constrains nothing, since every type conforms to `Any`, and is not a use. The scrutinee of a `case` with type heads (6.4) is a use at `Any`: a type is dispatched on only in an `Any` or a union. When the scrutinee is the parameter itself, it is `Any` throughout the `case`, and each arm narrows it as it narrows an `Any` (6.4), so what an arm does with it is done with the narrowed value and is no use of the parameter: in `f(x) = case (x) { Number -> x + 1; else -> 0 }`, `x` is `Any`. A use outside the `case` that leaves the parameter a type other than `Any` or a union, such as `Number`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names the `case` and suggests an annotation. Compared with `null`, a parameter is used at no type; compared or ordered with another parameter whose type is inferred, the two have one type.
 - **The inferred type** is the most general type that conforms (4.4) to every type the parameter is used at: the one a caller can pass the most values of. Used at `String` and at `String | Null`, a parameter is `String`; put at `Number` and at `Any`, it is `Number`; put only at `Any`, it is a type parameter (below), so that `wrap(x) = [to_json(x), x]` keeps the type of `x` in its result. A parameter used at two types that no type conforms to both of, such as `Number` and `String`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names both uses and suggests an annotation.
 - **A use at a type that has a type variable** in it, as an argument of a generic function (4.4) or as the element of an array the function takes, gives the parameter that shape, with the variable left to be inferred in turn: `size(xs)` makes `xs` an `Array<a>` for an `a` still to be found. A use inside a lambda the parameter is passed to counts as any other use.
-- **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (6.2, 15.4). Where its uses need two of them, it has the one that entails the other (`orderable` entails both others); two of which neither entails the other, such as `comparable` and `stringifiable`, are a type error (`E-TYPE-BOUND`) that asks for an annotation: a type parameter has at most one bound, written or inferred. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
+- **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (6.2, 15.4), and a class when it is passed where a type parameter bounded by the class is (4.6). Where its uses need two of them, it has the one that entails the other (`orderable` entails both others); two of which neither entails the other, such as `comparable` and `stringifiable`, are a type error (`E-TYPE-BOUND`) that asks for an annotation: a type parameter has at most one bound, written or inferred. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
 - **A value put where the parameter is.** A parameter used at no type, which the body joins with values of one type, as the other branches of an `if` or a `case` (4.3) or as arguments a generic function needs to be of one type with it (4.4), has that type: `f(c: Bool, n) = c ? 0 : n` is `f(c: Bool, n: Number): Number`. `null` joins with any type and says nothing of it, so `c ? x : null` keeps `x` a type parameter.
 - **What the body cannot tell.** A field access (`u.name`) or an index (`u[0]`, `u["X"]`) on a parameter whose type is not otherwise known, or a function value called with arguments, does not say what the whole type is: Lask has no record type open to further fields. It is a type error that asks for an annotation (`E-TYPE-ACCESS`, `E-TYPE-CALL`).
 - **A parameter marked `!!`** (6.10) is used at `String | Null` by its marker, so it is `String` or `String | Null`.
@@ -699,14 +702,15 @@ Polymorphic types:
 
 Bounds (4.2):
 
-- A type **satisfies** a named bound when it has the property the bound names (6.2, 15.4, 6.6), and a type bound `B` when it conforms to `B`. A type parameter in scope satisfies what its bound entails (below).
+- A type **satisfies** a named bound when it has the property the bound names (6.2, 15.4, 6.6), a type bound `B` when it conforms to `B`, and a class bound when it has an instance of the class in effect there (4.6). A type parameter in scope satisfies what its bound entails (below).
 - Wherever a signature is instantiated — at a call, and at a reference as a function value alike — the type each bounded variable is instantiated to must satisfy its bound. A violation is a static error (`E-TYPE-BOUND`), whose diagnostic names the function, the variable, the bound and the type. A type alias with bounded parameters is held to them where it is applied to type arguments.
 - The same predicates govern the operations that have no signature: `==` / `!=` (6.2) and a `case` value head (6.4) need `comparable`, and interpolation (6.6) needs `stringifiable`. A violation of these is `E-TYPE-BOUND` as well.
 - Built-in functions state their conditions as bounds in their signatures, written `sort<T: orderable>: Function<Array<T>, Array<T>>` (15.1). `cast` (15.8) is not among them, since its target has to be a concrete data type at run time. A type parameter never is, bounded or not, so that condition is well-formedness (`E-TYPE-ILLFORMED`) rather than a bound.
 
 Entailment:
 
-- A bound **entails** a named bound when every type it admits satisfies that named bound.
+- A bound **entails** a named bound, or a class, when every type it admits satisfies it.
+- A class entails itself, its superclass (4.6), and what its superclass entails: `<T: ord>` for `class ord<T: comparable>` entails `ord` and `comparable`. Nothing else entails a class.
 - `orderable` entails `comparable` and `stringifiable`, as well as itself. `comparable` and `stringifiable` entail only themselves.
 - A type bound `B` entails a named bound that `B` itself satisfies, except that `Any` entails nothing: every type conforms to `Any`. So `<T: Number | String>` entails `comparable` and `stringifiable`, but not `orderable`, since the union admits itself and a union is not orderable.
 
@@ -733,6 +737,60 @@ Type parameters within the body of their declaration (rigidity):
 - Function values are converted to reference metadata (`FunctionRef`; 13.2) in execution records and external output.
 - Likewise, `Void`, `Environment` and `Runnable` are converted to a tagged metadata representation (13.1) in external output. Restoration by deserialization is not guaranteed for either (the round-trip rules of 13.1).
 
+### 4.6 Classes and Instances
+
+```ebnf
+ClassDecl     = "class" lower_id "<" TypeParam ">" "{" { ClassMethod decl_end } "}" .
+ClassMethod   = lower_id "(" [ MethodParam { "," MethodParam } ] ")" ":" Type [ "=" Expression ] .
+MethodParam   = lower_id ":" Type .
+InstanceDecl  = "instance" ClassName "<" Type ">" "{" { FunctionDecl decl_end } "}" .
+ClassName     = [ lower_id "." ] lower_id .
+```
+
+A class names the types that have certain operations, its **methods**, and an instance gives a type those operations. A class is used as a bound (4.2): `<T: ord>` admits the types with an instance of `ord`, and lets the body call the methods of `ord` on a `T`.
+
+```lask
+type Version = Record<major: Number, minor: Number>
+
+class ord<T: comparable> {
+  compare(a: T, b: T): Number
+  lt(a: T, b: T): Bool = compare(a, b) < 0
+}
+
+instance ord<Version> {
+  compare(a, b) = if (a.major != b.major) { a.major - b.major } else { a.minor - b.minor }
+}
+
+smaller<T: ord>(a: T, b: T): T = if (lt(a, b)) { a } else { b }
+```
+
+Classes:
+
+- A `ClassDecl` declares a class over one type parameter. Its name is a `lower_id`, written where a bound is (4.2), bare or qualified by a namespace (`<T: m.ord>`). It is not a value: written as an expression, it is a type error (`E-TYPE-MISMATCH`). It must not be the name of a named bound, which a bound would read first (`E-NAME-DUPLICATE`).
+- The name of a class and the name of each of its methods are names of the module, in the namespace of values (5): each is a public symbol unless the class is marked `internal`, which makes its methods internal with it; each is imported, re-exported and renamed as a function is; and each collides, as a duplicate definition (`E-NAME-DUPLICATE`), with any other name of the module in that namespace, a method of another class included.
+- The bound of the type parameter, when it has one, is the class's **superclass**: a named bound or another class. An instance is then only for a type that satisfies it, and a type parameter bounded by the class has what the superclass gives as well (entailment, 4.4). A type bound there is ill-formed (`E-TYPE-ILLFORMED`), and so is a class that is its own superclass, directly or through others.
+- A `ClassMethod` is a signature written in full: each parameter positional and annotated, and the return type. Anything else is ill-formed (`E-TYPE-ILLFORMED`). The method is a function of the module whose type parameter is the class's, bounded by the class: `compare` above is `compare<T: ord>(a: T, b: T): Number`. A call of it at a type calls the method of that type's instance.
+- A method may have a **default** body, after `=`, which an instance that does not define the method takes. It is checked as the body of a declaration with the class's type parameter bounded by the class: the parameter is opaque (4.4), and the body may call the methods of the class, and of its superclasses, on it.
+
+Instances:
+
+- An `InstanceDecl` declares that a type has an instance of a class, and defines its methods: `instance ord<Version> { ... }`. The class is written as in a bound. The type is any type other than `Any` and `Void` that mentions no type parameter (`E-TYPE-ILLFORMED`).
+- An instance is for a type, not for the name it is written with: a type alias is expanded (4.3), so `Version` above and any other alias of `Record<major: Number, minor: Number>` name the one type with the one instance.
+- A method of an instance is a `FunctionDecl` named after a method of the class, with no type parameters and no `WithinClause` (`E-TYPE-ILLFORMED`), and with the positional parameters of the signature, as many as it has (`E-TYPE-ARITY`). Its types are those of the signature with the instance's type put in for the class's type parameter: a parameter or a return type written without an annotation takes them, and one written with an annotation must give them exactly (`E-TYPE-MISMATCH`). It is covered by the module constraint of the module it is in (5, 10.11).
+- A name that is not a method of the class is undefined (`E-NAME-UNDEFINED`); a method defined twice is a duplicate definition (`E-NAME-DUPLICATE`); a method with no default that the instance does not define is `E-TYPE-INSTANCE`.
+- The type must satisfy the superclass: a named bound by what the type is, and a class by an instance of it in effect where the instance is declared. Otherwise it is `E-TYPE-INSTANCE`.
+- A program has at most one instance of a class for a type. A second, wherever it is declared, is a duplicate definition (`E-NAME-DUPLICATE`), so which instance a use means never depends on where the use is.
+- An instance is declared in the module that declares the class, or in a module of the project; a module of a dependency (11.5) cannot declare one for a class of another module (`E-TYPE-INSTANCE`). Two dependencies therefore never bring the same instance between them, which no one who imports both could repair.
+- An instance has no name. It is not imported or exported, and takes no visibility marker. It is **in effect** in the module it is declared in and in every module that imports that module, directly or not.
+
+Using a class:
+
+- A type satisfies a class bound (4.4) when it has an instance of the class in effect where the bound is checked, or when it is a type parameter whose bound entails the class. The instance is found by the type exactly, after alias expansion and reduction of unions to canonical form (4.2): conformance takes no part, so `Number | String` and `Number` are distinct types, and an instance for `Array<Number>` is not one for `Array<Any>`.
+- A class bound is written on a type parameter of a top-level declaration: a function declaration, a binding of a lambda (6.1), or a type alias. A lambda bound by a block takes no class bound (`E-TYPE-ILLFORMED`); a class bound is resolved where the declaration is instantiated at concrete types, which a local function, being a value of the body it is in, never is.
+- Which instance a call uses is decided statically, by the type its type parameter is instantiated at (4.4). The value's own content plays no part, and `Any`, having no instances, satisfies no class bound.
+- A declaration generic over a class behaves as if written again for each type it is instantiated at, with the methods of that type's instances in place of its class's: so it is checked against the access constraints that cover it (10.11) at each of those types, and a recursive call of it stays at the types it was called with (4.3).
+- The CLI instantiates a class-bounded type parameter from the values it decodes (11.2).
+
 ## 5. Declarations and Modules
 
 This chapter defines modules, declarations, public symbols, and imports.
@@ -740,7 +798,8 @@ This chapter defines modules, declarations, public symbols, and imports.
 ```ebnf
 Module        = { TopLevelDecl } .
 TopLevelDecl  = ( ImportDecl | ExportDecl | ModuleWithin
-                | [ Visibility ] ( CommandDecl | TypeAliasDecl | AccessDecl | Declaration ) ) decl_end .
+                | InstanceDecl
+                | [ Visibility ] ( CommandDecl | TypeAliasDecl | AccessDecl | ClassDecl | Declaration ) ) decl_end .
 decl_end      = newline | ";" .
 Visibility    = "export" | "internal" .
 TypeAliasDecl = "type" upper_id [ TypeParams ] "=" Type .
@@ -784,6 +843,7 @@ Declaration termination rules:
 - `schema` is a contextual keyword, like `on`: it is a keyword only after the environment of a command declaration, and remains usable as an identifier everywhere else. The environment expression ends before it, and it must be placed on the same line as the end of that expression; the schema expression may span lines by the open-bracket continuation rule.
 - `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none; the `AccessSpec` may span lines by the open-bracket continuation rule, and the `=` follows its closing `}`, or the `AccessName`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
 - `access` is a contextual keyword (3.3). An `AccessDecl` is written on one line up to the `{` of its `AccessSpec`, which may span lines by the open-bracket continuation rule.
+- `class` and `instance` are contextual keywords (3.3). A `ClassDecl` or an `InstanceDecl` is written on one line up to its `{`. The braces enclose a block, as those of `do` do (6.5), not an object literal: each method in them is ended by a newline or `;`, and an expression in a method spans lines by the continuation rules of 6.5. `ClassDecl` and `InstanceDecl` are defined in 4.6.
 
 Access constraints:
 
@@ -3325,6 +3385,7 @@ Type conformance rules:
   - An unbounded one is instantiated at `Any`. This is sound because it is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
   - One with a type bound `B` is instantiated at `B`, the widest type it admits.
   - One with a named bound is decoded at `Any`, then instantiated from the types of the decoded values, as a call instantiates it from the types of its arguments (4.4). Each value in a position of the parameter's type contributes the type a literal of it would have (4.3). The values must agree on one type, and that type must satisfy the bound; otherwise it is a usage error (`E-CLI-USAGE`) before evaluation begins. A body may compare, sort or interpolate such a value, so it cannot be handed one outside its bound.
+  - One with a class bound (4.6) is decoded and instantiated in the same way, and the type the values agree on must be one with an instance of the class. The instance it selects is the one the function runs with, so the values must give a type: when they give none, as an empty array gives none for its elements, it is a usage error (`E-CLI-USAGE`) as well. A JSON object gives a record type, so `--arg-decode json` can select the instance for a record type such as `Version` (4.6).
   - One that a parameter written without an annotation gave rise to (4.3), with a named bound that admits `String`, is instantiated at `String`, and its values are taken as the text written. A body that does no more with a value than interpolate or compare it does not say it wants a number, so `--version 1.0` stays `"1.0"` and is not read as the number `1`. Annotating the parameter, or writing the type parameter, chooses another decoding.
 - Functions with positional parameters of type `Environment` or `Runnable` are excluded from direct CLI invocation (since no decoding mode can construct such a value, this is a pre-execution error). Keyword parameters of these types are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive a `String` etc. and choose inside the function among environments written there (`case (target) { "amd64" -> #alpine:3.20(platform = "linux/amd64") ... }`); every image stays written as a head (6.7). A run option may be taken from such a value directly, and given to `runnable` (15.5).
 
@@ -4552,7 +4613,7 @@ The table below is the complete list of codes. An implementation reports every o
 | `E-SYNTAX-UNEXPECTED-TOKEN` | syntax | `1` | a token the grammar does not allow where it stands (Chapter 3, 6) |
 | `E-SYNTAX-CASE-ELSE` | syntax | `1` | a `case` with no arms, with no `else` arm, with more than one, or with one that is not last (6.4) |
 | `E-NAME-UNDEFINED` | static | `1` | undefined reference |
-| `E-NAME-DUPLICATE` | static | `1` | duplicate definition |
+| `E-NAME-DUPLICATE` | static | `1` | duplicate definition, a second instance of a class for a type included (4.6) |
 | `E-TYPE-MISMATCH` | static | `1` | type mismatch |
 | `E-TYPE-ARITY` | static | `1` | function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2) |
 | `E-TYPE-CALL` | static | `1` | invalid call (calling a non-function value, etc.) |
@@ -4573,9 +4634,10 @@ The table below is the complete list of codes. An implementation reports every o
 | `E-TYPE-FIELD-DUPLICATE` | static | `1` | duplicate record field name or object literal key (4.2) |
 | `E-TYPE-CASE-DUPLICATE` | static | `1` | two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4) |
 | `E-TYPE-KEYWORD` | static | `1` | invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5) |
-| `E-TYPE-ILLFORMED` | static | `1` | violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`; 4.2, 6.4, 15.8) |
+| `E-TYPE-ILLFORMED` | static | `1` | violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`, a class or an instance outside the forms of 4.6, a class bound on a local function; 4.2, 4.6, 6.4, 15.8) |
 | `E-TYPE-SECRET-NON-STRING` | static | `1` | `!!` applied to a binding whose type is not `String` (6.10) |
-| `E-TYPE-BOUND` | static | `1` | a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 6.2, 6.4, 6.6) |
+| `E-TYPE-BOUND` | static | `1` | a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 4.6, 6.2, 6.4, 6.6) |
+| `E-TYPE-INSTANCE` | static | `1` | an instance declaration that leaves a method without a default undefined, is for a type outside its class's superclass, or is declared in a dependency for a class of another module (4.6) |
 | `E-MODULE-CYCLE` | static | `1` | module circular dependency |
 | `E-MODULE-UNRESOLVED` | static | `1` | unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5) |
 | `E-MODULE-DEEP-IMPORT` | static | `1` | an external import naming a path inside a dependency tree rather than its entry module (Chapter 5) |

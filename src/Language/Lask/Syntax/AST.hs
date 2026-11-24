@@ -13,6 +13,7 @@ module Language.Lask.Syntax.AST
     AccessSpec (..),
     TypeParam (..),
     SBound (..),
+    ClassMethod (..),
     typeParamNames,
     renderTypeParams,
     renderSType,
@@ -99,6 +100,26 @@ data DeclF
   | -- | @export command { "go" } from "path"@ (spec 5): an import of
     -- command words that also exports them.
     DExportCommandsFrom [Spanned Text] Text
+  | -- | @class name\<T: bound\> { methods }@ (spec 4.6): a class over
+    -- one type parameter, with the signatures of its methods and the
+    -- bodies of those that have a default.
+    DClass Text TypeParam [ClassMethod]
+  | -- | @instance [ns.]name\<Type\> { methods }@ (spec 4.6): the class,
+    -- with the namespace it is qualified by, the type it is an
+    -- instance for, and its methods, each a function declaration
+    -- without type parameters.
+    DInstance (Maybe (Spanned Text)) (Spanned Text) SType [Decl]
+  deriving (Show, Eq)
+
+-- | A method of a class as declared (spec 4.6): its signature, written
+-- in full, and its default body when it has one.
+data ClassMethod = ClassMethod
+  { cmSpan :: Span,
+    cmName :: Spanned Text,
+    cmParams :: [Param],
+    cmReturn :: SType,
+    cmDefault :: Maybe Expr
+  }
   deriving (Show, Eq)
 
 -- | An access constraint as written (spec 5, 10.11): the span of its
@@ -140,8 +161,15 @@ data ParamF
 data TypeParam = TypeParam {tpName :: Spanned Text, tpBound :: Maybe SBound}
   deriving (Show, Eq)
 
--- | A bound as written: a lower-case named bound, or a type.
-data SBound = SBoundNamed (Spanned Text) | SBoundType SType
+-- | A bound as written: a lower-case named bound or class, one
+-- qualified by a namespace (@m.ord@), or a type. 'SBoundClass' is
+-- never written: it is the class an inferred type parameter is bound
+-- by (spec 4.3), named by its declaring module and name.
+data SBound
+  = SBoundNamed (Spanned Text)
+  | SBoundQualified (Spanned Text) (Spanned Text)
+  | SBoundType SType
+  | SBoundClass FilePath Text
   deriving (Show, Eq)
 
 typeParamNames :: [TypeParam] -> [Text]
@@ -155,7 +183,9 @@ renderTypeParams tps = "<" <> T.intercalate ", " (map one tps) <> ">"
   where
     one (TypeParam (Spanned _ v) b) = v <> maybe "" ((": " <>) . bound) b
     bound (SBoundNamed (Spanned _ n)) = n
+    bound (SBoundQualified (Spanned _ q) (Spanned _ n)) = q <> "." <> n
     bound (SBoundType t) = renderSType t
+    bound (SBoundClass _ n) = n
 
 -- | The type names the grammar itself recognises (spec 4.2), which no
 -- alias declares.
@@ -322,7 +352,9 @@ stripTypeParam :: TypeParam -> TypeParam
 stripTypeParam (TypeParam (Spanned _ v) b) = TypeParam (Spanned NoSpan v) (fmap stripBound b)
   where
     stripBound (SBoundNamed (Spanned _ n)) = SBoundNamed (Spanned NoSpan n)
+    stripBound (SBoundQualified (Spanned _ q) (Spanned _ n)) = SBoundQualified (Spanned NoSpan q) (Spanned NoSpan n)
     stripBound (SBoundType t) = SBoundType (stripSpansType t)
+    stripBound (SBoundClass p n) = SBoundClass p n
 
 stripSpansDecl :: Decl -> Decl
 stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
@@ -345,7 +377,11 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DCommand ns e sch -> DCommand (map stripWord ns) (stripSpansExpr e) (fmap stripSpansExpr sch)
   DImportCommands ns path -> DImportCommands (map stripWord ns) path
   DExportCommandsFrom ns path -> DExportCommandsFrom (map stripWord ns) path
+  DClass n tp ms -> DClass n (stripTypeParam tp) (map stripMethod ms)
+  DInstance q c t ds -> DInstance (fmap stripWord q) (stripWord c) (stripSpansType t) (map stripSpansDecl ds)
   where
+    stripMethod (ClassMethod _ n ps r d) =
+      ClassMethod NoSpan (stripWord n) (map stripParam ps) (stripSpansType r) (fmap stripSpansExpr d)
     stripAccess w = case w of
       AccessSpec _ fs -> AccessSpec NoSpan [(Spanned NoSpan k, stripSpansExpr v) | (Spanned _ k, v) <- fs]
       AccessRef _ q n -> AccessRef NoSpan q n

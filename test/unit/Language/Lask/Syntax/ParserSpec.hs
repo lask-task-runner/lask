@@ -344,6 +344,39 @@ spec = do
             dfun "access" [Param NoSpan (PPositional "x" Public Nothing)] Nothing (var "x")
           ]
 
+    it "parses a class and an instance, whose members are newline-terminated (spec 4.6)" $ do
+      let pa n t = Param NoSpan (PPositional n Public (Just t))
+          tT = ty (SNamed Nothing "T" [])
+      pModule "class ord<T: comparable> {\n  compare(a: T, b: T): Number\n  lt(a: T, b: T): Bool = true\n}\ninstance m.ord<Number> {\n  compare(a, b) = 0\n}"
+        `shouldBe` Right
+          [ DClass
+              "ord"
+              (TypeParam (Spanned NoSpan "T") (Just (SBoundNamed (Spanned NoSpan "comparable"))))
+              [ ClassMethod NoSpan (Spanned NoSpan "compare") [pa "a" tT, pa "b" tT] (ty SNumber) Nothing,
+                ClassMethod NoSpan (Spanned NoSpan "lt") [pa "a" tT, pa "b" tT] (ty SBool) (Just (ex (EBool True)))
+              ],
+            DInstance
+              (Just (Spanned NoSpan "m"))
+              (Spanned NoSpan "ord")
+              (ty SNumber)
+              [ Decl NoSpan (dfun "compare" [Param NoSpan (PPositional "a" Public Nothing), Param NoSpan (PPositional "b" Public Nothing)] Nothing (num 0))
+              ]
+          ]
+
+    it "keeps class and instance usable as names, and gives an instance no marker (spec 3.3, 4.6)" $ do
+      pModule "class = 1\ninstance(x) = x"
+        `shouldBe` Right
+          [ DValue "class" Public Nothing (num 1),
+            dfun "instance" [Param NoSpan (PPositional "x" Public Nothing)] Nothing (var "x")
+          ]
+      pModule "export instance ord<Number> {}" `shouldSatisfy` isLeft
+      pModule "internal instance ord<Number> {}" `shouldSatisfy` isLeft
+
+    it "parses a bound that names a class through a namespace" $
+      pModule "f<T: m.ord>(x: T) = x"
+        `shouldBe` Right
+          [DFunction "f" [TypeParam (Spanned NoSpan "T") (Just (SBoundQualified (Spanned NoSpan "m") (Spanned NoSpan "ord")))] [Param NoSpan (PPositional "x" Public (Just (ty (SNamed Nothing "T" []))))] Nothing Nothing (var "x")]
+
     it "parses type parameters on a type alias, and arguments on a reference" $ do
       pModule "type Pair<A, B> = Record<first: A, second: B>"
         `shouldBe` Right
