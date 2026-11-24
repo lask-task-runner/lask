@@ -11,6 +11,10 @@ module Command.Lask.Common
     cliCallable,
     cliFunctionNames,
     cliFunction,
+    cliFunctionNamed,
+    cliNamespaces,
+    FunctionPath (..),
+    cliFunctionPath,
     notAFunction,
     internalFunction,
     renderDiags,
@@ -34,7 +38,10 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import qualified Data.Map.Strict as Map
+import Data.List (nub)
 import Data.Maybe (isJust)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Language.Lask (Compiled (..), compileFile)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
 import Language.Lask.Module.Resolve (entryPublicValues)
@@ -44,7 +51,7 @@ import Language.Lask.Diagnostic (Diagnostic (..), didYouMean)
 import Language.Lask.ErrorCode
 import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Suggest (suggest)
-import Language.Lask.Utils (Pretty (pretty), kebabToSnake, snakeToKebab)
+import Language.Lask.Utils (Pretty (pretty), cliPath, functionPath, kebabToSnake, namespacesOf)
 import System.Exit (ExitCode (..), exitWith)
 import System.FilePath (takeDirectory, (</>))
 import System.IO (stderr)
@@ -82,7 +89,7 @@ usageErrorSuggesting opts msg suggestions = do
 noSuchFunction :: CommonOpts -> Text -> [Text] -> IO a
 noSuchFunction opts wanted functions =
   usageErrorSuggesting opts ("no such function: '" <> wanted <> "'") $
-    map snakeToKebab (suggest (kebabToSnake wanted) functions)
+    map cliPath (suggest (kebabToSnake (T.replace " " "." wanted)) functions)
 
 -- | Whether the CLI can call a declaration (spec 11.2): its type is a
 -- function type. That is a function declaration, or a value binding
@@ -107,15 +114,37 @@ cliFunctions compiled =
 cliFunctionNames :: Compiled -> [Text]
 cliFunctionNames = map fst . cliFunctions
 
--- | The function a name on the command line gives (spec 11.2, 11.4,
+-- | The namespaces through which the entry module publishes values
+-- (spec 5, "Namespace re-export"), as declared: the names a function
+-- path on the command line may go through (11.2).
+cliNamespaces :: Compiled -> Set Text
+cliNamespaces compiled =
+  namespacesOf (map fst (entryPublicValues (compiledProgram compiled) (compiledScopes compiled)))
+
+-- | The function path at the head of the words that follow a
+-- subcommand (spec 11.2): its name as declared, the words it took, and
+-- the words after it, which are the function's arguments.
+data FunctionPath = FunctionPath
+  { fpName :: Text,
+    fpWords :: [Text],
+    fpRest :: [Text]
+  }
+
+cliFunctionPath :: Set Text -> [Text] -> FunctionPath
+cliFunctionPath namespaces ws = case functionPath namespaces ws of
+  (n, taken, rest) -> FunctionPath n taken rest
+
+-- | The function a path on the command line gives (spec 11.2, 11.4,
 -- 11.10), after the @-@ to @_@ mapping: a public function of the entry
--- module, or a usage error. A name of a plain value is told so.
-cliFunction :: CommonOpts -> Compiled -> Text -> IO ((FilePath, Text), CoreDecl)
-cliFunction opts compiled raw = do
-  let n = kebabToSnake raw
+-- module, or a usage error. A name of a plain value is told so, and
+-- one of a namespace is told which functions it holds.
+cliFunction :: CommonOpts -> Compiled -> FunctionPath -> IO ((FilePath, Text), CoreDecl)
+cliFunction opts compiled fp = do
+  let n = fpName fp
   case lookup n (cliFunctions compiled) of
     Just found -> pure found
     Nothing
+      | n `Set.member` cliNamespaces compiled -> groupNeeded opts raw n (cliFunctionNames compiled)
       | n `elem` map fst (entryPublicValues (compiledProgram compiled) (compiledScopes compiled)) ->
           notAFunction opts raw
       -- Declared, but not public: say so rather than that it is not
@@ -124,6 +153,29 @@ cliFunction opts compiled raw = do
       | otherwise -> noSuchFunction opts raw (cliFunctionNames compiled)
   where
     core = compiledCore compiled
+    raw = T.unwords (fpWords fp)
+
+-- | The function the words given in place of one name, where nothing
+-- follows it: the @<function>@ of @envs@ (11.4) and @secrets@ (11.10).
+cliFunctionNamed :: CommonOpts -> Compiled -> [Text] -> IO ((FilePath, Text), CoreDecl)
+cliFunctionNamed opts compiled ws = do
+  let fp = cliFunctionPath (cliNamespaces compiled) ws
+  found <- cliFunction opts compiled fp
+  case fpRest fp of
+    [] -> pure found
+    (w : _) -> usageError opts ("unexpected argument '" <> w <> "' after the function '" <> T.unwords (fpWords fp) <> "'")
+
+-- | A path that stops at a namespace (spec 11.2): it names a group of
+-- functions rather than one, and the message lists the names that may
+-- follow it, as the command line writes them.
+groupNeeded :: CommonOpts -> Text -> Text -> [Text] -> IO a
+groupNeeded opts raw ns functions =
+  usageError opts $
+    "'" <> raw <> "' is a group of functions: name one of them" <> case members of
+      [] -> ""
+      ms -> " (" <> T.intercalate ", " (map cliPath ms) <> ")"
+  where
+    members = nub [T.takeWhile (/= '.') rest | f <- functions, Just rest <- [T.stripPrefix (ns <> ".") f]]
 
 -- | A name on the command line that names an @internal@ declaration
 -- of the entry module, which the CLI does not call (spec 11.2).

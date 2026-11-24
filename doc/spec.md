@@ -905,7 +905,7 @@ Namespace re-export:
 - A module that imports the current one reaches its public namespaces through it: with `import * as m from "path"`, `m.ns` names the namespace and `m.ns.symbol` a public symbol of the module `ns` refers to, and a call `m.ns.f(...)` keeps `f`'s parameter list as a call through `m.f` does. A named import `import { ns } from "path"` binds `ns` as a namespace of the importing module. The same holds through any number of namespaces.
 - A namespace is not a value: `m.ns` written where a value is expected is an error before type checking (`E-NAME-UNDEFINED`), as is a member that is not a public symbol of the module the namespace refers to.
 - It brings no name in: only `ns` is published, and what it holds is reached only qualified, so the rule above still holds. A type alias is referenced through one namespace only (`m.TypeName`, 4.2); a public type of a re-exported namespace is reached by importing that module, or by the alias's own re-export.
-- The public functions and values of a namespace the entry module re-exports are invoked and listed by the CLI under their qualified name, `lask eval python.env --image ...` (11.2, 11.6), through any number of namespaces.
+- The public functions and values of a namespace the entry module re-exports are invoked by the CLI through their function path, the namespaces and the name as words or joined by `.`, `lask eval python env --image ...` or `lask eval python.env --image ...`, and listed by it as words (11.2, 11.6), through any number of namespaces.
 - Same-name collision rules are those of namespace imports: `ns` must not be the name of a top-level declaration, of a name brought in by a named import or re-export, or of another namespace.
 
 Evaluation timing of top-level declarations:
@@ -3262,7 +3262,7 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 
 - The invocation syntax of `run` and `eval` is identical. The rules of this section (function-name mapping, keyword arguments, binding, decoding) apply equally to both.
 - When `--module` is unspecified, `main.lask` is the target. Therefore the minimal form is `lask run <function> [args ...]` / `lask eval <function> [args ...]`.
-- Options of `lask` itself (`--module`, `--arg-decode`, `--output`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
+- Options of `lask` itself (`--module`, `--arg-decode`, `--output`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments). For a function in a namespace, the function name is its function path (below), and the boundary is after the path's last word.
 - The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
 - `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
 - For `cmd`, no token after the command name is intercepted, `--help` included: those tokens are the invoked program's own arguments (11.8). The help of the subcommand is obtained with `lask cmd --help`, with no command name.
@@ -3274,6 +3274,15 @@ Function-name and parameter-name mapping rules:
 - Matching is performed with the name after replacement; if there is no match, it is an undefined reference error.
 - Since identifiers cannot contain `-` (3.2), this mapping never maps multiple candidates to the same name, and resolution is always unique.
 - camelCase names (`buildAndTest` etc.) are not subject to the mapping and are specified with their names as is.
+
+Function path:
+
+- A function in a namespace the entry module re-exports (Chapter 5, "Namespace re-export") is named by its **function path**: its namespaces and its name, given as separate words, as words joined by `.`, or both. For `export * as db from "./db.lask"`, `lask run db migrate` and `lask run db.migrate` both call `migrate` of `db.lask`; through a namespace `tools` of `db`, `db tools run-it`, `db.tools run-it`, `db tools.run-it` and `db.tools.run-it` all name `run_it`.
+- The path is read from the first word after the `lask` options: each word after it belongs to the path while what has been read names a namespace, and the first word that does not complete a namespace is the path's last word. A word beginning with `-` is never part of the path. The mapping above applies to each name in it.
+- The reading is unambiguous. A namespace cannot share its name with a declaration or another name of its module (Chapter 5), so a name is either a namespace, after which the path goes on, or not, and the path ends at it. A namespace takes no arguments, so the word after one is never one of them; past the path's last word, every word is an argument, even one that spells a name of a namespace.
+- A path that ends at a namespace names a group of functions, not a function: `lask run db` is a usage error (`E-CLI-USAGE`) whose message lists the names that may follow it. `lask run db --help` lists the functions of the namespace (11.6).
+- The same holds wherever a subcommand takes a function name: `run`, `eval`, their `--help` (11.6), `envs` (11.4) and `secrets` (11.10). For `envs` and `secrets`, which take nothing after the function, a word after the path is a usage error.
+- Where the CLI writes the path for a person to read or type, it writes it as words (11.6). JSON output, the keys of `confirm` in the project file (Chapter 5), the default phrase of a confirmation, and logs keep the qualified name as declared, `db.migrate`, since they name the declaration.
 
 Keyword argument forms:
 
@@ -3418,7 +3427,7 @@ lask envs list [--module <path>] [<function>]
 Enumeration rules:
 
 - If no function is specified, the environments reachable from the module are enumerated (static scan of environment heads, 6.7): those in its declarations, keyword parameter defaults included, and in the environment of every command word the module has, declared or imported, through every declaration they reference in any module (Chapter 5). A declaration of an imported module that nothing reachable references is not scanned.
-- If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. It names a function the command line can call, as `run` takes it, by the function-name mapping of 11.2.
+- If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. It names a function the command line can call, as `run` takes it, by the function-name mapping and the function path of 11.2.
 - Reachability is an over-approximation. A superset of the environments that may be used must be reported; under-reporting is not permitted. Functions passed around as function values are included conservatively.
 - What is enumerated is the heads: every image is named by one (6.7), so every environment is enumerated concretely. Run options change no image, and add no entry.
 
@@ -3724,10 +3733,12 @@ lask run  [--module <path>] [lask options ...] <function> --help
 lask eval [--module <path>] [lask options ...] <function> --help
 lask run  [--module <path>] [lask options ...] --help
 lask eval [--module <path>] [lask options ...] --help
+lask run  [--module <path>] [lask options ...] <namespace> --help
+lask eval [--module <path>] [lask options ...] <namespace> --help
 ```
 
 - Only `run` and `eval` provide function help. As in 11.2, the two are identical in this respect.
-- When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module.
+- When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module. When the function path (11.2) ends at a namespace, the list of the functions it holds, through any number of namespaces, is displayed, headed `Functions in db:`; its JSON form is the function list.
 - Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
 - A function that declares type parameters (4.2) is displayed with them and their bounds, as `first<T>` or `largest<T: orderable>`, where its declaration is being described: the heading of its help, the list of a module's functions, and an editor hover. Where the name is instead something to type — the usage line, a completion candidate, the function argument of `lask run` — it appears plain, since the type parameters are not written at a use site (4.2). A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
 - The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
@@ -3745,7 +3756,7 @@ Sources of help information:
 
 Rendering rules:
 
-- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. An `_` that leads a name is kept, since a word on the command line that begins with `-` is read as an option: the function `_build_all` is shown as `_build-all`, and its parameter `_dry_run` as `--_dry-run`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
+- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. A function in a namespace is displayed by its function path as words, `db tools run-it` for `db.tools.run_it`; a completion candidate is the next word of the path (`db`, then `migrate`), or the qualified name once the word being typed has a `.`. An `_` that leads a name is kept, since a word on the command line that begins with `-` is read as an option: the function `_build_all` is shown as `_build-all`, and its parameter `_dry_run` as `--_dry-run`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
 - In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`. A required keyword parameter (6.1) is rendered without the brackets, `--name <Type>`, and a flag (11.2) without the type, `[--name]`.
 - In the parameter list, a required keyword parameter is marked `(required)` after its type, in place of a default value.
 - A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
