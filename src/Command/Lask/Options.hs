@@ -4,6 +4,7 @@
 module Command.Lask.Options
   ( RootCommand (..),
     CommonOpts (..),
+    commonOpts,
     RunOpts (..),
     EnvsOpts (..),
     SecretsOpts (..),
@@ -26,6 +27,10 @@ import Options.Applicative
 
 data CommonOpts = CommonOpts
   { optModule :: FilePath,
+    -- | Whether @--module@ was given. When it was not, 'optModule' is
+    -- @main.lask@ until the entry module is looked for in the
+    -- directories above (spec 11.1).
+    optModuleGiven :: Bool,
     -- | @--output@: what is written to stdout (spec 11.1, 11.3). Nothing
     -- leaves it to the command, whose default 11.3 gives.
     optOutput :: Maybe OutputFormat,
@@ -135,12 +140,12 @@ protectArgSeparator args = case break (== "--") args of
 pCommon :: Parser CommonOpts
 pCommon =
   build
-    <$> strOption
-      ( long "module"
-          <> metavar "PATH"
-          <> value "main.lask"
-          <> showDefault
-          <> help "Path to the entry module"
+    <$> optional
+      ( strOption
+          ( long "module"
+              <> metavar "PATH"
+              <> help "Path to the entry module (default: main.lask here or in the nearest directory above)"
+          )
       )
     <*> optional
       ( option
@@ -160,7 +165,7 @@ pCommon =
     <*> optional (T.pack <$> strOption (long "trace-id" <> metavar "ID" <> help "Trace identifier for this execution"))
     <*> switch (long "no-color" <> help "Disable colored output")
   where
-    build m out logJson tid nc = CommonOpts m out logJson tid nc
+    build m out logJson tid nc = CommonOpts (maybe "main.lask" id m) (m /= Nothing) out logJson tid nc
     parseLogFormat s = case s of
       "text" -> Just False
       "json" -> Just True
@@ -225,6 +230,37 @@ pEnvsOpts =
 -- bound @--module@ to @lask@ instead of to @f@. @noIntersperse@ turns
 -- everything after the first positional into an argument, which is
 -- the boundary rule of spec 11.2.
+-- | The common options of a command, to read or replace: the entry
+-- module is looked for once, before the command runs.
+commonOpts :: Applicative f => (CommonOpts -> f CommonOpts) -> RootCommand -> f RootCommand
+commonOpts f cmd = case cmd of
+  CmdServe -> pure CmdServe
+  CmdCheck o -> CmdCheck <$> f o
+  CmdFmt o -> (\c -> CmdFmt o {fmtCommon = c}) <$> f (fmtCommon o)
+  CmdRun o -> CmdRun <$> run o
+  CmdEval o -> CmdEval <$> run o
+  CmdRepl o -> CmdRepl <$> f o
+  CmdEnvsList o -> CmdEnvsList <$> envs o
+  CmdEnvsCommands o v -> (`CmdEnvsCommands` v) <$> envs o
+  CmdEnvsFiles o v -> (`CmdEnvsFiles` v) <$> envs o
+  CmdEnvsNetwork o -> CmdEnvsNetwork <$> envs o
+  CmdEnvsAccess o -> CmdEnvsAccess <$> envs o
+  CmdEnvsSecrets o -> CmdEnvsSecrets <$> envs o
+  CmdSync o frozen prune -> (\c -> CmdSync c frozen prune) <$> f o
+  CmdDepsList o -> CmdDepsList <$> f o
+  CmdDepsGraph o n d -> (\c -> CmdDepsGraph c n d) <$> f o
+  CmdDepsAdd o n s -> (\c -> CmdDepsAdd c n s) <$> f o
+  CmdDepsRm o n -> (`CmdDepsRm` n) <$> f o
+  CmdSecretsList o -> CmdSecretsList <$> secrets o
+  CmdSecretsCheck o -> CmdSecretsCheck <$> secrets o
+  CmdCmd o -> (\c -> CmdCmd o {cmdCommon = c}) <$> f (cmdCommon o)
+  CmdCompletion sh -> pure (CmdCompletion sh)
+  CmdVersion -> pure CmdVersion
+  where
+    run o = (\c -> o {runCommon = c}) <$> f (runCommon o)
+    envs o = (\c -> o {envsCommon = c}) <$> f (envsCommon o)
+    secrets o = (\c -> o {secretsCommon = c}) <$> f (secretsCommon o)
+
 pRootCommand :: Parser RootCommand
 pRootCommand =
   subparser

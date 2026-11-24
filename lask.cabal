@@ -32,6 +32,7 @@ library
       Command.Lask.Fmt
       Command.Lask.Help
       Command.Lask.Images
+      Command.Lask.Locate
       Command.Lask.Options
       Command.Lask.Progress
       Command.Lask.Project
