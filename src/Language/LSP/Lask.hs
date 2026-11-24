@@ -1484,9 +1484,9 @@ languageCompletion path src (Position pl pc)
 tokenNamesIn :: [Tok.Spanned Tok.Token] -> [Text]
 tokenNamesIn ts = declNames ts <> importNames ts
   where
-    declNames ts =
+    declNames toks =
       [ n
-      | (prev, Tok.Spanned sp t, next) <- zip3 (Nothing : map Just ts) ts (drop 1 ts),
+      | (prev, Tok.Spanned sp t, next) <- zip3 (Nothing : map Just toks) toks (drop 1 toks),
         inColumnOne sp || maybe False isMarker prev,
         n <- identText t,
         opensDecl (Tok.spannedValue next)

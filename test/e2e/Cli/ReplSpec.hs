@@ -9,7 +9,6 @@ module Cli.ReplSpec (spec) where
 
 import Data.List (isInfixOf)
 import Support.Harness
-import Support.Pending (knownBug)
 import System.Process (CreateProcess (..), readCreateProcessWithExitCode, shell)
 import Test.Hspec
 
