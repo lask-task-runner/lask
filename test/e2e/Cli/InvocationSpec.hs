@@ -82,6 +82,12 @@ spec = beforeAll findLask $ do
       usage lask ["envs"] "E-CLI-USAGE"
       usage lask ["secrets"] "E-CLI-USAGE"
       usage lask ["envs", "bogus"] "E-CLI-USAGE"
+    it "lists the subcommands of a group given none" $ \lask -> do
+      r <- lask' lask ["envs"] ""
+      resExit r `shouldBe` 4
+      resErr r `shouldSatisfy` ("E-CLI-USAGE: a subcommand is needed\n" `isPrefixOf`)
+      resErr r `shouldSatisfy` isInfixOf "Available commands:"
+      resErr r `shouldSatisfy` isInfixOf "  files "
     it "reports a value outside the closed set of --output, --log-format and --arg-decode" $ \lask -> do
       usage lask ["eval", "--output", "yaml", "rec"] "--output"
       usage lask ["eval", "--log-format", "xml", "rec"] "--log-format"
