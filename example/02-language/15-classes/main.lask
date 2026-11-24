@@ -1,0 +1,77 @@
+// Classes and instances
+//
+// A bound says what a type parameter can do. A class is a bound you
+// declare: the operations, as method signatures, and an instance per
+// type that gives them. Pure, so `lask eval` needs no Docker.
+//
+//   lask eval --arg-decode json latest '[{"major": 1, "minor": 2}, {"major": 1, "minor": 10}]'
+//   lask eval report
+//   lask eval --arg-decode json label-all '[[1, 2], [3]]'
+
+type Version = Record<major: Number, minor: Number>
+
+// orderable is a class too, the one sort and < use. Number and String
+// are its instances already; this makes Version one, by its compare:
+// negative when a comes first, 0 when neither does, positive otherwise.
+instance orderable<Version> {
+  compare(a, b) = if (a.major != b.major) { a.major - b.major } else { a.minor - b.minor }
+}
+
+// An instance can take type parameters: arrays of anything orderable
+// are orderable, element by element and then by length. The bound on T
+// is what lets the body call compare on the elements.
+instance<T: orderable> orderable<Array<T>> {
+  compare(a, b) = do {
+    n = min(size(a), size(b))
+    diffs = filter(map(range(0, n), \(i) -> compare(a[i], b[i])), \(d) -> d != 0)
+    is_empty(diffs) ? size(a) - size(b) : first(diffs)
+  }
+}
+
+// The newest version.
+//
+// sort orders a Version by its instance. From the command line, the
+// JSON objects make T Version, which picks that instance.
+//
+// @param vs  The versions to choose from.
+// @example lask eval --arg-decode json latest '[{"major": 1, "minor": 2}, {"major": 1, "minor": 10}]'
+latest<T: orderable>(vs: Array<T>): T = last(sort(vs))
+
+// A class of your own: one method without a body, which every
+// instance defines, and one with a default, which an instance may
+// leave out. Its methods are functions of the module, so `label` and
+// `labels` are names here, as `latest` is.
+class labelled<T> {
+  label(x: T): String
+  labels(xs: Array<T>): String = join(map(xs, \(x) -> label(x)), " ")
+}
+
+instance labelled<Number> {
+  label(x) = "##{x}"
+}
+
+instance labelled<Version> {
+  label(v) = "v#{v.major}.#{v.minor}"
+}
+
+instance<T: labelled> labelled<Array<T>> {
+  label(xs) = "[#{labels(xs)}]"
+}
+
+// Label every element, in order.
+//
+// A parameter can need more than one bound, joined with +. Here the
+// elements are sorted and labelled.
+//
+// @param xs  What to label.
+// @example lask eval --arg-decode json label-all '[[1, 2], [3]]'
+label_all<T: orderable + labelled>(xs: Array<T>): String = labels(sort(xs))
+
+// Everything above, once.
+//
+// @example lask eval report
+report(): Array<String> = do {
+  vs = [{ major: 1, minor: 10 }, { major: 0, minor: 9 }, { major: 1, minor: 2 }]
+  newest = latest(vs)
+  [label(newest), label_all(vs), label_all([[2, 1], [1, 9]]), "#{[1, 2] < [1, 3]}"]
+}
