@@ -1,0 +1,22 @@
+// A type parameter bounded by a class appears in the declaration's
+// type, and a method's signature mentions its class's parameter:
+// otherwise no call can say which instance it means (4.6).
+class shown<T> {
+  show(x: T): String
+  name(): String // expect: E-TYPE-ILLFORMED
+}
+
+instance shown<Number> {
+  show(n) = "#{n}"
+  name() = "number"
+}
+
+nowhere<T: shown>(x: Number): String = "x" // expect: E-TYPE-ILLFORMED
+
+ordered<T: orderable>(x: Number): Number = x // expect: E-TYPE-ILLFORMED
+
+result<T: shown>(): T = fail(error(1, "none"))
+
+keyword<T: shown>(--x: T): String = show(x)
+
+unbounded<T>(x: Number): Number = x

@@ -87,6 +87,7 @@ data AdvisoryCode
   | WDocParamUnknown
   | WCliParamShadowed
   | WExportInconsistent
+  | WBoundRedundant
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 advisoryText :: AdvisoryCode -> Text
@@ -99,6 +100,7 @@ advisoryText c = case c of
   WDocParamUnknown -> "W-DOC-PARAM-UNKNOWN"
   WCliParamShadowed -> "W-CLI-PARAM-SHADOWED"
   WExportInconsistent -> "W-EXPORT-INCONSISTENT"
+  WBoundRedundant -> "W-BOUND-REDUNDANT"
 
 -- | Error stage (spec 14.3).
 data Stage
