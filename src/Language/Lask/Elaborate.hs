@@ -200,8 +200,27 @@ data Ctx = Ctx
     -- | The type parameters in scope that a local function declares
     -- (spec 6.1): never specialized, so they are ordered as Number and
     -- String are, by the language (4.6).
-    ctxLocalVars :: Set Text
+    ctxLocalVars :: Set Text,
+    -- | The program's class declarations, and the class each method
+    -- belongs to, by module and name: read once, since a name is
+    -- looked up here for every reference.
+    ctxClassDecls :: Map Key (Span, TypeParam, [ClassMethod]),
+    ctxMethodClass :: Map Key Text
   }
+
+-- | The class declarations of a program ('ctxClassDecls') and the class
+-- of each method ('ctxMethodClass').
+classIndex :: Program -> (Map Key (Span, TypeParam, [ClassMethod]), Map Key Text)
+classIndex prog =
+  ( Map.fromList decls,
+    Map.fromList [((p, m), n) | ((p, n), (_, _, ms)) <- decls, ClassMethod _ (Spanned _ m) _ _ _ <- ms]
+  )
+  where
+    decls =
+      [ ((lmPath lm, n), (sp, tp, ms))
+      | lm <- Map.elems (progModules prog),
+        Decl sp (DClass n tp ms) <- moduleDecls (lmModule lm)
+      ]
 
 -- | The classes and instances of a program (spec 4.6), read before any
 -- declaration is elaborated.
@@ -580,7 +599,7 @@ elaborateModules prog scopes nameErrors paths =
   where
     base = Set.fromList paths
     inBase p = p `Set.member` base
-    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv Set.empty
+    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv Set.empty (fst (classIndex prog)) (snd (classIndex prog))
     -- The units holding an error elsewhere are not these modules' to
     -- record: the result must not depend on the rest of the program.
     restrict (ds, as, ws) =
@@ -616,7 +635,7 @@ elaborateRecoveringFrom resumed prog scopes nameErrors =
           }
       )
   where
-    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv Set.empty
+    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv Set.empty (fst (classIndex prog)) (snd (classIndex prog))
     failedUnits@(failedDecls, failedAliases, failedWords) = unitsHolding prog nameErrors
     (done, start) = case resumed of
       Nothing -> (Set.empty, initialSt failedUnits)
@@ -4555,9 +4574,7 @@ notAClass ctx sp n key = case classDeclAst ctx key of
 
 -- | A class declaration as written.
 classDeclAst :: Ctx -> Key -> Maybe (Span, TypeParam, [ClassMethod])
-classDeclAst ctx (path, name) = do
-  lm <- Map.lookup path (progModules (ctxProg ctx))
-  listToMaybe [(sp, tp, ms) | Decl sp (DClass n tp ms) <- moduleDecls (lmModule lm), n == name]
+classDeclAst ctx key = Map.lookup key (ctxClassDecls ctx)
 
 -- | What a class's type parameter is bounded by, where that is a named
 -- bound or a class.
@@ -4702,14 +4719,9 @@ importClosure prog = go Set.empty . pure
 methodDeclAst :: Ctx -> Key -> Maybe (Bool, Decl)
 methodDeclAst ctx (path, name) = do
   let (m, isDefault) = maybe (name, False) (\b -> (b, True)) (T.stripSuffix "#default" name)
-  lm <- Map.lookup path (progModules (ctxProg ctx))
-  (cn, TypeParam tv _, ClassMethod sp _ ps rt d) <-
-    listToMaybe
-      [ (cn, tp, cm)
-      | Decl _ (DClass cn tp ms) <- moduleDecls (lmModule lm),
-        cm@(ClassMethod _ (Spanned _ mn) _ _ _) <- ms,
-        mn == m
-      ]
+  cn <- Map.lookup (path, m) (ctxMethodClass ctx)
+  (_, TypeParam tv _, ms) <- Map.lookup (path, cn) (ctxClassDecls ctx)
+  ClassMethod sp _ ps rt d <- listToMaybe [cm | cm@(ClassMethod _ (Spanned _ mn) _ _ _) <- ms, mn == m]
   body <- if isDefault then d else Just (fromMaybe (Expr sp ENull) d)
   pure (not isDefault, Decl sp (DFunction m [TypeParam tv (Just (SBoundClass path cn))] ps (Just rt) Nothing body))
 
@@ -4734,7 +4746,9 @@ elabMethod ctx path (Decl sp f) = case f of
 isTemplate :: CoreDecl -> Bool
 isTemplate cd =
   any (any isClass . boundParts) (Map.elems (cdBounds cd))
-    || or
+    -- A declaration without type parameters orders nothing of its own.
+    || not (null (cdTypeVars cd))
+      && or
       [ v `elem` cdTypeVars cd
       | CVar (InstRef _ _ inst) <- map coreF (universeCore (cdCore cd)),
         (_, t) <- inst,
@@ -5050,7 +5064,18 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
 specializeAll :: Ctx -> TC ()
 specializeAll ctx = do
   decls <- gets stDecls
-  mapM_ (\(k, cd) -> unless (isTemplate cd) (rewriteDecl ctx 0 k cd)) (Map.toList decls)
+  -- Only a declaration that refers to a generic one at some types has
+  -- anything to rewrite; most refer to none, and are left as they are.
+  sequence_
+    [ rewriteDecl ctx 0 k cd
+    | (k, cd) <- Map.toList decls,
+      any isInstRef (universeCore (cdCore cd)),
+      not (isTemplate cd)
+    ]
+  where
+    isInstRef c = case coreF c of
+      CVar (InstRef {}) -> True
+      _ -> False
 
 -- | The entry module's public declarations with a class bound, at each
 -- choice of instances for their bounded type parameters: what the CLI
