@@ -767,7 +767,7 @@ cmdDepsRm opts name = do
 -- its image is on the container engine (10.10). The engine is asked
 -- once, read only; when it cannot be reached a warning says so and the status is
 -- @?@. No network, no pull, no build.
-cmdEnvsList :: CommonOpts -> Maybe Text -> IO ()
+cmdEnvsList :: CommonOpts -> [Text] -> IO ()
 cmdEnvsList opts function = do
   compiledE <- compileFile (optModule opts)
   compiled <- case compiledE of
@@ -776,10 +776,10 @@ cmdEnvsList opts function = do
   paths <- projectPaths opts
   let core = compiledCore compiled
   scope <- case function of
-    Nothing -> pure Nothing
-    Just fn ->
+    [] -> pure Nothing
+    ws ->
       -- A public function of the entry module, as run takes it (spec 11.2).
-      Just . fst <$> cliFunction opts compiled fn
+      Just . fst <$> cliFunctionNamed opts compiled ws
   lock <- loadLockMaybe paths
   backend <- resolveBackend
   daemon <- daemonReachable backend
@@ -854,7 +854,7 @@ data CommandLine = CommandLine
     clEnvs :: [(Text, Text)]
   }
 
-cmdEnvsCommands :: CommonOpts -> Maybe Text -> Bool -> IO ()
+cmdEnvsCommands :: CommonOpts -> [Text] -> Bool -> IO ()
 cmdEnvsCommands opts function verbose = do
   compiledE <- compileFile (optModule opts)
   compiled <- case compiledE of
@@ -863,10 +863,10 @@ cmdEnvsCommands opts function verbose = do
   paths <- projectPaths opts
   let core = compiledCore compiled
   scope <- case function of
-    Nothing -> pure Nothing
-    Just fn ->
+    [] -> pure Nothing
+    ws ->
       -- A public function of the entry module, as run takes it (spec 11.2).
-      Just . fst <$> cliFunction opts compiled fn
+      Just . fst <$> cliFunctionNamed opts compiled ws
   lock <- loadLockMaybe paths
   let sites = Map.elems (Map.fromList [(csSpan c, c) | c <- collectCommandSites core scope])
       uses = Map.fromList [(cuSpan u, u) | u <- cpCommandUses core]
@@ -1025,19 +1025,19 @@ data AccessRow = AccessRow
     arCheck :: Text
   }
 
-cmdEnvsFiles :: CommonOpts -> Maybe Text -> Bool -> IO ()
+cmdEnvsFiles :: CommonOpts -> [Text] -> Bool -> IO ()
 cmdEnvsFiles opts function verbose = cmdEnvsAccessListing ListFiles opts function verbose
 
-cmdEnvsNetwork :: CommonOpts -> Maybe Text -> IO ()
+cmdEnvsNetwork :: CommonOpts -> [Text] -> IO ()
 cmdEnvsNetwork opts function = cmdEnvsAccessListing ListNetwork opts function False
 
-cmdEnvsAccess :: CommonOpts -> Maybe Text -> IO ()
+cmdEnvsAccess :: CommonOpts -> [Text] -> IO ()
 cmdEnvsAccess opts function = cmdEnvsAccessListing ListAccess opts function False
 
 -- | @lask envs files | network | access@ (spec 11.4): what the uses of
 -- environments may reach past their containers, read statically, and
 -- what the access constraints covering them find (spec 10.11).
-cmdEnvsAccessListing :: AccessListing -> CommonOpts -> Maybe Text -> Bool -> IO ()
+cmdEnvsAccessListing :: AccessListing -> CommonOpts -> [Text] -> Bool -> IO ()
 cmdEnvsAccessListing listing opts function verbose = do
   compiledE <- compileFileUnconstrained (optModule opts)
   compiled <- case compiledE of
@@ -1046,10 +1046,10 @@ cmdEnvsAccessListing listing opts function verbose = do
   paths <- projectPaths opts
   let core = compiledCore compiled
   scope <- case function of
-    Nothing -> pure Nothing
-    Just fn ->
+    [] -> pure Nothing
+    ws ->
       -- A public function of the entry module, as run takes it (spec 11.2).
-      Just . fst <$> cliFunction opts compiled fn
+      Just . fst <$> cliFunctionNamed opts compiled ws
   lock <- loadLockMaybe paths
   let cons = snd (withinConstraints (compiledProgram compiled))
       sites = collectUseSites cons core scope
@@ -1406,7 +1406,7 @@ data SecretRow = SecretRow
 -- | @lask envs secrets@ (spec 11.4): which secret reaches which
 -- environment, by which channel, read statically (spec 10.11), and
 -- what the constraints covering the uses find of it.
-cmdEnvsSecrets :: CommonOpts -> Maybe Text -> IO ()
+cmdEnvsSecrets :: CommonOpts -> [Text] -> IO ()
 cmdEnvsSecrets opts function = do
   compiledE <- compileFileUnconstrained (optModule opts)
   compiled <- case compiledE of
@@ -1415,10 +1415,10 @@ cmdEnvsSecrets opts function = do
   paths <- projectPaths opts
   let core = compiledCore compiled
   scope <- case function of
-    Nothing -> pure Nothing
-    Just fn ->
+    [] -> pure Nothing
+    ws ->
       -- A public function of the entry module, as run takes it (spec 11.2).
-      Just . fst <$> cliFunction opts compiled fn
+      Just . fst <$> cliFunctionNamed opts compiled ws
   lock <- loadLockMaybe paths
   let cons = snd (withinConstraints (compiledProgram compiled))
       sites = collectUseSites cons core scope

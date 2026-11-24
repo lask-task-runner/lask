@@ -296,6 +296,7 @@ test-suite lask-e2e
       Cli.LogsSpec
       Cli.LspProtocolSpec
       Cli.ModulesSpec
+      Cli.NamespacesSpec
       Cli.ProgressSpec
       Cli.ReaperSpec
       Cli.ReplSpec

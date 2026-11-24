@@ -38,7 +38,7 @@ import Language.Lask.Elaborate (CoreDecl (..), StaticParams (..))
 import Language.Lask.Span (Position (..), Span (..), spanText)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..), renderBound, renderType, varDisplay)
-import Language.Lask.Utils (snakeToKebab)
+import Language.Lask.Utils (cliPath, snakeToKebab)
 
 data ParamKind = ParamPositional | ParamVariadic | ParamKeyword
   deriving (Show, Eq)
@@ -210,8 +210,8 @@ declTypeParams d = case AST.declF d of
 -- line is written in (spec 11.2, 11.6), with any type parameters.
 declaredAs :: FunctionHelp -> Text
 declaredAs fh
-  | null (fhTypeParams fh) = snakeToKebab (fhName fh)
-  | otherwise = snakeToKebab (fhName fh) <> "<" <> T.intercalate ", " (fhTypeParams fh) <> ">"
+  | null (fhTypeParams fh) = cliPath (fhName fh)
+  | otherwise = cliPath (fhName fh) <> "<" <> T.intercalate ", " (fhTypeParams fh) <> ">"
 
 declName :: AST.Decl -> Text
 declName d = case AST.declF d of
@@ -265,7 +265,7 @@ renderHelpText subcommand fh =
 
     usageLine =
       T.unwords $
-        ["lask", subcommand, snakeToKebab (fhName fh)] <> map usageParam (fhParams fh)
+        ["lask", subcommand, cliPath (fhName fh)] <> map usageParam (fhParams fh)
 
     usageParam p = case phKind p of
       ParamPositional -> "<" <> cliName p <> ">"

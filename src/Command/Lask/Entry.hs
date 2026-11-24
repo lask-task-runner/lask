@@ -71,7 +71,7 @@ import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Types (Type (..))
 import Language.Lask.Suggest (suggest)
-import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
+import Language.Lask.Utils (Pretty (pretty), cliPath, namespacesOf)
 import Paths_lask (version)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
@@ -178,15 +178,18 @@ cmdRunEval printResult runOpts = do
   rawName <- case runFunction runOpts of
     Just n -> pure n
     Nothing -> usageError opts "no function specified (use --help to list the module's functions)"
-  let fnName = kebabToSnake rawName
+  -- The function path: the name, or the namespaces the module
+  -- publishes and a name in the last of them, as words (spec 11.2).
+  let path = cliFunctionPath (cliNamespaces compiled) (rawName : runArgs runOpts)
+      fnName = fpName path
   -- The public functions of the module, re-exported ones included: a
   -- declaration marked `internal` is not part of any surface (spec 5),
   -- and a plain value binding is not a function (11.2).
-  (key, cd) <- cliFunction opts compiled rawName
+  (key, cd) <- cliFunction opts compiled path
 
   -- Which keyword arguments are flags depends on their types, so the
   -- tokens are split against the parameters (spec 11.2).
-  let (optionArgs, plainArgs) = splitArgSeparator (runArgs runOpts)
+  let (optionArgs, plainArgs) = splitArgSeparator (fpRest path)
       parseArgs ps = case parseCliArgs (flagNames ps) optionArgs of
         Right as -> pure (as <> map CliPos plainArgs)
         Left e -> usageError opts e
@@ -466,17 +469,28 @@ cmdHelp subcommand runOpts = do
     Just rawName -> do
       -- Without a parse there are no declarations to describe.
       when (isNothing (partialModule partial)) $ exitWith (ExitFailure 1)
-      let fnName = kebabToSnake rawName
+      let namespaces = namespacesOf (map fst declsByName)
+          path' = cliFunctionPath namespaces (rawName : runArgs runOpts)
+          fnName = fpName path'
+          shown = T.unwords (fpWords path')
       -- Help is for what the command line can call: a plain value
       -- binding has none (spec 11.2, 11.6).
       let isFunction (n, h) = fhFunction (helpOf [] (n, h))
+      -- A namespace has the list of the functions it holds, as the
+      -- module has the list of its own (spec 11.6).
+      when (fnName `Set.member` namespaces) $ do
+        let listing = [helpOf [] d | d@(n, _) <- declsByName, (fnName <> ".") `T.isPrefixOf` n]
+        if outputJson opts
+          then TIO.putStrLn (jsonOut opts (encodeJsonText (renderListJson path listing)))
+          else TIO.putStrLn (renderListText (T.unpack (cliPath fnName)) listing)
+        exitSuccess
       found <- case lookup fnName declsByName of
         Just h
           | isFunction (fnName, h) -> pure h
-          | otherwise -> notAFunction opts rawName
+          | otherwise -> notAFunction opts shown
         Nothing
-          | fnName `Set.member` maybe Set.empty cpInternal core -> internalFunction opts rawName entry
-          | otherwise -> noSuchFunction opts rawName [n | d@(n, _) <- declsByName, isFunction d]
+          | fnName `Set.member` maybe Set.empty cpInternal core -> internalFunction opts shown entry
+          | otherwise -> noSuchFunction opts shown [n | d@(n, _) <- declsByName, isFunction d]
       let envs = case core of
             -- Ordered as envs list orders them (spec 11.4): the host
             -- first, then by notation.
@@ -586,11 +600,11 @@ cmdSecrets isCheck o = do
   let opts = secretsCommon o
   env <- Map.fromList <$> getEnvironment
   scope <- case secretsFunction o of
-    Nothing -> pure AllVariables
-    Just fn -> do
+    [] -> pure AllVariables
+    ws -> do
       compiled <- compileOrExit opts
-      (key, _) <- cliFunction opts compiled fn
-      pure (maybe AllVariables (OnlyVariables fn) (collectEnvReadsFrom (compiledCore compiled) key))
+      (key, _) <- cliFunctionNamed opts compiled ws
+      pure (maybe AllVariables (OnlyVariables (T.unwords ws)) (collectEnvReadsFrom (compiledCore compiled) key))
   if isCheck
     then secretsCheck (outputFormat OutputText opts) (secretsRead o) env scope
     else secretsList (outputFormat OutputText opts) env scope

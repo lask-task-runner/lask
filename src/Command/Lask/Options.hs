@@ -60,13 +60,13 @@ data RunOpts = RunOpts
 -- | @lask envs list@ and @lask envs commands@ (spec 11.4).
 data EnvsOpts = EnvsOpts
   { envsCommon :: CommonOpts,
-    envsFunction :: Maybe Text
+    envsFunction :: [Text]
   }
 
 -- | @lask secrets list@ \/ @check@ (spec 11.10).
 data SecretsOpts = SecretsOpts
   { secretsCommon :: CommonOpts,
-    secretsFunction :: Maybe Text,
+    secretsFunction :: [Text],
     secretsRead :: Bool
   }
 
@@ -215,7 +215,12 @@ pEnvsOpts :: Parser EnvsOpts
 pEnvsOpts =
   EnvsOpts
     <$> pCommon
-    <*> optional (T.pack <$> argument str (metavar "FUNCTION"))
+    <*> pFunctionPath
+
+-- | The function a listing is for: a name, or a namespace and the
+-- names after it, @db migrate@ (spec 11.2).
+pFunctionPath :: Parser [Text]
+pFunctionPath = many (T.pack <$> argument str (metavar "FUNCTION..."))
 
 -- | Two deviations from the obvious parser for @run@ \/ @eval@.
 --
@@ -415,7 +420,7 @@ pSecretsCommand =
     pSecretsOpts pRead =
       SecretsOpts
         <$> pCommon
-        <*> optional (T.pack <$> argument str (metavar "FUNCTION"))
+        <*> pFunctionPath
         <*> pRead
 
 pDepsCommand :: Parser RootCommand

@@ -77,7 +77,7 @@ import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Span (Position (..), Span (..), spanText)
 import qualified Language.Lask.Syntax.AST as AST
 import Language.Lask.Syntax.Parser (parseModule)
-import Language.Lask.Utils (kebabToSnake, snakeToKebab)
+import Language.Lask.Utils (kebabToSnake, namespacesOf, snakeToKebab)
 import System.Directory (doesDirectoryExist, getFileSize, listDirectory)
 import System.FilePath (normalise, takeDirectory, takeExtension, (</>))
 import System.IO (hSetEncoding, stdout, utf8)
@@ -190,21 +190,18 @@ complete r ws = do
   -- Whether a word after a keyword parameter is its value depends on
   -- the parameter's type (spec 11.2), so a line inside a function's
   -- arguments is walked again with the module's flags.
+  -- Which words after a namespace continue the function path depends
+  -- on the namespaces the module publishes (spec 11.2), so a line with
+  -- a function word is walked again with them too.
   entry <- resolveEntry r
-  plan <- case planModule (classifyFrom entry (\_ _ -> False) ws) of
-    Just modPath -> do
-      idx <- loadIndex r modPath
-      pure (classifyFrom entry (isFlagParam idx) ws)
-    Nothing -> pure (classifyFrom entry (\_ _ -> False) ws)
+  let st0 = walkSt (initialSt entry) (if null ws then [] else init ws)
+  plan <-
+    if stSawFn st0
+      then do
+        idx <- loadIndex r (stModule st0)
+        pure (classifyIn entry (isFlagParam idx) (`Set.member` indexNamespaces idx) ws)
+      else pure (classifyFrom entry (\_ _ -> False) ws)
   answer r plan
-
--- | The module whose function a plan is inside the arguments of.
-planModule :: Plan -> Maybe FilePath
-planModule plan = case plan of
-  PFnFlags m _ _ _ -> Just m
-  PFnValue m _ _ _ _ -> Just m
-  PFnArg m _ _ -> Just m
-  _ -> Nothing
 
 -- | A keyword parameter written alone to bind @true@ (spec 11.2).
 isFlagParam :: CompleteIndex -> Text -> Text -> Bool
@@ -241,9 +238,9 @@ answer r plan = case plan of
   PDepName modPath pfx -> do
     names <- depNames r modPath
     pure (noFiles [Candidate n Nothing | n <- names, matches pfx n])
-  PFunctionName modPath pfx -> do
+  PFunctionName modPath ns pfx -> do
     idx <- loadIndex r modPath
-    pure (noFiles (functionCandidates idx pfx))
+    pure (noFiles (functionCandidates idx ns pfx))
   PFnFlags modPath fn used pfx -> do
     idx <- loadIndex r modPath
     pure (noFiles (flagCandidates idx fn used pfx))
@@ -318,16 +315,41 @@ optionCandidates opts used pfx =
 -- functions taking a positional @Environment@ — no decoding mode can
 -- construct one, so offering them would complete into a pre-execution
 -- error.
-functionCandidates :: CompleteIndex -> Text -> [Candidate]
-functionCandidates idx pfx =
-  [ Candidate (renderName pfx (idName d)) (idSummary d)
-  | d <- ciDecls idx,
-    idCallable d,
-    not (idHidden d),
-    not (idInternal d),
-    idCliCallable d,
-    matches pfx (idName d)
-  ]
+--
+-- @ns@ is the namespace the words before have named, with its @.@, or
+-- empty. A name in a namespace is offered as its next word, @db@ and
+-- then @migrate@ (spec 11.2), unless the word being typed already has
+-- a @.@, which asks for the qualified name in one word.
+functionCandidates :: CompleteIndex -> Text -> Text -> [Candidate]
+functionCandidates idx ns pfx =
+  nubOn
+    candValue
+    [ if dotted || not (isGroup rest)
+        then Candidate (renderName pfx shown) (idSummary d)
+        else Candidate (renderName pfx (T.takeWhile (/= '.') rest)) Nothing
+    | d <- ciDecls idx,
+      idCallable d,
+      not (idHidden d),
+      not (idInternal d),
+      idCliCallable d,
+      Just rest <- [T.stripPrefix ns (idName d)],
+      let shown = if dotted then rest else T.takeWhile (/= '.') rest,
+      matches pfx shown
+    ]
+  where
+    dotted = "." `T.isInfixOf` pfx
+    isGroup = T.isInfixOf "."
+    nubOn f = go Set.empty
+      where
+        go _ [] = []
+        go seen (c : cs)
+          | f c `Set.member` seen = go seen cs
+          | otherwise = c : go (Set.insert (f c) seen) cs
+
+-- | The namespaces the indexed names go through (spec 5, \"Namespace
+-- re-export\").
+indexNamespaces :: CompleteIndex -> Set.Set Text
+indexNamespaces = namespacesOf . map idName . ciDecls
 
 -- | The keyword parameters of one function, plus the @--help@ that
 -- spec 11.2 intercepts after the function name. @-h@ is deliberately
@@ -481,7 +503,9 @@ data Plan
     -- the text to put back in front of each candidate (@--opt=@ for
     -- the inline form, empty otherwise).
     POptValue ValueSpec Text Text
-  | PFunctionName FilePath Text
+  | -- | A function name, in the namespace given (with its @.@, or
+    -- empty) when the words before named one.
+    PFunctionName FilePath Text Text
   | PFnFlags FilePath Text [Text] Text
   | PFnValue FilePath Text Text Text Text
   | -- | The nth positional argument of a function is being typed.
@@ -719,6 +743,15 @@ data St = St
     stOpaque :: Bool,
     -- | Whether a keyword parameter of a function is a flag.
     stIsFlag :: Text -> Text -> Bool,
+    -- | Whether a name, as declared, is a namespace the module
+    -- publishes, after which the function path goes on (spec 11.2).
+    stIsNs :: Text -> Bool,
+    -- | The namespace the function path has named so far, with its
+    -- @.@, or empty.
+    stNs :: Text,
+    -- | Whether a word of the function path was consumed: the module
+    -- then decides how the rest of the line is read.
+    stSawFn :: Bool,
     -- | 'stPendingFn' is a flag, whose value the next word is only
     -- when it is @true@ or @false@; it is still offered those two.
     stAfterFlag :: Bool
@@ -739,8 +772,12 @@ classifyWith = classifyFrom defaultEntry
 -- | 'classifyWith', with the entry module a line that gives no
 -- @--module@ names.
 classifyFrom :: FilePath -> (Text -> Text -> Bool) -> [Text] -> Plan
-classifyFrom entry isFlag [] = atCursor (initialSt entry) {stIsFlag = isFlag} ""
-classifyFrom entry isFlag ws = walk (initialSt entry) {stIsFlag = isFlag} (init ws) (last ws)
+classifyFrom entry isFlag = classifyIn entry isFlag (const False)
+
+-- | 'classifyFrom', knowing the namespaces of the module as well.
+classifyIn :: FilePath -> (Text -> Text -> Bool) -> (Text -> Bool) -> [Text] -> Plan
+classifyIn entry isFlag isNs [] = atCursor (initialSt entry) {stIsFlag = isFlag, stIsNs = isNs} ""
+classifyIn entry isFlag isNs ws = walk (initialSt entry) {stIsFlag = isFlag, stIsNs = isNs} (init ws) (last ws)
 
 initialSt :: FilePath -> St
 initialSt entry =
@@ -759,6 +796,9 @@ initialSt entry =
       stAfterSep = False,
       stOpaque = False,
       stIsFlag = \_ _ -> False,
+      stIsNs = const False,
+      stNs = "",
+      stSawFn = False,
       stAfterFlag = False
     }
 
@@ -766,15 +806,19 @@ cmdSummary :: Cmd -> (Text, Text)
 cmdSummary c = (cmdName c, cmdHelp c)
 
 walk :: St -> [Text] -> Text -> Plan
-walk st [] cur = atCursor st cur
-walk st (_ : rest) cur | stOpaque st = walk st rest cur
-walk st (w : rest) cur = case stFn st of
-  Just _ -> walk (inFunctionArgs st w) rest cur
+walk st ws = atCursor (walkSt st ws)
+
+-- | The state the completed words leave.
+walkSt :: St -> [Text] -> St
+walkSt st [] = st
+walkSt st (_ : rest) | stOpaque st = walkSt st rest
+walkSt st (w : rest) = case stFn st of
+  Just _ -> walkSt (inFunctionArgs st w) rest
   Nothing -> case optWord w of
-    Just (name, inline) -> optionWord st name inline rest cur
+    Just (name, inline) -> optionWord st name inline rest
     Nothing -> case matchCommand st w of
-      Just st' -> walk st' rest cur
-      Nothing -> walk (consumePositional st w) rest cur
+      Just st' -> walkSt st' rest
+      Nothing -> walkSt (consumePositional st w) rest
 
 -- | Past the function name, spec 11.2 applies: a bare @--@ ends the
 -- @--help@ scan, and everything else is the function's own argument.
@@ -801,15 +845,15 @@ inFunctionArgs st w
       st {stFnUsed = kebabToSnake name : stFnUsed st, stPendingFn = pending, stAfterFlag = False}
     isFlag name = maybe False (\fn -> stIsFlag st fn (kebabToSnake name)) (stFn st)
 
-optionWord :: St -> Text -> Maybe Text -> [Text] -> Text -> Plan
-optionWord st name inline rest cur = case (inline, optValue =<< lookupOpt (stOpts st) name) of
-  (Just v, _) -> walk (record name v used) rest cur
+optionWord :: St -> Text -> Maybe Text -> [Text] -> St
+optionWord st name inline rest = case (inline, optValue =<< lookupOpt (stOpts st) name) of
+  (Just v, _) -> walkSt (record name v used) rest
   (Nothing, Just spec) -> case rest of
     -- The value is the next word, or — when there is none — the word
     -- being typed.
-    (v : more) -> walk (record name v used) more cur
-    [] -> walk used {stPending = Just spec} rest cur
-  _ -> walk used rest cur
+    (v : more) -> walkSt (record name v used) more
+    [] -> walkSt used {stPending = Just spec} rest
+  _ -> walkSt used rest
   where
     used = st {stUsed = name : stUsed st, stPending = Nothing}
 
@@ -835,7 +879,15 @@ matchCommand st w = case [c | c <- stCmds st, cmdName c == w] of
 
 consumePositional :: St -> Text -> St
 consumePositional st w = case (currentPos st, maybe NoBoundary cmdBoundary (stCmd st)) of
-  (Just PosFunction, FunctionArgs) -> st {stFn = Just (kebabToSnake w), stPending = Nothing}
+  -- A namespace keeps the function path open (spec 11.2): the next
+  -- word is a name in it.
+  (Just PosFunction, _)
+    | stIsNs st path -> st {stNs = path <> ".", stSawFn = True, stPending = Nothing}
+    where
+      path = stNs st <> kebabToSnake w
+  (Just PosFunction, FunctionArgs) ->
+    st {stFn = Just (stNs st <> kebabToSnake w), stNs = "", stSawFn = True, stPending = Nothing}
+  (Just PosFunction, _) -> st {stPos = stPos st + 1, stNs = "", stSawFn = True, stPending = Nothing}
   (Just PosCommandWord, ProgramArgs) -> st {stOpaque = True, stPending = Nothing}
   _ -> st {stPos = stPos st + 1, stPending = Nothing}
 
@@ -899,7 +951,7 @@ atCursor st cur = case stFn st of
       Nothing
         | not (null (stCmds st)) -> PCommands (map cmdSummary (stCmds st)) cur
         | otherwise -> case currentPos st of
-            Just PosFunction -> PFunctionName (stModule st) cur
+            Just PosFunction -> PFunctionName (stModule st) (stNs st) cur
             Just PosCommandWord -> PCommandWord (stModule st) cur
             Just PosDepName -> PDepName (stModule st) cur
             Just PosShell -> PShellName cur
@@ -919,7 +971,10 @@ data CompleteIndex = CompleteIndex
     ciMapKeys :: Map.Map Text [Text],
     -- | Re-exports (spec 5), as the published name, the name in the
     -- module it comes from, and that module's import path.
-    ciReexports :: [(Text, Text, Text)]
+    ciReexports :: [(Text, Text, Text)],
+    -- | Namespace re-exports (spec 5), as the namespace and the
+    -- import path of the module it refers to.
+    ciNamespaces :: [(Text, Text)]
   }
   deriving (Show, Eq)
 
@@ -961,12 +1016,13 @@ loadIndex r = go reexportDepth Set.empty
   where
     go depth seen path = do
       txt <- resolveRead r path
-      let idx = maybe (CompleteIndex [] [] Map.empty []) (buildIndex path) txt
+      let idx = maybe (CompleteIndex [] [] Map.empty [] []) (buildIndex path) txt
       if depth <= 0
         then pure idx
         else do
           reexported <- concat <$> mapM (follow depth (Set.insert path seen) path) (ciReexports idx)
-          pure idx {ciDecls = ciDecls idx <> reexported}
+          qualified <- concat <$> mapM (followNs depth (Set.insert path seen) path) (ciNamespaces idx)
+          pure idx {ciDecls = ciDecls idx <> reexported <> qualified}
 
     -- A function the module re-exports is one of its public functions
     -- (spec 5, 11.2), so it is offered under the name the module
@@ -978,6 +1034,16 @@ loadIndex r = go reexportDepth Set.empty
         not (target `Set.member` seen) = do
           sub <- go (depth - 1) seen target
           pure [d {idName = visible} | d <- ciDecls sub, idName d == original, not (idInternal d)]
+      | otherwise = pure []
+
+    -- The public functions of a namespace the module re-exports are
+    -- its functions too, under their qualified name (spec 5, 11.2).
+    followNs depth seen path (ns, from)
+      | isLocal from,
+        let target = normalise (takeDirectory path </> T.unpack from),
+        not (target `Set.member` seen) = do
+          sub <- go (depth - 1) seen target
+          pure [d {idName = ns <> "." <> idName d} | d <- ciDecls sub, not (idInternal d)]
       | otherwise = pure []
 
     isLocal from = "./" `T.isPrefixOf` from || "../" `T.isPrefixOf` from
@@ -1009,6 +1075,10 @@ fromModule path src m =
         [ (maybe n id a, n, from)
         | AST.Decl _ (AST.DExportFrom specs from) <- AST.moduleDecls m,
           AST.ImportSpec _ n a <- specs
+        ],
+      ciNamespaces =
+        [ (alias, from)
+        | AST.Decl _ (AST.DExportNamespace alias from) <- AST.moduleDecls m
         ]
     }
   where
@@ -1159,7 +1229,14 @@ scanIndex src =
     (concatMap commandsOfLine (T.lines src))
     Map.empty
     (concatMap reexportsOfLine (T.lines src))
+    (concatMap namespacesOfLine (T.lines src))
   where
+    -- @export * as db from "./db.lask"@, read as text.
+    namespacesOfLine l = case T.words l of
+      ["export", "*", "as", alias, "from", from]
+        | T.length from >= 2 -> [(alias, T.dropAround (== '"') from)]
+      _ -> []
+
     -- @export { a, b as c } from "./lib.lask"@, read as text. Only a
     -- list that closes on its own line is read.
     reexportsOfLine l = case T.stripPrefix "export" l >>= T.stripPrefix "{" . T.stripStart of
