@@ -1,0 +1,12 @@
+exit: 1
+--- stdout
+main.lask:4:9-4:19: E-TYPE-ARITY [static]: missing positional arguments: expected 2, got 1
+  note: 'greet' takes (name: String, times: Number)
+main.lask:6:13-6:35: E-TYPE-ARITY [static]: 'read_file' expects 2 arguments, got 1
+  note: its signature is read_file(String, Runnable): String
+main.lask:8:21-8:47: E-TYPE-ARITY [static]: 'map' expects 2 arguments, got 1
+  note: its signature is map(Array<T>, Function<T, U>): Array<U>
+  note: the operand of |> is not added to this call's arguments: the call is made first, and the operand is given to what it returns; write `x |> \(v) -> f(v, a)`, or `f(x, a)`
+
+--- stderr
+

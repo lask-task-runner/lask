@@ -129,6 +129,8 @@ builtinSchemes =
       -- sorts, equality for the searches.
       ("sort", bounded "T" (BoundNamed BOrderable) ["T"] [TyArray (tv "T")] (TyArray (tv "T"))),
       ("sort_by", bounded "U" (BoundNamed BOrderable) ["T", "U"] [TyArray (tv "T"), TyFun [tv "T"] (tv "U")] (TyArray (tv "T"))),
+      -- The method of the class orderable (spec 4.6).
+      ("compare", bounded "T" (BoundNamed BOrderable) ["T"] [tv "T", tv "T"] TyNumber),
       ("contains_array", bounded "T" (BoundNamed BComparable) ["T"] [TyArray (tv "T"), tv "T"] TyBool),
       ("index_of_array", bounded "T" (BoundNamed BComparable) ["T"] [TyArray (tv "T"), tv "T"] TyNumber),
       ("find", poly ["T"] [TyArray (tv "T"), TyFun [tv "T"] TyBool] (orNull (tv "T"))),

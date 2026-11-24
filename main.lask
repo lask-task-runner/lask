@@ -54,6 +54,16 @@ unittest(--env: String = "docker", --match: String = "") =
 e2etest(--env: String = "docker", --match: String = "") =
   $[envs[env]] stack build && HSPEC_MATCH=#{match} stack test lask:lask-e2e
 
+// Measure how often the language server's completion offers the name
+// being written, over the examples: each name a file has written before
+// is cut back to one and two characters, and completion is asked for
+// there (bench/CompletionAccuracy.hs).
+//
+// @param env  Environment to build and measure in ("local" or "docker").
+// @complete env @keys envs
+completion_accuracy(--env: String = "docker") =
+  $[envs[env]] stack bench lask:completion-accuracy
+
 // Run the diagnostics corpus (test/unit/corpus): programs whose expected
 // diagnostics are written on the lines that raise them.
 //

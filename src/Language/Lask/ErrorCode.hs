@@ -42,6 +42,7 @@ data ErrorCode
   | ETypeIllformed
   | ETypeSecretNonString
   | ETypeBound
+  | ETypeInstance
   | EModuleCycle
   | EModuleUnresolved
   | EModuleDeepImport
@@ -86,6 +87,7 @@ data AdvisoryCode
   | WDocParamUnknown
   | WCliParamShadowed
   | WExportInconsistent
+  | WBoundRedundant
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 advisoryText :: AdvisoryCode -> Text
@@ -98,6 +100,7 @@ advisoryText c = case c of
   WDocParamUnknown -> "W-DOC-PARAM-UNKNOWN"
   WCliParamShadowed -> "W-CLI-PARAM-SHADOWED"
   WExportInconsistent -> "W-EXPORT-INCONSISTENT"
+  WBoundRedundant -> "W-BOUND-REDUNDANT"
 
 -- | Error stage (spec 14.3).
 data Stage
@@ -137,6 +140,7 @@ codeText c = case c of
   ETypeIllformed -> "E-TYPE-ILLFORMED"
   ETypeSecretNonString -> "E-TYPE-SECRET-NON-STRING"
   ETypeBound -> "E-TYPE-BOUND"
+  ETypeInstance -> "E-TYPE-INSTANCE"
   EModuleCycle -> "E-MODULE-CYCLE"
   EModuleUnresolved -> "E-MODULE-UNRESOLVED"
   EModuleDeepImport -> "E-MODULE-DEEP-IMPORT"

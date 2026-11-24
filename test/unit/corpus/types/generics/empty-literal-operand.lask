@@ -1,0 +1,25 @@
+// An empty literal takes its type from where it is (4.3): from the
+// other operand of an operator as from the other arguments of a call,
+// on either side (6.2, 4.4).
+same<T>(a: T, b: T): T = a
+
+eq<T: comparable>(a: T, b: T): Bool = a == b
+
+instance<T: orderable> orderable<Array<T>> {
+  compare(a, b) = size(a) - size(b)
+}
+
+uses(xs: Array<Number>, m: Map<Number>): Array<Bool> = [
+  xs == [],
+  [] == xs,
+  xs != [],
+  [] < xs,
+  xs > [],
+  eq(xs, []),
+  eq([], xs),
+  same([], xs) == xs,
+  m == {},
+  {} == m
+]
+
+neither(): Bool = [] == [] // expect: E-TYPE-BOUND

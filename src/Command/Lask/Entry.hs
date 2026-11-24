@@ -17,7 +17,11 @@ import Command.Lask.Secrets (Scope (..), secretsCheck, secretsList)
 import Language.Lask.Confirm (Prompt (..), confirmationFor, describeRule, ruleFor)
 import Language.Lask.Core.AST (Core (..))
 import Command.Lask.Help
+import Command.Lask.Locate (locateEntry)
 import Command.Lask.Options
+import Data.Functor.Const (Const (..))
+import Data.Monoid (First (..))
+import System.Directory (doesFileExist)
 import Control.Exception (IOException, SomeException, fromException, toException, try)
 import Control.Monad (forM, unless, when, (>=>))
 import qualified Data.Aeson as A
@@ -38,11 +42,11 @@ import Data.Version (showVersion)
 import qualified Language.LSP.Lask as LSP
 import Language.Lask (Compiled (..), Partial (..), compileFile, compileFilePartial)
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
-import Language.Lask.Module.Resolve (entryPublicValues)
+import Language.Lask.Module.Resolve (entryPublicValues, internalDeclaredIn)
 import Language.Lask.Diagnostic (Advisory (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Core.Access (SVal (..), checkCommandEnv, checkInvocation, withinConstraints)
-import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
+import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..), isTemplate, specName)
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer (lexTokensWithComments)
 import Language.Lask.Obs.CommandLog
@@ -65,16 +69,50 @@ import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
-import Language.Lask.Types (Type (..))
+import Language.Lask.Types (Type (..), renderType)
 import Language.Lask.Suggest (suggest)
-import Language.Lask.Utils (Pretty (pretty), kebabToSnake)
+import Language.Lask.Utils (Pretty (pretty), cliPath, namespacesOf)
 import Paths_lask (version)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.IO (hFlush, hIsTerminalDevice, hPutStrLn, stderr, stdin)
 
 runRootCommand :: RootCommand -> IO ()
-runRootCommand cmd = case cmd of
+runRootCommand given = do
+  cmd <- commonOpts locate given
+  mapM_ requireEntry (needsEntry cmd)
+  runResolved cmd
+  where
+    locate o
+      | optModuleGiven o = pure o
+      | otherwise = (\p -> o {optModule = p}) <$> locateEntry
+
+-- | The common options of a command that reads the entry module. @fmt@
+-- formats files whether or not one is there, @deps@ works on
+-- @lask.json@, and @secrets@ on the environment variables too.
+needsEntry :: RootCommand -> Maybe CommonOpts
+needsEntry cmd = case cmd of
+  CmdFmt _ -> Nothing
+  CmdDepsList _ -> Nothing
+  CmdDepsGraph {} -> Nothing
+  CmdDepsAdd {} -> Nothing
+  CmdDepsRm {} -> Nothing
+  CmdSecretsList _ -> Nothing
+  CmdSecretsCheck _ -> Nothing
+  _ -> getFirst (getConst (commonOpts (Const . First . Just) cmd))
+
+-- | A usage error when the entry module is not there (spec 11.1),
+-- before a command tries to read it.
+requireEntry :: CommonOpts -> IO ()
+requireEntry opts = do
+  present <- doesFileExist (optModule opts)
+  unless present . usageError opts $
+    if optModuleGiven opts
+      then "no such module: " <> T.pack (optModule opts)
+      else "no main.lask in this directory or any directory above it; a Lask project is a directory with a main.lask file, and --module names another entry module"
+
+runResolved :: RootCommand -> IO ()
+runResolved cmd = case cmd of
   CmdServe -> LSP.serve >> pure ()
   CmdCheck opts -> cmdCheck opts
   CmdFmt fmtOpts -> cmdFmt fmtOpts
@@ -140,33 +178,36 @@ cmdRunEval printResult runOpts = do
   rawName <- case runFunction runOpts of
     Just n -> pure n
     Nothing -> usageError opts "no function specified (use --help to list the module's functions)"
-  let fnName = kebabToSnake rawName
+  -- The function path: the name, or the namespaces the module
+  -- publishes and a name in the last of them, as words (spec 11.2).
+  let path = cliFunctionPath (cliNamespaces compiled) (rawName : runArgs runOpts)
+      fnName = fpName path
   -- The public functions of the module, re-exported ones included: a
   -- declaration marked `internal` is not part of any surface (spec 5),
   -- and a plain value binding is not a function (11.2).
-  (key, cd) <- cliFunction opts compiled rawName
+  (key0, cd0) <- cliFunction opts compiled path
 
   -- Which keyword arguments are flags depends on their types, so the
   -- tokens are split against the parameters (spec 11.2).
-  let (optionArgs, plainArgs) = splitArgSeparator (runArgs runOpts)
+  let (optionArgs, plainArgs) = splitArgSeparator (fpRest path)
       parseArgs ps = case parseCliArgs (flagNames ps) optionArgs of
         Right as -> pure (as <> map CliPos plainArgs)
         Left e -> usageError opts e
 
   let orUsageError = either (usageError opts) pure
       orBindError = either (uncurry (usageErrorSuggesting opts)) pure
-  (posVals, kwVals) <- case cdParams cd of
+  ((posVals, kwVals), inst) <- case cdParams cd0 of
     -- A declaration with type parameters is invoked with each one
     -- decoded at the widest type it admits, and a named bound checked
     -- against what was decoded (spec 11.2): a bounded parameter is not
     -- opaque inside the body, which may compare or sort it (4.4).
     Just params -> do
-      let cliParams = instantiateForCli (cdTypeVars cd) (cdBounds cd) params
+      let cliParams = instantiateForCli (cdTypeVars cd0) (cdBounds cd0) params
       cliArgs <- parseArgs cliParams
       bound <- orBindError (bindCliArgs cliParams (runArgDecode runOpts) cliArgs)
-      orUsageError (uncurry (checkCliBounds (cdBounds cd) params) bound)
-      pure bound
-    Nothing -> case cdType cd of
+      inst <- orUsageError (uncurry (checkCliBounds (cpInstances core) (cdBounds cd0) params) bound)
+      pure (bound, inst)
+    Nothing -> fmap (\b -> (b, [])) $ case cdType cd0 of
       TyFun paramTys _ -> do
         -- A function-typed value declaration: positional only
         -- (spec 11.2, example 16.3).
@@ -174,6 +215,14 @@ cmdRunEval printResult runOpts = do
         cliArgs <- parseArgs valueParams
         orBindError (bindCliArgs valueParams (runArgDecode runOpts) cliArgs)
       _ -> usageError opts ("'" <> fnName <> "' is not a callable function")
+  -- A declaration with a class bound runs as specialized at the types
+  -- the arguments gave its bounded parameters (spec 4.6, 11.2).
+  (key, cd) <- case inst of
+    _ | not (isTemplate cd0) -> pure (key0, cd0)
+    [] -> usageError opts ("'" <> fnName <> "' orders by an instance, and the arguments do not say at which type")
+    _ ->
+      let key' = (fst key0, specName (snd key0) inst)
+       in maybe (usageError opts ("'" <> fnName <> "' has no specialization at " <> T.intercalate ", " (map (renderType . snd) inst))) (pure . (,) key') (Map.lookup key' (cpDecls core))
 
   -- A declared program its image lacks fails every command that runs
   -- it, so nothing is run (spec ch. 5).
@@ -270,6 +319,7 @@ cmdRunEval printResult runOpts = do
           (Just ERuntimeInterrupted)
           (errorValue (fromIntegral (128 + fromIntegral sig :: Int)) ("the run was stopped by " <> signalName sig))
           []
+          Nothing
   case result of
     Left lf -> failureExit opts traceId lf
     Right v -> do
@@ -303,7 +353,7 @@ maskOutcome outcome = pure outcome
 unawaitedFailure :: SomeException -> LaskFailure
 unawaitedFailure ex = case fromException ex of
   Just lf -> lf
-  Nothing -> LaskFailure Nothing (errorValue 1 (T.pack (show ex))) []
+  Nothing -> LaskFailure Nothing (errorValue 1 (T.pack (show ex))) [] Nothing
 
 -- | The advisory @W-ASYNC-UNAWAITED@ (spec 6.3, 14.2) for one
 -- computation that was never awaited, with how it ended.
@@ -427,15 +477,35 @@ cmdHelp subcommand runOpts = do
     Just rawName -> do
       -- Without a parse there are no declarations to describe.
       when (isNothing (partialModule partial)) $ exitWith (ExitFailure 1)
-      let fnName = kebabToSnake rawName
+      let namespaces = namespacesOf (map fst declsByName)
+          path' = cliFunctionPath namespaces (rawName : runArgs runOpts)
+          fnName = fpName path'
+          shown = T.unwords (fpWords path')
       -- Help is for what the command line can call: a plain value
       -- binding has none (spec 11.2, 11.6).
       let isFunction (n, h) = fhFunction (helpOf [] (n, h))
+          -- Without a loaded program only the entry module's own
+          -- internal names are known.
+          internalDeclaredIn' n = case partialProgram partial of
+            Just prog -> internalDeclaredIn prog n
+            Nothing
+              | n `Set.member` maybe Set.empty cpInternal core -> Just entry
+              | otherwise -> Nothing
+      -- A namespace has the list of the functions it holds, as the
+      -- module has the list of its own (spec 11.6).
+      when (fnName `Set.member` namespaces) $ do
+        let listing = [helpOf [] d | d@(n, _) <- declsByName, (fnName <> ".") `T.isPrefixOf` n]
+        if outputJson opts
+          then TIO.putStrLn (jsonOut opts (encodeJsonText (renderListJson path listing)))
+          else TIO.putStrLn (renderListText (T.unpack (cliPath fnName)) listing)
+        exitSuccess
       found <- case lookup fnName declsByName of
         Just h
           | isFunction (fnName, h) -> pure h
-          | otherwise -> notAFunction opts rawName
-        Nothing -> noSuchFunction opts rawName [n | d@(n, _) <- declsByName, isFunction d]
+          | otherwise -> notAFunction opts shown
+        Nothing
+          | Just declaredIn <- internalDeclaredIn' fnName -> internalFunction opts shown declaredIn
+          | otherwise -> noSuchFunction opts shown [n | d@(n, _) <- declsByName, isFunction d]
       let envs = case core of
             -- Ordered as envs list orders them (spec 11.4): the host
             -- first, then by notation.
@@ -545,11 +615,11 @@ cmdSecrets isCheck o = do
   let opts = secretsCommon o
   env <- Map.fromList <$> getEnvironment
   scope <- case secretsFunction o of
-    Nothing -> pure AllVariables
-    Just fn -> do
+    [] -> pure AllVariables
+    ws -> do
       compiled <- compileOrExit opts
-      (key, _) <- cliFunction opts compiled fn
-      pure (maybe AllVariables (OnlyVariables fn) (collectEnvReadsFrom (compiledCore compiled) key))
+      (key, _) <- cliFunctionNamed opts compiled ws
+      pure (maybe AllVariables (OnlyVariables (T.unwords ws)) (collectEnvReadsFrom (compiledCore compiled) key))
   if isCheck
     then secretsCheck (outputFormat OutputText opts) (secretsRead o) env scope
     else secretsList (outputFormat OutputText opts) env scope
@@ -749,18 +819,25 @@ commandRowsJson rows =
     | (name, kind, target, present) <- rows
     ]
 
+-- | The text form writes an environment as @run --help@ and @envs list@
+-- do (11.4, 11.6), its head and its kind, @#golang:1.25  registry@;
+-- the JSON form keeps the kind and target of the resolved environment.
 commandRowsText :: [CommandRow] -> [Text]
 commandRowsText rows =
-  [ T.justifyLeft width ' ' name
-      <> "  "
-      <> T.justifyLeft 6 ' ' kind
-      <> "  "
-      <> target
-      <> (if present then "" else "  MISSING (lask sync)")
-  | (name, kind, target, present) <- rows
-  ]
+  map
+    T.stripEnd
+    (columns [[name, envHead, label, if present then "" else "MISSING (lask sync)"] | (name, envHead, label, present) <- map asHead rows])
   where
-    width = maximum (8 : [T.length n | (n, _, _, _) <- rows])
+    asHead (name, kind, target, present) = case kind of
+      "local" -> (name, "#local", "local", present)
+      "docker"
+        | Just path <- T.stripPrefix "recipe " target -> (name, "#" <> path, "recipe", present)
+        | otherwise -> (name, "#" <> target, "registry", present)
+      _ -> (name, target, kind, present)
+    columns cells = map (T.concat . zipWith pad [0 :: Int ..]) cells
+      where
+        width i = maximum (0 : [T.length c | r <- cells, (j, c) <- zip [0 ..] r, j == i])
+        pad i c = c <> T.replicate (width i - T.length c + 2) " "
 
 -- | No network access and no build (spec 11.8). An environment that
 -- cannot be evaluated is a row with the failure rather than the end of

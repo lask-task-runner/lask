@@ -25,6 +25,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [4.3 Type Annotations and Inference](#43-type-annotations-and-inference)
     - [4.4 Type Semantics](#44-type-semantics)
     - [4.5 Serializable and Non-serializable Types](#45-serializable-and-non-serializable-types)
+    - [4.6 Classes and Instances](#46-classes-and-instances)
   - [5. Declarations and Modules](#5-declarations-and-modules)
   - [6. Expressions](#6-expressions)
     - [6.1 Function Parameters, Lambda Expressions, and Higher-Order Functions](#61-function-parameters-lambda-expressions-and-higher-order-functions)
@@ -347,6 +348,7 @@ Reserved words:
 - `on` is not a reserved word. It is a contextual keyword recognized only within a command declaration (Chapter 5), directly after the closing brace of its command words, where no other token may appear; it remains usable as an identifier elsewhere. Because the position is lexical, an editor can show `on` as a keyword there without elaborating the module.
 - `within` is not a reserved word either. It is a contextual keyword recognized in two positions only (Chapter 5): at the start of a top-level declaration, directly followed by `{`, by an `upper_id`, or by a `lower_id` and `.`, and in a function declaration, after its parameter list and return type and before its `=`. Neither position admits an identifier, so `within` remains usable as an identifier everywhere else.
 - `access` is a contextual keyword of the same kind, recognized only at the start of a top-level declaration, after its visibility marker if it has one, directly followed by an `upper_id` (Chapter 5). No declaration named `access` is followed by one, so `access` remains usable as an identifier everywhere else.
+- `class` and `instance` are contextual keywords of the same kind, recognized only at the start of a top-level declaration directly followed by a `lower_id` (4.6). No declaration named `class` or `instance` is followed by one, so both remain usable as identifiers everywhere else.
 - `stdin` is not a reserved word but is a reserved identifier (9.3), and must not be declared or rebound in user code.
 
 String interpolation:
@@ -412,7 +414,8 @@ QualifiedNamedType = lower_id "." upper_id .
 TypeArgs          = "<" Type { "," Type } ">" .
 TypeParams        = "<" TypeParam { "," TypeParam } ">" .
 TypeParam         = upper_id [ ":" Bound ] .
-Bound             = NamedBound | Type .
+Bound             = BoundPart { "+" BoundPart } | Type .
+BoundPart         = NamedBound | ClassName .
 NamedBound        = "comparable" | "orderable" | "stringifiable" .
 TypeAliasDecl     = "type" upper_id [ TypeParams ] "=" Type .
 ```
@@ -438,17 +441,18 @@ Type parameters:
 - An `upper_id` in type position resolves to a type parameter when one of that name is in scope, and to a `NamedType` otherwise. A qualified `namespace.TypeName` is never a type parameter.
 - A type parameter's scope is: for a function or a lambda, its parameter types, its return type, and the type annotations inside its body (6.5); for a type alias, the right-hand side of the alias.
 - Declaring a type parameter whose name is that of a type alias visible at the declaration, or of a type the grammar reads as its own (above), is a duplicate definition error (`E-NAME-DUPLICATE`). Shadowing is not permitted, so a type name means one thing throughout a declaration.
-- A type parameter that appears in no position is permitted. Nothing determines it and nothing needs to.
+- A type parameter that appears in no position is permitted. Nothing determines it and nothing needs to, unless it is bounded by a class, `orderable` included: then a call would have to say which instance it means, and it has to appear in a parameter or the result (4.6).
 - Type parameters are not written at a use site: a call instantiates them from the argument types and the expected type (4.4), and there is no syntax for giving them explicitly.
 
 Bounds:
 
-- A type parameter may carry a **bound**, written after a `:`, which limits the types it may be instantiated to (4.4). One parameter has at most one bound.
+- A type parameter may carry a **bound**, written after a `:`, which limits the types it may be instantiated to (4.4). One parameter has at most one bound, and that bound may join named bounds and classes with `+`: `<T: orderable + stringifiable>` admits the types that satisfy both, and gives what each gives. A type bound stands alone: one joined with `+` is ill-formed (`E-TYPE-ILLFORMED`).
 - A **named bound** is one of three predicates, written in lower case:
   - `comparable`: the comparable types of 6.2.
-  - `orderable`: `Number` and `String`, the types `sort` orders (15.4).
+  - `orderable`: the types `sort` orders (15.4): `Number` and `String`, and each type with an instance of `orderable` (4.6), which is a class.
   - `stringifiable`: the stringifiable types of 6.6.
-- The set of named bounds is closed: a program cannot declare one. A named bound is recognized only in bound position. There it cannot be mistaken for a type, since no type is written in lower case, and elsewhere the words are ordinary identifiers. Any other lower-case word there is an undefined reference error (`E-NAME-UNDEFINED`).
+- The set of named bounds is closed: a program cannot declare one. A named bound is recognized only in bound position. There it cannot be mistaken for a type, since no type is written in lower case, and elsewhere the words are ordinary identifiers.
+- A **class bound** names a class (4.6), by a `lower_id` that is not a named bound or by a namespace member `m.ord`, and admits the types that have an instance of it. Any other lower-case word in bound position is an undefined reference error (`E-NAME-UNDEFINED`).
 - A **type bound** is any other type. It admits the types that conform to it (4.4), so `<T: Number | String>` admits `Number`, `String` and `Number | String`. It may be written through a type alias, which is how a program defines a bound of its own:
 
   ```lask
@@ -458,7 +462,7 @@ Bounds:
   ```
 
 - A type bound must not mention a type parameter, and must not be `Void`. Either is a static error (`E-TYPE-ILLFORMED`).
-- A bound is a restriction on use sites, not a type class. There are no instances to declare, and a type satisfies a named bound by what it is, by the rules of the section that defines the predicate.
+- A named bound and a type bound are restrictions on use sites: a type satisfies one by what it is, by the rules of the section that defines the predicate, and there is nothing to declare for it. A class bound is satisfied by an instance declared for the type (4.6).
 
 ```lask
 largest<T: orderable>(xs: Array<T>): T = last(sort(xs))
@@ -594,7 +598,7 @@ Type annotations are optional, and the following type inference rules apply wher
 - In the form `Function<T1, T2, ..., R>`, the last type argument is the return type, and the preceding ones are the positional parameter types.
 - A `NamedType` is expanded into its `TypeAliasDecl` before type checking, and inference is performed on the expanded type.
 - Overloading is not supported. One symbol has one function type.
-- Abstract types (type classes, etc.) are not supported. A type parameter may carry a bound from a closed set of predicates, or a type bound (4.2), and nothing more: an operation beyond what the bounds give is taken as an argument instead (`Function<T, T, Bool>` as an equality).
+- A type parameter may carry a named bound, a class bound or a type bound (4.2). An operation beyond what its bound gives is declared as a method of a class (4.6), or taken as an argument (`Function<T, T, Bool>` as an equality).
 - A declaration may declare type parameters (4.2), and its annotations — including those on bindings inside its body — may mention them. They are instantiated per call by the rules of 4.4.
 
 Inference of parameter types:
@@ -604,12 +608,12 @@ A parameter written without a type annotation is not `Any`: its type is the one 
 - **Uses.** Each place the body puts the parameter in a position that requires a type `U` — an argument of a callee whose parameter is `U`, an operand of an operator (6.2), the condition of `if` or `case`, the scrutinee of a `case` with value patterns (6.4) at the type of those patterns, an operand of `==`, `!=`, `<`, `<=`, `>` or `>=` (6.2) at the type of the other operand, the environment of a command (6.6), a binding or a return with an annotation, a field of a record literal with an expected type — is a *use* at `U`. A position that requires `Any`, such as the argument of `to_json` or `cast` (15.8), constrains nothing, since every type conforms to `Any`, and is not a use. The scrutinee of a `case` with type heads (6.4) is a use at `Any`: a type is dispatched on only in an `Any` or a union. When the scrutinee is the parameter itself, it is `Any` throughout the `case`, and each arm narrows it as it narrows an `Any` (6.4), so what an arm does with it is done with the narrowed value and is no use of the parameter: in `f(x) = case (x) { Number -> x + 1; else -> 0 }`, `x` is `Any`. A use outside the `case` that leaves the parameter a type other than `Any` or a union, such as `Number`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names the `case` and suggests an annotation. Compared with `null`, a parameter is used at no type; compared or ordered with another parameter whose type is inferred, the two have one type.
 - **The inferred type** is the most general type that conforms (4.4) to every type the parameter is used at: the one a caller can pass the most values of. Used at `String` and at `String | Null`, a parameter is `String`; put at `Number` and at `Any`, it is `Number`; put only at `Any`, it is a type parameter (below), so that `wrap(x) = [to_json(x), x]` keeps the type of `x` in its result. A parameter used at two types that no type conforms to both of, such as `Number` and `String`, is a type error (`E-TYPE-MISMATCH`), whose diagnostic names both uses and suggests an annotation.
 - **A use at a type that has a type variable** in it, as an argument of a generic function (4.4) or as the element of an array the function takes, gives the parameter that shape, with the variable left to be inferred in turn: `size(xs)` makes `xs` an `Array<a>` for an `a` still to be found. A use inside a lambda the parameter is passed to counts as any other use.
-- **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (6.2, 15.4). Where its uses need two of them, it has the one that entails the other (`orderable` entails both others); two of which neither entails the other, such as `comparable` and `stringifiable`, are a type error (`E-TYPE-BOUND`) that asks for an annotation: a type parameter has at most one bound, written or inferred. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
+- **A parameter that is not used at any type**, or a variable of a shape left unconstrained, becomes a type parameter of the function (4.2): `identity(x) = x` is `identity<T>(x: T): T`. It is opaque in the body as a written type parameter is (4.4), and its bound is what the body needs of it: `comparable` when it is compared with `==` (6.2), `stringifiable` when it is interpolated (6.6), `orderable` when it is ordered (6.2, 15.4), and a class when it is passed where a type parameter bounded by the class is (4.6). A value of a type built of it, such as `[x]`, needs a class, or an order, through the parametric instance whose type that matches (4.6), and the parameter has the bounds that instance asks of the part it stands in: with `instance<T: orderable> orderable<Array<T>>`, `ordered(x) = [x] < [x]` is `ordered<T: orderable>(x: T): Bool`. Where its uses need more than one, it has each of them that no other of them entails, joined with `+` (4.2): `orderable` entails `comparable`, so a parameter both sorted and compared is `orderable`, and one sorted and interpolated is `orderable + stringifiable`. A lambda that is not bound to a name has no type parameters (4.4), so such a parameter of it is `Any`. Such type parameters are named `T`, `U`, `V`, ... in the order their parameters are written, skipping names in use, and are shown so in help (11.6) and in diagnostics.
 - **A value put where the parameter is.** A parameter used at no type, which the body joins with values of one type, as the other branches of an `if` or a `case` (4.3) or as arguments a generic function needs to be of one type with it (4.4), has that type: `f(c: Bool, n) = c ? 0 : n` is `f(c: Bool, n: Number): Number`. `null` joins with any type and says nothing of it, so `c ? x : null` keeps `x` a type parameter.
 - **What the body cannot tell.** A field access (`u.name`) or an index (`u[0]`, `u["X"]`) on a parameter whose type is not otherwise known, or a function value called with arguments, does not say what the whole type is: Lask has no record type open to further fields. It is a type error that asks for an annotation (`E-TYPE-ACCESS`, `E-TYPE-CALL`).
 - **A parameter marked `!!`** (6.10) is used at `String | Null` by its marker, so it is `String` or `String | Null`.
 - **Only the body decides.** The type of a function does not depend on how it is called: a call is checked against the inferred type, as against a written one. A declaration's type is therefore known from the declaration alone, for help, editor integration and the command line (11.2) alike.
-- **Recursion.** A recursive call is not a use. A function that calls itself has its parameters' types inferred from the other uses in its body, and each recursive call is then checked against those types, as any other call is: an argument of it must conform to the parameter it is passed to, which says what the caller may pass and nothing of what the parameter is. The function is not generalized within its own body, so a recursive call passes its parameters' types as they are. Its return type is to be written, as before (6.1). Declarations that call one another through other declarations have their parameters annotated, every one of them in the cycle: a call that comes back to a declaration whose parameters' types are still being found is a type error (`E-TYPE-MISMATCH`) that names the cycle.
+- **Recursion.** A recursive call is not a use. A function that calls itself has its parameters' types inferred from the other uses in its body, and each recursive call is then checked against those types, as any other call is: an argument of it must conform to the parameter it is passed to, which says what the caller may pass and nothing of what the parameter is. The function is not generalized within its own body, so a recursive call passes its parameters' types as they are. Its return type is to be written, as before (6.1). Declarations that call one another through other declarations have their parameters annotated, every one of them in the cycle: a call that comes back to a declaration whose parameters' types are still being found is a type error (`E-TYPE-MISMATCH`) that names the cycle. A call of another declaration of the cycle is instantiated at the types it is given, as a call of any generic declaration is (4.4): only a declaration's calls of itself pass its parameters' types as they are, so `pong<U>(y: U, n: Number)` may call `ping<T>(x: T, n: Number)` with `y`, or with `1`.
 - An annotation always wins over inference: a parameter that is annotated has that type, and its uses are checked against it.
 
 Diagnostic rules on inference failure:
@@ -659,7 +663,7 @@ Variance:
 - No value is ever changed (15.4): an array, a map, a record or a handle is read and never written. Reading a value at a wider type than it has is therefore always safe, and conformance is lifted into the contents of the type constructors that hold values. `Array<Number>` conforms to `Array<Any>`, `Array<String>` to `Array<String | Null>`, `Array<Environment>` to `Array<Runnable>`, and `Record<a: String>` to `Record<a: String | Null>`; the reverse of each does not.
 - A record's fields are not widened or narrowed, only their types: a record with an extra field does not conform to one without it (no width subtyping), since its serialization (13.1) and its equality (6.2) would show the field the type does not have. Whether a field may be absent is part of the type, so `Record<a: String>` does not conform to `Record<a?: String>`, nor the reverse.
 - A function that accepts more, or returns less, stands in for one that accepts less, or returns more: `Function<Any, String>` conforms to `Function<String, String>`, and `Function<Number, String>` to `Function<Number, String | Null>`.
-- Conformance is a check of types already determined. A type variable is instantiated by matching the types it appears in exactly (Polymorphic types, below), and conformance applies to the result. A type variable inside a function type is therefore determined by exact matching too: for `for_each(xs, show)` with `xs: Array<String>` and `show: Function<Any, Void>`, the variable `T` of `for_each` is `String` by the one and `Any` by the other, and the call is a type error, although a lambda written in place adopts the parameter type it is given.
+- A type variable inside a function type follows the same variance where a call instantiates it (Polymorphic types, below). In an argument whose parameter type is a function type, a parameter of that function bounds the callee's type variable from above, since the function has to take every value the callee will pass it, and a result of that function determines its variable as any other argument position does. So for `for_each(xs, show)` with `xs: Array<String>` and `show: Function<Any, Void>`, `T` is `String`, which `show` takes, and the call is well-typed, as it is with a lambda `\(x: Any) -> ...` in place of `show`; with `show: Function<Number, Void>` it is a type error, whose diagnostic names what `for_each` passes and what `show` takes. Outside function types, an argument still determines its variables by matching its type: arguments that give one variable different types make it the one every other conforms to, when there is one (Polymorphic types, below), and `append(names, null)` with `names: Array<String>` is a type error and not an `Array<String | Null>`, since a union is inferred only where 4.3 says so.
 
 The meaning of types is defined by the following rules.
 
@@ -687,7 +691,9 @@ Polymorphic types:
 - An `upper_id` in a type annotation that is not a type parameter in scope is a `NamedType`, resolved as a type alias reference; if there is no corresponding declaration (for the qualified form: no such namespace, or no public type alias of that name in the module it refers to), it is an undefined reference error.
 - A signature containing type variables is treated as a type scheme, and is instantiated to concrete types independently for each call and then checked. Within a single call, type variables of the same name must be bound to the same concrete type.
 - Instantiation is determined from the argument types and the contextual expected type. If a single concrete type cannot be determined, it is an inference failure error (4.3).
-- Instantiation does not depend on the order of the arguments. An argument whose own type comes from its position — a `cast` (15.8), or a `fail` (15.7) — is therefore checked once the other arguments and the expected type have determined the type variables of the position it sits in, and may stand in any argument position whose type they determine. Where nothing determines it, it remains an inference failure. This governs checking only: the arguments of a call are still evaluated from left to right (8.3).
+- An expected type determines nothing of a type variable it would make `Any`. Every type conforms to `Any`, so a position that requires it says nothing of what is placed there, and the variable is left to the arguments: in `to_json(largest([1, 2]))`, `largest<T: orderable>` is instantiated at `Number` by its argument, not at `Any` by the parameter of `to_json`, and in `ys: Array<Any> = sort([2, 1])` the result `Array<Number>` conforms to the annotation (Variance, above). Only where the arguments leave the variable undetermined does the expected type instantiate it, `Any` included.
+- A type variable that only the parameter positions of function arguments bound (Variance, above) is the greatest type all of them take: arguments `Function<String | Number, Bool>` and `Function<String, Bool>` for two parameters `Function<T, Bool>` give `T = String`, and `Function<Number, Bool>` with `Function<String, Bool>` is a type error, since no type is taken by both. Where `T` occurs in the result type, an upper bound of `Any` alone determines nothing, so a precise result never becomes `Any` by default: the expected type determines it, or it is the ordinary inference failure. Where `T` does not occur in the result, it may be `Any`. A variable determined otherwise, by another argument or by the expected type, must conform to each such upper bound. That is checked once every argument has been seen, so the order of the arguments decides nothing here either.
+- Instantiation does not depend on the order of the arguments. Where arguments outside function types give one variable different types, and one of them is a type every other conforms to, the variable is that one, as for the branches of one expression (4.3): `same<T>(a: T, b: T)` with `x: Number | Null` is instantiated at `Number | Null` by `same(x, 1)` and by `same(1, x)` alike, and `concat_array(names, anys)` with `anys: Array<Any>` is `Array<Any>` whichever argument comes first. Where no such type exists, it is a type error. An empty literal, `[]` or `{}`, says nothing of its elements, and is checked against the type the other arguments give its position, wherever it stands: `eq([], xs)` with `xs: Array<Number>` compares two lists of numbers. An argument whose own type comes from its position — a `cast` (15.8), or a `fail` (15.7) — is therefore checked once the other arguments and the expected type have determined the type variables of the position it sits in, and may stand in any argument position whose type they determine. Where nothing determines it, it remains an inference failure. This governs checking only: the arguments of a call are still evaluated from left to right (8.3).
 - A type variable may occur inside a union anywhere a type variable may occur, a parameter position included. In a return type the union is built by substituting the instantiation (`find`, 15.4, is `Function<Array<T>, Function<T, Bool>, T | Null>`); in a parameter position it is matched like any other pattern, and the variable is determined by whichever position determines it — which, since instantiation does not depend on argument order, may be another parameter or the expected type. Where nothing determines it, the ordinary inference failure reports it.
 - Matching an argument against a union pattern follows the rule above for unions on both sides: the members the two have in common are dropped, and a variable left facing a single member is bound to it. An argument that is not a union at all is matched once the other positions have made the pattern concrete. So for a signature `Function<T | Null, T, T>`, an argument of type `String | Null` binds `T` to `String` by the first route and an argument of type `String` by the second.
 - A union in a parameter position that mentions no type variable is an ordinary ground type and is checked by conformance like any other.
@@ -698,21 +704,24 @@ Polymorphic types:
 
 Bounds (4.2):
 
-- A type **satisfies** a named bound when it has the property the bound names (6.2, 15.4, 6.6), and a type bound `B` when it conforms to `B`. A type parameter in scope satisfies what its bound entails (below).
+- A type **satisfies** a named bound when it has the property the bound names (6.2, 15.4, 6.6), a type bound `B` when it conforms to `B`, and a class bound when it has an instance of the class in effect there (4.6). A type parameter in scope satisfies what its bound entails (below).
 - Wherever a signature is instantiated — at a call, and at a reference as a function value alike — the type each bounded variable is instantiated to must satisfy its bound. A violation is a static error (`E-TYPE-BOUND`), whose diagnostic names the function, the variable, the bound and the type. A type alias with bounded parameters is held to them where it is applied to type arguments.
 - The same predicates govern the operations that have no signature: `==` / `!=` (6.2) and a `case` value head (6.4) need `comparable`, and interpolation (6.6) needs `stringifiable`. A violation of these is `E-TYPE-BOUND` as well.
 - Built-in functions state their conditions as bounds in their signatures, written `sort<T: orderable>: Function<Array<T>, Array<T>>` (15.1). `cast` (15.8) is not among them, since its target has to be a concrete data type at run time. A type parameter never is, bounded or not, so that condition is well-formedness (`E-TYPE-ILLFORMED`) rather than a bound.
 
 Entailment:
 
-- A bound **entails** a named bound when every type it admits satisfies that named bound.
-- `orderable` entails `comparable` and `stringifiable`, as well as itself. `comparable` and `stringifiable` entail only themselves.
+- A bound **entails** a named bound, or a class, when every type it admits satisfies it.
+- A class entails itself, its superclass (4.6), and what its superclass entails: `<T: ord>` for `class ord<T: comparable>` entails `ord` and `comparable`. Nothing else entails a class.
+- `orderable` entails `comparable`, as well as itself: it is a class whose superclass is `comparable` (4.6). It does not entail `stringifiable`, since a type ordered by its instance need not be one. `comparable` and `stringifiable` entail only themselves.
+- A bound joined with `+` entails what any of its parts entails, and a bound entails one joined with `+` when it entails each part.
+- A part of a joined bound that is written twice, or that another part entails (`orderable + comparable`), adds nothing. It is not an error, and is reported as the advisory `W-BOUND-REDUNDANT` (14.2).
 - A type bound `B` entails a named bound that `B` itself satisfies, except that `Any` entails nothing: every type conforms to `Any`. So `<T: Number | String>` entails `comparable` and `stringifiable`, but not `orderable`, since the union admits itself and a union is not orderable.
 
 Type parameters within the body of their declaration (rigidity):
 
 - Within the body of a declaration that declares type parameters, each type parameter is an opaque type, distinct from every other type including every other type parameter. It conforms to itself, to `Any`, and, when it has a type bound `B`, to whatever `B` conforms to.
-- It satisfies a named bound exactly when its own bound entails it (4.4, bounds). An unbounded type parameter is therefore not a comparable type (6.2), not ordered (15.4), and not stringifiable (6.6); `<T: comparable>` can be compared with `==`, `<T: stringifiable>` interpolated, and `<T: orderable>` sorted, compared and interpolated. No bound makes it a legal target of `cast` (15.8) or a legal `case` type head (6.4), being neither a union nor `Any`.
+- It satisfies a named bound exactly when its own bound entails it (4.4, bounds). An unbounded type parameter is therefore not a comparable type (6.2), not ordered (15.4), and not stringifiable (6.6); `<T: comparable>` can be compared with `==`, `<T: stringifiable>` interpolated, `<T: orderable>` sorted and compared, and `<T: orderable + stringifiable>` all of these. No bound makes it a legal target of `cast` (15.8) or a legal `case` type head (6.4), being neither a union nor `Any`.
 - A value of an unbounded type parameter's type can be bound, passed, returned, placed in an `Array` / `Map` / `Record`, and serialized through `Any` — and nothing else. A body that needs an operation beyond what a bound gives takes the operation as an argument (`Function<T, Number>` as a sort key, `Function<T, T, Bool>` as an equality).
 - A bounded type parameter is still distinct from its bound: `<T: Number>` may be passed where `Number` is required, but `x + 1` is a `Number` and not a `T`.
 - A type parameter is opaque only inside the body. At a call site it is instantiated to a concrete type, and the result is that concrete type.
@@ -732,6 +741,107 @@ Type parameters within the body of their declaration (rigidity):
 - Function values are converted to reference metadata (`FunctionRef`; 13.2) in execution records and external output.
 - Likewise, `Void`, `Environment` and `Runnable` are converted to a tagged metadata representation (13.1) in external output. Restoration by deserialization is not guaranteed for either (the round-trip rules of 13.1).
 
+### 4.6 Classes and Instances
+
+```ebnf
+ClassDecl     = "class" lower_id "<" TypeParam ">" "{" { ClassMethod decl_end } "}" .
+ClassMethod   = lower_id "(" [ MethodParam { "," MethodParam } ] ")" ":" Type [ "=" Expression ] .
+MethodParam   = lower_id ":" Type .
+InstanceDecl  = "instance" [ TypeParams ] ClassName "<" Type ">" "{" { FunctionDecl decl_end } "}" .
+ClassName     = [ lower_id "." ] lower_id .
+```
+
+A class names the types that have certain operations, its **methods**, and an instance gives a type those operations. A class is used as a bound (4.2): `<T: ord>` admits the types with an instance of `ord`, and lets the body call the methods of `ord` on a `T`.
+
+```lask
+type Version = Record<major: Number, minor: Number>
+
+class ord<T: comparable> {
+  compare(a: T, b: T): Number
+  lt(a: T, b: T): Bool = compare(a, b) < 0
+}
+
+instance ord<Version> {
+  compare(a, b) = if (a.major != b.major) { a.major - b.major } else { a.minor - b.minor }
+}
+
+smaller<T: ord>(a: T, b: T): T = if (lt(a, b)) { a } else { b }
+```
+
+Classes:
+
+- A `ClassDecl` declares a class over one type parameter. Its name is a `lower_id`, written where a bound is (4.2), bare or qualified by a namespace (`<T: m.ord>`). It is not a value: written as an expression, it is a type error (`E-TYPE-MISMATCH`). It must not be the name of a named bound, which a bound would read first (`E-NAME-DUPLICATE`).
+- The name of a class and the name of each of its methods are names of the module, in the namespace of values (5): each is a public symbol unless the class is marked `internal`, which makes its methods internal with it; each is imported, re-exported and renamed as a function is; and each collides, as a duplicate definition (`E-NAME-DUPLICATE`), with any other name of the module in that namespace, a method of another class included.
+- The bound of the type parameter, when it has one, is the class's **superclass**: a named bound or another class. An instance is then only for a type that satisfies it, and a type parameter bounded by the class has what the superclass gives as well (entailment, 4.4). A type bound there is ill-formed (`E-TYPE-ILLFORMED`), and so is a class that is its own superclass, directly or through others.
+- A `ClassMethod` is a signature written in full: each parameter positional and annotated, and the return type. Anything else is ill-formed (`E-TYPE-ILLFORMED`). The method is a function of the module whose type parameter is the class's, bounded by the class: `compare` above is `compare<T: ord>(a: T, b: T): Number`. A call of it at a type calls the method of that type's instance. The signature mentions the class's type parameter, in a parameter or the result: a method that does not has nothing at a call to say which instance it means (`E-TYPE-ILLFORMED`).
+- A method may have a **default** body, after `=`, which an instance that does not define the method takes. It is checked as the body of a declaration with the class's type parameter bounded by the class: the parameter is opaque (4.4), and the body may call the methods of the class, and of its superclasses, on it.
+
+Instances:
+
+- An `InstanceDecl` declares that a type has an instance of a class, and defines its methods: `instance ord<Version> { ... }`. The class is written as in a bound. The type is any type other than `Any` and `Void` that mentions no type parameter but those of the instance (`E-TYPE-ILLFORMED`); an instance with type parameters is parametric (below).
+- An instance is for a type, not for the name it is written with: a type alias is expanded (4.3), so `Version` above and any other alias of `Record<major: Number, minor: Number>` name the one type with the one instance.
+- A method of an instance is a `FunctionDecl` named after a method of the class, with no type parameters and no `WithinClause` (`E-TYPE-ILLFORMED`), and with the positional parameters of the signature, as many as it has (`E-TYPE-ARITY`). Its types are those of the signature with the instance's type put in for the class's type parameter: a parameter or a return type written without an annotation takes them, and one written with an annotation must give them exactly (`E-TYPE-MISMATCH`). It is covered by the module constraint of the module it is in (5, 10.11).
+- A name that is not a method of the class is undefined (`E-NAME-UNDEFINED`); a method defined twice is a duplicate definition (`E-NAME-DUPLICATE`); a method with no default that the instance does not define is `E-TYPE-INSTANCE`.
+- The type must satisfy the superclass: a named bound by what the type is, and a class by an instance of it in effect where the instance is declared. Otherwise it is `E-TYPE-INSTANCE`.
+- A program has at most one instance of a class for a type. A second, wherever it is declared, is a duplicate definition (`E-NAME-DUPLICATE`), so which instance a use means never depends on where the use is.
+- An instance is declared in the module that declares the class, or in a module of the project; a module of a dependency (11.5) cannot declare one for a class of another module (`E-TYPE-INSTANCE`). Two dependencies therefore never bring the same instance between them, which no one who imports both could repair.
+- A program has at most one instance of a class for a type, a type that a parametric instance is for included: two instances of a class whose types have one in common are a duplicate definition (`E-NAME-DUPLICATE`), however much one of them says more than the other.
+- An instance has no name. It is not imported or exported, and takes no visibility marker. It is **in effect** in the module it is declared in and in every module that imports that module, directly or not.
+
+The built-in classes:
+
+- The named bounds (4.2) are classes of the language. `comparable` and `stringifiable` are **closed**: their instances are the types 6.2 and 6.6 make comparable and stringifiable, and an instance declared for either is `E-TYPE-INSTANCE`. Equality and interpolation therefore mean the same for every type.
+- `orderable` is **open**. It is the class
+
+  ```lask fragment
+  class orderable<T: comparable> {
+    compare(a: T, b: T): Number
+  }
+  ```
+
+  whose instances for `Number` and `String` are the language's own (15.4): declaring one of those is a duplicate definition (`E-NAME-DUPLICATE`). An instance for another type gives it an order, by `compare`, which `sort`, `sort_by`, `compare` and the ordering operators (6.2) use for it. Its module is no module of the program, so such an instance is declared in the project (above).
+
+  ```lask
+  type Version = Record<major: Number, minor: Number>
+
+  instance orderable<Version> {
+    compare(a, b) = if (a.major != b.major) { a.major - b.major } else { a.minor - b.minor }
+  }
+
+  latest(vs: Array<Version>): Version = last(sort(vs))
+  ```
+
+- A type parameter of a local function (6.1) bounded by `orderable` is ordered as `Number` and `String` are, the local function being instantiated where it is called and not specialized: a call of it at a type ordered by an instance is `E-TYPE-BOUND`.
+
+Parametric instances:
+
+- An instance that declares type parameters, after `instance` as a declaration does (4.2), is an instance for each type its type matches, each type parameter standing for the part of the type in its place. Each part has to satisfy the bound of the type parameter it stands for, which may be a class: the instance is then for those types alone.
+
+  ```lask
+  instance<T: orderable> orderable<Array<T>> {
+    compare(a, b) = do {
+      n = min(size(a), size(b))
+      diffs = filter(map(range(0, n), \(i) -> compare(a[i], b[i])), \(d) -> d != 0)
+      is_empty(diffs) ? size(a) - size(b) : first(diffs)
+    }
+  }
+
+  ordered(): Bool = [1, 2] < [1, 3]
+  ```
+
+  Arrays of an orderable type are then orderable, by the element first, so are arrays of those, and so on; an array of `Bool` is not.
+- Every type parameter appears in the instance's type, which is more than a type parameter, and none of them is a member of a union in it, since a type is matched part by part. Anything else is ill-formed (`E-TYPE-ILLFORMED`). A part a type parameter stands for is smaller than the type, so looking for an instance always ends.
+- Within its methods the type parameters are opaque as a declaration's are (4.4), with what their bounds give. A method that calls a method of its class at a type that grows with each call, so that the types it would be specialized at have no end, is a type error (`E-TYPE-BOUND`).
+- The superclass is checked as for any instance, a type parameter satisfying it by its bound: `orderable<Array<T>>` needs `T` bounded by `comparable` or a bound that entails it, which `orderable` does.
+
+Using a class:
+
+- A type satisfies a class bound (4.4) when it has an instance of the class in effect where the bound is checked, or when it is a type parameter whose bound entails the class. The instance is found by the type exactly, after alias expansion and reduction of unions to canonical form (4.2), or by the type matching that of a parametric instance: conformance takes no part, so `Number | String` and `Number` are distinct types, and an instance for `Array<Number>` is not one for `Array<Any>`.
+- A class bound is written on a type parameter of a top-level declaration: a function declaration, a binding of a lambda (6.1), or a type alias. A lambda bound by a block takes no class bound (`E-TYPE-ILLFORMED`); a class bound is resolved where the declaration is instantiated at concrete types, which a local function, being a value of the body it is in, never is. A type parameter with a class bound appears in a parameter or the result of the declaration, so that a call can determine it, from its arguments or from the type expected of it (`E-TYPE-ILLFORMED`).
+- Which instance a call uses is decided statically, by the type its type parameter is instantiated at (4.4). The value's own content plays no part, and `Any`, having no instances, satisfies no class bound.
+- A declaration generic over a class behaves as if written again for each type it is instantiated at, with the methods of that type's instances in place of its class's: so it is checked against the access constraints that cover it (10.11) at each of those types, and a recursive call of it stays at the types it was called with (4.3).
+- The CLI instantiates a class-bounded type parameter from the values it decodes (11.2).
+
 ## 5. Declarations and Modules
 
 This chapter defines modules, declarations, public symbols, and imports.
@@ -739,7 +849,8 @@ This chapter defines modules, declarations, public symbols, and imports.
 ```ebnf
 Module        = { TopLevelDecl } .
 TopLevelDecl  = ( ImportDecl | ExportDecl | ModuleWithin
-                | [ Visibility ] ( CommandDecl | TypeAliasDecl | AccessDecl | Declaration ) ) decl_end .
+                | InstanceDecl
+                | [ Visibility ] ( CommandDecl | TypeAliasDecl | AccessDecl | ClassDecl | Declaration ) ) decl_end .
 decl_end      = newline | ";" .
 Visibility    = "export" | "internal" .
 TypeAliasDecl = "type" upper_id [ TypeParams ] "=" Type .
@@ -783,6 +894,7 @@ Declaration termination rules:
 - `schema` is a contextual keyword, like `on`: it is a keyword only after the environment of a command declaration, and remains usable as an identifier everywhere else. The environment expression ends before it, and it must be placed on the same line as the end of that expression; the schema expression may span lines by the open-bracket continuation rule.
 - `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none; the `AccessSpec` may span lines by the open-bracket continuation rule, and the `=` follows its closing `}`, or the `AccessName`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
 - `access` is a contextual keyword (3.3). An `AccessDecl` is written on one line up to the `{` of its `AccessSpec`, which may span lines by the open-bracket continuation rule.
+- `class` and `instance` are contextual keywords (3.3). A `ClassDecl` or an `InstanceDecl` is written on one line up to its `{`. The braces enclose a block, as those of `do` do (6.5), not an object literal: each method in them is ended by a newline or `;`, and an expression in a method spans lines by the continuation rules of 6.5. `ClassDecl` and `InstanceDecl` are defined in 4.6.
 
 Access constraints:
 
@@ -904,7 +1016,7 @@ Namespace re-export:
 - A module that imports the current one reaches its public namespaces through it: with `import * as m from "path"`, `m.ns` names the namespace and `m.ns.symbol` a public symbol of the module `ns` refers to, and a call `m.ns.f(...)` keeps `f`'s parameter list as a call through `m.f` does. A named import `import { ns } from "path"` binds `ns` as a namespace of the importing module. The same holds through any number of namespaces.
 - A namespace is not a value: `m.ns` written where a value is expected is an error before type checking (`E-NAME-UNDEFINED`), as is a member that is not a public symbol of the module the namespace refers to.
 - It brings no name in: only `ns` is published, and what it holds is reached only qualified, so the rule above still holds. A type alias is referenced through one namespace only (`m.TypeName`, 4.2); a public type of a re-exported namespace is reached by importing that module, or by the alias's own re-export.
-- The public functions and values of a namespace the entry module re-exports are invoked and listed by the CLI under their qualified name, `lask eval python.env --image ...` (11.2, 11.6), through any number of namespaces.
+- The public functions and values of a namespace the entry module re-exports are invoked by the CLI through their function path, the namespaces and the name as words or joined by `.`, `lask eval python env --image ...` or `lask eval python.env --image ...`, and listed by it as words (11.2, 11.6), through any number of namespaces.
 - Same-name collision rules are those of namespace imports: `ns` must not be the name of a top-level declaration, of a name brought in by a named import or re-export, or of another namespace.
 
 Evaluation timing of top-level declarations:
@@ -1248,17 +1360,17 @@ The types of the operators are as follows.
 
 - `!` is typed as `Function<Bool, Bool>`, and unary `-` as `Function<Number, Number>`: `-e` is `0 - e`.
 - `*`, `/`, `+`, `-` are typed as `Function<Number, Number, Number>`.
-- `<`, `<=`, `>`, `>=` are `<T: orderable> Function<T, T, Bool>` (4.4): both operands have one type, `Number` or `String` (or a type parameter whose bound entails `orderable`), and a type that is not orderable is `E-TYPE-BOUND`. Numbers are ordered by value, and strings by Unicode code point, as `sort` orders them (15.4).
+- `<`, `<=`, `>`, `>=` are `<T: orderable> Function<T, T, Bool>` (4.4), and their operands are typed as the arguments of a call of it are: both have one orderable type, the wider of the two when one conforms to the other, as for `==`, and an empty literal takes the type of the other operand, on either side, as with `[] < xs` and `xs > []`. That type is orderable -- `Number`, `String`, a type with an instance of `orderable` (4.6), or a type parameter whose bound entails `orderable` -- and a type that is not orderable is `E-TYPE-BOUND`. Numbers are ordered by value, and strings by Unicode code point, as `sort` orders them (15.4); a value of another type by the `compare` of its instance, `a < b` being `compare(a, b) < 0`.
 - `&&`, `||` are typed as `Function<Bool, Bool, Bool>`.
-- `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. In the terms of 4.4 they are `<T: comparable> Function<T, T, Bool>`, instantiated at the wider type, and a type that is not comparable is `E-TYPE-BOUND`. So `xs == ys` with `xs: Array<String>` and `ys: Array<String | Null>` compares at `Array<String | Null>`. A comparison with an `Any` side is never well-typed, since `Any` is not comparable.
+- `==`, `!=` are well-typed only when the type of one side conforms to the type of the other (4.4) and the wider of the two — the one conformed to — is a comparable type; the result type is `Bool`. In the terms of 4.4 they are `<T: comparable> Function<T, T, Bool>`, instantiated at the wider type, and a type that is not comparable is `E-TYPE-BOUND`. So `xs == ys` with `xs: Array<String>` and `ys: Array<String | Null>` compares at `Array<String | Null>`. An empty literal, `[]` or `{}`, is checked against the type of the other side, on either side, so `xs == []` and `[] == xs` compare two lists of the elements of `xs`; `[] == []` has nothing to give it a type, and is a comparison at `Array<Any>`. A comparison with an `Any` side is never well-typed, since `Any` is not comparable.
 - The comparable types are limited to `Number`, `String`, `Bool`, `Null`, `Environment`, `Runnable`, `Array<T>` / `Map<T>` / `Record<...>` whose element, value, and field types are all comparable types, a union all of whose members are comparable types, and a type parameter whose bound entails `comparable` (4.4). This is the named bound `comparable` (4.2).
 - Therefore `x == null` is well-typed when `x: String | Null`, since `Null` conforms to `String | Null` and that union is comparable. It compares values and does not by itself narrow the type of `x`; narrowing is a property of `case` (6.4).
 - Applying `==` / `!=` to types containing `Function`, `AsyncHandle`, `Void`, or `Any` is a static error. To compare values of `Any`, first move to a concrete type with `cast` (15.8), or narrow with `case` (6.4), and then compare.
 - Equality of structured values (`Array` / `Map` / `Record`) is determined by recursive structural comparison of elements, keys, and fields. Equality of `Environment` and `Runnable` follows 8.8.
 - `e1 |> f` is well-typed when `e1: T` and `f: Function<T, R>` hold, and the type of the whole expression is `R`.
 - `f <| e1` is well-typed when `e1: T` and `f: Function<T, R>` hold, and the type of the whole expression is `R`.
-- `f >> g` is well-typed when `f: Function<T, U>` and `g: Function<U, R>` hold, and the type of the whole expression is `Function<T, R>`.
-- `f << g` is well-typed when `g: Function<T, U>` and `f: Function<U, R>` hold, and the type of the whole expression is `Function<T, R>`.
+- `f >> g` is well-typed when `f: Function<T, U>` and `g: Function<V, R>` hold and `U` conforms to `V` (4.4), and the type of the whole expression is `Function<T, R>`.
+- `f << g` is well-typed when `g: Function<T, U>` and `f: Function<V, R>` hold and `U` conforms to `V` (4.4), and the type of the whole expression is `Function<T, R>`.
 
 The pipe and composition operators are syntactic sugar for making the passing of functions readable from left to right, and parentheses can be used to make the association order explicit.
 
@@ -1369,7 +1481,7 @@ Typing rules:
 - `map` is typed as `Function<Array<T>, Function<T, U>, Array<U>>`.
 - `filter` is typed as `Function<Array<T>, Function<T, Bool>, Array<T>>`.
 - `reduce` is typed as `Function<Array<T>, U, Function<U, T, U>, U>`.
-- `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because a body that returns `Void` does not conform to one that returns `Any`, and a type variable inside a function type is matched exactly (4.4); `U` accepts a body of any return type through instantiation).
+- `for_each` is typed as `Function<Array<T>, Function<T, U>, Void>` (the return type `U` of the body is arbitrary and the result is discarded. The type variable `U` is used rather than `Any` because a body that returns `Void` does not conform to one that returns `Any`, and the result of a function argument determines its type variable (4.4); `U` accepts a body of any return type through instantiation).
 - An `IfExpr` is well-typed only when the condition expression is `Bool` and the types of the two branch blocks are the same `T`, and the type of the whole expression is `T`; or, with no expected type, when they differ only as the joins of 4.3 allow, whose result is the type of the whole expression.
 - An `if` without `else` is typed as the `if` with `else { null }` it is sugar for. With no expected type, its block of type `T` is joined with `Null` (4.3), so its type is `T | Null`, reduced to canonical form (4.2): when the condition is false its value is `null`. When `T` is `Void` — a block run for its effect — the sugar has an empty `else` instead, and the type is `Void`.
 - With an expected type `E` (4.3), the block is checked against `E`, and `Null` must also conform to `E`, unless `E` is `Void`. So `f(c: Bool): String | Null = if (c) { "x" }` is well-typed and `f(c: Bool): String = if (c) { "x" }` is a type error (`E-TYPE-MISMATCH`), whose remedy is an `else`.
@@ -3202,7 +3314,7 @@ lask <subcommand> [options]
 
 Common options:
 
-- `--module <path>`: specifies the target module for execution. When unspecified, `main.lask` in the execution directory is used.
+- `--module <path>`: specifies the target module for execution. When unspecified, it is `main.lask` in the execution directory or, when that has none, in the nearest directory above it that has one, so that a task can be run from any directory of its project. The directory of the entry module is the base directory, against which paths, the mount and `lask.json` resolve (10.5), not the execution directory, so a task behaves the same from anywhere in the project; diagnostics name the module relative to the execution directory (`../main.lask`). No `main.lask` up to the root is `E-CLI-USAGE`, as is a `--module` that names no file; `--module` is not looked for above. `fmt`, `deps` and `secrets` do not need the module: without one, `fmt` formats the execution directory, `deps` works on its `lask.json`, and `secrets` on the environment variables alone (11.10).
 - `--output <text|json|pretty-json>`: what is written to **stdout**: the evaluation result of `eval`, and the report of a command — the diagnostics of `check`, the tables of `envs`, `deps`, `secrets` and `sync`, the list of `fmt`, and help (11.6). `json` is compact JSON and `pretty-json` the same JSON indented. Its default is `json` for the evaluation result of `eval`, which is meant to be read by another program, and `text` for every report and for help. `run` and `cmd` write no result of their own (11.3), so it applies to them only for help.
 - `--log-format <text|json>`: what is written to **stderr**: logs, the command execution log, diagnostics and execution events (Chapter 12). `json` is JSON Lines, one object per line (12.2). The default is `text`.
 - The two are independent, one per stream, so that a CI job can read the logs of a run as JSON Lines while what it prints stays text, or the other way round.
@@ -3261,7 +3373,7 @@ lask eval [--module <path>] [--arg-decode <mode>] [lask options ...] <function> 
 
 - The invocation syntax of `run` and `eval` is identical. The rules of this section (function-name mapping, keyword arguments, binding, decoding) apply equally to both.
 - When `--module` is unspecified, `main.lask` is the target. Therefore the minimal form is `lask run <function> [args ...]` / `lask eval <function> [args ...]`.
-- Options of `lask` itself (`--module`, `--arg-decode`, `--output`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments).
+- Options of `lask` itself (`--module`, `--arg-decode`, `--output`, etc.) must be placed before the function name. **All tokens after the function name are interpreted as arguments to the function** (a boundary rule to prevent collisions between `lask` options and function keyword arguments). For a function in a namespace, the function name is its function path (below), and the boundary is after the path's last word.
 - The sole exception to this boundary rule is `--help` (11.6). When `--help` appears after the function name as a standalone token, it is intercepted by the CLI and the help of the function is displayed instead of the function being called.
 - `-h` is **not** intercepted after the function name, because it would collide with the short form of a single-character keyword parameter. `-h` is accepted only before the function name.
 - For `cmd`, no token after the command name is intercepted, `--help` included: those tokens are the invoked program's own arguments (11.8). The help of the subcommand is obtained with `lask cmd --help`, with no command name.
@@ -3273,6 +3385,15 @@ Function-name and parameter-name mapping rules:
 - Matching is performed with the name after replacement; if there is no match, it is an undefined reference error.
 - Since identifiers cannot contain `-` (3.2), this mapping never maps multiple candidates to the same name, and resolution is always unique.
 - camelCase names (`buildAndTest` etc.) are not subject to the mapping and are specified with their names as is.
+
+Function path:
+
+- A function in a namespace the entry module re-exports (Chapter 5, "Namespace re-export") is named by its **function path**: its namespaces and its name, given as separate words, as words joined by `.`, or both. For `export * as db from "./db.lask"`, `lask run db migrate` and `lask run db.migrate` both call `migrate` of `db.lask`; through a namespace `tools` of `db`, `db tools run-it`, `db.tools run-it`, `db tools.run-it` and `db.tools.run-it` all name `run_it`.
+- The path is read from the first word after the `lask` options: each word after it belongs to the path while what has been read names a namespace, and the first word that does not complete a namespace is the path's last word. A word beginning with `-` is never part of the path. The mapping above applies to each name in it.
+- The reading is unambiguous. A namespace cannot share its name with a declaration or another name of its module (Chapter 5), so a name is either a namespace, after which the path goes on, or not, and the path ends at it. A namespace takes no arguments, so the word after one is never one of them; past the path's last word, every word is an argument, even one that spells a name of a namespace.
+- A path that ends at a namespace names a group of functions, not a function: `lask run db` is a usage error (`E-CLI-USAGE`) whose message lists the names that may follow it. `lask run db --help` lists the functions of the namespace (11.6).
+- The same holds wherever a subcommand takes a function name: `run`, `eval`, their `--help` (11.6), `envs` (11.4) and `secrets` (11.10). For `envs` and `secrets`, which take nothing after the function, a word after the path is a usage error.
+- Where the CLI writes the path for a person to read or type, it writes it as words (11.6). JSON output, the keys of `confirm` in the project file (Chapter 5), the default phrase of a confirmation, and logs keep the qualified name as declared, `db.migrate`, since they name the declaration.
 
 Keyword argument forms:
 
@@ -3290,7 +3411,7 @@ Flags:
 Binding rules:
 
 1. Resolve the target module (`--module`, default `main.lask`) and obtain the function specified by the first positional argument, among the public symbols of that module: those it declares, and those it re-exports under the name it publishes them by (Chapter 5). A re-exported function is invoked as the declaration it names, with its parameter list intact. A declaration marked `internal` is not reachable.
-   The command line calls functions: a public symbol whose type is a function type, which is a function declaration or a value binding whose value is a function (`inc = \(x: Number) -> x + 1`). A plain value binding (`version = "1.0"`) is not called, and naming one is a usage error (`E-CLI-USAGE`) that says so; a value the command line is to print is written as a function of no parameters (`version() = "1.0"`). The same holds wherever a subcommand takes a function name: `run`, `eval`, their `--help` (11.6), `envs` (11.4) and `secrets` (11.10).
+   The command line calls functions: a public symbol whose type is a function type, which is a function declaration or a value binding whose value is a function (`inc = \(x: Number) -> x + 1`). A plain value binding (`version = "1.0"`) is not called, and naming one is a usage error (`E-CLI-USAGE`) that says so; a value the command line is to print is written as a function of no parameters (`version() = "1.0"`). An `internal` declaration of the entry module (Chapter 5) is not called either, and the usage error says it is internal rather than that there is no such function; so does one of a module a namespace refers to, named by its function path (below), and the error names that module. The same holds wherever a subcommand takes a function name: `run`, `eval`, their `--help` (11.6), `envs` (11.4) and `secrets` (11.10).
 2. Bind the positional arguments after the function name, from left to right, to the positional parameters in declaration order. Positional arguments exceeding the number of positional parameters are collected into the variadic parameter (variadic collection in 7.5).
 3. Bind keyword arguments to parameters with matching names. Unknown names and duplicate bindings are pre-execution errors (corresponding to `E-TYPE-KEYWORD` in 7.5).
 4. Keyword parameters that were not bound are completed with the default values from the function definition (default-value completion in 7.5). A required keyword parameter (6.1) that was not bound is a pre-execution error (`missing keyword argument: '--target'`).
@@ -3315,6 +3436,7 @@ Type conformance rules:
   - An unbounded one is instantiated at `Any`. This is sound because it is opaque within the body (4.4): whatever the CLI hands over, the body can only pass it along.
   - One with a type bound `B` is instantiated at `B`, the widest type it admits.
   - One with a named bound is decoded at `Any`, then instantiated from the types of the decoded values, as a call instantiates it from the types of its arguments (4.4). Each value in a position of the parameter's type contributes the type a literal of it would have (4.3). The values must agree on one type, and that type must satisfy the bound; otherwise it is a usage error (`E-CLI-USAGE`) before evaluation begins. A body may compare, sort or interpolate such a value, so it cannot be handed one outside its bound.
+  - One with a class bound (4.6), `orderable` included, is decoded and instantiated in the same way, and the type the values agree on must be one with an instance of the class: for `orderable`, `Number`, `String` or a type with an instance declared. The instance it selects is the one the function runs with, so the values must give a type: when they give none, as an empty array gives none for its elements, it is a usage error (`E-CLI-USAGE`) as well. A JSON object gives a record type, so `--arg-decode json` can select the instance for a record type such as `Version` (4.6). A parametric instance gives types without end, and the CLI selects among those it gives with a type the program has an instance for, or `Number`, `String` or `Bool`, put in for each of its type parameters: `Array<Version>` and `Array<Number>`, but not `Array<Array<Number>>`, for the instance above. Another type is a usage error (`E-CLI-USAGE`).
   - One that a parameter written without an annotation gave rise to (4.3), with a named bound that admits `String`, is instantiated at `String`, and its values are taken as the text written. A body that does no more with a value than interpolate or compare it does not say it wants a number, so `--version 1.0` stays `"1.0"` and is not read as the number `1`. Annotating the parameter, or writing the type parameter, chooses another decoding.
 - Functions with positional parameters of type `Environment` or `Runnable` are excluded from direct CLI invocation (since no decoding mode can construct such a value, this is a pre-execution error). Keyword parameters of these types are completed with their default values, but values cannot be supplied from the CLI. To select the environment externally, receive a `String` etc. and choose inside the function among environments written there (`case (target) { "amd64" -> #alpine:3.20(platform = "linux/amd64") ... }`); every image stays written as a head (6.7). A run option may be taken from such a value directly, and given to `runnable` (15.5).
 
@@ -3417,7 +3539,7 @@ lask envs list [--module <path>] [<function>]
 Enumeration rules:
 
 - If no function is specified, the environments reachable from the module are enumerated (static scan of environment heads, 6.7): those in its declarations, keyword parameter defaults included, and in the environment of every command word the module has, declared or imported, through every declaration they reference in any module (Chapter 5). A declaration of an imported module that nothing reachable references is not scanned.
-- If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. It names a function the command line can call, as `run` takes it, by the function-name mapping of 11.2.
+- If `<function>` is specified, the enumeration is limited to the environments used on the call graph reachable from that function. It names a function the command line can call, as `run` takes it, by the function-name mapping and the function path of 11.2.
 - Reachability is an over-approximation. A superset of the environments that may be used must be reported; under-reporting is not permitted. Functions passed around as function values are included conservatively.
 - What is enumerated is the heads: every image is named by one (6.7), so every environment is enumerated concretely. Run options change no image, and add no entry.
 
@@ -3723,10 +3845,12 @@ lask run  [--module <path>] [lask options ...] <function> --help
 lask eval [--module <path>] [lask options ...] <function> --help
 lask run  [--module <path>] [lask options ...] --help
 lask eval [--module <path>] [lask options ...] --help
+lask run  [--module <path>] [lask options ...] <namespace> --help
+lask eval [--module <path>] [lask options ...] <namespace> --help
 ```
 
 - Only `run` and `eval` provide function help. As in 11.2, the two are identical in this respect.
-- When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module.
+- When a function name is given, the help of that function is displayed. When it is omitted, the CLI option help is displayed, followed by the list of callable functions in the target module. When the function path (11.2) ends at a namespace, the list of the functions it holds, through any number of namespaces, is displayed, headed `Functions in db:`; its JSON form is the function list.
 - Function-name mapping follows 11.2, so `lask run show-version --help` displays the help of `show_version`.
 - A function that declares type parameters (4.2) is displayed with them and their bounds, as `first<T>` or `largest<T: orderable>`, where its declaration is being described: the heading of its help, the list of a module's functions, and an editor hover. Where the name is instead something to type — the usage line, a completion candidate, the function argument of `lask run` — it appears plain, since the type parameters are not written at a use site (4.2). A function *value* carries no type parameters, having been instantiated at the reference position (4.4), so `FunctionRef` (13.2) never shows one.
 - The interception rules for `--help` (standalone token, `-h`, `--`, `--help=<value>`) are defined in 11.2.
@@ -3744,7 +3868,7 @@ Sources of help information:
 
 Rendering rules:
 
-- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. An `_` that leads a name is kept, since a word on the command line that begins with `-` is read as an option: the function `_build_all` is shown as `_build-all`, and its parameter `_dry_run` as `--_dry-run`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
+- Function and parameter names are displayed in the kebab-case form of 11.2, the form the command line is written in: the parameter `out_dir` is shown as `--out-dir`. A function in a namespace is displayed by its function path as words, `db tools run-it` for `db.tools.run_it`; a completion candidate is the next word of the path (`db`, then `migrate`), or the qualified name once the word being typed has a `.`. An `_` that leads a name is kept, since a word on the command line that begins with `-` is read as an option: the function `_build_all` is shown as `_build-all`, and its parameter `_dry_run` as `--_dry-run`. The name as declared remains accepted (11.2). This holds wherever the CLI writes a name for a person to read or type — the help, the function list, usage errors and their suggestions (14.3), and completion candidates, except that a candidate for a word already typed with `_` keeps that form. JSON output carries names as declared (3.2), since a tool reads it against the declarations.
 - In the usage line, a positional parameter is rendered `<name>`, a variadic parameter `[<name> ...]`, and a keyword parameter `[--name <Type>]`. A required keyword parameter (6.1) is rendered without the brackets, `--name <Type>`, and a flag (11.2) without the type, `[--name]`.
 - In the parameter list, a required keyword parameter is marked `(required)` after its type, in place of a default value.
 - A section with no content is omitted (no summary, no parameters, `#local` only, and so on).
@@ -3847,7 +3971,7 @@ Output destination and exit codes:
 
 - Help is written to stdout (the exception in 11.3). Diagnostics are written to stderr as usual.
 - `0`: the help was displayed.
-- `4`: the specified name is not a function the command line can call (11.2): no public symbol of the module has it, or it names a plain value binding. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`.
+- `4`: the specified name is not a function the command line can call (11.2): no public symbol of the module has it, it names a plain value binding, or it names an `internal` declaration. The usage and, where possible, candidate names (14.3) are written to stderr as `E-CLI-USAGE`.
 - `1`: the target module could not be parsed. Diagnostics are written to stderr and no help is displayed.
 - Static errors (14.4) do **not** prevent help display. The help is rendered from the information that is available, a type that could not be determined is displayed as `?`, the diagnostics are written to stderr, and the exit code is `0`. Help is most needed while a module is broken, so this is a deliberate exception to the rule of 14.4 that static errors stop `run` / `eval`; no function is evaluated in this case either.
 - For `lask run --help` / `lask eval --help` without a function name, the CLI option help must always be displayed with exit code `0`. If the target module cannot be loaded, the function list is omitted.
@@ -3898,7 +4022,7 @@ General rules:
 
 Progress and the summary:
 
-- While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
+- While it runs, `sync` reports on stderr what it is doing: a `Modules` and an `Images (<n>)` heading, each only when there is something under it, and for each module and image, when it starts (resolving, checking, pulling, building) and how it ended (`fetched`, `present`, `pulled`, `built`, `pruned`, or `failed` with its error code), with the time it took.
 - On a terminal, the item in progress is a single line redrawn in place, with the latest detail: for a pull, how many of the image's layers are complete; for a build, the step that is running. Elsewhere each item is a timestamped line when it starts and when it ends, with a line every 30 seconds in between, so that a long pull is seen to progress. With `--log-format json` each of these is a JSON Lines event.
 - When it ends, whether it succeeded or not, `sync` writes to stdout a `Modules` table — `NAME`, `SOURCE`, `REQUESTED`, `REV`, `HASH`, `STATUS`, `TIME`, as in `deps list` (11.5) — and an `Images` table — `ENVIRONMENT`, `KIND`, `PINNED`, `REQUIRED BY`, `STATUS`, `TIME`, as in `envs list` (11.4) — then one line counting both by status, the total time, and whether `lask.json` and `lask.lock.json` were updated. With `--output json` the summary is one object, `modules` and `images`.
 - The diagnostic of each failure follows on stderr in full, and the images the lock no longer records are named as kept on the container engine.
@@ -3957,7 +4081,7 @@ Exit code rules:
 Rules (`--help`):
 
 - `lask cmd --help` (or `-h`), with no command name, displays the CLI option help followed by the list of command words, in the way `lask run --help` lists functions (11.6).
-- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. Structured output is available with `--output json`.
+- The list holds every command word the target module has, declared or imported: the name, its resolved environment, and whether the image is present on the target daemon. The environment is written as `lask run --help` and `envs list` write one (11.4, 11.6), its head and its kind. Structured output is available with `--output json`, which gives the kind of the resolved environment, `docker` or `local`, and its target.
 - An environment that cannot be evaluated is reported with the failure in place of its target, and the listing continues.
 - The list is produced with no network access and no build, on the same terms as `envs` (11.4).
 - The option help is displayed whatever state the target module is in. When the module does not compile, its diagnostics go to stderr, the list is omitted, and the exit code is `0`.
@@ -3971,10 +4095,10 @@ Usage: lask cmd [--module PATH] [--output text|json|pretty-json] [--log-format t
 ...
 
 Commands in main.lask:
-  go         docker  golang:1.25
-  npm        docker  node:20.20.2-alpine3.23
-  terraform  docker  hashicorp/terraform:1.16.2  MISSING (lask sync)
-  mv         local   local
+  go         #golang:1.25                 registry
+  npm        #node:20.20.2-alpine3.23     registry
+  terraform  #hashicorp/terraform:1.16.2  registry  MISSING (lask sync)
+  mv         #local                       local
 
 $ lask cmd go test ./... > report.txt
 2026-09-12T12:56:40.217Z [#golang:1.25:1] $ go test ./...
@@ -3991,6 +4115,7 @@ Input rules:
 - An input starting with `:` is a session command. No declaration or expression starts with `:`, so an unknown command is reported as such (`unknown command ':foo'`) and is never parsed as code.
 - A declaration is added to the session if the session still compiles with it; otherwise its diagnostics are reported and the session is unchanged.
 - An expression is evaluated against the session and its result printed. It is not kept in the session.
+- A diagnostic in what was typed at the prompt is placed in that input, as `<repl>:<line>:<column>`, line 1 being the input's first line, and not in the target module, whose file does not hold it.
 - The target module's text is the one read at start or by the last successful `:reload`. Imported modules and the lock file are read from disk on every input, so a change to them takes effect without a reload.
 - Standard input is the session's input, not a value (9.2). A declaration or an expression typed at the prompt that names `stdin` is an undefined reference error (`E-NAME-UNDEFINED`) and changes nothing. A function of the target module, or of a module it imports, that names `stdin` is still loaded and can be called; there `stdin` is the empty string.
 
@@ -3998,6 +4123,7 @@ Session commands:
 
 | Command | Meaning |
 | --- | --- |
+| `:help`, `:h`, `:?` | List the session commands and what may be typed. |
 | `:reload`, `:r` | Read the target module again (below). |
 | `:quit`, `:q`, `:exit` | End the session. End of input does the same. |
 
@@ -4081,7 +4207,7 @@ lask fmt --stdin [--check]
 
 Targets:
 
-- Each `<path>` is a file, or a directory whose `.lask` files are formatted, recursively. Without one, the target is the directory of the entry module (`--module`, default `main.lask` in the execution directory): the whole project.
+- Each `<path>` is a file, or a directory whose `.lask` files are formatted, recursively. Without one, the target is the directory of the entry module (`--module`, default the `main.lask` found as 11.1 describes): the whole project.
 - A directory whose name begins with `.` is not entered — among them `.lask`, where external dependencies are cached (11.5) — and neither is a symbolic link to a directory.
 - With `--stdin`, standard input is formatted to standard output instead, and no `<path>` may be given.
 
@@ -4253,6 +4379,7 @@ Implementations must be able to generate and record stack traces at all times up
 - Contain at least function names, call order, and, where possible, source positions (line/column or span).
 - When crossing asynchronous boundaries (`spawn` / `await`), the parent-child relationship must be traceable.
 - Failures involving command execution (`run`) may include the environment kind and a summary of the executed command.
+- This implementation writes one frame per function the failure leaves, innermost first, as `at <name> (<module>:<line>:<column>)`. The position is where in that function the failure was: the expression that failed in the innermost frame, and the call the failure came out of in each frame after it. A function the language makes rather than the user names is shown by what made it: `lambda` for `\(x) -> e`, `async` for the computation of `async e` (6.3), and `try` and `finally` for the blocks of `try` (6.9). Its generated name, such as `<async@4:7>`, is what names it in a `FunctionRef` (13.2).
 
 Omission rules:
 
@@ -4537,7 +4664,7 @@ The table below is the complete list of codes. An implementation reports every o
 | `E-SYNTAX-UNEXPECTED-TOKEN` | syntax | `1` | a token the grammar does not allow where it stands (Chapter 3, 6) |
 | `E-SYNTAX-CASE-ELSE` | syntax | `1` | a `case` with no arms, with no `else` arm, with more than one, or with one that is not last (6.4) |
 | `E-NAME-UNDEFINED` | static | `1` | undefined reference |
-| `E-NAME-DUPLICATE` | static | `1` | duplicate definition |
+| `E-NAME-DUPLICATE` | static | `1` | duplicate definition, a second instance of a class for a type included (4.6) |
 | `E-TYPE-MISMATCH` | static | `1` | type mismatch |
 | `E-TYPE-ARITY` | static | `1` | function argument count mismatch (shortage or excess of positional arguments; 7.5), or a type argument count that does not match the parameters of a type alias (4.2) |
 | `E-TYPE-CALL` | static | `1` | invalid call (calling a non-function value, etc.) |
@@ -4558,9 +4685,10 @@ The table below is the complete list of codes. An implementation reports every o
 | `E-TYPE-FIELD-DUPLICATE` | static | `1` | duplicate record field name or object literal key (4.2) |
 | `E-TYPE-CASE-DUPLICATE` | static | `1` | two literal heads of one `case` expression denote the same value, or two type heads of one `case` expression denote the same type, so the later arm is unreachable (6.4) |
 | `E-TYPE-KEYWORD` | static | `1` | invalid keyword argument (unknown name, name-based specification of positional or variadic parameters, duplicate binding, application to a function-typed value; 6.1, 7.5) |
-| `E-TYPE-ILLFORMED` | static | `1` | violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`; 4.2, 6.4, 15.8) |
+| `E-TYPE-ILLFORMED` | static | `1` | violation of type well-formedness rules (invalid position of `Void`, recursive type alias, a union member that is not a data type, a `case` type head on an `Any` scrutinee that is not a data type, invalid target type of `cast`, a class or an instance outside the forms of 4.6, a class bound on a local function; 4.2, 4.6, 6.4, 15.8) |
 | `E-TYPE-SECRET-NON-STRING` | static | `1` | `!!` applied to a binding whose type is not `String` (6.10) |
-| `E-TYPE-BOUND` | static | `1` | a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 6.2, 6.4, 6.6) |
+| `E-TYPE-BOUND` | static | `1` | a type variable instantiated at a type that does not satisfy its bound, at a call, a reference, or a type alias application; or an operand of `==` / `!=`, a `case` scrutinee with value heads, or an interpolation outside the predicate it needs (4.2, 4.4, 4.6, 6.2, 6.4, 6.6) |
+| `E-TYPE-INSTANCE` | static | `1` | an instance declaration that leaves a method without a default undefined, is for a type outside its class's superclass, is of a closed class, or is declared in a dependency for a class of another module (4.6) |
 | `E-MODULE-CYCLE` | static | `1` | module circular dependency |
 | `E-MODULE-UNRESOLVED` | static | `1` | unresolvable import (undeclared dependency name, or a declared dependency not present or not verified in the cache; Chapter 5) |
 | `E-MODULE-DEEP-IMPORT` | static | `1` | an external import naming a path inside a dependency tree rather than its entry module (Chapter 5) |
@@ -4600,6 +4728,7 @@ The table below is the complete list of codes. An implementation reports every o
 | `W-DOC-PARAM-UNKNOWN` | advisory | — | an `@param` in a documentation comment (3.1) names a parameter the declaration does not have. |
 | `W-CLI-PARAM-SHADOWED` | advisory | — | a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6). |
 | `W-EXPORT-INCONSISTENT` | advisory | — | one module writes `export` on some of its declarations and leaves it out on others, so an omitted marker may be misread as non-public (5) |
+| `W-BOUND-REDUNDANT` | advisory | — | a part of a bound joined with `+` is written twice, or is entailed by another part, so it adds nothing (4.4) |
 
 ¹ The default: a runtime or external I/O error carries the `code` of its `Error` value, which a command failure takes from the process (8.10, 14.8).
 
@@ -4888,6 +5017,7 @@ The built-in library provides at least the following functions.
 - `reverse`: `Function<Array<T>, Array<T>>`
 - `sort<T: orderable>`: `Function<Array<T>, Array<T>>`
 - `sort_by<T, U: orderable>`: `Function<Array<T>, Function<T, U>, Array<T>>`
+- `compare<T: orderable>`: `Function<T, T, Number>`
 - `contains_array<T: comparable>`: `Function<Array<T>, T, Bool>`
 - `index_of_array<T: comparable>`: `Function<Array<T>, T, Number>`
 - `find`: `Function<Array<T>, Function<T, Bool>, T | Null>`
@@ -4929,8 +5059,9 @@ Element access:
 
 Ordering:
 
-- `sort(xs)` returns the elements in ascending order. The element type is bounded by `orderable`, so it is `Number` or `String`; any other element type is a static error (`E-TYPE-BOUND`).
+- `sort(xs)` returns the elements in ascending order. The element type is bounded by `orderable`: `Number`, `String`, or a type with an instance of `orderable` (4.6), which it orders by its instance's `compare`. Any other element type is a static error (`E-TYPE-BOUND`). Elements that `compare` puts at `0` keep their input order.
 - `sort_by(xs, key)` sorts by the value of `key` applied once to each element, under the same bound on the key type `U`, and is stable: elements with equal keys keep their input order.
+- `compare(a, b)`, the method of the class `orderable` (4.6), is negative when `a` comes before `b`, `0` when neither comes first, and positive when `b` does: for `Number` and `String` in the order of `sort`, `-1`, `0` or `1`, and for another type what the `compare` of its instance returns.
 - `String` ordering is lexicographic by Unicode code point. The ordering operators `<` `<=` `>` `>=` (6.2) order strings the same way.
 
 Searching:

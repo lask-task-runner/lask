@@ -320,7 +320,11 @@ null_ :: E v 'TNull
 null_ = leaf NoSpan CNull
 
 -- | Use a value where a type it conforms to is wanted (spec 4.4). Lask
--- does this implicitly, and the Core is the same: nothing.
+-- does this implicitly, and the Core is the same: nothing. The
+-- higher-order combinators take a Haskell function, whose parameter
+-- GHC fixes at the element type; one that takes more is written
+-- @'forEach' xs (\\x -> show ('widen' x))@, where Lask accepts
+-- @for_each(xs, show)@ itself (spec 4.4, Variance).
 widen :: forall b a v. (Conforms a b) => E v a -> E v b
 widen (E x) = conforms @a @b `seq` E x
 
@@ -1069,7 +1073,8 @@ assemble exports = case nameErrors <> dupErrors <> docErrors <> kwErrors <> comm
           cpAdvisories = [],
           cpDispatched = Map.empty,
           cpSchemas = Map.empty,
-          cpSchemaUses = []
+          cpSchemaUses = [],
+          cpInstances = Map.empty
         }
 
 -- | A @lower_id@ (spec 3.2) that is not a reserved word.

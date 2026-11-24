@@ -1,0 +1,17 @@
+// A part of a joined bound that is written twice, or that another part
+// entails, adds nothing (4.4): an advisory, not an error (14.2).
+class base<T> {
+  b(x: T): Number
+}
+
+class derived<T: base> {
+  d(x: T): Number
+}
+
+twice<T: orderable + orderable>(x: T): T = x // expect: W-BOUND-REDUNDANT
+
+entailed<T: orderable + comparable>(x: T): T = x // expect: W-BOUND-REDUNDANT
+
+super<T: derived + base>(x: T): Number = d(x) + b(x) // expect: W-BOUND-REDUNDANT
+
+distinct<T: orderable + stringifiable>(x: T): String = "#{x}"

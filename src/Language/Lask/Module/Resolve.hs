@@ -15,6 +15,7 @@ module Language.Lask.Module.Resolve
     modulePublics,
     namespaceMember,
     entryPublicValues,
+    internalDeclaredIn,
     buildScopes,
     resolveProgram,
     ResolvedModule,
@@ -26,7 +27,7 @@ where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -146,7 +147,7 @@ data Publics = Publics
 modulePublics :: LoadedModule -> Publics
 modulePublics lm =
   Publics
-    { pubValues = Set.difference (Set.fromList (mapMaybe valueName decls) <> reValues) internal,
+    { pubValues = Set.difference (Set.fromList (concatMap valueNames decls) <> reValues) internal,
       pubTypes = Set.difference (Set.fromList (mapMaybe typeName decls) <> reTypes) internal,
       pubCommands =
         Set.difference
@@ -173,9 +174,12 @@ modulePublics lm =
     reValues = Set.fromList (filter (not . startsUpper) reexported)
     reTypes = Set.fromList (filter startsUpper reexported)
     startsUpper t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
-    valueName (DValue n _ _ _) = Just n
-    valueName (DFunction n _ _ _ _ _) = Just n
-    valueName _ = Nothing
+    valueNames (DValue n _ _ _) = [n]
+    valueNames (DFunction n _ _ _ _ _) = [n]
+    -- A class is imported and exported by its name, as its methods
+    -- are by theirs (spec 4.6).
+    valueNames (DClass n _ ms) = n : [m | ClassMethod _ (Spanned _ m) _ _ _ <- ms]
+    valueNames _ = []
     -- An access declaration shares the namespace of type aliases
     -- (spec 5), and is imported and exported as one is.
     typeName (DTypeAlias n _ _) = Just n
@@ -226,6 +230,27 @@ entryPublicValues prog scopes = publicValuesOf (0 :: Int) "" (progEntry prog)
       _ -> []
     startsUpper t = maybe False (\(c, _) -> c >= 'A' && c <= 'Z') (T.uncons t)
 
+-- | The module that declares a name, qualified by the namespaces the
+-- entry module publishes (as 'entryPublicValues' names it), when the
+-- declaration there is marked @internal@: what the CLI tells apart
+-- from a name no module has (spec 11.2).
+internalDeclaredIn :: Program -> Text -> Maybe FilePath
+internalDeclaredIn prog qualified = do
+  key <- moduleOf (0 :: Int) (progEntry prog) namespaces
+  lm <- Map.lookup key (progModules prog)
+  if name `Set.member` moduleInternal (lmModule lm) then Just key else Nothing
+  where
+    segs = T.splitOn "." qualified
+    namespaces = init segs
+    name = last segs
+    moduleOf _ key [] = Just key
+    moduleOf depth key (alias : rest)
+      | depth >= 16 = Nothing
+      | otherwise = do
+          lm <- Map.lookup key (progModules prog)
+          p <- listToMaybe [p' | Decl _ (DExportNamespace a p') <- moduleDecls (lmModule lm), a == alias]
+          moduleOf (depth + 1) (Map.findWithDefault (T.unpack p) p (lmImportKeys lm)) rest
+
 -- Scope construction ---------------------------------------------------------
 
 buildScope :: Map FilePath Publics -> LoadedModule -> (GlobalScope, [Diagnostic])
@@ -247,6 +272,12 @@ buildScope publics lm = go base [] (moduleDecls (lmModule lm))
     go gs ds (Decl sp f : rest) = case f of
       DValue n _ _ _ -> goValue gs ds rest sp n
       DFunction n _ _ _ _ _ -> goValue gs ds rest sp n
+      -- A class binds its name and the names of its methods in the
+      -- namespace of values (spec 4.6); an instance binds nothing.
+      DClass n _ ms ->
+        let named = (sp, n) : [(msp, m) | ClassMethod _ (Spanned msp m) _ _ _ <- ms]
+         in go gs ds (map (\(s', m) -> Decl s' (DValue m Public Nothing (Expr s' ENull))) named <> rest)
+      DInstance {} -> go gs ds rest
       DTypeAlias n _ _ -> goType gs ds rest sp n
       -- An access declaration is bound where a type alias is (spec 5);
       -- which of the two a name is, its declaration says.
@@ -383,6 +414,8 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
             DFunction _ tps ps _ _ body -> typeParamNames tps <> lambdaParams (paramDefaults ps <> [body])
             DTypeAlias _ tps _ -> typeParamNames tps
             DValue _ _ _ e -> lambdaParams [e]
+            DClass _ tp ms -> typeParamNames [tp] <> lambdaParams ([d | ClassMethod _ _ _ _ (Just d) <- ms] <> concat [paramDefaults ps | ClassMethod _ _ ps _ _ <- ms])
+            DInstance tps _ _ _ ds -> typeParamNames tps <> lambdaParams (concat [paramDefaults ps <> [b] | Decl _ (DFunction _ _ ps _ _ b) <- ds] <> [e | Decl _ (DValue _ _ _ e) <- ds])
             _ -> []
         ]
     -- Those of the lambdas written anywhere in these expressions.
@@ -394,10 +427,33 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       ]
     universe e = e : concatMap universe (childExprs e)
 
-    -- A type bound names types like any annotation; a named bound is
-    -- checked by the elaborator, which knows the set (spec 4.2).
-    checkBound (TypeParam _ (Just (SBoundType t))) = checkType t
-    checkBound _ = []
+    -- A type bound names types like any annotation, and a class named
+    -- through a namespace is resolved as a member of it; a named bound
+    -- is checked by the elaborator, which knows the set (spec 4.2).
+    checkBound (TypeParam _ mb) = maybe [] checkSBound mb
+
+    checkSBound b = case b of
+      SBoundType t -> checkType t
+      SBoundAll bs -> concatMap checkSBound bs
+      SBoundQualified q n -> checkQualifiedClass q n
+      _ -> []
+
+    -- A class named through a namespace is one of its public symbols
+    -- (spec 4.6): an internal class, and its methods, stay in its
+    -- module, however they are written.
+    checkQualifiedClass (Spanned qsp ns) (Spanned nsp n) = case Map.lookup ns (gsNamespaces gs) of
+      Just key -> case Map.lookup key publics of
+        Just pub
+          | n `Set.member` pubValues pub -> []
+        pub ->
+          [ suggesting n (maybe [] (Set.toList . pubValues) pub) $
+              mkDiagnostic ENameUndefined StageStatic nsp $
+                "namespace '" <> ns <> "' has no public class '" <> n <> "'"
+          ]
+      Nothing ->
+        [ suggesting ns (Map.keys (gsNamespaces gs)) $
+            mkDiagnostic ENameUndefined StageStatic qsp ("undefined namespace: '" <> ns <> "'")
+        ]
 
     checkDecl (Decl _ f) = case f of
       DValue _ _ t e -> maybe [] checkType t <> checkExpr [] e
@@ -408,6 +464,13 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
           <> maybe [] checkAccessRef w
           <> checkExpr [paramNames ps] body
       DTypeAlias _ tps t -> concatMap checkBound tps <> checkType t
+      DClass _ tp ms ->
+        checkBound tp
+          <> concat
+            [ checkParams [] ps <> checkType rt <> maybe [] (checkExpr [paramNames ps]) d
+            | ClassMethod _ _ ps rt d <- ms
+            ]
+      DInstance tps q c t ds -> concatMap checkBound tps <> maybe [] (`checkQualifiedClass` c) q <> checkType t <> concatMap checkDecl ds
       -- The environment of a command declaration is checked for
       -- static resolvability in "Language.Lask.Elaborate" (spec ch. 5);
       -- here only its name references are resolved.
@@ -541,8 +604,9 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       EArray es -> concatMap (checkExpr sc) es
       EObject kvs -> concatMap (checkExpr sc . snd) kvs
       EString ps -> concatMap (checkPart sc) ps
-      ELambda _ ps t body ->
-        checkParams sc ps
+      ELambda tps ps t body ->
+        concatMap checkBound tps
+          <> checkParams sc ps
           <> maybe [] checkType t
           <> checkExpr (paramNames ps : sc) body
       EBin _ a b -> checkExpr sc a <> checkExpr sc b

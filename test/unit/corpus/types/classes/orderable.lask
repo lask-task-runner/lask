@@ -1,0 +1,37 @@
+// orderable is a class whose instances are Number, String and the
+// types with an instance declared for them; sort, sort_by, compare
+// and the ordering operators order those by their compare (4.6).
+type Version = Record<major: Number, minor: Number>
+
+instance orderable<Version> {
+  compare(a, b) = if (a.major != b.major) { a.major - b.major } else { a.minor - b.minor }
+}
+
+largest<T: orderable>(xs: Array<T>): T = last(sort(xs))
+
+smaller<T: orderable>(a: T, b: T): T = a < b ? a : b
+
+uses(): Number = do {
+  vs = [{ major: 1, minor: 2 }, { major: 0, minor: 9 }]
+  first(sort(vs)).minor + largest(vs).major + smaller(vs[0], vs[1]).minor + compare(vs[0], vs[1])
+    + size(sort_by(vs, \(v) -> v)) + largest([3, 1])
+}
+
+ordered(): Bool = { major: 1, minor: 0 } <= { major: 1, minor: 1 }
+
+instance orderable<Number> { // expect: E-NAME-DUPLICATE
+  compare(a, b) = b - a
+}
+
+instance comparable<Version> {} // expect: E-TYPE-INSTANCE
+
+instance orderable<Function<Number, Number>> { // expect: E-TYPE-INSTANCE
+  compare(a, b) = 0
+}
+
+unordered(): Bool = { x: 1 } < { x: 2 } // expect: E-TYPE-BOUND
+
+local(): Version = do {
+  s = \<U: orderable>(xs: Array<U>): U -> first(sort(xs))
+  s([{ major: 1, minor: 0 }]) // expect: E-TYPE-BOUND
+}

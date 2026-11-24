@@ -8,7 +8,8 @@ Usage: lask run [--module PATH] [--output text|json|pretty-json]
   Run a function (result is not printed)
 
 Available options:
-  --module PATH            Path to the entry module (default: "main.lask")
+  --module PATH            Path to the entry module (default: main.lask here or
+                           in the nearest directory above)
   --output text|json|pretty-json
                            What stdout is written in: the result of eval, or the
                            report of a command

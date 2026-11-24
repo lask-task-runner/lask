@@ -15,6 +15,7 @@ module Language.Lask.Runtime.AsyncTrack
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async, asyncThreadId, waitCatch)
 import Control.Exception (SomeException)
@@ -81,7 +82,7 @@ siteOf v = case v of
   _ -> AsyncSite "" Nothing "<async>"
   where
     anonymousAt name = do
-      lc <- T.stripPrefix "<lambda@" name >>= T.stripSuffix ">"
+      lc <- (T.stripPrefix "<async@" name <|> T.stripPrefix "<lambda@" name) >>= T.stripSuffix ">"
       case T.splitOn ":" lc of
         [l, c] | Right (line, "") <- TR.decimal l, Right (col, "") <- TR.decimal c -> Just (line, col)
         _ -> Nothing

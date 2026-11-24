@@ -66,6 +66,7 @@ trigger c = case c of
   ETypeIllformed -> check "type T = Array<T>\n"
   ETypeSecretNonString -> check "f(): Number = do {\n  p!!: Number = 1\n  p\n}\n"
   ETypeBound -> check "f() = sort([true, false])\n"
+  ETypeInstance -> check "class pretty<T> {\n  show(x: T): String\n}\ninstance pretty<Number> {}\n"
   EModuleCycle ->
     Check
       [ ("main.lask", "import { a } from \"./a.lask\"\nx = a\n"),
@@ -261,6 +262,7 @@ advises c lask = withProject [("main.lask", src)] $ \dir -> do
       WDocParamUnknown -> ("// Greets.\n// @param nmae who\ngreet(name: String): String = name\n", ["check"])
       WCliParamShadowed -> ("show(--help: Bool = false): Bool = help\n", ["check"])
       WExportInconsistent -> ("export a() = 1\nb() = 2\n", ["check"])
+      WBoundRedundant -> ("f<T: orderable + orderable>(x: T): T = x\n", ["check"])
 
 raises :: ErrorCode -> FilePath -> Expectation
 raises c lask = case trigger c of

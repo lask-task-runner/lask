@@ -1,0 +1,3 @@
+internal helper() = 1
+
+main_task() = helper()

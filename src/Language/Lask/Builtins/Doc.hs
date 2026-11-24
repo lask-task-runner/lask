@@ -180,14 +180,21 @@ builtinDocs =
         doc
           "15.4"
           [ "`sort(xs)` returns the elements in ascending order. Strings are ordered by Unicode code point.",
-            "The element type must be `Number` or `String`, which is checked at the call site."
+            "The element type must be orderable: `Number`, `String`, or a type with an instance `orderable<...>`, whose `compare` orders it."
           ]
       ),
       ( "sort_by",
         doc
           "15.4"
           [ "`sort_by(xs, key)` sorts by `key` applied once to each element. The sort is stable.",
-            "The key type must be `Number` or `String`."
+            "The key type must be orderable: `Number`, `String`, or a type with an instance `orderable<...>`."
+          ]
+      ),
+      ( "compare",
+        doc
+          "15.4"
+          [ "`compare(a, b)` is negative when `a` comes before `b`, `0` when neither does, and positive when `b` comes first.",
+            "It is the method of the class `orderable` (4.6): for `Number` and `String` the order of `sort`, and for another type the `compare` of its instance."
           ]
       ),
       ("contains_array", doc "15.4" ["`contains_array(xs, v)` is true when some element `== v`.", "The element type must be comparable."]),

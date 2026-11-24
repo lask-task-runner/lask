@@ -59,6 +59,31 @@ spec = do
           "export { a } from \"./lib\""
         ]
 
+    it "puts each member of a class and an instance on its own line (spec 4.6)" $
+      [ "class ord<T:comparable> {",
+        "  compare(a:T, b:T):Number",
+        "  lt(a:T,b:T):Bool=compare(a,b)<0",
+        "}",
+        "instance ord<Number> { compare(a,b)=a-b }",
+        "f<T:m.ord>(x:T)=x"
+      ]
+        `formatsTo` [ "class ord<T: comparable> {",
+                      "  compare(a: T, b: T): Number",
+                      "  lt(a: T, b: T): Bool = compare(a, b) < 0",
+                      "}",
+                      "instance ord<Number> {",
+                      "  compare(a, b) = a - b",
+                      "}",
+                      "f<T: m.ord>(x: T) = x"
+                    ]
+
+    it "keeps the type parameters of a parametric instance (spec 4.6)" $
+      ["instance<T:orderable> orderable<Array<T>> { compare(a,b)=0 }"]
+        `formatsTo` [ "instance<T: orderable> orderable<Array<T>> {",
+                      "  compare(a, b) = 0",
+                      "}"
+                    ]
+
     it "keeps the type parameters of a lambda (spec 6.1)" $
       ["ident = \\<T>(x:T):T->x"] `formatsTo` ["ident = \\<T>(x: T): T -> x"]
 

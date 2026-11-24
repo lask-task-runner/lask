@@ -406,6 +406,8 @@ shrinkDecl (Decl _ f) = Decl NoSpan <$> case f of
       <> [DCommand ws e (Just s') | Just s <- [sch], s' <- shrinkExpr s]
   DImportCommands ws p -> [DImportCommands ws' p | ws' <- shrinkList (const []) ws, not (null ws')]
   DExportCommandsFrom ws p -> [DExportCommandsFrom ws' p | ws' <- shrinkList (const []) ws, not (null ws')]
+  DClass {} -> []
+  DInstance {} -> []
   DImportNamespace {} -> []
   DExportNamespace {} -> []
 
@@ -574,6 +576,9 @@ decl (Decl _ f) = case f of
   DCommand ws e sch -> "command " <> commandNames ws <> " on " <> expr top 0 False e <> maybe "" ((" schema " <>) . expr top 0 False) sch
   DImportCommands ws p -> "import command " <> commandNames ws <> " from " <> quoted p
   DExportCommandsFrom ws p -> "export command " <> commandNames ws <> " from " <> quoted p
+  -- Not generated: written only so that every declaration has a form.
+  DClass n tp _ -> "class " <> n <> typeParams [tp] <> " {}"
+  DInstance tps q (Spanned _ c) t _ -> "instance" <> typeParams tps <> " " <> maybe "" ((<> ".") . spannedValue) q <> c <> "<" <> typ t <> "> {}"
   where
     top = Lines 0
     importSpecs specs = "{ " <> commas [n <> maybe "" (" as " <>) a | ImportSpec _ n a <- specs] <> " }"
@@ -598,7 +603,10 @@ typeParams tps = "<" <> commas (map one tps) <> ">"
   where
     one (TypeParam (Spanned _ v) b) = v <> maybe "" ((": " <>) . bound) b
     bound (SBoundNamed (Spanned _ n)) = n
+    bound (SBoundQualified (Spanned _ q) (Spanned _ n)) = q <> "." <> n
     bound (SBoundType t) = typ t
+    bound (SBoundClass _ n) = n
+    bound (SBoundAll bs) = T.intercalate " + " (map bound bs)
 
 params :: Mode -> [Param] -> Text
 params m ps = "(" <> commas (map one ps) <> ")"

@@ -50,8 +50,9 @@ spec = beforeAll findLask $ do
           r <- runLaskEnv lask dir [] ["eval", "py.greet", "--name", "lask"] ""
           resExit r `shouldBe` 0
           resOut r `shouldContain` "hi lask"
+          -- Listed by its function path, as words (spec 11.6).
           h <- runLaskEnv lask dir [] ["run", "--help"] ""
-          resOut h `shouldContain` "py.greet"
+          resOut h `shouldContain` "py greet"
 
     it "runs the commands of a with_container body in one container, removed afterwards (spec 15.5)" $ \lask ->
       withFakeDocker $ \state extra ->

@@ -93,6 +93,12 @@ spec = do
     it "skips a call whose callee is no dotted name" $
       callAt 2 12 `shouldBe` Just ["f"]
 
+  describe "enclosingCallArgs" $
+    it "gives the keyword arguments the call already binds, but the one the position is in" $ do
+      let m = parsed ["x = f(a = 1, 2, b = 3)"]
+      enclosingCallArgs "test.lask" m (at 1 15) `shouldBe` Just (["f"], ["a", "b"])
+      enclosingCallArgs "test.lask" m (at 1 11) `shouldBe` Just (["f"], ["b"])
+
   describe "childExprs" $ do
     it "gives a call its callee and arguments" $
       children "f(1, k = 2)" `shouldBe` Right [EVar "f", ENumber 1, ENumber 2]

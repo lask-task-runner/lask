@@ -1,0 +1,27 @@
+// A class, instances for a record type and a base type, a declaration
+// generic over the class, and one whose bound is inferred (4.3, 4.6).
+type Version = Record<major: Number, minor: Number>
+
+class ord<T: comparable> {
+  compare(a: T, b: T): Number
+  lt(a: T, b: T): Bool = compare(a, b) < 0
+}
+
+instance ord<Version> {
+  compare(a, b) = if (a.major != b.major) { a.major - b.major } else { a.minor - b.minor }
+}
+
+instance ord<Number> {
+  compare(a, b) = a - b
+}
+
+smaller<T: ord>(a: T, b: T): T = if (lt(a, b)) { a } else { b }
+
+smallest(xs) = reduce(drop(xs, 1), first(xs), \(m, x) -> smaller(m, x))
+
+pick: Function<Version, Version, Version> = smaller
+
+uses(): Number = do {
+  v = pick({ major: 1, minor: 2 }, { major: 1, minor: 1 })
+  v.minor + smallest([3, 1, 2])
+}

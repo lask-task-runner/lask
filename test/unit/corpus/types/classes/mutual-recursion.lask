@@ -1,0 +1,34 @@
+// Declarations that call one another, with their parameters written,
+// are instantiated at each call as any generic is (4.3): a type
+// parameter of one is not one of the other, whatever its name. Each is
+// specialized where it is called (4.6), and one that comes back at an
+// ever larger type has no end of specializations.
+class shown<T> {
+  show(x: T): String
+}
+
+instance shown<Number> {
+  show(n) = "#{n}"
+}
+
+instance<T: shown> shown<Array<T>> {
+  show(xs) = join(map(xs, \(x) -> show(x)), ",")
+}
+
+ping<T>(x: T, n: Number): Number = n == 0 ? 0 : pong(x, n - 1)
+
+pong<U>(y: U, n: Number): Number = ping(y, n)
+
+other<T>(x: T, n: Number): Number = n == 0 ? 0 : back(x, n - 1)
+
+back<U>(y: U, n: Number): Number = other(1, n)
+
+there<T: shown>(x: T, n: Number): String = n == 0 ? show(x) : again(x, n - 1)
+
+again<U: shown>(y: U, n: Number): String = there(y, n)
+
+grow<T: shown>(x: T, n: Number): String = n == 0 ? show(x) : wrap([x], n - 1) // expect: E-TYPE-BOUND
+
+wrap<U: shown>(y: U, n: Number): String = grow(y, n)
+
+uses(): String = "#{ping("a", 2)}#{other("b", 2)}#{there(1, 2)}#{grow(1, 2)}"

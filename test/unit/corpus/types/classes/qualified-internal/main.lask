@@ -1,0 +1,13 @@
+// An internal class is no public symbol of its module (4.6), named or
+// qualified: neither a bound nor an instance can name it from outside.
+import * as lib from "./lib.lask"
+
+seen<T: lib.shown>(x: T): String = lib.show(x)
+
+bounded<T: lib.hidden>(x: T): Number = 1 // expect: E-NAME-UNDEFINED
+
+joined<T: orderable + lib.hidden>(x: T): Number = 1 // expect: E-NAME-UNDEFINED
+
+instance lib.hidden<String> { // expect: E-NAME-UNDEFINED
+  peek(s) = s
+}

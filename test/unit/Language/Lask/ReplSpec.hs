@@ -21,6 +21,7 @@ spec = do
     it "recognizes the commands and their short forms" $ do
       map classifyInput [":r", ":reload", " :reload ", ":q", ":quit", ":exit"]
         `shouldBe` [InputReload, InputReload, InputReload, InputQuit, InputQuit, InputQuit]
+      map classifyInput [":help", ":h", ":?"] `shouldBe` [InputHelp, InputHelp, InputHelp]
 
     it "rejects arguments to a command that takes none" $
       classifyInput ":r main.lask" `shouldBe` InputBadArgs ":r"

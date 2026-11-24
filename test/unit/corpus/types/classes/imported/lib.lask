@@ -1,0 +1,9 @@
+class ord<T: comparable> {
+  compare(a: T, b: T): Number
+}
+
+instance ord<Number> {
+  compare(a, b) = a - b
+}
+
+smaller<T: ord>(a: T, b: T): T = if (compare(a, b) < 0) { a } else { b }

@@ -98,9 +98,9 @@ spec = before_ resetSecretRegistryForTests . after_ resetSecretRegistryForTests 
       masked `shouldBe` VRecord (Map.fromList [("args", VArray (V.fromList [VString "a ***"])), ("m", VMap (Map.fromList [("***", VNumber 1)]))])
     it "masks a failure's error value and frames, keeping its code" $ do
       registerSecret "tok-123"
-      let lf = LaskFailure (Just ERuntimeCommandNonzero) (errorValue 1 "denied for tok-123\n") ["deploy (main.lask)"]
+      let lf = LaskFailure (Just ERuntimeCommandNonzero) (errorValue 1 "denied for tok-123\n") ["deploy (main.lask)"] Nothing
       masked <- maskFailure lf
-      masked `shouldBe` LaskFailure (Just ERuntimeCommandNonzero) (errorValue 1 "denied for ***\n") ["deploy (main.lask)"]
+      masked `shouldBe` LaskFailure (Just ERuntimeCommandNonzero) (errorValue 1 "denied for ***\n") ["deploy (main.lask)"] Nothing
 
   -- Laws over generated secrets and text. Each case starts from an empty
   -- registry, which is global.

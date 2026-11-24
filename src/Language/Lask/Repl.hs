@@ -29,7 +29,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Language.Lask (Compiled (..), compileWith)
 import Language.Lask.Core.AST (Core (..), CoreF (..), VarRef (..), coreChildren)
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, withNote)
+import Language.Lask.Diagnostic (Diagnostic (..), mkDiagnostic, withNote)
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
 import Language.Lask.ErrorCode (ErrorCode (ENameUndefined), Stage (StageStatic))
 import Language.Lask.Span (Position (..), Span (..))
@@ -76,6 +76,7 @@ data Input
   = InputBlank
   | InputQuit
   | InputReload
+  | InputHelp
   | -- | A known command given arguments it does not take.
     InputBadArgs Text
   | InputUnknownCommand Text
@@ -96,6 +97,7 @@ classifyInput raw = case T.uncons trimmed of
      in case name of
           _ | name `elem` ["q", "quit", "exit"] -> noArgs InputQuit
           _ | name `elem` ["r", "reload"] -> noArgs InputReload
+          _ | name `elem` ["h", "help", "?"] -> noArgs InputHelp
           _ -> InputUnknownCommand (":" <> name)
   Just _ -> InputCode trimmed
   where
@@ -143,7 +145,7 @@ runRepl modulePath = do
     if exists
       then TIO.readFile modulePath
       else pure ""
-  putStrLn "lask repl — :reload to reload, :quit to exit"
+  putStrLn "lask repl — :help for help, :reload to reload, :quit to exit"
   runInputT defaultSettings (loop modulePath (Session baseSource []))
 
 loop :: FilePath -> Session -> InputT IO ()
@@ -157,7 +159,10 @@ loop modulePath session = do
       outputStrLn ("error: " <> T.unpack name <> " takes no arguments")
       loop modulePath session
     Just (InputUnknownCommand name) -> do
-      outputStrLn ("error: unknown command '" <> T.unpack name <> "'")
+      outputStrLn ("error: unknown command '" <> T.unpack name <> "'; :help lists the commands")
+      loop modulePath session
+    Just InputHelp -> do
+      mapM_ outputStrLn helpLines
       loop modulePath session
     Just InputReload -> do
       r <- liftIO (reloadSession modulePath session)
@@ -170,7 +175,7 @@ loop modulePath session = do
           outputStrLn "reload failed; the previous session is kept."
           loop modulePath session
         Left (ReloadConflict d ds) -> do
-          mapM_ (outputStrLn . pretty) ds
+          mapM_ (outputStrLn . pretty . typedAt modulePath (typedChunks (sessionWith d) Nothing)) ds
           outputStrLn ("reload failed: the REPL declaration '" <> T.unpack d <> "' no longer compiles; the previous session is kept.")
           loop modulePath session
         Right session' -> do
@@ -183,7 +188,7 @@ loop modulePath session = do
         let source' = sessionSource session <> "\n" <> resultName <> " = " <> code <> "\n"
         r <- liftIO (evalSession modulePath (sessionBase session) source')
         case r of
-          Left ds -> mapM_ (outputStrLn . pretty) ds
+          Left ds -> mapM_ (outputStrLn . pretty . typedAt modulePath (typedChunks session (Just code))) ds
           Right (Left lf) -> liftIO (maskFailure lf) >>= outputStrLn . renderFailure
           Right (Right v) -> case v of
             VVoid -> pure ()
@@ -195,10 +200,14 @@ loop modulePath session = do
         r <- liftIO (compileSession modulePath (sessionBase session') (sessionSource session'))
         case r of
           Left ds -> do
-            mapM_ (outputStrLn . pretty) ds
+            mapM_ (outputStrLn . pretty . typedAt modulePath (typedChunks session' Nothing)) ds
             loop modulePath session
           Right _ -> loop modulePath session'
   where
+    -- The session a conflicting declaration was re-applied in: the
+    -- new base, and the declarations up to and including it.
+    sessionWith d = case break (== d) (sessionDecls session) of
+      (before, _) -> Session (sessionBase session) (before <> [d])
     reappliedNote 0 = ""
     reappliedNote 1 = " (1 REPL declaration re-applied)"
     reappliedNote n = " (" <> show n <> " REPL declarations re-applied)"
@@ -262,3 +271,51 @@ evalSession modulePath base source = do
 
 renderFailure :: LaskFailure -> String
 renderFailure lf = "error: " <> T.unpack (failureMessage lf)
+
+-- | What @:help@ prints.
+helpLines :: [String]
+helpLines =
+  [ "Type an expression to evaluate it, or a declaration to add it to the session:",
+    "  1 + 2",
+    "  double(x: Number) = x * 2",
+    "Names from the module are in scope, and the declarations typed here stay for the session.",
+    "",
+    "Commands:",
+    "  :help, :h, :?   show this help",
+    "  :reload, :r     read the module again and re-apply the declarations typed here",
+    "  :quit, :q       leave (or Ctrl-D)"
+  ]
+
+-- | Where in the source the session compiles each thing typed at the
+-- prompt starts: its first line, and how many columns of that line
+-- the session put in front of it. The declarations come first, then
+-- the expression being evaluated, if any, which follows
+-- @repl_result__ = @.
+typedChunks :: Session -> Maybe Text -> [(Int, Int)]
+typedChunks session expr = go (lineCount (sessionBase session) + 1) (sessionDecls session)
+  where
+    -- Each declaration is preceded by a newline (sessionSource).
+    go l (d : ds) = (l + 1, 0) : go (l + 2 + lineCount d) ds
+    go l [] = case expr of
+      Just _ -> [(l + 1, T.length resultName + 3)]
+      Nothing -> []
+    lineCount t = T.count "\n" t
+
+-- | A diagnostic in what was typed at the prompt names the input, as
+-- @<repl>:1:5@, rather than the line the session put it on in the
+-- module, which is not in the file.
+typedAt :: FilePath -> [(Int, Int)] -> Diagnostic -> Diagnostic
+typedAt modulePath chunks d = d {diagSpan = move (diagSpan d)}
+  where
+    move sp@(Span a b)
+      | Just (l0, shift) <- chunkOf a = Span (at l0 shift a) (at l0 shift b)
+      | otherwise = sp
+    move NoSpan = NoSpan
+    chunkOf p
+      | equalFilePath (normalise (fileName p)) (normalise modulePath),
+        (c : _) <- reverse [ch | ch@(l0, _) <- chunks, l0 <= line p] =
+          Just c
+      | otherwise = Nothing
+    at l0 shift p =
+      let l = line p - l0 + 1
+       in Position "<repl>" l (if l == 1 then max 1 (column p - shift) else column p)

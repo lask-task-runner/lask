@@ -1,0 +1,46 @@
+// What an instance declaration is checked for (4.6).
+class ord<T: comparable> {
+  compare(a: T, b: T): Number
+  lt(a: T, b: T): Bool = compare(a, b) < 0
+}
+
+class pretty<T> {
+  show(x: T): String
+}
+
+class ranked<T: ord> {
+  rank(x: T): Number
+}
+
+instance ord<Number> {
+  compare(a, b) = a - b
+}
+
+instance ord<Number> { // expect: E-NAME-DUPLICATE
+  compare(a, b) = b - a
+}
+
+instance pretty<Number> {} // expect: E-TYPE-INSTANCE
+
+instance pretty<String> {
+  show(x) = x
+  shout(x) = x // expect: E-NAME-UNDEFINED
+}
+
+instance pretty<Bool> {
+  show(x: Bool): Number = 1 // expect: E-TYPE-MISMATCH
+}
+
+instance ord<Function<Number, Number>> { // expect: E-TYPE-INSTANCE
+  compare(a, b) = 0
+}
+
+instance ranked<String> { // expect: E-TYPE-INSTANCE
+  rank(x) = 0
+}
+
+instance pretty<Any> { // expect: E-TYPE-ILLFORMED
+  show(x) = "?"
+}
+
+instance nothing<Number> {} // expect: E-NAME-UNDEFINED

@@ -19,6 +19,7 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import Support.Harness
 import System.Exit (ExitCode (..))
+import System.FilePath ((</>))
 import System.Process (CreateProcess (..), readCreateProcessWithExitCode, shell)
 import Test.Hspec
 
@@ -81,6 +82,12 @@ spec = beforeAll findLask $ do
       usage lask ["envs"] "E-CLI-USAGE"
       usage lask ["secrets"] "E-CLI-USAGE"
       usage lask ["envs", "bogus"] "E-CLI-USAGE"
+    it "lists the subcommands of a group given none" $ \lask -> do
+      r <- lask' lask ["envs"] ""
+      resExit r `shouldBe` 4
+      resErr r `shouldSatisfy` ("E-CLI-USAGE: a subcommand is needed\n" `isPrefixOf`)
+      resErr r `shouldSatisfy` isInfixOf "Available commands:"
+      resErr r `shouldSatisfy` isInfixOf "  files "
     it "reports a value outside the closed set of --output, --log-format and --arg-decode" $ \lask -> do
       usage lask ["eval", "--output", "yaml", "rec"] "--output"
       usage lask ["eval", "--log-format", "xml", "rec"] "--log-format"
@@ -91,6 +98,42 @@ spec = beforeAll findLask $ do
       r <- lask' lask ["version"] ""
       resExit r `shouldBe` 0
       resOut r `shouldSatisfy` ("lask " `isPrefixOf`)
+
+  describe "the entry module (spec 11.1)" $ do
+    let nested =
+          [ ("main.lask", "notes() = read_file(\"notes.txt\", #local)\n"),
+            ("notes.txt", "from the project"),
+            ("app/deep/keep", "")
+          ]
+
+    it "finds main.lask in the nearest directory above, and resolves paths against it" $ \lask ->
+      withProject nested $ \dir -> do
+        r <- runLask lask (dir </> "app/deep") ["eval", "notes"] ""
+        resExit r `shouldBe` 0
+        resOut r `shouldBe` "\"from the project\"\n"
+
+    it "names the module it found relative to where lask runs" $ \lask ->
+      withProject (("main.lask", "notes(): Number = \"x\"\n") : drop 1 nested) $ \dir -> do
+        r <- runLask lask (dir </> "app/deep") ["check"] ""
+        resExit r `shouldBe` 1
+        resOut r `shouldContain` "../../main.lask:1:"
+
+    it "takes the nearest main.lask when several directories have one" $ \lask ->
+      withProject (("app/main.lask", "notes() = \"from app\"\n") : nested) $ \dir -> do
+        r <- runLask lask (dir </> "app/deep") ["eval", "notes"] ""
+        resOut r `shouldBe` "\"from app\"\n"
+
+    it "does not look above for a module --module names" $ \lask ->
+      withProject nested $ \dir -> do
+        r <- runLask lask (dir </> "app") ["eval", "--module", "main.lask", "notes"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldContain` "E-CLI-USAGE: no such module: main.lask"
+
+    it "is a usage error when no directory above has one" $ \lask ->
+      withProject [("readme", "")] $ \dir -> do
+        r <- runLask lask dir ["run", "build"] ""
+        resExit r `shouldBe` 4
+        resErr r `shouldContain` "E-CLI-USAGE: no main.lask in this directory or any directory above it"
 
   describe "the boundary rule (spec 11.2)" $ do
     it "passes an option of lask written after the function name to the function" $ \lask ->
@@ -150,7 +193,7 @@ spec = beforeAll findLask $ do
     it "calls a value binding whose value is a function" $ \lask ->
       evals lask ["inc", "2"] "3"
     it "does not reach an internal declaration" $ \lask ->
-      usage lask ["eval", "hidden-fn"] "no such function"
+      usage lask ["eval", "hidden-fn"] "'hidden-fn' is internal"
     it "does not map a camelCase name, which is called as written" $ \lask -> do
       evals lask ["camelCase"] "\"camel\""
       usage lask ["eval", "camel-case"] "no such function"

@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "description": "Renders the Lask tour video from lask-tour.html",
+  "type": "module",
+  "devDependencies": {
+    "puppeteer-core": "25.18.1"
+  }
+}

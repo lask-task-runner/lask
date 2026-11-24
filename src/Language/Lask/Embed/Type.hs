@@ -766,12 +766,13 @@ stringify = holds @(IsStringifiable t) @('Text (Render t) ':<>: 'Text " cannot b
 -- | The named bounds (spec 4.2).
 data Named = NComparable | NOrderable | NStringifiable
 
--- | What a bound entails (spec 4.4): orderable entails all three; a type
+-- | What a bound entails (spec 4.4): orderable entails comparable; a type
 -- bound entails what it satisfies, except Any, which entails nothing.
 type family Entails (b :: Bound) (k :: Named) :: Bool where
   Entails 'BNone _ = 'False
   Entails 'BComparable 'NComparable = 'True
-  Entails 'BOrderable _ = 'True
+  Entails 'BOrderable 'NComparable = 'True
+  Entails 'BOrderable 'NOrderable = 'True
   Entails 'BStringifiable 'NStringifiable = 'True
   Entails ('BType 'TAny) _ = 'False
   Entails ('BType u) 'NComparable = IsComparable u

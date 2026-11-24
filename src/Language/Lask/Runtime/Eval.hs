@@ -36,6 +36,7 @@ import Language.Lask.Obs.Events
 import Language.Lask.Runtime.Secrets (maskSecretsJson)
 import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (functionRefJson)
+import Language.Lask.Span (Position (..), Span (..))
 import Language.Lask.Types (Field (..), Type (..), renderType, requiredNames)
 
 data RtCtx = RtCtx
@@ -127,7 +128,7 @@ evalCore ctx scope c = case rtSteps ctx of
   Just _ -> spend ctx 1 >> evalNode ctx scope c
 
 evalNode :: RtCtx -> Scope -> Core -> IO Value
-evalNode ctx scope (Core _ f) = case f of
+evalNode ctx scope (Core sp f) = case f of
   CNull -> pure VNull
   CBool b -> pure (VBool b)
   CNumber n -> pure (VNumber n)
@@ -147,11 +148,12 @@ evalNode ctx scope (Core _ f) = case f of
   CVar (TopRef p n) -> topValue ctx (p, n)
   CVar (BuiltinRef "stdin") -> pure (VString (rtStdin ctx))
   CVar (BuiltinRef b) -> pure (VBuiltin b)
+  CVar (InstRef _ n _) -> internal ("unspecialized reference to " <> n)
   CArray es -> VArray . V.fromList <$> mapM (evalCore ctx scope) es
   CMapLit kvs -> VMap . Map.fromList <$> mapM evalKv kvs
   CRecordLit kvs -> VRecord . Map.fromList <$> mapM evalKv kvs
   CLam lam -> pure (VClosure (Closure lam scope))
-  CApp fn pos kw -> do
+  CApp fn pos kw -> at $ do
     fv <- evalCore ctx scope fn
     posVs <- mapM (evalCore ctx scope) pos
     kwVs <- mapM (\(n, c) -> (,) n <$> evalCore ctx scope c) kw
@@ -165,7 +167,7 @@ evalNode ctx scope (Core _ f) = case f of
         -- (spec 4.2), which reads as null (6.8).
         Nothing -> pure VNull
       _ -> internal "field access on a non-record"
-  CIndex kind c i -> do
+  CIndex kind c i -> at $ do
     container <- evalCore ctx scope c
     idx <- evalCore ctx scope i
     case (kind, container, idx) of
@@ -210,7 +212,8 @@ evalNode ctx scope (Core _ f) = case f of
   CBin op a b -> do
     av <- evalCore ctx scope a
     bv <- evalCore ctx scope b
-    binOp ctx op av bv
+    -- Only a division fails (by zero); the rest stay off the handler.
+    (if op == PDiv then at else id) (binOp ctx op av bv)
   CDo stmts -> go scope VVoid stmts
     where
       go _ acc [] = pure acc
@@ -220,7 +223,7 @@ evalNode ctx scope (Core _ f) = case f of
       go sc _ (CSExpr c : rest) = do
         v <- evalCore ctx sc c
         go sc v rest
-  CAwait c -> do
+  CAwait c -> at $ do
     v <- evalCore ctx scope c
     case v of
       VAsync (AsyncHandle a) -> do
@@ -238,13 +241,13 @@ evalNode ctx scope (Core _ f) = case f of
     -- of the value: an environment equals the same one written
     -- without it.
     pure (VEnv (EnvValue kind (Map.fromList [(k, v) | (k, v) <- params, case v of VNull -> False; _ -> True])))
-  CRunnable base args -> do
+  CRunnable base args -> at $ do
     b <- evalCore ctx scope base
     params <- mapM evalKv args
     case b of
       VEnv ev -> either throwIO (pure . VEnv) (withRunOptions ev params)
       _ -> internal "runnable of a non-environment"
-  CCast c ty -> do
+  CCast c ty -> at $ do
     v <- evalCore ctx scope c
     castValue ty v
   CIsType c ty -> do
@@ -252,6 +255,9 @@ evalNode ctx scope (Core _ f) = case f of
     pure (VBool (matchesType ty v))
   where
     evalKv (n, c) = (,) n <$> evalCore ctx scope c
+    -- A failure out of this expression is at it, unless it is at an
+    -- expression inside (spec 12.4).
+    at act = act `catch` (throwIO . failedAt sp)
 
 -- | Function application (spec 8.3): bind positionals, collect the
 -- variadic tail, then bind keyword parameters in declaration order —
@@ -309,18 +315,18 @@ applyValue ctx fv pos kw = case fv of
 -- lambdas (names in angle brackets) are not observed.
 instrument :: RtCtx -> Lam -> [Value] -> IO Value -> IO Value
 instrument ctx lam args action
-  | isAnonymous = action `catch` (throwIO . pushFrame frameLabel)
+  | isAnonymous = action `catch` \lf -> throwIO (pushFrame (frameLabel lf) lf)
   | otherwise = do
       emit EvCall [("args", summarizeArgs)]
       r <-
         action `catch` \lf -> do
           emit EvFail [("error", summarizeValue (lfError lf))]
-          throwIO (pushFrame frameLabel lf)
+          throwIO (pushFrame (frameLabel lf) lf)
       emit EvReturn [("result", summarizeValue r)]
       pure r
   where
     isAnonymous = T.isPrefixOf "<" (lamName lam)
-    frameLabel = lamName lam <> " (" <> T.pack (lamModule lam) <> ")"
+    frameLabel = stackFrame lam
     summarizeArgs = summarizeValue (VArray (V.fromList args))
     -- Arguments, results and errors are masked as the event is made
     -- (spec 12.8): a secret passed to a function is in its CallEvent.
@@ -455,3 +461,17 @@ matchesType ty v = case (ty, v) of
 internal :: Text -> IO a
 internal msg =
   throwIO (runtimeFailure ERuntimeAccess ("internal error: " <> msg))
+
+-- | The stack frame of a function a failure leaves (spec 12.4): its
+-- name and where in it the failure was, @deploy (main.lask:12:3)@. An
+-- anonymous function is named after what made it, @lambda@, @async@ or
+-- @try@, rather than by the generated name its position is in.
+stackFrame :: Lam -> LaskFailure -> Text
+stackFrame lam lf = shown <> " (" <> T.pack (lamModule lam) <> pos <> ")"
+  where
+    shown = case T.stripPrefix "<" (lamName lam) of
+      Just rest -> T.takeWhile (\ch -> ch /= '@' && ch /= '>') rest
+      Nothing -> lamName lam
+    pos = case lfAt lf of
+      Just (Span (Position _ l c) _) -> ":" <> T.pack (show l) <> ":" <> T.pack (show c)
+      _ -> ""

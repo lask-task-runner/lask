@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Elaboration: bidirectional type checking (spec 4, 7) combined
@@ -13,6 +14,8 @@ module Language.Lask.Elaborate
     CommandUse (..),
     CoreDecl (..),
     readFieldType,
+    dockerRunOptions,
+    imageOptionNames,
     Key,
     StaticParams (..),
     HoverInfo (..),
@@ -21,13 +24,15 @@ module Language.Lask.Elaborate
     Elaborated,
     elaborateModules,
     elaborateRecoveringFrom,
+    specName,
+    isTemplate,
   )
 where
 
 import Control.Applicative ((<|>))
-import Control.Monad (foldM, unless, when, zipWithM)
+import Control.Monad (filterM, foldM, forM, unless, when, zipWithM)
 import Control.Monad.State.Strict (StateT (runStateT), get, gets, lift, modify, put)
-import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Bifunctor (first)
 import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
@@ -123,7 +128,11 @@ data CoreProgram = CoreProgram
     cpSchemas :: Map FilePath (Map Text Schema),
     -- | Every simple command checked against a schema, for editor
     -- tooling.
-    cpSchemaUses :: [SchemaUse]
+    cpSchemaUses :: [SchemaUse],
+    -- | The types each class has an instance for (spec 4.6), by the
+    -- class's module and name: what the CLI instantiates a type
+    -- parameter with a class bound at (11.2).
+    cpInstances :: Map Key [Type]
   }
   deriving (Show)
 
@@ -185,7 +194,74 @@ data Ctx = Ctx
     -- | Declarations as checked after their parameters' types were
     -- inferred (spec 4.3): the written declaration with those types
     -- written in. A recursive call reads its header from here.
-    ctxDeclOverride :: Map Key Decl
+    ctxDeclOverride :: Map Key Decl,
+    -- | The program's classes and instances (spec 4.6).
+    ctxEnv :: ClassEnv,
+    -- | The type parameters in scope that a local function declares
+    -- (spec 6.1): never specialized, so they are ordered as Number and
+    -- String are, by the language (4.6).
+    ctxLocalVars :: Set Text,
+    -- | The program's class declarations, and the class each method
+    -- belongs to, by module and name: read once, since a name is
+    -- looked up here for every reference.
+    ctxClassDecls :: Map Key (Span, TypeParam, [ClassMethod]),
+    ctxMethodClass :: Map Key Text
+  }
+
+-- | The class declarations of a program ('ctxClassDecls') and the class
+-- of each method ('ctxMethodClass').
+classIndex :: Program -> (Map Key (Span, TypeParam, [ClassMethod]), Map Key Text)
+classIndex prog =
+  ( Map.fromList decls,
+    Map.fromList [((p, m), n) | ((p, n), (_, _, ms)) <- decls, ClassMethod _ (Spanned _ m) _ _ _ <- ms]
+  )
+  where
+    decls =
+      [ ((lmPath lm, n), (sp, tp, ms))
+      | lm <- Map.elems (progModules prog),
+        Decl sp (DClass n tp ms) <- moduleDecls (lmModule lm)
+      ]
+
+-- | The classes and instances of a program (spec 4.6), read before any
+-- declaration is elaborated.
+data ClassEnv = ClassEnv
+  { clsClasses :: Map Key ClassInfo,
+    clsInstances :: [InstanceInfo],
+    -- | Each method an instance writes, as the declaration it is
+    -- elaborated as: named for the instance, with the types the
+    -- class's signature gives it written in where it leaves them out.
+    clsSynthetic :: Map Key Decl
+  }
+
+emptyClassEnv :: ClassEnv
+emptyClassEnv = ClassEnv Map.empty [] Map.empty
+
+data ClassInfo = ClassInfo
+  { ciParam :: TypeParam,
+    ciMethods :: [(Text, MethodInfo)]
+  }
+
+data MethodInfo = MethodInfo
+  { miParams :: [Param],
+    miDefault :: Maybe Expr,
+    -- | The method's type, in terms of the class's type parameter;
+    -- Nothing where its signature does not elaborate, which the check
+    -- of the class reports.
+    miType :: Maybe Type
+  }
+
+data InstanceInfo = InstanceInfo
+  { iiModule :: FilePath,
+    iiSpan :: Span,
+    iiClass :: Key,
+    -- | The type it is for, which mentions its type parameters when it
+    -- is parametric.
+    iiHead :: Type,
+    iiDecls :: [Decl],
+    -- | The type parameters of a parametric instance, with their bounds
+    -- as written and as read (spec 4.6).
+    iiTypeParams :: [TypeParam],
+    iiParams :: [(Text, Maybe Bound)]
   }
 
 -- | A type is settled at this point when every variable it still
@@ -208,6 +284,7 @@ addTypeVars :: [(Text, Maybe Bound)] -> Ctx -> Ctx
 addTypeVars vs ctx =
   ctx
     { ctxTypeVars = ctxTypeVars ctx <> Set.fromList (map fst vs),
+      ctxLocalVars = ctxLocalVars ctx <> Set.fromList (map fst vs),
       ctxBounds = ctxBounds ctx <> boundMap vs
     }
 
@@ -246,6 +323,12 @@ conforms ctx = conformsUnder upper
 holds :: Ctx -> NamedBound -> Type -> Bool
 holds ctx = satisfiesNamed (boundOf ctx)
 
+-- | 'holds', seen from a module: a type is orderable by an instance in
+-- effect there as well (spec 4.6).
+holdsAt :: Ctx -> FilePath -> NamedBound -> Type -> Bool
+holdsAt ctx path nb t =
+  holds ctx nb t || (nb == BOrderable && isJust (instanceFor ctx (Just path) orderableKey t))
+
 -- | A use instantiated a bounded type variable at a type outside its
 -- bound (spec 4.4).
 boundViolation :: Ctx -> Span -> Text -> Text -> Bound -> Type -> Diagnostic
@@ -256,16 +339,20 @@ boundViolation ctx sp callee v b t =
     wanted = case b of
       BoundNamed nb -> "be " <> renderNamedBound nb
       BoundType u -> "conform to " <> renderType u
+      BoundClass c -> "have an instance of " <> crName c
+      BoundAll _ -> "be " <> renderBound b
     hint = case t of
       TyVar w
         | w `Set.member` ctxTypeVars ctx ->
             " (a type parameter has only what its bound gives it; declare it as <"
               <> w <> ": " <> renderBound b <> ">)"
       _ -> case b of
-        BoundNamed BOrderable -> " (only Number and String are orderable)"
+        BoundNamed BOrderable -> " (Number and String are orderable, and a type with an instance orderable<...> in effect here)"
         BoundNamed BStringifiable -> " (only String, Number, Bool and Any are stringifiable; use to_json for structured values)"
         BoundNamed BComparable -> " (functions, handles, Void and Any cannot be compared)"
         BoundType _ -> ""
+        BoundClass c -> " (no instance " <> crName c <> "<" <> renderType t <> "> is in effect here)"
+        BoundAll _ -> ""
 
 data St = St
   { stDecls :: Map Key CoreDecl,
@@ -300,7 +387,8 @@ data St = St
     -- editor tooling and advisories is recorded by the check that
     -- follows it instead.
     stQuiet :: Bool,
-    stFailures :: Failures
+    stFailures :: Failures,
+    stInstanceHeads :: Map Key [Type]
   }
 
 -- | The top-level units (declarations, type aliases, command
@@ -511,7 +599,7 @@ elaborateModules prog scopes nameErrors paths =
   where
     base = Set.fromList paths
     inBase p = p `Set.member` base
-    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty
+    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv Set.empty (fst (classIndex prog)) (snd (classIndex prog))
     -- The units holding an error elsewhere are not these modules' to
     -- record: the result must not depend on the rest of the program.
     restrict (ds, as, ws) =
@@ -542,11 +630,12 @@ elaborateRecoveringFrom resumed prog scopes nameErrors =
             cpAdvisories = sortOn advSpan (nub (stAdvisories st)),
             cpDispatched = Map.map Set.toList (stDispatched st),
             cpSchemas = Map.map (Map.mapMaybe ceSchema) (stCommands st),
-            cpSchemaUses = stSchemaUses st
+            cpSchemaUses = stSchemaUses st,
+            cpInstances = stInstanceHeads st
           }
       )
   where
-    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty
+    ctx = Ctx prog scopes Set.empty Map.empty (not (null nameErrors)) Map.empty emptyClassEnv Set.empty (fst (classIndex prog)) (snd (classIndex prog))
     failedUnits@(failedDecls, failedAliases, failedWords) = unitsHolding prog nameErrors
     (done, start) = case resumed of
       Nothing -> (Set.empty, initialSt failedUnits)
@@ -566,7 +655,7 @@ elaborateRecoveringFrom resumed prog scopes nameErrors =
       maybe Set.empty (moduleInternal . lmModule) $
         Map.lookup (progEntry prog) (progModules prog)
     emptyCore =
-      CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] [] Map.empty Map.empty []
+      CoreProgram (progEntry prog) (progBaseDir prog) Map.empty internal Map.empty [] [] [] Map.empty Map.empty [] Map.empty
 
 -- | The state no unit has been elaborated in, given the units that
 -- hold an error of name resolution.
@@ -588,7 +677,8 @@ initialSt (failedDecls, failedAliases, failedWords) =
       stInfer = Map.empty,
       stInferNext = 0,
       stQuiet = False,
-      stFailures = Failures [] failedDecls failedAliases failedWords
+      stFailures = Failures [] failedDecls failedAliases failedWords,
+      stInstanceHeads = Map.empty
     }
 
 -- | Elaborate every unit of the modules the predicate selects.
@@ -596,7 +686,22 @@ initialSt (failedDecls, failedAliases, failedWords) =
 -- command string uses them (spec ch. 5), and so is every type alias,
 -- whether or not a type refers to it (spec 4.2).
 elabUnits :: Ctx -> (FilePath -> Bool) -> TC ()
-elabUnits ctx selected = do
+elabUnits ctx0 selected = do
+  env <- buildClassEnv ctx0
+  let ctx = ctx0 {ctxEnv = env}
+      modules = filter (selected . lmPath) (Map.elems (progModules (ctxProg ctx)))
+  modify (\s -> s {stInstanceHeads = instanceHeads ctx})
+  elabUnitsWith ctx modules
+  mapM_ (unit . checkClassDecl ctx) [(lmPath lm, d) | lm <- modules, d@(Decl _ DClass {}) <- moduleDecls (lmModule lm)]
+  mapM_ (unit . checkInstanceDecl ctx) [(lmPath lm, d) | lm <- modules, d@(Decl _ DInstance {}) <- moduleDecls (lmModule lm)]
+  mapM_ (unit . checkClassVarsUsed ctx) [(lmPath lm, d) | lm <- modules, d <- moduleDecls (lmModule lm)]
+  specializeEntry ctx (filter (selected . lmPath) [lm | lm <- Map.elems (progModules (ctxProg ctx)), lmPath lm == progEntry (ctxProg ctx)])
+  specializeAll ctx
+  where
+    unit act = recoverTC act >>= either recordFailure pure
+
+elabUnitsWith :: Ctx -> [LoadedModule] -> TC ()
+elabUnitsWith ctx modules = do
   mapM_ (commandTable ctx . lmPath) modules
   mapM_
     (tryAliasBody ctx)
@@ -612,7 +717,6 @@ elabUnits ctx selected = do
       n <- declValueName f
     ]
   where
-    modules = filter (selected . lmPath) (Map.elems (progModules (ctxProg ctx)))
     declValueName (DValue n _ _ _) = [n]
     declValueName (DFunction n _ _ _ _ _) = [n]
     declValueName _ = []
@@ -651,6 +755,8 @@ unitsHolding prog ds =
       DExportNamespace alias _ -> ([(path, alias)], [], [])
       DWithin _ -> ([], [], [])
       DAccess n _ -> ([], [(path, n)], [])
+      DClass n _ ms -> ([(path, m) | m <- n : [mn | ClassMethod _ (Spanned _ mn) _ _ _ <- ms]], [], [])
+      DInstance {} -> ([], [], [])
     imported path specs =
       ([(path, v) | (v, False) <- bad], [(path, v) | (v, True) <- bad], [])
       where
@@ -668,6 +774,8 @@ contains _ _ = False
 lookupDeclAst :: Ctx -> Key -> Maybe Decl
 lookupDeclAst ctx key@(path, name)
   | Just d <- Map.lookup key (ctxDeclOverride ctx) = Just d
+  | Just d <- Map.lookup key (clsSynthetic (ctxEnv ctx)) = Just d
+  | Just (_, d) <- methodDeclAst ctx key = Just d
   | otherwise = do
       lm <- Map.lookup path (progModules (ctxProg ctx))
       let match d = case declF d of
@@ -728,9 +836,21 @@ typeVarsOf ctx path tps = do
     param (TypeParam (Spanned _ v) mb) = (,) v <$> traverse bound mb
     bound (SBoundNamed (Spanned bsp n)) = case namedBoundFromText n of
       Just b -> pure (BoundNamed b)
-      Nothing ->
-        abort . diag ENameUndefined bsp $
-          "unknown bound '" <> n <> "': a named bound is comparable, orderable or stringifiable"
+      Nothing -> case classNamed ctx path Nothing n of
+        Just key -> pure (BoundClass (classRefOf ctx key))
+        Nothing ->
+          abort . diag ENameUndefined bsp $
+            "unknown bound '" <> n <> "': a named bound is comparable, orderable or stringifiable, or a class in scope"
+    bound (SBoundQualified (Spanned _ q) (Spanned bsp n)) = case classNamed ctx path (Just q) n of
+      Just key -> pure (BoundClass (classRefOf ctx key))
+      Nothing -> abort (diag ENameUndefined bsp ("'" <> q <> "." <> n <> "' is not a class"))
+    bound (SBoundClass p n) = pure (BoundClass (classRefOf ctx (p, n)))
+    bound (SBoundAll sbs) = do
+      bs <- mapM part sbs
+      redundantParts (zip (map partSpan sbs) bs)
+      pure $ case nub (concatMap boundParts bs) of
+        [b] -> b
+        bs' -> BoundAll bs'
     bound (SBoundType st) = do
       case filter (`elem` names) (sTypeNames st) of
         (v : _) ->
@@ -740,6 +860,27 @@ typeVarsOf ctx path tps = do
       when (t == TyVoid || not (wellFormed t)) $
         () <$ abort (diag ETypeIllformed (stypeSpan st) ("'" <> renderType t <> "' cannot be a bound"))
       pure (BoundType t)
+    -- A part of @a + b@ that says nothing the others do not: written
+    -- twice, or entailed by another part (spec 4.4). Not an error, as
+    -- the bound means the same without it (14.2).
+    redundantParts parts =
+      sequence_
+        [ advise WBoundRedundant psp msg
+        | (i, (psp, b)) <- zip [0 :: Int ..] parts,
+          let ents = [q | (j, (_, q)) <- zip [0 :: Int ..] parts, j /= i, q /= b, entailsBound q b],
+          msg <- take 1 $
+            ["'" <> renderBound b <> "' is written twice in this bound" | any ((== b) . snd) (take i parts)]
+              <> ["'" <> renderBound b <> "' adds nothing to this bound: '" <> renderBound q <> "' entails it" | q <- ents]
+        ]
+    partSpan sb = case sb of
+      SBoundNamed (Spanned bsp _) -> bsp
+      SBoundQualified (Spanned qsp _) (Spanned bsp _) -> qsp <> bsp
+      SBoundType st -> stypeSpan st
+      _ -> NoSpan
+    -- A part of @a + b@ is a named bound or a class (spec 4.2).
+    part sb = case sb of
+      SBoundType st -> abort (diag ETypeIllformed (stypeSpan st) "a type bound stands alone: only named bounds and classes are joined with +")
+      _ -> bound sb
 
 -- | The unqualified type names a type mentions.
 sTypeNames :: SType -> [Text]
@@ -842,7 +983,9 @@ tryDemandDecl ctx key@(path, name) = do
           outer <- gets stCurrent
           r <- recoverTC $ do
             modify (\s -> s {stActive = Set.insert key (stActive s), stCurrent = key : outer})
-            loud (elabDecl ctx path d)
+            loud $ case methodDeclAst ctx key of
+              Just (True, _) -> elabMethod ctx path d
+              _ -> elabDecl ctx path d
           modify (\s -> s {stCurrent = outer})
           case r of
             Right cd -> do
@@ -1132,7 +1275,7 @@ aliasType ctx path sp qualifier n args = do
       sequence_
         [ abort (boundViolation ctx sp n v b t)
         | ((v, Just b), t) <- zip params args,
-          not (satisfiesBound (boundOf ctx) b t)
+          not (boundHolds ctx path b t)
         ]
       pure (applySubst (Map.fromList (zip (map fst params) args)) body)
     Nothing ->
@@ -1247,9 +1390,15 @@ elabLambdaExpecting ctx path locals sp mName expectedRet ps0 retAnn body = do
   pure (Core sp (CLam lam), funTy, params)
 
 lambdaName :: Span -> Text
-lambdaName (Span (Position _ l c) _) =
-  "<lambda@" <> T.pack (show l) <> ":" <> T.pack (show c) <> ">"
-lambdaName NoSpan = "<lambda>"
+lambdaName = generatedName "lambda"
+
+-- | The name of a function the language makes rather than the user
+-- writes, after what made it and where: @<async\@3:7>@ (13.2). A stack
+-- trace shows it by what made it (12.4).
+generatedName :: Text -> Span -> Text
+generatedName what (Span (Position _ l c) _) =
+  "<" <> what <> "@" <> T.pack (show l) <> ":" <> T.pack (show c) <> ">"
+generatedName what NoSpan = "<" <> what <> ">"
 
 -- | Elaborate the parameter list: types, keyword defaults (evaluated
 -- in the scope of preceding parameters, spec 8.3), the body scope, and
@@ -1338,8 +1487,8 @@ data IVar = IVar
     ivShape :: Maybe Type,
     -- | The types it is used at, with where.
     ivUppers :: [(Span, Type)],
-    -- | The named bounds its uses need of it.
-    ivBounds :: [NamedBound],
+    -- | The bounds its uses need of it: named bounds and classes.
+    ivBounds :: [Bound],
     -- | The types of the values the body puts where it is, as the
     -- other branches of a choice: what it is when it is used at none.
     ivLowers :: [Type],
@@ -1415,7 +1564,7 @@ addLower v t
   | t == TyNull || hasInfer t = pure ()
   | otherwise = modifyVar v (\iv -> iv {ivLowers = nub (ivLowers iv <> [t])})
 
-addVarBound :: Text -> NamedBound -> TC ()
+addVarBound :: Text -> Bound -> TC ()
 addVarBound v nb = modifyVar v (\iv -> iv {ivBounds = nub (ivBounds iv <> [nb])})
 
 -- | The scrutinee of a case with type heads (spec 4.3): a use at Any,
@@ -1507,21 +1656,78 @@ constrain ctx sp a0 e0 = do
 holdsM :: Ctx -> NamedBound -> Type -> TC Bool
 holdsM ctx nb t0 = do
   active <- inferActive
+  path <- currentModule ctx
   if not active
-    then pure (holds ctx nb t0)
+    then pure (holdsAt ctx path nb t0)
     else do
       vs <- gets stInfer
       let t = zonkWith vs t0
           open = [v | v <- typeVars t, Just _ <- [openVar vs (TyVar v)]]
-          ok = satisfiesNamed (\v -> if v `elem` open then Just (BoundNamed nb) else boundOf ctx v) nb t
-      when ok (mapM_ (`addVarBound` nb) open)
-      pure ok
+          ok =
+            satisfiesNamed (\v -> if v `elem` open then Just (BoundNamed nb) else boundOf ctx v) nb t
+              || holdsAt ctx path nb t
+      when ok (mapM_ (`addVarBound` BoundNamed nb) open)
+      if ok || nb /= BOrderable || not (hasInfer t)
+        then pure ok
+        else fromMaybe False <$> reduceByInstance ctx orderableKey t
 
 -- | 'satisfiesBound', with 'holdsM' and 'conformsM'.
 satisfiesBoundM :: Ctx -> Span -> Bound -> Type -> TC Bool
 satisfiesBoundM ctx sp b t = case b of
   BoundNamed nb -> holdsM ctx nb t
   BoundType u -> conformsM ctx sp t u
+  BoundClass c -> classHoldsM ctx c t
+  BoundAll bs -> and <$> mapM (\b' -> satisfiesBoundM ctx sp b' t) bs
+
+-- | 'classHolds', where a value whose type is still to be found is
+-- taken as needing the class (spec 4.3), and one whose type is found
+-- only in part is left to the check made with the inferred types.
+classHoldsM :: Ctx -> ClassRef -> Type -> TC Bool
+classHoldsM ctx c t0 = do
+  active <- inferActive
+  vs <- gets stInfer
+  path <- currentModule ctx
+  let t = zonkWith vs t0
+  case openVar vs t of
+    Just v | active -> True <$ addVarBound v (BoundClass c)
+    _
+      | active && hasInfer t -> fromMaybe True <$> reduceByInstance ctx (classKey c) t
+      | otherwise -> pure (classHolds ctx path c t)
+
+-- | A literal with nothing in it, @[]@ or @{}@, whose type is the one
+-- its position gives it (spec 4.3), when something gives one.
+emptyLiteral :: Expr -> Bool
+emptyLiteral e = case exprF e of
+  EArray [] -> True
+  EObject [] -> True
+  _ -> False
+
+-- | A type still found only in part, which a parametric instance's type
+-- matches (spec 4.6): it has the class when the parts the instance's
+-- type parameters stand for satisfy their bounds, so a parameter whose
+-- type is still to be found takes those bounds (4.3). Nothing when no
+-- instance in effect matches it yet.
+reduceByInstance :: Ctx -> Key -> Type -> TC (Maybe Bool)
+reduceByInstance ctx cls t = do
+  path <- currentModule ctx
+  case [ (ii, sub)
+       | ii <- clsInstances (ctxEnv ctx),
+         iiClass ii == cls,
+         not (null (iiParams ii)),
+         iiModule ii `Set.member` importClosure (ctxProg ctx) path,
+         Just sub <- [matchHead (map fst (iiParams ii)) (iiHead ii) t]
+       ] of
+    [(ii, sub)] ->
+      Just . and
+        <$> sequence
+          [ satisfiesBoundM ctx NoSpan b (Map.findWithDefault TyAny v sub)
+          | (v, Just b) <- iiParams ii
+          ]
+    _ -> pure Nothing
+
+-- | The module of the declaration being elaborated.
+currentModule :: Ctx -> TC FilePath
+currentModule ctx = gets (maybe (progEntry (ctxProg ctx)) fst . listToMaybe . stCurrent)
 
 -- | 'unifyOrFail', where an argument whose type is still to be found
 -- takes the shape the callee's parameter gives it (spec 4.3): an
@@ -1686,7 +1892,7 @@ inferParams ctx path locals generalize ps retAnn body
               [(v, t) | (v, Right t) <- solved]
                 <> [(v, if generalize then TyVar (nm <> "%") else TyAny) | ((v, _), nm) <- named]
           tparams =
-            [ TypeParam (Spanned NoSpan (nm <> "%")) (fmap (SBoundNamed . Spanned NoSpan . renderNamedBound) b)
+            [ TypeParam (Spanned NoSpan (nm <> "%")) (fmap writtenBound b)
             | generalize,
               ((_, b), nm) <- named
             ]
@@ -1752,17 +1958,19 @@ inferParams ctx path locals generalize ps retAnn body
       _ -> False
     renderAt (Span (Position f l _) _) = T.pack f <> ":" <> T.pack (show l)
     renderAt NoSpan = "its case"
-    boundFor sp iv = case ivBounds iv of
+    -- The bound as it would be written, for the declaration checked
+    -- with the inferred parameters written in.
+    writtenBound b = case b of
+      BoundClass c -> SBoundClass (crModule c) (crName c)
+      BoundAll bs -> SBoundAll (map writtenBound bs)
+      _ -> SBoundNamed (Spanned NoSpan (renderBound b))
+    -- What the uses need, less what another of them entails: one
+    -- bound, or several joined with + (spec 4.2).
+    boundFor _ iv = case nub (concatMap boundParts (ivBounds iv)) of
       [] -> pure Nothing
-      bs -> case [b | b <- bs, all (boundEntails (BoundNamed b)) bs] of
-        b : _ -> pure (Just b)
-        [] ->
-          abort . diag ETypeBound sp $
-            "'"
-              <> ivOrigin iv
-              <> "' has to be "
-              <> T.intercalate " and " (map renderNamedBound bs)
-              <> ", and a type parameter has one bound; annotate the parameter"
+      bs -> case [b | b <- bs, not (any (\b' -> b' /= b && entailsBound b' b) bs)] of
+        [b] -> pure (Just b)
+        bs' -> pure (Just (BoundAll bs'))
 
 -- Bidirectional elaboration --------------------------------------------------------
 
@@ -1834,7 +2042,7 @@ infer ctx path locals (Expr sp f) = case f of
   ETry body mCatch mFin -> elabTry ctx path locals sp body mCatch mFin Nothing False
   EAsync inner -> do
     (c, t) <- infer ctx path locals inner
-    let thunk = mkThunk path sp c t
+    let thunk = mkThunk "async" path sp c t
     pure (Core sp (CApp (Core sp (CVar (BuiltinRef "spawn"))) [thunk] []), TyAsync t)
   EAwait inner -> do
     (c, t0) <- infer ctx path locals inner
@@ -1854,11 +2062,11 @@ spanStart :: Span -> Position
 spanStart (Span s _) = s
 spanStart NoSpan = Position "" 0 0
 
-mkThunk :: FilePath -> Span -> Core -> Type -> Core
-mkThunk path sp body ty =
+mkThunk :: Text -> FilePath -> Span -> Core -> Type -> Core
+mkThunk what path sp body ty =
   Core sp . CLam $
     Lam
-      { lamName = lambdaName sp,
+      { lamName = generatedName what sp,
         lamModule = path,
         lamPositional = [],
         lamVariadic = Nothing,
@@ -2074,17 +2282,17 @@ check ctx path locals e@(Expr sp f) expected = case f of
         -- A declaration with type parameters, referenced as a value:
         -- the expected type has to determine every one of them (4.4).
         (bounds, t) <- declTypeBounds ctx (defPath, defName)
-        t' <-
+        (t', inst) <-
           if settled ctx t
-            then pure t
+            then pure (t, [(v, TyVar v) | (v, b) <- Map.toList bounds, dictBound b])
             else do
               subst <- unifyM ctx sp t expected Map.empty
               refBounds ctx sp n bounds subst
-              pure (applySubst subst t)
+              pure (applySubst subst t, [(v, applySubst subst (TyVar v)) | (v, b) <- Map.toList bounds, dictBound b])
         ok <- conformsM ctx sp t' expected
         unless (settled ctx t' && ok) (mismatch sp expected t')
         recordVar sp n t' (Just (defPath, defName))
-        pure (Core sp (CVar (TopRef defPath defName)))
+        pure (instantiateRef (Core sp (CVar (TopRef defPath defName))) inst)
   EVar n
     | not (Map.member n locals),
       Just (VBuiltin bn) <- lookupValueTarget ctx path n,
@@ -2099,7 +2307,7 @@ check ctx path locals e@(Expr sp f) expected = case f of
           mismatch sp expected t
         refBounds ctx sp n (schemeBounds scheme) subst
         recordBuiltin sp n t bn
-        pure (Core sp (CVar (BuiltinRef bn)))
+        builtinRef ctx sp bn (schemeBounds scheme) subst
   EBin op a b | isEqOp op || expected == TyBool -> do
     (c, t) <- elabBin ctx path locals sp op a b (Just expected)
     conformsM ctx sp t expected >>= \ok -> unless ok (mismatch sp expected t)
@@ -2181,7 +2389,7 @@ lookupValueTarget ctx path n =
 -- function value, which cannot have a required keyword parameter
 -- (7.5): a call through a value binds no names.
 declAsValue :: Ctx -> Span -> Text -> Key -> TC ()
-declAsValue ctx sp n key = case lookupDeclAst ctx key of
+declAsValue ctx sp n key = notAClass ctx sp n key >> case lookupDeclAst ctx key of
   Just (Decl _ (DFunction _ _ ps _ _ _)) -> requiredAsValue sp ("'" <> n <> "'") ps
   Just (Decl _ (DValue _ _ _ (Expr _ (ELambda _ ps _ _)))) -> requiredAsValue sp ("'" <> n <> "'") ps
   _ -> pure ()
@@ -2436,38 +2644,74 @@ elabBin ctx path locals sp op a b mExpected = case op of
   OpAnd -> logical CAnd
   OpOr -> logical COr
   -- e |> f  ==  f(e)   /   f <| e  ==  f(e)   (spec 6.2)
-  OpPipeR -> elabCall ctx path locals sp b [Arg (exprSpan a) (APos a)] mExpected
-  OpPipeL -> elabCall ctx path locals sp a [Arg (exprSpan b) (APos b)] mExpected
+  OpPipeR -> pipedInto b (elabCall ctx path locals sp b [Arg (exprSpan a) (APos a)] mExpected)
+  OpPipeL -> pipedInto a (elabCall ctx path locals sp a [Arg (exprSpan b) (APos b)] mExpected)
   -- f >> g  ==  \(x) -> g(f(x))   /   f << g  ==  \(x) -> f(g(x))
   OpCompR -> compose a b
   OpCompL -> compose b a
   OpNot -> abort (diag ETypeMismatch sp "internal: '!' is not a binary operator")
   where
+    -- `xs |> map(f)` reads as passing xs to map, but the call is made
+    -- first and its result is what xs is given to (spec 6.2): say so
+    -- where the call comes up short.
+    pipedInto fn act = do
+      r <- recoverTC act
+      case (r, exprF fn) of
+        (Right x, _) -> pure x
+        (Left (Failed d), ECall {})
+          | diagCode d == ETypeArity ->
+              abort . withNote "the operand of |> is not added to this call's arguments: the call is made first, and the operand is given to what it returns; write `x |> \\(v) -> f(v, a)`, or `f(x, a)`" $ d
+        (Left f, _) -> failWith f
     arith p = do
       ca <- check ctx path locals a TyNumber
       cb <- check ctx path locals b TyNumber
       pure (Core sp (CBin p ca cb), TyNumber)
-    -- Both operands have one orderable type (spec 6.2): Number or
-    -- String. An operand that needs an expected type to be typed, as
-    -- a cast, takes the other's.
+    -- Both operands have one orderable type (spec 6.2): the wider of
+    -- the two, the one the other conforms to, as for == and for the
+    -- arguments of a call (4.4), so that the order of the operands
+    -- decides nothing. An operand that needs an expected type to be
+    -- typed, as a cast, takes the other's.
     compare' p = do
-      ra <- tryTC (infer ctx path locals a)
-      rb <- tryTC (infer ctx path locals b)
+      (ra, rb) <- operands
       (ca, cb, t) <- case (ra, rb) of
         (Right (ca, ta), Right (cb, tb)) -> do
           used <- orderUse ta tb
-          unless used $ do
-            ab <- conformsM ctx sp ta tb
-            ba <- conformsM ctx sp tb ta
-            unless (ab && ba) (mismatch sp ta tb)
-          pure (ca, cb, ta)
+          wider <-
+            if used
+              then pure ta
+              else do
+                ab <- conformsM ctx sp ta tb
+                if ab
+                  then pure tb
+                  else do
+                    ba <- conformsM ctx sp tb ta
+                    if ba then pure ta else mismatch sp ta tb
+          pure (ca, cb, wider)
         (Right (ca, ta), Left _) -> (\cb -> (ca, cb, ta)) <$> check ctx path locals b ta
         (Left _, Right (cb, tb)) -> (\ca -> (ca, cb, tb)) <$> check ctx path locals a tb
         (Left d, Left _) -> abort d
       ok <- holdsM ctx BOrderable t
       unless ok $
-        abort (diag ETypeBound sp ("values of type " <> renderType t <> " cannot be ordered with <, <=, > or >=: only Number and String are orderable"))
-      pure (Core sp (CBin p ca cb), TyBool)
+        abort (diag ETypeBound sp ("values of type " <> renderType t <> " cannot be ordered with <, <=, > or >=: Number and String are orderable, and a type with an instance orderable<...>"))
+      vs <- gets stInfer
+      let t' = zonkWith vs t
+      pure $
+        if orderNative ctx t'
+          then (Core sp (CBin p ca cb), TyBool)
+          else (Core sp (CApp (Core sp (CVar (InstRef builtinClassModule (orderOpName p) [("T", t')]))) [ca, cb] []), TyBool)
+    -- The two operands, typed as the two arguments of a call of the
+    -- operator are (spec 6.2, 4.4): an empty literal takes the type of
+    -- the other operand, on either side.
+    operands
+      | emptyLiteral a && not (emptyLiteral b) = do
+          rb <- tryTC (infer ctx path locals b)
+          ra <- either (const (tryTC (infer ctx path locals a))) (\(_, tb) -> tryTC ((\c -> (c, tb)) <$> check ctx path locals a tb)) rb
+          pure (ra, rb)
+      | emptyLiteral b && not (emptyLiteral a) = do
+          ra <- tryTC (infer ctx path locals a)
+          rb <- either (const (tryTC (infer ctx path locals b))) (\(_, ta) -> tryTC ((\c -> (c, ta)) <$> check ctx path locals b ta)) ra
+          pure (ra, rb)
+      | otherwise = (,) <$> tryTC (infer ctx path locals a) <*> tryTC (infer ctx path locals b)
     -- A parameter whose type is still to be found, ordered (spec 4.3):
     -- against a value of a type, it is used at that type; against
     -- another such parameter, the two have one type. Either way it is
@@ -2477,7 +2721,7 @@ elabBin ctx path locals sp op a b mExpected = case op of
       case (openVar vs ta, openVar vs tb) of
         (Just v, Just w) -> do
           when (v /= w) (refineVar ctx v (TyVar w))
-          True <$ addVarBound w BOrderable
+          True <$ addVarBound w (BoundNamed BOrderable)
         (Just v, Nothing) -> True <$ constrain ctx sp (TyVar v) (zonkWith vs tb)
         (Nothing, Just w) -> True <$ constrain ctx sp (TyVar w) (zonkWith vs ta)
         _ -> pure False
@@ -2485,8 +2729,9 @@ elabBin ctx path locals sp op a b mExpected = case op of
     -- -- the one conformed to -- has to be comparable (spec 6.2). For
     -- two non-union types that is the same as requiring them equal.
     equality p = do
-      (ca, ta) <- infer ctx path locals a
-      (cb, tb) <- infer ctx path locals b
+      (ra, rb) <- operands
+      (ca, ta) <- either abort pure ra
+      (cb, tb) <- either abort pure rb
       used <- equalityUse ta tb
       if used
         then pure (Core sp (CBin p ca cb), TyBool)
@@ -2509,16 +2754,16 @@ elabBin ctx path locals sp op a b mExpected = case op of
     equalityUse ta tb = do
       vs <- gets stInfer
       let use v other
-            | other == TyNull = True <$ addVarBound v BComparable
+            | other == TyNull = True <$ addVarBound v (BoundNamed BComparable)
             | otherwise = do
                 _ <- constrain ctx sp (TyVar v) other
                 vs' <- gets stInfer
-                mapM_ (`addVarBound` BComparable) (openVar vs' (TyVar v))
+                mapM_ (`addVarBound` BoundNamed BComparable) (openVar vs' (TyVar v))
                 pure True
       case (openVar vs ta, openVar vs tb) of
         (Just v, Just w) -> do
           when (v /= w) (refineVar ctx v (TyVar w))
-          True <$ addVarBound w BComparable
+          True <$ addVarBound w (BoundNamed BComparable)
         (Just v, Nothing) -> use v (zonkWith vs tb)
         (Nothing, Just w) -> use w (zonkWith vs ta)
         _ -> pure False
@@ -2529,8 +2774,13 @@ elabBin ctx path locals sp op a b mExpected = case op of
     compose f g = do
       (cf, tf) <- infer ctx path locals f
       (cg, tg) <- infer ctx path locals g
+      -- The result of the first is passed to the second, so it has to
+      -- conform to what the second takes (spec 6.2, 4.4).
+      fits <- case (tf, tg) of
+        (TyFun [_] tb, TyFun [tb'] _) -> conformsM ctx sp tb tb'
+        _ -> pure False
       case (tf, tg) of
-        (TyFun [ta] tb, TyFun [tb'] tc) | tb == tb' -> do
+        (TyFun [ta] _, TyFun [_] tc) | fits -> do
           let x = "%x"
               bodyCore =
                 Core sp (CApp cg [Core sp (CApp cf [Core sp (CVar (LocalRef x))] [])] [])
@@ -2624,6 +2874,12 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
               () <$ abort (diag ETypeIllformed (stypeSpan t) "a binding of a lambda with type parameters takes no type annotation: the lambda gives its types")
             Nothing -> pure ()
           vs <- typeVarsOf ctx path tps
+          -- A local function is not specialized (spec 4.6): a class
+          -- bound is a top-level declaration's.
+          case [tsp | (TypeParam (Spanned tsp _) _, (_, Just (BoundClass _))) <- zip tps vs] of
+            tsp : _ ->
+              () <$ abort (diag ETypeIllformed (if tsp == NoSpan then exprSpan e else tsp) "a class bound is written on a type parameter of a top-level declaration, not of a local function; declare the function at the top level")
+            [] -> pure ()
           -- A type name means one thing throughout a declaration (4.2).
           mapM_
             ( \(TypeParam (Spanned vsp v) _) ->
@@ -3024,7 +3280,7 @@ elabTry ctx path locals sp body mCatch mFin mExpected discarded = do
             Core sp $
               CApp
                 (builtin "%ensure")
-                [mkThunk path sp caught caughtTy, mkThunk path (blockSpan fin) finCore finTy]
+                [mkThunk "try" path sp caught caughtTy, mkThunk "finally" path (blockSpan fin) finCore finTy]
                 []
       pure (whole, caughtTy)
   where
@@ -3032,7 +3288,7 @@ elabTry ctx path locals sp body mCatch mFin mExpected discarded = do
     coreOf blk stmts = Core (blockSpan blk) (CDo stmts)
     recoverCall bodyCore ename handlerCore ty = recoverCallWith bodyCore ename handlerCore ty
     recoverCallWith bodyCore ename handlerCore ty =
-      let thunk = mkThunk path sp bodyCore ty
+      let thunk = mkThunk "try" path sp bodyCore ty
           handlerLam =
             Core sp . CLam $
               Lam
@@ -3788,8 +4044,14 @@ elabCall ctx path locals sp fn args mExpected = do
       ret <- case fnTy of
         TyFun _ r -> pure r
         other -> abort (diag ETypeCall (exprSpan fn) ("cannot call a value of type " <> renderType other))
-      (posCores, kwCores, retTy) <- bindStatic tvs bounds ret params
-      pure (Core sp (CApp fnCore posCores kwCores), retTy)
+      (posCores, kwCores, retTy, inst) <- bindStatic tvs bounds ret params
+      case fnCore of
+        Core _ (CVar (LocalRef ln))
+          | (v, t) : _ <- [(v, t) | (v, t) <- inst, not (orderNative ctx t)] ->
+              abort . diag ETypeBound sp $
+                "'" <> ln <> "' is a local function, so its " <> varDisplay (T.takeWhile (/= '@') v) <> " is ordered as Number and String are, and " <> renderType t <> " is neither; declare the function at the top level to order it by its instance"
+        _ -> pure ()
+      pure (Core sp (CApp (instantiateRef fnCore inst) posCores kwCores), retTy)
     -- runnable's keyword parameters are the run options (spec 15.5).
     CalleeBuiltin "runnable" _ -> case args of
       Arg _ (APos e) : rest -> do
@@ -3857,6 +4119,7 @@ elabCall ctx path locals sp fn args mExpected = do
       pure (CalleeValue c t)
 
     staticFromDecl key = do
+      notAClass ctx (exprSpan fn) calleeName key
       cd <- demandOrHeader key
       case cd of
         Just (core, tvs, bounds, ty, Just params) -> pure (CalleeStatic core tvs bounds ty params)
@@ -3877,7 +4140,19 @@ elabCall ctx path locals sp fn args mExpected = do
           -- variables, which the header does carry. A function with a
           -- required keyword parameter cannot be called as a value
           -- (7.5), so its annotations have to give the parameters.
+          current <- gets (listToMaybe . stCurrent)
           params <- case lookupDeclAst ctx key >>= declaredParams of
+            -- Reached again through another declaration of a cycle,
+            -- whose parameters are all written (spec 4.3): its type is
+            -- the one its annotations give, instantiated per call as
+            -- any generic's is, so that a type variable of the caller
+            -- is not mistaken for one of its own, and a class-bounded
+            -- one is specialized where the caller is (4.6).
+            Just ps
+              | current /= Just key,
+                not (null vs),
+                annotated ps ->
+                  Just <$> headerStaticParams (withTypeVars vs ctx) p ps
             Just ps
               | not (null [k | Param _ (PKeyword k _ _ Nothing) <- ps]) ->
                   if annotated ps
@@ -3917,11 +4192,18 @@ elabCall ctx path locals sp fn args mExpected = do
         )
         kwArgs
       let nPos = length positional
+      -- What the call should have looked like (spec 14.3).
+      let takes =
+            withNote $
+              "'" <> calleeName <> "' takes "
+                <> if null positional
+                  then "no positional arguments"
+                  else "(" <> T.intercalate ", " [pn <> ": " <> renderType pt | (pn, pt) <- positional] <> ")"
       when (length posExprs < nPos) $
-        () <$ abort (diag ETypeArity sp ("missing positional arguments: expected " <> tshow nPos <> ", got " <> tshow (length posExprs)))
+        () <$ abort (takes (diag ETypeArity sp ("missing positional arguments: expected " <> tshow nPos <> ", got " <> tshow (length posExprs))))
       let (bound, extra) = splitAt nPos posExprs
       when (isNothing variadic && not (null extra)) $
-        () <$ abort (diag ETypeArity sp ("too many positional arguments: expected " <> tshow nPos <> ", got " <> tshow (length posExprs)))
+        () <$ abort (takes (diag ETypeArity sp ("too many positional arguments: expected " <> tshow nPos <> ", got " <> tshow (length posExprs))))
       kwSlots <- keywordSlots keywords
       case [n | n <- required, n `notElem` [k | (k, _, _) <- kwSlots]] of
         n : _ -> () <$ abort (diag ETypeKeyword sp ("missing keyword argument: '" <> n <> "'"))
@@ -3934,21 +4216,24 @@ elabCall ctx path locals sp fn args mExpected = do
         then do
           posCores <- mapM (\(e, t) -> check ctx path locals e t) posSlots
           kwCores <- mapM (\(n, e, t) -> (,) n <$> check ctx path locals e t) kwSlots
-          pure (posCores, kwCores, ret)
+          pure (posCores, kwCores, ret, [])
         else do
           -- Pre-bind from the expected return type, then let every
           -- argument -- positional, variadic and keyword alike --
           -- contribute, in no particular order (spec 4.4).
           let retPat = ren ret
-              subst0 = case mExpected of
-                Just expT -> either (const Map.empty) id (unifyE retPat expT Map.empty)
-                Nothing -> Map.empty
-          (cores, subst) <-
-            goArgs subst0 (posSlots <> [(e, ren t) | (_, e, t) <- kwSlots])
-          retTy <- instantiateRet calleeName declVs retPat subst
+              subst0 = expectedBindings retPat
+          (cores, subst1) <-
+            goArgsInOrderOf declVs retPat subst0 (posSlots <> [(e, ren t) | (_, e, t) <- kwSlots])
+          -- What the expected type determined is held to the bounds,
+          -- and selects instances, as what the arguments did (4.4).
+          (retTy, subst) <- instantiateRet calleeName declVs retPat subst1
           checkBounds calleeName bounds subst
+          vs <- gets stInfer
           let (posCores, kwCores) = splitAt (length posSlots) cores
-          pure (posCores, zip [n | (n, _, _) <- kwSlots] kwCores, retTy)
+              declared = Map.mapKeys (T.takeWhile (/= '#')) subst
+              inst = [(v, zonkWith vs t) | (v, b) <- Map.toList bounds, dictBound b, Just t <- [Map.lookup v declared]]
+          pure (posCores, zip [n | (n, _, _) <- kwSlots] kwCores, retTy, inst)
 
     -- The keyword arguments a call gives, validated against the
     -- declaration's keyword parameters (spec 7.5).
@@ -3966,46 +4251,244 @@ elabCall ctx path locals sp fn args mExpected = do
                 diag ETypeKeyword asp ("unknown keyword argument: '" <> n <> "'")
         go seen (Arg _ (APos _) : rest) = go seen rest -- unreachable (validated)
 
-    goArgs subst argSlots = do
-      (done, deferred, subst') <- firstPass subst Map.empty [] (zip [0 :: Int ..] argSlots)
-      (done', subst'') <- retryPass subst' done deferred
-      pure (Map.elems done', subst'')
+    -- The arguments, then the variables only the parameters of
+    -- function arguments bound from above (spec 4.4, Variance): each
+    -- is the greatest type those parameters all take, and is checked
+    -- against them once every argument has spoken, so the order of
+    -- the arguments decides nothing.
+    goArgs retPat subst argSlots = do
+      (done, deferred, subst', ups) <- firstPass subst [] Map.empty [] (zip [0 :: Int ..] argSlots)
+      subst'' <- settleUppers subst' ups
+      (done', subst''', ups') <- retryPass subst'' ups done deferred
+      subst4 <- settleUppers subst''' ups'
+      mapM_ (checkUpper subst4) ups'
+      -- One bounded only by Any, and absent from the result, can be
+      -- nothing but Any; one in the result is left to the expected
+      -- type, or is the ordinary inference failure.
+      let anyOnly =
+            [ (v, TyAny)
+            | (v, _, _, _, _) <- ups',
+              not (Map.member v subst4),
+              v `notElem` typeVars retPat
+            ]
+      pure (Map.elems done', Map.union subst4 (Map.fromList anyOnly))
 
-    firstPass subst done deferred [] = pure (done, reverse deferred, subst)
-    firstPass subst done deferred (slot@(i, (argExpr, pat)) : rest) = do
+    -- 'goArgs', with no regard to which argument comes first (spec
+    -- 4.4): where arguments determine one variable at different types,
+    -- one of which every other conforms to, the variable is that one,
+    -- as it is for the branches of one expression (4.3) and the sides
+    -- of == (6.2). The arguments are matched again with it known. Only
+    -- a variable outside function types, and not one the expected type
+    -- determined, is widened so; anything else reports as it did.
+    goArgsInOrderOf vars retPat subst0 argSlots = attempt (length argSlots) subst0
+      where
+        attempt n seed = do
+          r <- recoverTC (goArgs retPat seed argSlots)
+          case r of
+            Right x -> pure x
+            Left f@(Failed _)
+              | n > 0 -> do
+                  seed' <- widened seed
+                  if seed' /= seed
+                    then do
+                      r' <- recoverTC (attempt (n - 1) seed')
+                      either (const (failWith f)) pure r'
+                    else failWith f
+            Left f -> failWith f
+        widened seed = do
+          found <- fmap concat . forM argSlots $ \(argExpr, pat) ->
+            if hasFunT pat
+              then pure []
+              else do
+                r <- probe (infer ctx path locals argExpr)
+                pure $ case r of
+                  Right (_, t)
+                    | not (hasInfer t),
+                      t /= TyAny,
+                      Right b <- unifyE pat t Map.empty ->
+                        [(v, x) | (v, x) <- Map.toList b, v `elem` vars, not (Map.member v subst0)]
+                  _ -> []
+          foldM widest seed (Map.toList (Map.fromListWith (flip (<>)) [(v, [x]) | (v, x) <- found]))
+        widest s (v, xs) = case nub xs of
+          cands@(_ : _ : _) -> do
+            ws <- filterM (\w -> and <$> mapM (\x -> conformsM ctx sp x w) cands) cands
+            pure $ case ws of
+              w : _ -> Map.insert v w s
+              [] -> s
+          _ -> pure s
+        -- An argument typed only to see what it says: what that records
+        -- is left out, but for the declarations it elaborated on the way.
+        probe act = do
+          st <- get
+          r <- recoverTC act
+          st' <- get
+          put st {stFailures = stFailures st', stDecls = stDecls st'}
+          pure r
+        hasFunT t = case t of
+          TyFun _ _ -> True
+          TyArray e -> hasFunT e
+          TyMap e -> hasFunT e
+          TyAsync e -> hasFunT e
+          TyRecord fs -> any (hasFunT . fieldType) fs
+          TyUnion ts -> any hasFunT ts
+          _ -> False
+
+    firstPass subst ups done deferred [] = pure (done, reverse deferred, subst, ups)
+    firstPass subst ups done deferred (slot@(i, (argExpr, pat)) : rest) = do
       let p = applySubst subst pat
       if settled ctx p
         then do
-          c <- check ctx path locals argExpr p
-          firstPass subst (Map.insert i c done) deferred rest
+          c <- checkArg argExpr p
+          firstPass subst ups (Map.insert i c done) deferred rest
+        -- An empty literal says nothing of its elements: it takes the
+        -- type the other arguments give its position, whichever comes
+        -- first, and is typed on its own only where none does.
+        else if emptyLiteral argExpr
+          then firstPass subst ups done (slot : deferred) rest
         else do
           r <- tryTC $ do
             (c, t) <- inferWithHint argExpr p
-            subst' <- unifyM ctx (exprSpan argExpr) p t subst
-            pure (c, subst')
+            (subst', new) <- matchArg (exprSpan argExpr) p t subst
+            pure (c, subst', new)
           case r of
-            Right (c, subst') -> firstPass subst' (Map.insert i c done) deferred rest
+            Right (c, subst', new) -> firstPass subst' (ups <> new) (Map.insert i c done) deferred rest
             -- Deferred rather than reported: another argument may
             -- yet make this position concrete, and if none does,
             -- the retry reports it against the type it ended with.
-            Left _ -> firstPass subst done (slot : deferred) rest
+            Left _ -> firstPass subst ups done (slot : deferred) rest
 
     -- A retried argument whose position is now concrete is checked
     -- against it, which is what gives @cast@ its target. One still
     -- undetermined is elaborated as before, so its own diagnostic
     -- is the report.
-    retryPass subst done [] = pure (done, subst)
-    retryPass subst done ((i, (argExpr, pat)) : rest) = do
+    retryPass subst ups done [] = pure (done, subst, ups)
+    retryPass subst ups done ((i, (argExpr, pat)) : rest) = do
       let p = applySubst subst pat
       if settled ctx p
         then do
-          c <- check ctx path locals argExpr p
-          retryPass subst (Map.insert i c done) rest
+          c <- checkArg argExpr p
+          retryPass subst ups (Map.insert i c done) rest
         else do
           (c, t) <- inferWithHint argExpr p
           when (t == TyAny) (anyArgument (exprSpan argExpr) p)
-          subst' <- unifyM ctx (exprSpan argExpr) p t subst
-          retryPass subst' (Map.insert i c done) rest
+          (subst', new) <- matchArg (exprSpan argExpr) p t subst
+          retryPass subst' (ups <> new) (Map.insert i c done) rest
+
+    -- An argument at a concrete position. A function argument that
+    -- does not conform is reported as 'matchArg' reports it, in the
+    -- terms of the call, where that finds the parameter or the result
+    -- at fault; anything else keeps the diagnostic of the check.
+    checkArg argExpr p = do
+      r <- tryTC (check ctx path locals argExpr p)
+      case r of
+        Right c -> pure c
+        Left d
+          | hasFun p ->
+              tryTC (infer ctx path locals argExpr) >>= \case
+                Right (_, t) -> varianceOf (exprSpan argExpr) p t >> abort d
+                Left _ -> abort d
+          | otherwise -> abort d
+      where
+        hasFun t = case t of
+          TyFun _ _ -> True
+          TyArray e -> hasFun e
+          TyMap e -> hasFun e
+          TyAsync e -> hasFun e
+          TyRecord fs -> any (hasFun . fieldType) fs
+          _ -> False
+
+    -- Matching an argument against its parameter (spec 4.4). Outside
+    -- a function type it is exact. Inside one, a parameter conforms
+    -- the other way round and a result as it is (Variance): a type
+    -- already known is checked by conformance, and a variable in a
+    -- parameter position of the argument is bounded from above by
+    -- what the argument takes rather than bound to it. What is left
+    -- is matched as before, so the result of a function argument
+    -- still determines its variable.
+    matchArg asp p t subst = do
+      (p', ups) <- varianceOf asp p t
+      subst' <- unifyM ctx asp p' t subst
+      pure (subst', [(v, a, asp, p, t) | (v, a) <- ups])
+
+    -- The variance part of 'matchArg': the pattern with what was
+    -- checked by conformance put in place, and the upper bounds found.
+    varianceOf asp p t = variance False True p t
+      where
+        variance inFun co pt at = case (pt, at) of
+          _ | inFun && hasInfer at -> pure (pt, [])
+          (TyVar v, _)
+            | inFun,
+              not co,
+              v `elem` calleeVars pt ->
+                pure (at, [(v, at)])
+          _
+            | inFun,
+              pt /= at,
+              null (calleeVars pt) -> do
+                ok <- if co then conformsM ctx asp at pt else conformsM ctx asp pt at
+                unless ok (varianceMismatch asp co pt at p t)
+                pure (at, [])
+          (TyFun ps r, TyFun qs r')
+            | length ps == length qs -> do
+                params <- zipWithM (variance True (not co)) ps qs
+                (r'', ur) <- variance True co r r'
+                pure (TyFun (map fst params) r'', concatMap snd params <> ur)
+          (TyArray x, TyArray y) -> first TyArray <$> variance inFun co x y
+          (TyMap x, TyMap y) -> first TyMap <$> variance inFun co x y
+          (TyAsync x, TyAsync y) -> first TyAsync <$> variance inFun co x y
+          (TyRecord fp, TyRecord fa)
+            | Map.keysSet fp == Map.keysSet fa,
+              map fieldOptional (Map.elems fp) == map fieldOptional (Map.elems fa) -> do
+                fields <-
+                  traverse
+                    (\(f, g) -> first (\ft -> f {fieldType = ft}) <$> variance inFun co (fieldType f) (fieldType g))
+                    (Map.intersectionWith (,) fp fa)
+                pure (TyRecord (fmap fst fields), concatMap snd (Map.elems fields))
+          _ -> pure (pt, [])
+
+    -- The callee's own variables in a pattern, as 'unifyM' finds them.
+    calleeVars pt = [v | v <- typeVars pt, not (isInferVar v), not (v `Set.member` ctxTypeVars ctx)]
+
+    -- A variable only parameter positions bounded is the greatest type
+    -- they all take. Where that is Any, it stays open until the end:
+    -- Any is never chosen where it would become a result (spec 4.4).
+    settleUppers subst ups = foldM settle subst (Map.toList grouped)
+      where
+        grouped = Map.fromListWith (flip (<>)) [(v, [u]) | u@(v, _, _, _, _) <- ups, not (Map.member v subst)]
+        settle s (v, us@(u0 : _)) = case foldM (meetType ctx) (upperOf u0) (map upperOf us) of
+          Just m
+            | m /= TyAny -> pure (Map.insert v m s)
+          Just _ -> pure s
+          Nothing -> case [u | u <- us, isNothing (meetType ctx (upperOf u0) (upperOf u))] of
+            u : _ -> abort (noCommonUpper u0 u)
+            [] -> pure s
+        settle s (_, []) = pure s
+        upperOf (_, a, _, _, _) = a
+
+    -- Each upper bound holds of what its variable became.
+    checkUpper subst (v, a, asp, p, t) = case Map.lookup v subst of
+      Just b -> do
+        ok <- conformsM ctx asp b a
+        unless ok (varianceMismatch asp False b a p t)
+      Nothing -> pure ()
+
+    -- Said in the terms of the call (spec 4.4): what the callee passes
+    -- a function argument, or needs back from it, against what the
+    -- function takes or returns.
+    varianceMismatch asp co want got p t =
+      abort . withExpectedActual (renderSig p) (renderType t) . diag ETypeMismatch asp $
+        if co
+          then
+            "this function returns " <> renderType got <> ", but '" <> calleeName <> "' needs "
+              <> renderSig want
+          else
+            "this function takes " <> renderType got <> ", but '" <> calleeName <> "' passes it "
+              <> renderSig want
+
+    noCommonUpper (_, a, _, _, _) (_, b, bsp, p, t) =
+      withExpectedActual (renderSig p) (renderType t) . diag ETypeMismatch bsp $
+        "'" <> calleeName <> "' passes one type to functions that take " <> renderType a
+          <> " and " <> renderType b <> ", and no type is both"
 
     -- An Any value may be placed only where Any is required (spec
     -- 4.4). Said in the terms of the call, since the position comes
@@ -4047,7 +4530,8 @@ elabCall ctx path locals sp fn args mExpected = do
 
     -- The result of instantiating a signature at this call: the
     -- substitution applied, checked for well-formedness (4.2), and
-    -- reported as an inference failure where a variable is left over.
+    -- reported as an inference failure where a variable is left over;
+    -- with the substitution the expected type completed.
     instantiateRet name' vs ret subst
       | all (`Map.member` subst) vs = done subst
       | otherwise = case mExpected of
@@ -4056,7 +4540,7 @@ elabCall ctx path locals sp fn args mExpected = do
             if all (`Map.member` s') vs then done s' else cannotInstantiate
           Nothing -> cannotInstantiate
       where
-        done sub = let t = applySubst sub ret in wellFormedRet t >> pure t
+        done sub = let t = applySubst sub ret in wellFormedRet t >> pure (t, sub)
         wellFormedRet t =
           unless (wellFormed t) $
             abort . diag ETypeIllformed sp $
@@ -4076,6 +4560,14 @@ elabCall ctx path locals sp fn args mExpected = do
         | (v, b) <- Map.toList bounds,
           Just t <- [Map.lookup v (Map.mapKeys (T.takeWhile (/= '#')) subst)]
         ]
+
+    -- What the expected type says of the type variables of a result
+    -- before the arguments are looked at (spec 4.4). A variable it
+    -- would make Any is left to them: every type conforms to Any, so a
+    -- position that takes Any says nothing of what is placed there.
+    expectedBindings retPat = case mExpected of
+      Just expT -> Map.filter (/= TyAny) (either (const Map.empty) id (unifyE retPat expT Map.empty))
+      Nothing -> Map.empty
 
     -- The name of the callee, for diagnostics about its instantiation.
     calleeName = case exprF fn of
@@ -4103,15 +4595,17 @@ elabCall ctx path locals sp fn args mExpected = do
               params = map ren (schemeParams scheme)
               retPat = ren (schemeRet scheme)
           unless (length posExprs == length params) $
-            () <$ abort (diag ETypeArity sp ("'" <> name <> "' expects " <> tshow (length params) <> " arguments, got " <> tshow (length posExprs)))
+            () <$ abort
+              ( withNote ("its signature is " <> name <> "(" <> T.intercalate ", " (map renderType (schemeParams scheme)) <> "): " <> renderType (schemeRet scheme)) $
+                  diag ETypeArity sp ("'" <> name <> "' expects " <> tshow (length params) <> " arguments, got " <> tshow (length posExprs))
+              )
           -- Pre-bind type variables from the expected return type.
-          let subst0 = case mExpected of
-                Just expT -> either (const Map.empty) id (unifyE retPat expT Map.empty)
-                Nothing -> Map.empty
-          (cores, subst) <- goArgs subst0 (zip posExprs params)
-          retTy <- instantiateRet name schemeVs retPat subst
+          let subst0 = expectedBindings retPat
+          (cores, subst1) <- goArgsInOrderOf schemeVs retPat subst0 (zip posExprs params)
+          (retTy, subst) <- instantiateRet name schemeVs retPat subst1
           checkBounds name (schemeBounds scheme) subst
-          pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) cores []), retTy)
+          fnRef <- builtinRef ctx sp name (schemeBounds scheme) (Map.mapKeys (T.takeWhile (/= '#')) subst)
+          pure (Core sp (CApp fnRef cores []), retTy)
       where
         castNeedsType =
           abort (diag ETypeMismatch sp "cast requires an expected type from context")
@@ -4208,3 +4702,796 @@ renderSig = asWritten . renderType
 
 asWritten :: Text -> Text
 asWritten = T.filter (/= '#')
+
+-- Classes and instances (spec 4.6) --------------------------------------------
+
+-- | The class a bound names, by its module and name, where it names
+-- one: a name in scope, or a member of a namespace.
+classNamed :: Ctx -> FilePath -> Maybe Text -> Text -> Maybe Key
+classNamed ctx path q n = do
+  gs <- Map.lookup path (ctxScopes ctx)
+  key <- case q of
+    Nothing -> case Map.lookup n (gsValues gs) of
+      Just (VTopLevel p n') -> Just (p, n')
+      _ -> Nothing
+    Just ns -> do
+      m <- Map.lookup ns (gsNamespaces gs)
+      pure (namespaceMember (ctxScopes ctx) m n)
+  key <$ classDeclAst ctx key
+
+-- | A class is written where a bound is (spec 4.6): it is no value.
+notAClass :: Ctx -> Span -> Text -> Key -> TC ()
+notAClass ctx sp n key = case classDeclAst ctx key of
+  Just _ -> abort (diag ETypeMismatch sp ("'" <> n <> "' is a class, which is written as a bound (<T: " <> n <> ">), not as a value"))
+  Nothing -> pure ()
+
+-- | A class declaration as written.
+classDeclAst :: Ctx -> Key -> Maybe (Span, TypeParam, [ClassMethod])
+classDeclAst ctx key = Map.lookup key (ctxClassDecls ctx)
+
+-- | What a class's type parameter is bounded by, where that is a named
+-- bound or a class.
+superBound :: Ctx -> FilePath -> SBound -> Maybe (Either NamedBound Key)
+superBound ctx p b = case b of
+  SBoundNamed (Spanned _ n) -> case namedBoundFromText n of
+    Just nb -> Just (Left nb)
+    Nothing -> Right <$> classNamed ctx p Nothing n
+  SBoundQualified (Spanned _ q) (Spanned _ n) -> Right <$> classNamed ctx p (Just q) n
+  SBoundClass cp cn -> Just (Right (cp, cn))
+  SBoundType _ -> Nothing
+  SBoundAll _ -> Nothing
+
+-- | The superclass of a class, as its type parameter's bound names it.
+classSuper :: Ctx -> Key -> Maybe (Either NamedBound Key)
+classSuper _ key | key == orderableKey = Just (Left BComparable)
+classSuper ctx key@(p, _) = do
+  (_, TypeParam _ mb, _) <- classDeclAst ctx key
+  mb >>= superBound ctx p
+
+-- | A class where it is a bound (spec 4.6), with what it entails along
+-- its chain of superclasses. A chain that comes back to a class is cut
+-- there; the check of the class reports it.
+classRefOf :: Ctx -> Key -> ClassRef
+classRefOf ctx = go []
+  where
+    go seen key@(p, n) = case classSuper ctx key of
+      Just (Left nb) -> ClassRef p n (namedClosure nb) []
+      Just (Right k)
+        | k `notElem` (key : seen) ->
+            let r = go (key : seen) k
+             in ClassRef p n (crEntailsNamed r) (k : crSupers r)
+      _ -> ClassRef p n [] []
+    namedClosure nb = [b | b <- [minBound .. maxBound], boundEntails (BoundNamed nb) b]
+
+-- | Whether a type has an instance of a class (spec 4.6), seen from a
+-- module: a type parameter in scope by what its bound entails, and a
+-- concrete type by an instance in effect there.
+classHolds :: Ctx -> FilePath -> ClassRef -> Type -> Bool
+classHolds ctx path c t = case t of
+  TyVar v -> maybe False (`entailsBound` BoundClass c) (boundOf ctx v)
+  _ -> isJust (instanceFor ctx (Just path) (classKey c) t)
+
+-- | 'satisfiesBound', with the program's instances.
+boundHolds :: Ctx -> FilePath -> Bound -> Type -> Bool
+boundHolds ctx path b t = case b of
+  BoundClass c -> classHolds ctx path c t
+  BoundNamed nb -> holdsAt ctx path nb t
+  BoundAll bs -> all (\b' -> boundHolds ctx path b' t) bs
+  _ -> satisfiesBound (boundOf ctx) b t
+
+-- | The instance of a class for a type: one in effect in the given
+-- module -- declared there or in a module it imports, directly or not
+-- -- or, without one, anywhere in the program.
+instanceFor :: Ctx -> Maybe FilePath -> Key -> Type -> Maybe InstanceInfo
+instanceFor ctx from cls t = fst <$> instanceMatch ctx from cls t
+
+-- | 'instanceFor', with the types the type parameters of a parametric
+-- instance take for the type (spec 4.6). Its type is matched against
+-- the instance's, and each type a parameter takes has to satisfy the
+-- parameter's bound in turn: a part of the type, so the search ends.
+instanceMatch :: Ctx -> Maybe FilePath -> Key -> Type -> Maybe (InstanceInfo, Map Text Type)
+instanceMatch ctx from cls t =
+  listToMaybe
+    [ (ii, sub)
+    | ii <- clsInstances (ctxEnv ctx),
+      iiClass ii == cls,
+      maybe True (\p -> iiModule ii `Set.member` importClosure (ctxProg ctx) p) from,
+      Just sub <- [matchHead (map fst (iiParams ii)) (iiHead ii) t],
+      and
+        [ boundHolds ctx (fromMaybe (iiModule ii) from) b (Map.findWithDefault TyAny v sub)
+        | (v, Just b) <- iiParams ii
+        ]
+    ]
+
+-- | Match a type against the type of an instance, whose variables
+-- among the given ones stand for any type: the types they stand for.
+matchHead :: [Text] -> Type -> Type -> Maybe (Map Text Type)
+matchHead vars pat0 t0 = go pat0 t0 Map.empty
+  where
+    go pat t sub = case pat of
+      TyVar v
+        | v `elem` vars -> case Map.lookup v sub of
+            Just u -> if u == t then Just sub else Nothing
+            Nothing -> Just (Map.insert v t sub)
+      _ -> case (pat, t) of
+        (TyArray a, TyArray b) -> go a b sub
+        (TyMap a, TyMap b) -> go a b sub
+        (TyAsync a, TyAsync b) -> go a b sub
+        (TyRecord fa, TyRecord fb)
+          | Map.keysSet fa == Map.keysSet fb,
+            map fieldOptional (Map.elems fa) == map fieldOptional (Map.elems fb) ->
+              foldM (\s' (x, y) -> go (fieldType x) (fieldType y) s') sub (zip (Map.elems fa) (Map.elems fb))
+        (TyFun ps r, TyFun qs r')
+          | length ps == length qs -> foldM (\s' (x, y) -> go x y s') sub (zip (ps <> [r]) (qs <> [r']))
+        _
+          | pat == t -> Just sub
+          | otherwise -> Nothing
+
+-- | Whether two instances' types have a type in common (spec 4.6):
+-- each one's variables among the given ones may stand for any type.
+headsOverlap :: [Text] -> Type -> [Text] -> Type -> Bool
+headsOverlap vs a ws b = isJust (unify (applySubst ren a) b Map.empty)
+  where
+    ren = Map.fromList [(v, TyVar (v <> "'")) | v <- vs]
+    free = Set.fromList (map (<> "'") vs <> ws)
+    walk sub t = case t of
+      TyVar v | Just u <- Map.lookup v sub -> walk sub u
+      _ -> t
+    unify x0 y0 sub =
+      let x = walk sub x0
+          y = walk sub y0
+       in case (x, y) of
+            (TyVar v, _) | v `Set.member` free -> if x == y then Just sub else Just (Map.insert v y sub)
+            (_, TyVar w) | w `Set.member` free -> Just (Map.insert w x sub)
+            (TyArray p, TyArray q) -> unify p q sub
+            (TyMap p, TyMap q) -> unify p q sub
+            (TyAsync p, TyAsync q) -> unify p q sub
+            (TyRecord fa, TyRecord fb)
+              | Map.keysSet fa == Map.keysSet fb,
+                map fieldOptional (Map.elems fa) == map fieldOptional (Map.elems fb) ->
+                  foldM (\s' (f1, f2) -> unify (fieldType f1) (fieldType f2) s') sub (zip (Map.elems fa) (Map.elems fb))
+            (TyFun ps r, TyFun qs r')
+              | length ps == length qs -> foldM (\s' (p', q') -> unify p' q' s') sub (zip (ps <> [r]) (qs <> [r']))
+            _
+              | x == y -> Just sub
+              | otherwise -> Nothing
+
+-- | A module and every module it imports, directly or not.
+importClosure :: Program -> FilePath -> Set FilePath
+importClosure prog = go Set.empty . pure
+  where
+    go seen [] = seen
+    go seen (p : rest)
+      | p `Set.member` seen = go seen rest
+      | otherwise =
+          go (Set.insert p seen) (maybe [] (Map.elems . lmImportKeys) (Map.lookup p (progModules prog)) <> rest)
+
+-- | The declaration a method's key names (spec 4.6): the method itself,
+-- whose signature is all there is to it (True), or, under its name with
+-- @#default@, its default body (False).
+methodDeclAst :: Ctx -> Key -> Maybe (Bool, Decl)
+methodDeclAst ctx (path, name) = do
+  let (m, isDefault) = maybe (name, False) (\b -> (b, True)) (T.stripSuffix "#default" name)
+  cn <- Map.lookup (path, m) (ctxMethodClass ctx)
+  (_, TypeParam tv _, ms) <- Map.lookup (path, cn) (ctxClassDecls ctx)
+  ClassMethod sp _ ps rt d <- listToMaybe [cm | cm@(ClassMethod _ (Spanned _ mn) _ _ _) <- ms, mn == m]
+  body <- if isDefault then d else Just (fromMaybe (Expr sp ENull) d)
+  pure (not isDefault, Decl sp (DFunction m [TypeParam tv (Just (SBoundClass path cn))] ps (Just rt) Nothing body))
+
+-- | A method: its signature alone (spec 4.6). Its core is never run:
+-- every reference to it is to the method of an instance.
+elabMethod :: Ctx -> FilePath -> Decl -> TC CoreDecl
+elabMethod ctx path (Decl sp f) = case f of
+  DFunction m tps ps (Just rt) _ _ -> do
+    vs <- typeVarsOf ctx path tps
+    let ctx' = withTypeVars vs ctx
+    params <- headerStaticParams ctx' path ps
+    ret <- typeFromS ctx' path rt
+    pure (CoreDecl path m (map fst vs) (TyFun (map snd (spPositional params)) ret) (Core sp CNull) (Just params) (boundMap vs))
+  _ -> abort (diag ENameUndefined sp "internal: not a method")
+
+-- | A declaration with a type parameter bounded by a class: generic,
+-- and run only as specialized (spec 4.6).
+--
+-- One bounded by @orderable@ alone is generic only where its body
+-- orders a value of its type parameter's type, which a value of an
+-- instance type is ordered by its instance to do.
+isTemplate :: CoreDecl -> Bool
+isTemplate cd =
+  any (any isClass . boundParts) (Map.elems (cdBounds cd))
+    -- A declaration without type parameters orders nothing of its own.
+    || not (null (cdTypeVars cd))
+      && or
+      [ v `elem` cdTypeVars cd
+      | CVar (InstRef _ _ inst) <- map coreF (universeCore (cdCore cd)),
+        (_, t) <- inst,
+        v <- typeVars t
+      ]
+  where
+    isClass b = case b of
+      BoundClass _ -> True
+      _ -> False
+
+-- | A bound an instantiation has to be followed through: one with a
+-- class, or @orderable@, which an instance may give a type (spec 4.6).
+dictBound :: Bound -> Bool
+dictBound = any one . boundParts
+  where
+    one b = case b of
+      BoundClass _ -> True
+      BoundNamed BOrderable -> True
+      _ -> False
+
+-- | Whether values of a type are ordered by the language (spec 15.4)
+-- rather than by an instance: Number and String, a type still to be
+-- found while parameters are inferred (that check is not the one that
+-- runs), and a type parameter of a local function, which is never
+-- specialized.
+orderNative :: Ctx -> Type -> Bool
+orderNative ctx t = case t of
+  TyVar v -> isInferVar v || v `Set.member` ctxLocalVars ctx || T.isInfixOf "@" v
+  _ -> nativeOrderable t || hasInfer t
+
+-- | The name a built-in order operation is specialized under.
+orderOpName :: PrimOp -> Text
+orderOpName p = case p of
+  PLt -> "<"
+  PLe -> "<="
+  PGt -> ">"
+  _ -> ">="
+
+-- | A built-in at the types a call or reference instantiates it at:
+-- itself, unless an @orderable@ type parameter of it is at a type the
+-- language does not order, where it is the built-in specialized to the
+-- instance's order (spec 4.6).
+builtinRef :: Ctx -> Span -> Text -> Map Text Bound -> Subst -> TC Core
+builtinRef ctx sp name bounds subst = do
+  vs <- gets stInfer
+  let inst = [(v, zonkWith vs t) | (v, BoundNamed BOrderable) <- Map.toList bounds, Just t <- [Map.lookup v subst]]
+  pure $
+    if all (orderNative ctx . snd) inst
+      then Core sp (CVar (BuiltinRef name))
+      else Core sp (CVar (InstRef builtinClassModule name inst))
+
+-- | The name of a declaration specialized at the types of its type
+-- parameters with a class bound, in the order of their names.
+specName :: Text -> [(Text, Type)] -> Text
+specName n inst = n <> "<" <> T.intercalate ", " (map (renderType . snd) (sortOn fst inst)) <> ">"
+
+-- | A reference to a declaration, at the types its class-bounded type
+-- parameters are instantiated at.
+instantiateRef :: Core -> [(Text, Type)] -> Core
+instantiateRef c [] = c
+instantiateRef (Core sp (CVar (TopRef p n))) inst = Core sp (CVar (InstRef p n (sortOn fst inst)))
+instantiateRef c _ = c
+
+-- | The key of a method an instance writes.
+implKey :: InstanceInfo -> Text -> Key
+implKey ii m = (iiModule ii, snd (iiClass ii) <> "<" <> renderType (iiHead ii) <> ">." <> m)
+
+-- | Read the program's classes and instances. Nothing is reported
+-- here: what does not read is left out, and reported by the check of
+-- the class or instance it is in.
+buildClassEnv :: Ctx -> TC ClassEnv
+buildClassEnv ctx = do
+  q <- gets stQuiet
+  modify (\s -> s {stQuiet = True})
+  classes <-
+    Map.fromList
+      <$> sequence
+        [ do
+            let ref = classRefOf ctx key
+                ctx' = withTypeVars [(v, Just (BoundClass ref))] ctx
+            methods <-
+              sequence
+                [ do
+                    r <- recoverTC (TyFun <$> paramHeaderTypes ctx' path ps <*> typeFromS ctx' path rt)
+                    pure (mn, MethodInfo ps d (either (const Nothing) Just r))
+                | ClassMethod _ (Spanned _ mn) ps rt d <- ms
+                ]
+            pure (key, ClassInfo tp methods)
+        | lm <- Map.elems (progModules (ctxProg ctx)),
+          let path = lmPath lm,
+          Decl _ (DClass n tp@(TypeParam (Spanned _ v) _) ms) <- moduleDecls (lmModule lm),
+          let key = (path, n)
+        ]
+  instances <-
+    catMaybes
+      <$> sequence
+        [ case either (const Nothing) Just (instanceClass ctx path qual c) of
+            Nothing -> pure Nothing
+            Just ck -> do
+              r <- recoverTC $ do
+                vs <- typeVarsOf ctx path tps
+                (,) vs <$> typeFromS (withTypeVars vs ctx) path t
+              pure (either (const Nothing) (\(vs, ht) -> Just (InstanceInfo path sp ck ht ds tps vs)) r)
+        | -- Dependencies first (progOrder), so that of two instances
+          -- for one type, the later is the one reported.
+          path <- progOrder (ctxProg ctx),
+          Just lm <- [Map.lookup path (progModules (ctxProg ctx))],
+          Decl sp (DInstance tps qual (Spanned _ c) t ds) <- moduleDecls (lmModule lm)
+        ]
+  modify (\s -> s {stQuiet = q})
+  let classes' = Map.insert orderableKey orderableInfo classes
+      synthetic =
+        Map.fromList
+          [ (implKey ii mn, implDecl ci ii d)
+          | ii <- instances,
+            Just ci <- [Map.lookup (iiClass ii) classes'],
+            d@(Decl _ (DFunction mn [] _ _ Nothing _)) <- iiDecls ii
+          ]
+  pure (ClassEnv classes' instances synthetic)
+  where
+    -- A method written in an instance, with the types the class gives
+    -- it written in where it leaves them out.
+    implDecl ci ii d@(Decl dsp df) = case df of
+      DFunction mn _ ps rt w body
+        | Just mi <- lookup mn (ciMethods ci),
+          Just (TyFun pts r) <- miType mi,
+          length pts == length ps ->
+            let TypeParam (Spanned _ v) _ = ciParam ci
+                sub = applySubst (Map.singleton v (iiHead ii))
+                fill (Param psp pf) pt = Param psp $ case pf of
+                  PPositional n sec Nothing -> PPositional n sec (Just (typeToS psp (sub pt)))
+                  other -> other
+             in Decl dsp (DFunction mn (iiTypeParams ii) (zipWith fill ps pts) (rt <|> Just (typeToS dsp (sub r))) w body)
+      _ -> d
+
+-- | The built-in class @orderable@ (spec 4.6): its method @compare@,
+-- whose built-in instances are Number and String.
+orderableInfo :: ClassInfo
+orderableInfo =
+  ClassInfo
+    (TypeParam (Spanned NoSpan "T") (Just (SBoundNamed (Spanned NoSpan "comparable"))))
+    [ ( "compare",
+        MethodInfo
+          [Param NoSpan (PPositional n Public (Just (SType NoSpan (SNamed Nothing "T" [])))) | n <- ["a", "b"]]
+          Nothing
+          (Just (TyFun [TyVar "T", TyVar "T"] TyNumber))
+      )
+    ]
+
+-- | The class an instance declaration is of: a class in scope, or the
+-- built-in @orderable@. The other named bounds are closed classes,
+-- whose instances are the types the language gives them.
+instanceClass :: Ctx -> FilePath -> Maybe (Spanned Text) -> Text -> Either Text Key
+instanceClass ctx path qual c = case (qual, namedBoundFromText c) of
+  (Nothing, Just BOrderable) -> Right orderableKey
+  (Nothing, Just nb) ->
+    Left ("'" <> renderNamedBound nb <> "' is a closed class: its instances are the types the language makes " <> renderNamedBound nb <> ", and no others are declared")
+  _ -> maybe (Left ("'" <> maybe "" ((<> ".") . spannedValue) qual <> c <> "' is not a class")) Right (classNamed ctx path (spannedValue <$> qual) c)
+
+-- | Check a class declaration (spec 4.6), and the signatures and
+-- default bodies of its methods.
+checkClassDecl :: Ctx -> (FilePath, Decl) -> TC ()
+checkClassDecl ctx (path, Decl sp f) = case f of
+  DClass n tp@(TypeParam _ mb) ms -> do
+    when (isJust (namedBoundFromText n)) $
+      abort (diag ENameDuplicate sp ("'" <> n <> "' is a named bound, which no class can be called"))
+    case mb of
+      Just (SBoundType st) ->
+        abort (diag ETypeIllformed (stypeSpan st) "a class's type parameter is bounded by a named bound or by another class, not by a type")
+      _ -> pure ()
+    _ <- typeVarsOf ctx path [tp]
+    when ((path, n) `elem` superChain (path, n)) $
+      abort (diag ETypeIllformed sp ("class '" <> n <> "' is its own superclass"))
+    sequence_
+      [ abort (diag ETypeIllformed psp "a method takes positional parameters, each with its type written")
+      | ClassMethod _ _ ps _ _ <- ms,
+        Param psp pf <- ps,
+        case pf of
+          PPositional _ Public (Just _) -> False
+          _ -> True
+      ]
+    sequence_
+      [ do
+          r <- tryDemandDecl ctx (path, m)
+          -- A method whose signature does not mention the type parameter
+          -- has nothing at a call to say which instance it means.
+          case r of
+            Just cd
+              | tv `notElem` typeVars (cdType cd) ->
+                  abort . diag ETypeIllformed msp $
+                    "'" <> m <> "' does not mention " <> tv <> " in its parameters or its result, so no call of it can say which instance of " <> n <> " it means"
+            _ -> pure ()
+          when (isJust d) (() <$ tryDemandDecl ctx (path, m <> "#default"))
+      | ClassMethod _ (Spanned msp m) _ _ d <- ms
+      ]
+  _ -> pure ()
+  where
+    tv = case f of
+      DClass _ (TypeParam (Spanned _ v) _) _ -> v
+      _ -> ""
+    superChain = go (16 :: Int)
+      where
+        go 0 _ = []
+        go k key = case classSuper ctx key of
+          Just (Right s) -> s : go (k - 1) s
+          _ -> []
+
+-- | A type parameter with a bound an instance has to be found for -- a
+-- class, orderable included -- appears in the declaration's type: its
+-- parameters or its result (spec 4.6). Otherwise nothing at a call
+-- determines it, and no call could say which instance it means.
+checkClassVarsUsed :: Ctx -> (FilePath, Decl) -> TC ()
+checkClassVarsUsed ctx (path, Decl _ f) = case header of
+  Just (name, tps@(_ : _)) -> do
+    r <- tryDemandDecl ctx (path, name)
+    case r of
+      Just cd ->
+        sequence_
+          [ abort . diag ETypeIllformed vsp $
+              "type parameter '" <> v <> "' is bounded by " <> renderBound b <> ", and appears in no parameter or result type of '" <> name <> "', so no call can say which instance it means"
+          | TypeParam (Spanned vsp v) (Just _) <- tps,
+            Just b <- [Map.lookup v (cdBounds cd)],
+            dictBound b,
+            v `notElem` used cd
+          ]
+      Nothing -> pure ()
+  _ -> pure ()
+  where
+    header = case f of
+      DFunction n tps _ _ _ _ -> Just (n, tps)
+      DValue n _ _ (Expr _ (ELambda tps _ _ _)) -> Just (n, tps)
+      _ -> Nothing
+    used cd = typeVars (cdType cd) <> maybe [] (concatMap (typeVars . snd) . spKeywords) (cdParams cd)
+
+-- | Check an instance declaration (spec 4.6): its class and type, where
+-- it may be declared, that it is the only one, its superclass, and its
+-- methods against the class's signatures.
+checkInstanceDecl :: Ctx -> (FilePath, Decl) -> TC ()
+checkInstanceDecl ctx (path, Decl sp f) = case f of
+  DInstance tps qual (Spanned csp c) st ds -> do
+    let written = maybe "" ((<> ".") . spannedValue) qual <> c
+        display = written <> "<" <> renderSType st <> ">"
+    ck <- case instanceClass ctx path qual c of
+      Right k -> pure k
+      Left msg
+        | isJust (namedBoundFromText c) && isNothing qual -> abort (diag ETypeInstance csp msg)
+        | otherwise -> abort (diag ENameUndefined csp msg)
+    ci <- maybe dependencyFailed pure (Map.lookup ck (clsClasses (ctxEnv ctx)))
+    vs <- typeVarsOf ctx path tps
+    let ictx = withTypeVars vs ctx
+    ht <- typeFromS ictx path st
+    when (ht == TyAny || ht == TyVoid || not (wellFormed ht)) $
+      abort (diag ETypeIllformed (stypeSpan st) ("there is no instance for " <> renderType ht <> ": an instance is for a type other than Any and Void"))
+    -- A parametric instance is for the types its type has, each of its
+    -- type parameters standing for a part of them (spec 4.6).
+    case ht of
+      TyVar _ -> abort (diag ETypeIllformed (stypeSpan st) "an instance is for a type that is more than a type parameter")
+      _ -> pure ()
+    case [v | (v, _) <- vs, v `notElem` typeVars ht] of
+      v : _ -> abort (diag ETypeIllformed (stypeSpan st) ("the type parameter '" <> v <> "' of the instance is not in its type, so nothing says what it is"))
+      [] -> pure ()
+    when (varInUnion ht) $
+      abort (diag ETypeIllformed (stypeSpan st) "a type parameter of an instance is not a member of a union: its type matches a type part by part")
+    -- Instances are of the class's module, or of the project: a
+    -- dependency cannot declare one for another's class (spec 4.6).
+    let prog = ctxProg ctx
+    unless (path == fst ck || isNothing (inCache (progCacheDir prog) path)) $
+      abort (diag ETypeInstance sp ("an instance of '" <> written <> "' is declared in the module of the class or in the project, not in a dependency"))
+    when (ck == orderableKey && nativeOrderable ht) $
+      abort (diag ENameDuplicate sp (renderType ht <> " is orderable by the language, which is its one instance of orderable"))
+    -- Instances whose types have one in common, after this one in the
+    -- order of the modules, are reported where they are.
+    let others = [ii | ii <- clsInstances (ctxEnv ctx), iiClass ii == ck, headsOverlap (map fst (iiParams ii)) (iiHead ii) (map fst vs) ht]
+    case others of
+      earlier : _
+        | (iiModule earlier, iiSpan earlier) /= (path, sp) ->
+            abort . withNote ("the other is at " <> renderAt (iiSpan earlier)) $
+              diag ENameDuplicate sp ("duplicate instance " <> display <> ": a type has one instance of a class, and this one is for a type that another is for")
+      _ -> pure ()
+    case classSuper ctx ck of
+      Just (Left nb)
+        | not (holdsAt ictx path nb ht) ->
+            abort (diag ETypeInstance sp ("'" <> written <> "' is a class of " <> renderNamedBound nb <> " types, and " <> renderType ht <> " is not " <> renderNamedBound nb))
+      Just (Right sk)
+        | isNothing (instanceFor ictx (Just path) sk ht) ->
+            abort (diag ETypeInstance sp ("an instance " <> display <> " needs an instance " <> snd sk <> "<" <> renderSType st <> "> in effect here"))
+      _ -> pure ()
+    let methods = ciMethods ci
+        names = [n | Decl _ (DFunction n _ _ _ _ _) <- ds] <> [n | Decl _ (DValue n _ _ _) <- ds]
+    sequence_ [methodShape (map fst methods) d | d <- ds]
+    case [n | (n : _ : _) <- group' names] of
+      n : _ -> abort (diag ENameDuplicate sp ("the instance " <> display <> " defines '" <> n <> "' more than once"))
+      [] -> pure ()
+    case [m | (m, mi) <- methods, isNothing (miDefault mi), m `notElem` names] of
+      [] -> pure ()
+      missing ->
+        abort (diag ETypeInstance sp ("the instance " <> display <> " does not define " <> T.intercalate ", " ["'" <> m <> "'" | m <- missing] <> ", which " <> written <> " has no default for"))
+    let ii = InstanceInfo path sp ck ht ds tps vs
+        TypeParam (Spanned _ v) _ = ciParam ci
+    sequence_
+      [ do
+          r <- tryDemandDecl ctx (implKey ii m)
+          case (r, miType mi) of
+            (Just cd, Just expected)
+              | let want = applySubst (Map.singleton v ht) expected,
+                cdType cd /= want ->
+                  abort . withExpectedActual (renderType want) (renderType (cdType cd)) $
+                    diag ETypeMismatch dsp ("'" <> m <> "' of " <> display <> " has to have the type the class gives it")
+            _ -> pure ()
+      | Decl dsp (DFunction m _ _ _ _ _) <- ds,
+        Just mi <- [lookup m methods]
+      ]
+  _ -> pure ()
+  where
+    group' xs = [[x | x' <- xs, x' == x] | x <- nub xs]
+    varInUnion t = case t of
+      TyUnion ms -> any (not . null . typeVars) ms
+      TyArray e -> varInUnion e
+      TyMap e -> varInUnion e
+      TyAsync e -> varInUnion e
+      TyRecord fs -> any (varInUnion . fieldType) (Map.elems fs)
+      TyFun ps r -> any varInUnion (r : ps)
+      _ -> False
+    renderAt (Span (Position fl l _) _) = T.pack fl <> ":" <> T.pack (show l)
+    renderAt NoSpan = "another module"
+    methodShape known (Decl dsp df) = case df of
+      DValue n _ _ _ -> abort (diag ETypeIllformed dsp ("'" <> n <> "' is written as a method is: " <> n <> "(...) = ..."))
+      DFunction n tps ps _ w _
+        | n `notElem` known ->
+            abort . suggesting n known $ diag ENameUndefined dsp ("the class has no method '" <> n <> "'")
+        | not (null tps) -> abort (diag ETypeIllformed dsp "a method of an instance declares no type parameters: the class gives its types")
+        | isJust w -> abort (diag ETypeIllformed dsp "a method of an instance takes the access constraint of its module; it writes no within of its own")
+        | Just mi <- lookup' n,
+          length [() | Param _ (PPositional {}) <- ps] /= length ps || length ps /= length (miParams mi) ->
+            abort (diag ETypeArity dsp ("'" <> n <> "' takes the " <> T.pack (show (length (miParams mi))) <> " positional parameters the class gives it"))
+        | otherwise -> pure ()
+      _ -> pure ()
+      where
+        lookup' n = case f of
+          DInstance _ qual (Spanned _ c) _ _ -> do
+            ck <- either (const Nothing) Just (instanceClass ctx path qual c)
+            ci <- Map.lookup ck (clsClasses (ctxEnv ctx))
+            lookup n (ciMethods ci)
+          _ -> Nothing
+
+-- Specialization (spec 4.6) ---------------------------------------------------
+
+-- | Make every declaration that is not generic refer, wherever it
+-- refers to a generic one at concrete types, to that declaration
+-- specialized at them, making the specializations it needs.
+specializeAll :: Ctx -> TC ()
+specializeAll ctx = do
+  decls <- gets stDecls
+  -- Only a declaration that refers to a generic one at some types has
+  -- anything to rewrite; most refer to none, and are left as they are.
+  sequence_
+    [ rewriteDecl ctx [] k cd
+    | (k, cd) <- Map.toList decls,
+      any isInstRef (universeCore (cdCore cd)),
+      not (isTemplate cd)
+    ]
+  where
+    isInstRef c = case coreF c of
+      CVar (InstRef {}) -> True
+      _ -> False
+
+-- | The entry module's public declarations with a class bound, at each
+-- choice of instances for their bounded type parameters: what the CLI
+-- may invoke them at (spec 11.2).
+specializeEntry :: Ctx -> [LoadedModule] -> TC ()
+specializeEntry ctx lms =
+  sequence_
+    [ do
+        r <- tryDemandDecl ctx key
+        case r of
+          Just cd
+            | isTemplate cd ->
+                sequence_
+                  [ () <$ recoverTC (ensureSpec ctx [] key inst)
+                  | inst <- take 64 (choices [(v, candidates b) | (v, b) <- Map.toList (cdBounds cd), dictBound b])
+                  ]
+          _ -> pure ()
+    | lm <- lms,
+      Decl _ df <- moduleDecls (lmModule lm),
+      n <- case df of
+        DFunction n' _ _ _ _ _ -> [n']
+        DValue n' _ _ _ -> [n']
+        _ -> [],
+      n `Set.notMember` moduleInternal (lmModule lm),
+      let key = (lmPath lm, n)
+    ]
+  where
+    heads ck = Map.findWithDefault [] ck (instanceHeads ctx)
+    -- The types the CLI may instantiate a variable with the bound at:
+    -- those with an instance of each of its classes, orderable or not.
+    candidates b =
+      [ t
+      | t <- nub (concat [partHeads p' | p' <- boundParts b]),
+        all (\p' -> boundHolds ctx (progEntry (ctxProg ctx)) p' t) (boundParts b)
+      ]
+    partHeads p' = case p' of
+      BoundClass c -> heads (classKey c)
+      BoundNamed BOrderable -> [TyNumber, TyString] <> heads orderableKey
+      _ -> []
+    choices [] = [[]]
+    choices ((v, ts) : rest) = [(v, t) : more | t <- ts, more <- choices rest]
+
+-- | Rewrite a declaration's references to generic declarations.
+rewriteDecl :: Ctx -> [Key] -> Key -> CoreDecl -> TC ()
+rewriteDecl ctx depth key cd = do
+  let refs = nub [(p, n, inst) | CVar (InstRef p n inst) <- map coreF (universeCore (cdCore cd))]
+  targets <-
+    mapM
+      ( \(p, n, inst) ->
+          (,) (p, n, inst)
+            <$> if p == builtinClassModule
+              then resolveBuiltinOp ctx depth n inst
+              else uncurry TopRef <$> resolveInst ctx depth (p, n) inst
+      )
+      refs
+  let replace c@(Core sp cf) = case cf of
+        CVar (InstRef p n inst) | Just r <- lookup (p, n, inst) targets -> Core sp (CVar r)
+        _ -> c
+  modify (\s -> s {stDecls = Map.insert key cd {cdCore = transformCore replace (cdCore cd)} (stDecls s)})
+
+-- | The declaration a reference to a generic declaration at concrete
+-- types runs: a method's, that of the instance for the type, or its
+-- default specialized; any other's, itself specialized.
+resolveInst :: Ctx -> [Key] -> Key -> [(Text, Type)] -> TC Key
+resolveInst ctx depth key@(p, n) inst
+  | not (all (isGround . snd) inst) =
+      abort (diag ETypeBound NoSpan ("internal: '" <> n <> "' is referred to at a type that is not concrete"))
+  | Nothing <- methodDeclAst ctx key = do
+      -- A declaration that orders nothing by an instance runs as it is.
+      cd <- demandDecl ctx key
+      if isTemplate cd then ensureSpec ctx depth key inst else pure key
+  | Just (True, _) <- methodDeclAst ctx key,
+    Just (ck, ci) <- classOfMethod,
+    [(_, t)] <- inst =
+      case instanceMatch ctx Nothing ck t of
+        Nothing -> abort (diag ETypeBound NoSpan ("there is no instance " <> snd ck <> "<" <> renderType t <> ">"))
+        Just (ii, sub)
+          | n `elem` [m | Decl _ (DFunction m _ _ _ _ _) <- iiDecls ii] -> instanceMethod ctx depth ii sub n
+          | isJust (lookup n (ciMethods ci) >>= miDefault) -> ensureSpec ctx depth (p, n <> "#default") inst
+          | otherwise -> abort (diag ETypeInstance (iiSpan ii) ("the instance does not define '" <> n <> "'"))
+  | otherwise = ensureSpec ctx depth key inst
+  where
+    classOfMethod =
+      listToMaybe
+        [ (ck, ci)
+        | (ck@(cp, _), ci) <- Map.toList (clsClasses (ctxEnv ctx)),
+          cp == p,
+          isJust (lookup n (ciMethods ci))
+        ]
+
+-- | The key of a generic declaration specialized at concrete types,
+-- making the specialization the first time it is asked for.
+ensureSpec :: Ctx -> [Key] -> Key -> [(Text, Type)] -> TC Key
+ensureSpec ctx depth key@(p, n) inst = do
+  let key' = (p, specName n inst)
+  done <- gets (Map.member key' . stDecls)
+  if done
+    then pure key'
+    else do
+      cd <- demandDecl ctx key
+      -- The specializations that led here, innermost first. The one
+      -- that keeps coming back at larger types is the one to blame:
+      -- the declaration among them made most often, the outermost of
+      -- those on a tie.
+      when (length depth > 32) $ do
+        let chain = key : depth
+            counts = Map.fromListWith (+) [(k, 1 :: Int) | k <- chain]
+            most = maximum (Map.elems counts)
+            culprit = last [k | k <- chain, Map.findWithDefault 0 k counts == most]
+        ccd <- demandDecl ctx culprit
+        abort (diag ETypeBound (coreSpan (cdCore ccd)) ("'" <> displayName (snd culprit) <> "' calls itself, through its instances, at ever larger types, so it is never specialized at all of them; call it at the types it is given"))
+      let vs = map fst inst
+          sub = applySubst (Map.fromList inst)
+          -- A recursive call refers to the declaration itself, at the
+          -- types it is specialized at (spec 4.3: a recursive call is
+          -- not generalized).
+          self c@(Core sp cf) = case cf of
+            CVar (TopRef p' n') | (p', n') == key -> Core sp (CVar (TopRef p (specName n inst)))
+            _ -> c
+          cd' =
+            cd
+              { cdTypeVars = filter (`notElem` vs) (cdTypeVars cd),
+                cdType = sub (cdType cd),
+                cdCore = transformCore self (substCoreTypes inst (cdCore cd)),
+                cdParams = fmap (substParams sub) (cdParams cd),
+                cdBounds = Map.withoutKeys (cdBounds cd) (Set.fromList vs)
+              }
+      -- Recorded before its references are followed, so that one that
+      -- comes back to it finds it.
+      modify (\s -> s {stDecls = Map.insert key' cd' (stDecls s)})
+      rewriteDecl ctx (key : depth) key' cd'
+      pure key'
+  where
+    -- A default method is reported by its own name.
+    displayName = fst . T.breakOn "#default"
+    substParams sub sp =
+      sp
+        { spPositional = [(x, sub t) | (x, t) <- spPositional sp],
+          spVariadic = fmap (fmap sub) (spVariadic sp),
+          spKeywords = [(x, sub t) | (x, t) <- spKeywords sp]
+        }
+
+-- | A core expression and everything in it.
+universeCore :: Core -> [Core]
+universeCore c = c : concatMap universeCore (coreChildren c)
+
+-- | A built-in order operation -- @sort@, @sort_by@, @compare@ or an
+-- ordering operator -- at a concrete type (spec 4.6): the built-in
+-- itself for a type the language orders, and otherwise the operation
+-- ordering by the @compare@ of the type's instance.
+resolveBuiltinOp :: Ctx -> [Key] -> Text -> [(Text, Type)] -> TC VarRef
+resolveBuiltinOp ctx depth op inst = case inst of
+  [(_, t)]
+    | nativeOrderable t -> case op of
+        _ | op `elem` ["sort", "sort_by", "compare"] -> pure (BuiltinRef op)
+        _ -> synthesize builtinClassModule t (\a b -> Core NoSpan (CBin (primOf op) a b))
+    | Just (ii, sub) <- instanceMatch ctx Nothing orderableKey t -> do
+        cmpKey <- instanceMethod ctx depth ii sub "compare"
+        let cmp = Core NoSpan (CVar (uncurry TopRef cmpKey))
+            call f args = Core NoSpan (CApp f args [])
+        case op of
+          "compare" -> pure (uncurry TopRef cmpKey)
+          "sort" -> synthesizeWith (iiModule ii) ["xs"] (TyFun [TyArray t] (TyArray t)) (\args -> call (builtin "%sort_with") (args <> [cmp]))
+          "sort_by" -> synthesizeWith (iiModule ii) ["xs", "key"] (TyFun [TyArray TyAny, TyFun [TyAny] t] (TyArray TyAny)) (\args -> call (builtin "%sort_by_with") (args <> [cmp]))
+          _ -> synthesize (iiModule ii) t (\a b -> Core NoSpan (CBin (primOf op) (call cmp [a, b]) (Core NoSpan (CNumber 0))))
+    | otherwise -> abort (diag ETypeBound NoSpan ("there is no instance orderable<" <> renderType t <> ">"))
+  _ -> abort (diag ETypeBound NoSpan ("internal: '" <> op <> "' is ordered at no one type"))
+  where
+    builtin b = Core NoSpan (CVar (BuiltinRef b))
+    local x = Core NoSpan (CVar (LocalRef x))
+    primOf o = case o of
+      "<" -> PLt
+      "<=" -> PLe
+      ">" -> PGt
+      _ -> PGe
+    synthesize :: FilePath -> Type -> (Core -> Core -> Core) -> TC VarRef
+    synthesize path t mk =
+      synthesizeWith path ["a", "b"] (TyFun [t, t] TyBool) (\args -> case args of
+        [a, b] -> mk a b
+        _ -> Core NoSpan CNull)
+    -- A declaration made for the operation at the type, under a name
+    -- no source can write, once.
+    synthesizeWith :: FilePath -> [Text] -> Type -> ([Core] -> Core) -> TC VarRef
+    synthesizeWith path ps ty mk = do
+      let t = maybe TyAny snd (listToMaybe inst)
+          key = (path, "%" <> op <> "<" <> renderType t <> ">")
+          params = case ty of
+            TyFun pts _ -> StaticParams (zip ps pts) Nothing [] []
+            _ -> StaticParams [] Nothing [] []
+          lam = Lam op path ps Nothing [] (mk (map local ps)) ty
+      done <- gets (Map.member key . stDecls)
+      unless done $
+        modify (\s -> s {stDecls = Map.insert key (CoreDecl path (snd key) [] ty (Core NoSpan (CLam lam)) (Just params) Map.empty) (stDecls s)})
+      pure (uncurry TopRef key)
+
+-- | The declaration a method of an instance runs as, at the types its
+-- type parameters take: the method as written, or, for a parametric
+-- instance whose method orders or calls by them, specialized there.
+instanceMethod :: Ctx -> [Key] -> InstanceInfo -> Map Text Type -> Text -> TC Key
+instanceMethod ctx depth ii sub n = do
+  let key = implKey ii n
+  cd <- demandDecl ctx key
+  if isTemplate cd
+    then ensureSpec ctx depth key [(v, t) | (v, Just b) <- iiParams ii, dictBound b, Just t <- [Map.lookup v sub]]
+    else pure key
+
+-- | The types each class has an instance for that the CLI can name
+-- (spec 11.2): those of the instances that are not parametric, and
+-- each a parametric one gives with one of those, a built-in base type
+-- or Number or String put in for each of its type parameters -- one
+-- level deep, since a parametric instance gives types without end.
+instanceHeads :: Ctx -> Map Key [Type]
+instanceHeads ctx =
+  Map.map nub . Map.fromListWith (flip (<>)) $
+    [(iiClass ii, [iiHead ii]) | ii <- plain]
+      <> [ (iiClass ii, [t])
+         | ii <- parametric,
+           sub <- take 32 (choices [(v, base) | (v, _) <- iiParams ii]),
+           let t = applySubst (Map.fromList sub) (iiHead ii),
+           isJust (instanceMatch ctx Nothing (iiClass ii) t)
+         ]
+  where
+    instances = clsInstances (ctxEnv ctx)
+    plain = [ii | ii <- instances, null (iiParams ii)]
+    parametric = [ii | ii <- instances, not (null (iiParams ii))]
+    base = nub ([TyNumber, TyString, TyBool] <> map iiHead plain)
+    choices [] = [[]]
+    choices ((v, ts) : rest) = [(v, t) : more | t <- ts, more <- choices rest]

@@ -1,0 +1,11 @@
+class shown<T> {
+  show(x: T): String
+}
+
+internal class hidden<T> {
+  peek(x: T): String
+}
+
+instance hidden<Number> {
+  peek(n) = "h"
+}

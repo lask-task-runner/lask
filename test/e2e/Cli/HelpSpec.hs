@@ -116,7 +116,7 @@ spec = beforeAll findLask $ do
           usage ["envs", "list", "version"] >>= (`shouldContain` "'version' is a value, not a function")
           usage ["secrets", "list", "version"] >>= (`shouldContain` "'version' is a value, not a function")
           -- An internal declaration is not one, for envs as for run.
-          usage ["envs", "list", "hidden"] >>= (`shouldContain` "no such function: 'hidden'")
+          usage ["envs", "list", "hidden"] >>= (`shouldContain` "'hidden' is internal")
           inc <- runLask lask dir ["eval", "inc", "2"] ""
           resOut inc `shouldBe` "3\n"
           shown <- runLask lask dir ["eval", "show"] ""

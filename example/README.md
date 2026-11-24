@@ -46,6 +46,7 @@ One directory per topic, in reading order. The whole of the [Quick Reference](ht
 | [12-io-and-secrets](02-language/12-io-and-secrets) | `stdin`, the stdout contract, `get_env` and friends, `!!`, `log` |
 | [13-files-and-paths](02-language/13-files-and-paths) | `read_file` / `write_file` / `glob` and the environment each one names |
 | [14-docs-and-cli](02-language/14-docs-and-cli) | Doc comments, `@param`, `@complete`, `@hidden`, and how a signature becomes a command line |
+| [15-classes](02-language/15-classes) | Classes, instances, parametric instances, an order for your own types, bounds joined with `+` |
 
 The rules behind all of it are in the [specification](../doc/spec.md).
 

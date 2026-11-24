@@ -43,6 +43,7 @@ module Language.Lask.Core.Access
     programMarksSecrets,
 
     -- * Constraints
+    accessFieldNames,
     Covering (..),
     renderCovering,
     Constraints,
@@ -72,7 +73,7 @@ import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes)
 import Language.Lask.Core.AST
 import Language.Lask.Diagnostic (Advisory (..), Diagnostic, mkDiagnostic, withNote)
-import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticParams (..))
+import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticParams (..), isTemplate)
 import Language.Lask.ErrorCode (AdvisoryCode (..), ErrorCode (..), Stage (..))
 import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
@@ -390,7 +391,13 @@ collectUseSites cons core scope = walkRoots cons core roots
 walkRoots :: Constraints -> CoreProgram -> [Key] -> [UseSite]
 walkRoots cons core roots =
   Set.toList . Set.fromList $
-    evalState (concat <$> mapM (\k -> maybe (pure []) (\cd -> walkDecl cons core [] [] Nothing cd Nothing) (Map.lookup k (cpDecls core))) roots) Map.empty
+    evalState (concat <$> mapM (\k -> maybe (pure []) walkOne (Map.lookup k (cpDecls core))) roots) Map.empty
+  where
+    -- A declaration with a class bound runs only as specialized (spec
+    -- 4.6), and each specialization is a declaration walked as any.
+    walkOne cd
+      | isTemplate cd = pure []
+      | otherwise = walkDecl cons core [] [] Nothing cd Nothing
 
 -- | A declaration, walked with what a call binds its parameters to, or
 -- on its own. Walks are remembered by what they were given, except a
@@ -950,7 +957,7 @@ type Constraints = Map FilePath (Maybe Covering, Map Text Covering)
 coveringsOf :: Constraints -> Key -> [Covering]
 coveringsOf cons (p, n) = case Map.lookup p cons of
   Nothing -> []
-  Just (m, fs) -> filter (bounds . cvConstraint) (maybe [] pure m <> maybe [] pure (Map.lookup n fs))
+  Just (m, fs) -> filter (bounds . cvConstraint) (maybe [] pure m <> maybe [] pure (Map.lookup (T.takeWhile (/= '<') n) fs))
 
 -- | Read the access constraints of a program (spec 5, 10.11): what
 -- each module and function is written with, and @E-TYPE-WITHIN-SPEC@
@@ -1016,6 +1023,11 @@ withinConstraints prog =
           )
 
 -- | An access constraint from its fields (spec 10.11), each a literal.
+-- | The fields of an access constraint (spec 10.11), in the order its
+-- messages list them.
+accessFieldNames :: [Text]
+accessFieldNames = ["files", "volumes", "outbound", "inbound", "secrets", "runs"]
+
 parseSpec :: AST.AccessSpec -> Either [Diagnostic] Constraint
 parseSpec w = case w of
   AST.AccessRef sp _ _ -> Left [mkDiagnostic ETypeWithinSpec StageStatic sp "an access declaration is written with braces"]
@@ -1077,7 +1089,7 @@ parseSpec w = case w of
           | Just names <- mapM (\x -> case AST.exprF x of AST.EVar n -> Just (n, AST.exprSpan x); _ -> Nothing) xs ->
               Right (\c -> c {conSecrets = Just (SecretsNamed names)})
         _ -> Left (err (AST.exprSpan v) "'secrets' takes false, or an array of the names of secret bindings, such as [token]")
-      _ -> Left (err ksp ("unknown field '" <> k <> "': a constraint takes files, volumes, outbound, inbound, secrets and runs"))
+      _ -> Left (err ksp ("unknown field '" <> k <> "': a constraint takes " <> T.intercalate ", " (init accessFieldNames) <> " and " <> last accessFieldNames))
     str (k, SStr s') = Just (k, s')
     str _ = Nothing
     strings = mapM (\x -> case x of SStr t -> Just t; _ -> Nothing)

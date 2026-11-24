@@ -9,13 +9,13 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "next": "16.4.3",
+    "next": "16.4.6",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
     "eslint": "9.39.5",
-    "eslint-config-next": "16.4.3"
+    "eslint-config-next": "16.4.6"
   }
 }

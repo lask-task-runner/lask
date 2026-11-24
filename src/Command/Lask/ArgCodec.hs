@@ -36,7 +36,14 @@ import Language.Lask.Number (numberText)
 import Language.Lask.Serialize (valueFromJson)
 import Language.Lask.Types
   ( Bound (..),
+    NamedBound (..),
+    ClassRef (..),
     Field (..),
+    boundParts,
+    classKey,
+    nativeOrderable,
+    orderableKey,
+    renderBound,
     Type (..),
     applySubst,
     mkUnion,
@@ -261,7 +268,13 @@ instantiateForCli vs bounds ps
       -- bound admits String, and a body that only interpolates or
       -- compares a value does not say it wants a number.
       Just (BoundNamed _) | implicitVar v -> TyString
+      Just (BoundAll bs) | implicitVar v, all isNamed bs -> TyString
       _ -> TyAny
+
+isNamed :: Bound -> Bool
+isNamed b = case b of
+  BoundNamed _ -> True
+  _ -> False
 
 -- | A type parameter that inference made (spec 4.3), not one the
 -- source writes: its name carries a part no source can write.
@@ -272,10 +285,50 @@ implicitVar = T.isSuffixOf "%"
 -- arguments the CLI decoded, as a call instantiates it from the types
 -- of its arguments (spec 11.2): the arguments have to agree on one
 -- type, and that type has to satisfy the bound.
-checkCliBounds :: Map Text Bound -> StaticParams -> [Value] -> [(Text, Value)] -> Either Text ()
-checkCliBounds bounds params posVals kwVals =
-  mapM_ check [(v, nb) | (v, BoundNamed nb) <- Map.toList bounds]
+--
+-- A type parameter with a class bound (4.6) is instantiated the same
+-- way, at a type the class has an instance for, and the result is the
+-- type each such parameter was instantiated at: the specialization of
+-- the declaration to run.
+checkCliBounds :: Map (FilePath, Text) [Type] -> Map Text Bound -> StaticParams -> [Value] -> [(Text, Value)] -> Either Text [(Text, Type)]
+checkCliBounds instances bounds params posVals kwVals = do
+  mapM_ check [(v, nb) | (v, b) <- Map.toList bounds, BoundNamed nb <- boundParts b, nb /= BOrderable]
+  concat <$> mapM dictAt [(v, b) | (v, b) <- Map.toList bounds, any isDict (boundParts b)]
   where
+    -- A class, or orderable, which an instance may give a type.
+    isDict p = case p of
+      BoundClass _ -> True
+      BoundNamed BOrderable -> True
+      _ -> False
+    has t p = case p of
+      BoundClass c -> t `elem` Map.findWithDefault [] (classKey c) instances
+      BoundNamed BOrderable -> nativeOrderable t || t `elem` Map.findWithDefault [] orderableKey instances
+      _ -> True
+    -- The CLI names the types of the instances, and those a parametric
+    -- one gives one level deep (spec 11.2).
+    lacking p = case p of
+      BoundClass c -> "has no instance of " <> crName c <> " the command line can select"
+      _ -> "is not " <> renderBound p <> " at a type the command line can select"
+    dictAt (v, b) =
+      let parts = filter isDict (boundParts b)
+       in case nub (concat [evidence v t x | (t, x) <- slots]) of
+            [t] -> case filter (not . has t) parts of
+              [] -> Right [(v, t)]
+              p : _ -> Left ("the arguments make " <> varDisplay v <> " " <> renderType t <> ", which " <> lacking p)
+            -- Only a class needs the type said: orderable alone is
+            -- asked for where the function orders by an instance.
+            []
+              | all (== BoundNamed BOrderable) parts -> Right []
+              | otherwise -> Left ("the arguments do not say what " <> varDisplay v <> " is, and it has to be a type with " <> renderBound b)
+            ts ->
+              Left
+                ( "the arguments give "
+                    <> varDisplay v
+                    <> " more than one type ("
+                    <> T.intercalate ", " (map renderType ts)
+                    <> "); it has to be one type that is "
+                    <> renderBound b
+                )
     (boundVals, extraVals) = splitAt (length (spPositional params)) posVals
     slots =
       zip (map snd (spPositional params)) boundVals
