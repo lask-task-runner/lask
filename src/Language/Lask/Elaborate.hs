@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Elaboration: bidirectional type checking (spec 4, 7) combined
@@ -2548,8 +2549,13 @@ elabBin ctx path locals sp op a b mExpected = case op of
     compose f g = do
       (cf, tf) <- infer ctx path locals f
       (cg, tg) <- infer ctx path locals g
+      -- The result of the first is passed to the second, so it has to
+      -- conform to what the second takes (spec 6.2, 4.4).
+      fits <- case (tf, tg) of
+        (TyFun [_] tb, TyFun [tb'] _) -> conformsM ctx sp tb tb'
+        _ -> pure False
       case (tf, tg) of
-        (TyFun [ta] tb, TyFun [tb'] tc) | tb == tb' -> do
+        (TyFun [ta] _, TyFun [_] tc) | fits -> do
           let x = "%x"
               bodyCore =
                 Core sp (CApp cg [Core sp (CApp cf [Core sp (CVar (LocalRef x))] [])] [])
@@ -3970,7 +3976,7 @@ elabCall ctx path locals sp fn args mExpected = do
                 Just expT -> either (const Map.empty) id (unifyE retPat expT Map.empty)
                 Nothing -> Map.empty
           (cores, subst) <-
-            goArgs subst0 (posSlots <> [(e, ren t) | (_, e, t) <- kwSlots])
+            goArgs retPat subst0 (posSlots <> [(e, ren t) | (_, e, t) <- kwSlots])
           retTy <- instantiateRet calleeName declVs retPat subst
           checkBounds calleeName bounds subst
           let (posCores, kwCores) = splitAt (length posSlots) cores
@@ -3992,46 +3998,179 @@ elabCall ctx path locals sp fn args mExpected = do
                 diag ETypeKeyword asp ("unknown keyword argument: '" <> n <> "'")
         go seen (Arg _ (APos _) : rest) = go seen rest -- unreachable (validated)
 
-    goArgs subst argSlots = do
-      (done, deferred, subst') <- firstPass subst Map.empty [] (zip [0 :: Int ..] argSlots)
-      (done', subst'') <- retryPass subst' done deferred
-      pure (Map.elems done', subst'')
+    -- The arguments, then the variables only the parameters of
+    -- function arguments bound from above (spec 4.4, Variance): each
+    -- is the greatest type those parameters all take, and is checked
+    -- against them once every argument has spoken, so the order of
+    -- the arguments decides nothing.
+    goArgs retPat subst argSlots = do
+      (done, deferred, subst', ups) <- firstPass subst [] Map.empty [] (zip [0 :: Int ..] argSlots)
+      subst'' <- settleUppers subst' ups
+      (done', subst''', ups') <- retryPass subst'' ups done deferred
+      subst4 <- settleUppers subst''' ups'
+      mapM_ (checkUpper subst4) ups'
+      -- One bounded only by Any, and absent from the result, can be
+      -- nothing but Any; one in the result is left to the expected
+      -- type, or is the ordinary inference failure.
+      let anyOnly =
+            [ (v, TyAny)
+            | (v, _, _, _, _) <- ups',
+              not (Map.member v subst4),
+              v `notElem` typeVars retPat
+            ]
+      pure (Map.elems done', Map.union subst4 (Map.fromList anyOnly))
 
-    firstPass subst done deferred [] = pure (done, reverse deferred, subst)
-    firstPass subst done deferred (slot@(i, (argExpr, pat)) : rest) = do
+    firstPass subst ups done deferred [] = pure (done, reverse deferred, subst, ups)
+    firstPass subst ups done deferred (slot@(i, (argExpr, pat)) : rest) = do
       let p = applySubst subst pat
       if settled ctx p
         then do
-          c <- check ctx path locals argExpr p
-          firstPass subst (Map.insert i c done) deferred rest
+          c <- checkArg argExpr p
+          firstPass subst ups (Map.insert i c done) deferred rest
         else do
           r <- tryTC $ do
             (c, t) <- inferWithHint argExpr p
-            subst' <- unifyM ctx (exprSpan argExpr) p t subst
-            pure (c, subst')
+            (subst', new) <- matchArg (exprSpan argExpr) p t subst
+            pure (c, subst', new)
           case r of
-            Right (c, subst') -> firstPass subst' (Map.insert i c done) deferred rest
+            Right (c, subst', new) -> firstPass subst' (ups <> new) (Map.insert i c done) deferred rest
             -- Deferred rather than reported: another argument may
             -- yet make this position concrete, and if none does,
             -- the retry reports it against the type it ended with.
-            Left _ -> firstPass subst done (slot : deferred) rest
+            Left _ -> firstPass subst ups done (slot : deferred) rest
 
     -- A retried argument whose position is now concrete is checked
     -- against it, which is what gives @cast@ its target. One still
     -- undetermined is elaborated as before, so its own diagnostic
     -- is the report.
-    retryPass subst done [] = pure (done, subst)
-    retryPass subst done ((i, (argExpr, pat)) : rest) = do
+    retryPass subst ups done [] = pure (done, subst, ups)
+    retryPass subst ups done ((i, (argExpr, pat)) : rest) = do
       let p = applySubst subst pat
       if settled ctx p
         then do
-          c <- check ctx path locals argExpr p
-          retryPass subst (Map.insert i c done) rest
+          c <- checkArg argExpr p
+          retryPass subst ups (Map.insert i c done) rest
         else do
           (c, t) <- inferWithHint argExpr p
           when (t == TyAny) (anyArgument (exprSpan argExpr) p)
-          subst' <- unifyM ctx (exprSpan argExpr) p t subst
-          retryPass subst' (Map.insert i c done) rest
+          (subst', new) <- matchArg (exprSpan argExpr) p t subst
+          retryPass subst' (ups <> new) (Map.insert i c done) rest
+
+    -- An argument at a concrete position. A function argument that
+    -- does not conform is reported as 'matchArg' reports it, in the
+    -- terms of the call, where that finds the parameter or the result
+    -- at fault; anything else keeps the diagnostic of the check.
+    checkArg argExpr p = do
+      r <- tryTC (check ctx path locals argExpr p)
+      case r of
+        Right c -> pure c
+        Left d
+          | hasFun p ->
+              tryTC (infer ctx path locals argExpr) >>= \case
+                Right (_, t) -> varianceOf (exprSpan argExpr) p t >> abort d
+                Left _ -> abort d
+          | otherwise -> abort d
+      where
+        hasFun t = case t of
+          TyFun _ _ -> True
+          TyArray e -> hasFun e
+          TyMap e -> hasFun e
+          TyAsync e -> hasFun e
+          TyRecord fs -> any (hasFun . fieldType) fs
+          _ -> False
+
+    -- Matching an argument against its parameter (spec 4.4). Outside
+    -- a function type it is exact. Inside one, a parameter conforms
+    -- the other way round and a result as it is (Variance): a type
+    -- already known is checked by conformance, and a variable in a
+    -- parameter position of the argument is bounded from above by
+    -- what the argument takes rather than bound to it. What is left
+    -- is matched as before, so the result of a function argument
+    -- still determines its variable.
+    matchArg asp p t subst = do
+      (p', ups) <- varianceOf asp p t
+      subst' <- unifyM ctx asp p' t subst
+      pure (subst', [(v, a, asp, p, t) | (v, a) <- ups])
+
+    -- The variance part of 'matchArg': the pattern with what was
+    -- checked by conformance put in place, and the upper bounds found.
+    varianceOf asp p t = variance False True p t
+      where
+        variance inFun co pt at = case (pt, at) of
+          _ | inFun && hasInfer at -> pure (pt, [])
+          (TyVar v, _)
+            | inFun,
+              not co,
+              v `elem` calleeVars pt ->
+                pure (at, [(v, at)])
+          _
+            | inFun,
+              pt /= at,
+              null (calleeVars pt) -> do
+                ok <- if co then conformsM ctx asp at pt else conformsM ctx asp pt at
+                unless ok (varianceMismatch asp co pt at p t)
+                pure (at, [])
+          (TyFun ps r, TyFun qs r')
+            | length ps == length qs -> do
+                params <- zipWithM (variance True (not co)) ps qs
+                (r'', ur) <- variance True co r r'
+                pure (TyFun (map fst params) r'', concatMap snd params <> ur)
+          (TyArray x, TyArray y) -> first TyArray <$> variance inFun co x y
+          (TyMap x, TyMap y) -> first TyMap <$> variance inFun co x y
+          (TyAsync x, TyAsync y) -> first TyAsync <$> variance inFun co x y
+          (TyRecord fp, TyRecord fa)
+            | Map.keysSet fp == Map.keysSet fa,
+              map fieldOptional (Map.elems fp) == map fieldOptional (Map.elems fa) -> do
+                fields <-
+                  traverse
+                    (\(f, g) -> first (\ft -> f {fieldType = ft}) <$> variance inFun co (fieldType f) (fieldType g))
+                    (Map.intersectionWith (,) fp fa)
+                pure (TyRecord (fmap fst fields), concatMap snd (Map.elems fields))
+          _ -> pure (pt, [])
+
+    -- The callee's own variables in a pattern, as 'unifyM' finds them.
+    calleeVars pt = [v | v <- typeVars pt, not (isInferVar v), not (v `Set.member` ctxTypeVars ctx)]
+
+    -- A variable only parameter positions bounded is the greatest type
+    -- they all take. Where that is Any, it stays open until the end:
+    -- Any is never chosen where it would become a result (spec 4.4).
+    settleUppers subst ups = foldM settle subst (Map.toList grouped)
+      where
+        grouped = Map.fromListWith (flip (<>)) [(v, [u]) | u@(v, _, _, _, _) <- ups, not (Map.member v subst)]
+        settle s (v, us@(u0 : _)) = case foldM (meetType ctx) (upperOf u0) (map upperOf us) of
+          Just m
+            | m /= TyAny -> pure (Map.insert v m s)
+          Just _ -> pure s
+          Nothing -> case [u | u <- us, isNothing (meetType ctx (upperOf u0) (upperOf u))] of
+            u : _ -> abort (noCommonUpper u0 u)
+            [] -> pure s
+        settle s (_, []) = pure s
+        upperOf (_, a, _, _, _) = a
+
+    -- Each upper bound holds of what its variable became.
+    checkUpper subst (v, a, asp, p, t) = case Map.lookup v subst of
+      Just b -> do
+        ok <- conformsM ctx asp b a
+        unless ok (varianceMismatch asp False b a p t)
+      Nothing -> pure ()
+
+    -- Said in the terms of the call (spec 4.4): what the callee passes
+    -- a function argument, or needs back from it, against what the
+    -- function takes or returns.
+    varianceMismatch asp co want got p t =
+      abort . withExpectedActual (renderSig p) (renderType t) . diag ETypeMismatch asp $
+        if co
+          then
+            "this function returns " <> renderType got <> ", but '" <> calleeName <> "' needs "
+              <> renderSig want
+          else
+            "this function takes " <> renderType got <> ", but '" <> calleeName <> "' passes it "
+              <> renderSig want
+
+    noCommonUpper (_, a, _, _, _) (_, b, bsp, p, t) =
+      withExpectedActual (renderSig p) (renderType t) . diag ETypeMismatch bsp $
+        "'" <> calleeName <> "' passes one type to functions that take " <> renderType a
+          <> " and " <> renderType b <> ", and no type is both"
 
     -- An Any value may be placed only where Any is required (spec
     -- 4.4). Said in the terms of the call, since the position comes
@@ -4137,7 +4276,7 @@ elabCall ctx path locals sp fn args mExpected = do
           let subst0 = case mExpected of
                 Just expT -> either (const Map.empty) id (unifyE retPat expT Map.empty)
                 Nothing -> Map.empty
-          (cores, subst) <- goArgs subst0 (zip posExprs params)
+          (cores, subst) <- goArgs retPat subst0 (zip posExprs params)
           retTy <- instantiateRet name schemeVs retPat subst
           checkBounds name (schemeBounds scheme) subst
           pure (Core sp (CApp (Core sp (CVar (BuiltinRef name))) cores []), retTy)

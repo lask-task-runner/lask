@@ -1,0 +1,9 @@
+// A function argument may take more than its type variable (4.4, Variance):
+// its parameters bound the variable from above, the array determines it.
+show(x: Any): Void = log(to_json(x))
+num(n: Number): Void = log("n")
+f(xs: Array<String>) = for_each(xs, show)
+g(xs: Array<String>) = for_each(xs, \(x) -> show(x))
+h(xs: Array<String>) = for_each(xs, num) // expect: E-TYPE-MISMATCH
+// Value arguments are still matched exactly.
+k(names: Array<String>) = append(names, null) // expect: E-TYPE-MISMATCH

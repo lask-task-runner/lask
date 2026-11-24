@@ -538,6 +538,10 @@ spec = do
       hasType "g(x: Number) = x + 1\ny = 3 |> g" "y" "Number"
     it "types composition" $
       hasType "g(x: Number): Number = x + 1\nh = g >> g" "h" "Function<Number, Number>"
+    it "composes a function that takes more than the first returns (spec 6.2, 4.4)" $ do
+      hasType "f(x: String): String = x\ng(x: Any): Number = 1\nh = f >> g" "h" "Function<String, Number>"
+      hasType "f(x: String): String = x\ng(x: Any): Number = 1\nh = g << f" "h" "Function<String, Number>"
+      rejects "f(x: Any): Any = x\ng(x: String): Number = 1\nh = f >> g" ETypeMismatch
     it "composed functions are callable" $
       accepts "g(x: Number): Number = x + 1\nh = g >> g\ny = h(1)"
 
@@ -589,8 +593,29 @@ spec = do
       rejects "p(n: Number): String | Null = null\napply(g: Function<Number, String>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
     it "does not let a Void result stand for a value (spec 4.4)" $
       rejects "p(n: Number): Void = log(\"x\")\napply(g: Function<Number, Any>): Number = 1\nf(): Number = apply(p)" ETypeMismatch
-    it "still instantiates a type variable inside a function type exactly (spec 4.4)" $
-      rejects "show(x: Any): Void = log(to_json(x))\nf(): Void = for_each([\"a\"], show)" ETypeMismatch
+    -- A type variable inside a function type follows the same
+    -- variance (spec 4.4): the parameters of a function argument bound
+    -- it from above, its results determine it.
+    it "lets a function argument take more than its variable (spec 4.4)" $ do
+      accepts "show(x: Any): Void = log(to_json(x))\nf(): Void = for_each([\"a\"], show)"
+      accepts "f(xs: Array<String>): Array<Number> = map(xs, \\(x: Any) -> 1)"
+      accepts "p(x: String | Null): Bool = true\nf(xs: Array<String>): Array<String> = filter(xs, p)"
+      rejects "p(n: Number): Void = log(\"x\")\nf(xs: Array<String>): Void = for_each(xs, p)" ETypeMismatch
+    it "keeps the variable at what the other arguments say, not at the wider (spec 4.4)" $ do
+      hasType "p(x: Any): Bool = true\nf(xs: Array<String>) = filter(xs, p)" "f" "Function<Array<String>, Array<String>>"
+      hasType "p(x: Any): Bool = true\nf(xs: Array<String>) = find(xs, p)" "f" "Function<Array<String>, String | Null>"
+    it "does not depend on whether the function argument comes first (spec 4.4)" $ do
+      accepts "show(x: Any): Void = log(to_json(x))\na<T>(g: Function<T, Void>, xs: Array<T>): Array<T> = xs\nf(xs: Array<String>): Array<String> = a(show, xs)"
+      rejects "p(n: Number): Void = log(\"x\")\na<T>(g: Function<T, Void>, xs: Array<T>): Array<T> = xs\nf(xs: Array<String>): Array<String> = a(p, xs)" ETypeMismatch
+      rejects "p(n: Number): Void = log(\"x\")\nb<T>(xs: Array<T>, g: Function<T, Void>): Array<T> = xs\nf(xs: Array<String>): Array<String> = b(xs, p)" ETypeMismatch
+    it "takes the greatest type the function arguments all take, where nothing else says (spec 4.4)" $ do
+      accepts "p(x: String): Bool = true\nc<T>(g: Function<T, Bool>, h: Function<T, Bool>): Number = 1\nf(): Number = c(p, \\(x) -> x == \"a\")"
+      accepts "c<T>(g: Function<T, Bool>, h: Function<T, Bool>): Number = 1\nf(a: Function<Number | String, Bool>, b: Function<String, Bool>): Number = c(a, b)"
+      rejects "c<T>(g: Function<T, Bool>, h: Function<T, Bool>): Number = 1\nf(a: Function<Number, Bool>, b: Function<String, Bool>): Number = c(a, b)" ETypeMismatch
+    it "still matches value arguments exactly (spec 4.4)" $ do
+      rejects "f(names: Array<String>) = append(names, null)" ETypeMismatch
+      rejects "f(a: Array<String>, b: Array<Any>) = concat_array(a, b)" ETypeMismatch
+      accepts "f(xs: Array<String>): String | Null = reduce(xs, null, \\(acc, x) -> x)"
     it "types branches of conforming types at the wider, in either order (spec 4.3)" $ do
       hasType "n(): Array<String> = [\"a\"]\nw(): Array<String | Null> = [null]\nf(c: Bool) = c ? n() : w()" "f" "Function<Bool, Array<String | Null>>"
       hasType "n(): Array<String> = [\"a\"]\nw(): Array<String | Null> = [null]\nf(c: Bool) = c ? w() : n()" "f" "Function<Bool, Array<String | Null>>"
