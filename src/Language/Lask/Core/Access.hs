@@ -73,7 +73,7 @@ import Language.Lask.Builtins.Names (effectfulBuiltinNames)
 import Language.Lask.Builtins.Sig (Scheme (..), builtinSchemes)
 import Language.Lask.Core.AST
 import Language.Lask.Diagnostic (Advisory (..), Diagnostic, mkDiagnostic, withNote)
-import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticParams (..))
+import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), Key, StaticParams (..), isTemplate)
 import Language.Lask.ErrorCode (AdvisoryCode (..), ErrorCode (..), Stage (..))
 import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
@@ -391,7 +391,13 @@ collectUseSites cons core scope = walkRoots cons core roots
 walkRoots :: Constraints -> CoreProgram -> [Key] -> [UseSite]
 walkRoots cons core roots =
   Set.toList . Set.fromList $
-    evalState (concat <$> mapM (\k -> maybe (pure []) (\cd -> walkDecl cons core [] [] Nothing cd Nothing) (Map.lookup k (cpDecls core))) roots) Map.empty
+    evalState (concat <$> mapM (\k -> maybe (pure []) walkOne (Map.lookup k (cpDecls core))) roots) Map.empty
+  where
+    -- A declaration with a class bound runs only as specialized (spec
+    -- 4.6), and each specialization is a declaration walked as any.
+    walkOne cd
+      | isTemplate cd = pure []
+      | otherwise = walkDecl cons core [] [] Nothing cd Nothing
 
 -- | A declaration, walked with what a call binds its parameters to, or
 -- on its own. Walks are remembered by what they were given, except a
@@ -951,7 +957,7 @@ type Constraints = Map FilePath (Maybe Covering, Map Text Covering)
 coveringsOf :: Constraints -> Key -> [Covering]
 coveringsOf cons (p, n) = case Map.lookup p cons of
   Nothing -> []
-  Just (m, fs) -> filter (bounds . cvConstraint) (maybe [] pure m <> maybe [] pure (Map.lookup n fs))
+  Just (m, fs) -> filter (bounds . cvConstraint) (maybe [] pure m <> maybe [] pure (Map.lookup (T.takeWhile (/= '<') n) fs))
 
 -- | Read the access constraints of a program (spec 5, 10.11): what
 -- each module and function is written with, and @E-TYPE-WITHIN-SPEC@

@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- | Newline-significance pass (spec 3.3 and 6.5).
 --
 -- The lexer emits every newline as a 'TNewline' token. This pass
@@ -31,7 +33,14 @@
 -- and a nested @IfExpr@ may still put its @else@ block on the next
 -- line.
 --
--- Block braces are distinguished from object-literal braces by the
+-- The braces of a class or an instance declaration (spec 4.6) are a
+-- block too: their members are newline-terminated. They are told by
+-- the contextual keyword that begins the declaration, @class@ or
+-- @instance@ at the start of a line (or after @export@ \/ @internal@),
+-- when nothing but its header -- names and the tokens of a type --
+-- stands between it and the @{@.
+--
+-- Other block braces are distinguished from object-literal braces by the
 -- token immediately before @{@: @do@, @try@, @finally@, @else@,
 -- @case@ (the condition form) and @)@ (the header close of
 -- @if@\/@for@\/@catch@\/@case@) open blocks; braces in any other
@@ -49,20 +58,50 @@ data Delim = DParen | DBracket | DObj | DBlock
   deriving (Show, Eq)
 
 layout :: [Spanned Token] -> [Spanned Token]
-layout = go [] Nothing Nothing
+layout = go False [] Nothing Nothing
   where
-    go :: [Delim] -> Maybe Token -> Maybe Token -> [Spanned Token] -> [Spanned Token]
-    go _ _ _ [] = []
-    go stack prev2 prev (t : rest)
+    -- @header@: within the header of a class or an instance, whose
+    -- brace opens a block.
+    go :: Bool -> [Delim] -> Maybe Token -> Maybe Token -> [Spanned Token] -> [Spanned Token]
+    go _ _ _ _ [] = []
+    go header stack prev2 prev (t : rest)
       | TNewline <- spannedValue t =
           let rest' = dropWhile ((== TNewline) . spannedValue) rest
            in if keepNewline stack prev2 prev rest'
-                then t : go stack prev (Just TNewline) rest'
-                else go stack prev2 prev rest'
+                then t : go False stack prev (Just TNewline) rest'
+                else go header stack prev2 prev rest'
       | otherwise =
           let v = spannedValue t
-              stack' = updateStack stack prev v
-           in t : go stack' prev (Just v) rest
+              stack'
+                | header && v == TLBrace = DBlock : stack
+                | otherwise = updateStack stack prev v
+              header'
+                | null stack, declStart prev, v `elem` [TLowerId "class", TLowerId "instance"] = True
+                | header = inHeader v
+                | otherwise = False
+           in t : go header' stack' prev (Just v) rest
+
+    declStart prev = case prev of
+      Nothing -> True
+      Just TNewline -> True
+      Just TSemi -> True
+      Just (TKw KExport) -> True
+      Just (TKw KInternal) -> True
+      _ -> False
+
+    -- What a class's or an instance's header is made of.
+    inHeader v = case v of
+      TLowerId _ -> True
+      TUpperId _ -> True
+      TDot -> True
+      TColon -> True
+      TComma -> True
+      TPipe -> True
+      TQuestion -> True
+      TOp OpLt -> True
+      TOp OpGt -> True
+      TOp OpCompR -> True
+      _ -> False
 
     keepNewline :: [Delim] -> Maybe Token -> Maybe Token -> [Spanned Token] -> Bool
     keepNewline stack prev2 prev next

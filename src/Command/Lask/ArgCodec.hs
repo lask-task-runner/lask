@@ -36,7 +36,9 @@ import Language.Lask.Number (numberText)
 import Language.Lask.Serialize (valueFromJson)
 import Language.Lask.Types
   ( Bound (..),
+    ClassRef (..),
     Field (..),
+    classKey,
     Type (..),
     applySubst,
     mkUnion,
@@ -272,10 +274,31 @@ implicitVar = T.isSuffixOf "%"
 -- arguments the CLI decoded, as a call instantiates it from the types
 -- of its arguments (spec 11.2): the arguments have to agree on one
 -- type, and that type has to satisfy the bound.
-checkCliBounds :: Map Text Bound -> StaticParams -> [Value] -> [(Text, Value)] -> Either Text ()
-checkCliBounds bounds params posVals kwVals =
+--
+-- A type parameter with a class bound (4.6) is instantiated the same
+-- way, at a type the class has an instance for, and the result is the
+-- type each such parameter was instantiated at: the specialization of
+-- the declaration to run.
+checkCliBounds :: Map (FilePath, Text) [Type] -> Map Text Bound -> StaticParams -> [Value] -> [(Text, Value)] -> Either Text [(Text, Type)]
+checkCliBounds instances bounds params posVals kwVals = do
   mapM_ check [(v, nb) | (v, BoundNamed nb) <- Map.toList bounds]
+  mapM classAt [(v, c) | (v, BoundClass c) <- Map.toList bounds]
   where
+    classAt (v, c) = case nub (concat [evidence v t x | (t, x) <- slots]) of
+      [t]
+        | t `elem` Map.findWithDefault [] (classKey c) instances -> Right (v, t)
+        | otherwise ->
+            Left ("the arguments make " <> varDisplay v <> " " <> renderType t <> ", which has no instance of " <> crName c)
+      [] -> Left ("the arguments do not say what " <> varDisplay v <> " is, and it has to be a type with an instance of " <> crName c)
+      ts ->
+        Left
+          ( "the arguments give "
+              <> varDisplay v
+              <> " more than one type ("
+              <> T.intercalate ", " (map renderType ts)
+              <> "); it has to be one type with an instance of "
+              <> crName c
+          )
     (boundVals, extraVals) = splitAt (length (spPositional params)) posVals
     slots =
       zip (map snd (spPositional params)) boundVals

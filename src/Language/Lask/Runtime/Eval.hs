@@ -148,6 +148,7 @@ evalNode ctx scope (Core sp f) = case f of
   CVar (TopRef p n) -> topValue ctx (p, n)
   CVar (BuiltinRef "stdin") -> pure (VString (rtStdin ctx))
   CVar (BuiltinRef b) -> pure (VBuiltin b)
+  CVar (InstRef _ n _) -> internal ("unspecialized reference to " <> n)
   CArray es -> VArray . V.fromList <$> mapM (evalCore ctx scope) es
   CMapLit kvs -> VMap . Map.fromList <$> mapM evalKv kvs
   CRecordLit kvs -> VRecord . Map.fromList <$> mapM evalKv kvs

@@ -471,8 +471,34 @@ decl sp f = case f of
     dn <- commandNames ns
     p <- path
     pure ("export command " <> dn <> " from " <> p)
+  DClass n tp ms -> do
+    dtp <- typeParams [tp]
+    body <- braced [Item (startOf msp) (endOf msp) (method m) | m@(ClassMethod msp _ _ _ _) <- ms]
+    pure ("class " <> text n <> dtp <> " " <> body)
+  DInstance q (Spanned _ c) t ds -> do
+    dt <- ty t
+    body <- braced [Item (startOf dsp) (endOf dsp) (decl dsp df) | Decl dsp df <- ds]
+    pure ("instance " <> text (maybe "" ((<> ".") . spannedValue) q <> c) <> "<" <> dt <> "> " <> body)
   where
     start = startOf sp
+    -- The braces of a class or an instance: its members one per line.
+    braced items = do
+      (_, open) <- tokFrom TLBrace start
+      close <- lastTokStart (endOf sp)
+      commented <- anyIn open close
+      if null items && not commented
+        then pure "{}"
+        else do
+          body <- seqLines open close items
+          pure ("{" <> nest body <> line <> "}")
+    method (ClassMethod msp (Spanned _ m) ps rt d) = do
+      popen <- tokFrom TLParen (startOf msp)
+      dps <- params popen ps
+      drt <- ty rt
+      let lhs = text m <> dps <> ": " <> drt
+      case d of
+        Nothing -> pure lhs
+        Just e -> joinAfter lhs "=" (startOf (exprSpan e)) (exprOn e)
     -- The path ends the declaration, spelt as the source spells it.
     path = do
       s <- lastTokStart (endOf sp)
@@ -518,7 +544,9 @@ typeParams tps = do
   ds <- forM tps $ \(TypeParam (Spanned _ v) b) -> case b of
     Nothing -> pure (text v)
     Just (SBoundNamed (Spanned _ n)) -> pure (text (v <> ": " <> n))
+    Just (SBoundQualified (Spanned _ q) (Spanned _ n)) -> pure (text (v <> ": " <> q <> "." <> n))
     Just (SBoundType t) -> (\dt -> text v <> ": " <> dt) <$> ty t
+    Just (SBoundClass _ n) -> pure (text (v <> ": " <> n))
   pure ("<" <> sepBy ", " ds <> ">")
 
 -- Types ---------------------------------------------------------------------------------

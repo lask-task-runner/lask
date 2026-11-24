@@ -1,0 +1,22 @@
+// What a class declaration is checked for (4.6). Its methods are names
+// of the module, as its declarations are.
+class orderable<T> { // expect: E-NAME-DUPLICATE
+  key_a(x: T): Number
+}
+
+class loop<T: loop> { // expect: E-TYPE-ILLFORMED
+  key_b(x: T): Number
+}
+
+class typed<T: Number> { // expect: E-TYPE-ILLFORMED
+  key_c(x: T): Number
+}
+
+class loose<T> {
+  key_d(x): Number // expect: E-TYPE-ILLFORMED
+}
+
+class twice<T> {
+  key_e(x: T): Number
+  key_e(x: T): String // expect: E-NAME-DUPLICATE
+}

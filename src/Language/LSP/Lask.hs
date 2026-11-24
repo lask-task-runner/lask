@@ -465,9 +465,11 @@ lexSemanticTokensIn commandWordSpans fileName src =
         schema [] = []
 
     -- @within@ is a keyword only directly before the brace of an
-    -- access constraint, or the name of one (spec 3.3, 5), and
-    -- @access@ only before the name it declares: no identifier stands
-    -- there, since a name is never followed by @{@ or by another name.
+    -- access constraint, or the name of one (spec 3.3, 5), @access@
+    -- only before the name it declares, and @class@ and @instance@
+    -- only before the class they declare or are of (4.6): no
+    -- identifier stands there, since a name is never followed by @{@
+    -- or by another name.
     withinSpans toks =
       [ sp
       | (prev, Tok.Spanned sp (Tok.TLowerId w), next : after) <- zip3 (Nothing : map Just toks) toks (drop 1 (tails toks)),
@@ -477,6 +479,8 @@ lexSemanticTokensIn commandWordSpans fileName src =
           ("within", Tok.TUpperId _, _) -> True
           ("within", Tok.TLowerId _, [Tok.TDot]) -> True
           ("access", Tok.TUpperId _, _) -> True
+          ("class", Tok.TLowerId _, _) -> True
+          ("instance", Tok.TLowerId _, _) -> True
           _ -> False
       ]
 
@@ -1238,7 +1242,7 @@ languageCompletion path src (Position pl pc)
           map Tok.keywordText [minBound .. maxBound :: Tok.Keyword]
             <> ["true", "false", "null"]
             -- Keywords only where they appear (spec 3.3).
-            <> ["access", "on", "schema", "within"]
+            <> ["access", "class", "instance", "on", "schema", "within"]
       ]
 
     -- After a dot: the public members of a namespace, else the fields

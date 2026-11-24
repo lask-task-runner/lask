@@ -14,13 +14,16 @@ module Language.Lask.Core.AST
     PrimOp (..),
     Lam (..),
     coreChildren,
+    transformCore,
+    substCoreTypes,
   )
 where
 
 import Data.Scientific (Scientific)
 import Data.Text (Text)
 import Language.Lask.Span (Span)
-import Language.Lask.Types (Type)
+import qualified Data.Map.Strict as Map
+import Language.Lask.Types (Type, applySubst)
 
 data Core = Core {coreSpan :: Span, coreF :: CoreF}
   deriving (Show, Eq)
@@ -31,6 +34,13 @@ data VarRef
     TopRef FilePath Text
   | -- | Builtin symbol (including the reserved @stdin@).
     BuiltinRef Text
+  | -- | A top-level declaration whose type parameters carry a class
+    -- bound (spec 4.6), at the types it is instantiated at here, for
+    -- those parameters. Elaboration replaces every one whose types
+    -- are concrete with a 'TopRef' to the declaration specialized at
+    -- them: it remains only in a declaration that is itself generic,
+    -- which nothing runs.
+    InstRef FilePath Text [(Text, Type)]
   deriving (Show, Eq)
 
 data CoreF
@@ -153,3 +163,46 @@ coreChildren c = case coreF c of
   where
     stmtExpr (CSBind _ e) = [e]
     stmtExpr (CSExpr e) = [e]
+
+-- | Rebuild a core expression bottom up, applying the function to
+-- every node after its children.
+transformCore :: (Core -> Core) -> Core -> Core
+transformCore f = go
+  where
+    go (Core sp c) = f (Core sp (step c))
+    step c = case c of
+      CStr ps -> CStr [case p of CPExpr e -> CPExpr (go e); t -> t | p <- ps]
+      CArray es -> CArray (map go es)
+      CMapLit kvs -> CMapLit [(k, go v) | (k, v) <- kvs]
+      CRecordLit kvs -> CRecordLit [(k, go v) | (k, v) <- kvs]
+      CLam lam -> CLam lam {lamKeywords = [(k, fmap go d) | (k, d) <- lamKeywords lam], lamBody = go (lamBody lam)}
+      CApp fn pos kw -> CApp (go fn) (map go pos) [(k, go v) | (k, v) <- kw]
+      CDot e n -> CDot (go e) n
+      CIndex k a b -> CIndex k (go a) (go b)
+      CIf a b c' -> CIf (go a) (go b) (go c')
+      CAnd a b -> CAnd (go a) (go b)
+      COr a b -> COr (go a) (go b)
+      CNot a -> CNot (go a)
+      CBin o a b -> CBin o (go a) (go b)
+      CDo stmts -> CDo [case st of CSBind n e -> CSBind n (go e); CSExpr e -> CSExpr (go e) | st <- stmts]
+      CAwait a -> CAwait (go a)
+      CEnv k args -> CEnv k [(n, go v) | (n, v) <- args]
+      CRunnable e args -> CRunnable (go e) [(n, go v) | (n, v) <- args]
+      CCast a t -> CCast (go a) t
+      CIsType a t -> CIsType (go a) t
+      other -> other
+
+-- | Put types in for type variables throughout a core expression: in
+-- the types its lambdas, casts and type tests carry, and in the
+-- instantiations of the generic declarations it refers to.
+substCoreTypes :: [(Text, Type)] -> Core -> Core
+substCoreTypes [] = id
+substCoreTypes pairs = transformCore one
+  where
+    sub = applySubst (Map.fromList pairs)
+    one (Core sp c) = Core sp $ case c of
+      CLam lam -> CLam lam {lamType = sub (lamType lam)}
+      CCast a t -> CCast a (sub t)
+      CIsType a t -> CIsType a (sub t)
+      CVar (InstRef p n inst) -> CVar (InstRef p n [(v, sub t) | (v, t) <- inst])
+      other -> other

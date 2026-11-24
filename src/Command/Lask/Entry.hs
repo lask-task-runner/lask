@@ -46,7 +46,7 @@ import Language.Lask.Module.Resolve (entryPublicValues)
 import Language.Lask.Diagnostic (Advisory (..))
 import Language.Lask.Doc (DocComment, docBlockAbove, emptyDoc, parseDoc)
 import Language.Lask.Core.Access (SVal (..), checkCommandEnv, checkInvocation, withinConstraints)
-import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..))
+import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (..), specName)
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer (lexTokensWithComments)
 import Language.Lask.Obs.CommandLog
@@ -69,7 +69,7 @@ import Language.Lask.Runtime.Value
 import Language.Lask.Serialize (encodeValue, encodeValuePretty, failureMessage, renderValueText)
 import Language.Lask.Span (Position (..), Span (..))
 import qualified Language.Lask.Syntax.AST as AST
-import Language.Lask.Types (Type (..))
+import Language.Lask.Types (Type (..), renderType)
 import Language.Lask.Suggest (suggest)
 import Language.Lask.Utils (Pretty (pretty), cliPath, namespacesOf)
 import Paths_lask (version)
@@ -185,7 +185,7 @@ cmdRunEval printResult runOpts = do
   -- The public functions of the module, re-exported ones included: a
   -- declaration marked `internal` is not part of any surface (spec 5),
   -- and a plain value binding is not a function (11.2).
-  (key, cd) <- cliFunction opts compiled path
+  (key0, cd0) <- cliFunction opts compiled path
 
   -- Which keyword arguments are flags depends on their types, so the
   -- tokens are split against the parameters (spec 11.2).
@@ -196,18 +196,18 @@ cmdRunEval printResult runOpts = do
 
   let orUsageError = either (usageError opts) pure
       orBindError = either (uncurry (usageErrorSuggesting opts)) pure
-  (posVals, kwVals) <- case cdParams cd of
+  ((posVals, kwVals), inst) <- case cdParams cd0 of
     -- A declaration with type parameters is invoked with each one
     -- decoded at the widest type it admits, and a named bound checked
     -- against what was decoded (spec 11.2): a bounded parameter is not
     -- opaque inside the body, which may compare or sort it (4.4).
     Just params -> do
-      let cliParams = instantiateForCli (cdTypeVars cd) (cdBounds cd) params
+      let cliParams = instantiateForCli (cdTypeVars cd0) (cdBounds cd0) params
       cliArgs <- parseArgs cliParams
       bound <- orBindError (bindCliArgs cliParams (runArgDecode runOpts) cliArgs)
-      orUsageError (uncurry (checkCliBounds (cdBounds cd) params) bound)
-      pure bound
-    Nothing -> case cdType cd of
+      inst <- orUsageError (uncurry (checkCliBounds (cpInstances core) (cdBounds cd0) params) bound)
+      pure (bound, inst)
+    Nothing -> fmap (\b -> (b, [])) $ case cdType cd0 of
       TyFun paramTys _ -> do
         -- A function-typed value declaration: positional only
         -- (spec 11.2, example 16.3).
@@ -215,6 +215,13 @@ cmdRunEval printResult runOpts = do
         cliArgs <- parseArgs valueParams
         orBindError (bindCliArgs valueParams (runArgDecode runOpts) cliArgs)
       _ -> usageError opts ("'" <> fnName <> "' is not a callable function")
+  -- A declaration with a class bound runs as specialized at the types
+  -- the arguments gave its bounded parameters (spec 4.6, 11.2).
+  (key, cd) <- case inst of
+    [] -> pure (key0, cd0)
+    _ ->
+      let key' = (fst key0, specName (snd key0) inst)
+       in maybe (usageError opts ("'" <> fnName <> "' has no specialization at " <> T.intercalate ", " (map (renderType . snd) inst))) (pure . (,) key') (Map.lookup key' (cpDecls core))
 
   -- A declared program its image lacks fails every command that runs
   -- it, so nothing is run (spec ch. 5).

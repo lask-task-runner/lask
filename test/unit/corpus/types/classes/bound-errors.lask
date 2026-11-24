@@ -1,0 +1,23 @@
+// A class bound at a use (4.4, 4.6).
+class ord<T: comparable> {
+  compare(a: T, b: T): Number
+}
+
+instance ord<Number> {
+  compare(a, b) = a - b
+}
+
+missing(): Number = compare("a", "b") // expect: E-TYPE-BOUND
+
+unbounded<T>(x: T): Number = compare(x, x) // expect: E-TYPE-BOUND
+
+bounded<T: ord>(x: T): Number = compare(x, x)
+
+unknown<T: nope>(x: T): T = x // expect: E-NAME-UNDEFINED
+
+value() = ord // expect: E-TYPE-MISMATCH
+
+local(): Number = do {
+  f = \<U: ord>(x: U): Number -> compare(x, x) // expect: E-TYPE-ILLFORMED
+  f(1)
+}

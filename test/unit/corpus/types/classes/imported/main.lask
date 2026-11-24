@@ -1,0 +1,21 @@
+// A class and its methods are imported by name, and a bound may name a
+// class through a namespace (4.6). An instance in this module serves
+// the imported generic declaration.
+import { ord, smaller } from "./lib.lask"
+import * as lib from "./lib.lask"
+
+instance ord<String> {
+  compare(a, b) = if (a == b) { 0 } else { 1 }
+}
+
+class keyed<T: lib.ord> {
+  key(x: T): String
+}
+
+instance keyed<String> {
+  key(x) = x
+}
+
+smallest_key<T: keyed>(a: T, b: T): String = key(smaller(a, b))
+
+uses(): String = "#{smallest_key("b", "a")}#{smaller("x", "y")}"

@@ -218,16 +218,18 @@ pModule = do
   pure
     ( Module
         (map fst items)
-        (Set.fromList [n | (d, True) <- items, Just n <- [declaredName d]])
+        (Set.fromList [n | (d, True) <- items, n <- declaredName d])
         (Set.fromList [n | (Decl _ (DCommand ns _ _), True) <- items, Spanned _ n <- ns])
     )
   where
     declaredName d = case declF d of
-      DValue n _ _ _ -> Just n
-      DFunction n _ _ _ _ _ -> Just n
-      DTypeAlias n _ _ -> Just n
-      DAccess n _ -> Just n
-      _ -> Nothing
+      DValue n _ _ _ -> [n]
+      DFunction n _ _ _ _ _ -> [n]
+      DTypeAlias n _ _ -> [n]
+      DAccess n _ -> [n]
+      -- An internal class keeps its methods internal with it.
+      DClass n _ ms -> n : [m | ClassMethod _ (Spanned _ m) _ _ _ <- ms]
+      _ -> []
 
     -- Top-level declarations, each ended by a terminator or the end of
     -- input. One with a syntax error is reported and skipped (spec
@@ -279,14 +281,20 @@ pTopLevel =
       (\d -> (d, False)) <$> pModuleWithin,
       do
         s <- kw KExport
-        choice [pExportFrom s, pExportNamespace s, pExportCommand s, plain],
+        choice [pExportFrom s, pExportNamespace s, pExportCommand s, marked plain],
       do
         _ <- kw KInternal
-        (\d -> (d, True)) <$> choice [pCommandDecl, pDecl],
+        (\d -> (d, True)) <$> choice [pCommandDecl, fst <$> marked plain],
       plain
     ]
   where
     plain = (\d -> (d, False)) <$> pDecl
+
+    -- An instance has no name for a marker to make public or internal
+    -- (spec 4.6).
+    marked p = do
+      _ <- notFollowedBy (lookAhead (contextual "instance" *> lowerId))
+      p
 
     -- @export command { "go" } on e@ is the explicit form of a public
     -- command declaration; @export command { "go" } from "path"@
@@ -323,7 +331,68 @@ pTopLevel =
       pure (Decl (s <> e) (DExportFrom specs path), False)
 
 pDecl :: P Decl
-pDecl = choice [pImport, pTypeAliasDecl, pAccessDecl, pValueOrFunction]
+pDecl = choice [pImport, pTypeAliasDecl, pAccessDecl, pClassDecl, pInstanceDecl, pValueOrFunction]
+
+-- | @class name\<T: bound\> { methods }@ (spec 4.6). @class@ is a
+-- contextual keyword like @access@: no declaration named @class@ is
+-- followed by a lower-case word.
+pClassDecl :: P Decl
+pClassDecl = do
+  _ <- try (lookAhead (contextual "class" *> lowerId))
+  Spanned s () <- contextual "class"
+  Spanned _ name <- lowerId
+  _ <- op OpLt
+  tp <- TypeParam <$> upperId <*> optional (sym TColon *> pBound)
+  _ <- closeAngle
+  _ <- sym TLBrace
+  skipMany terminator
+  ms <- sepEndBy pMethod (skipSome terminator)
+  e <- sym TRBrace
+  pure (Decl (s <> e) (DClass name tp ms))
+  where
+    pMethod = do
+      n@(Spanned sp _) <- lowerId
+      _ <- sym TLParen
+      ps <- pParamList
+      _ <- sym TRParen
+      _ <- sym TColon
+      rt <- pType
+      d <- optional (sym TAssign *> pExpr)
+      pure (ClassMethod (sp <> maybe (stypeSpan rt) exprSpan d) n ps rt d)
+
+-- | @instance [ns.]name\<Type\> { methods }@ (spec 4.6). Each method
+-- is written as a function declaration is.
+pInstanceDecl :: P Decl
+pInstanceDecl = do
+  _ <- try (lookAhead (contextual "instance" *> lowerId))
+  Spanned s () <- contextual "instance"
+  q <- optional (try (lowerId <* sym TDot))
+  cls <- lowerId
+  _ <- op OpLt
+  t <- pType
+  _ <- closeAngle
+  _ <- sym TLBrace
+  skipMany terminator
+  ds <- sepEndBy pValueOrFunction (skipSome terminator)
+  e <- sym TRBrace
+  pure (Decl (s <> e) (DInstance q cls t ds))
+
+-- | A word that is a keyword only where it is read here.
+contextual :: Text -> P (Spanned ())
+contextual w = matchTok (T.unpack w) $ \t -> case t of
+  TLowerId x | x == w -> Just ()
+  _ -> Nothing
+
+-- | A bound (spec 4.2): a lower-case word names a predicate or a
+-- class, @m.ord@ a class of the module @m@ names, and anything else is
+-- a type, since no type is written in lower case.
+pBound :: P SBound
+pBound =
+  choice
+    [ try (SBoundQualified <$> (lowerId <* sym TDot) <*> lowerId),
+      try (SBoundNamed <$> lowerId <* notFollowedBy (sym TDot)),
+      SBoundType <$> pType
+    ]
 
 -- | @command { "go", "gofmt" } on #golang:1.25@ (spec ch. 5).
 pCommandDecl :: P Decl
@@ -428,7 +497,6 @@ pTypeParams = option [] $ do
   pure vs
   where
     pTypeParam = TypeParam <$> upperId <*> optional (sym TColon *> pBound)
-    pBound = choice [try (SBoundNamed <$> lowerId <* notFollowedBy (sym TDot)), SBoundType <$> pType]
 
 pValueOrFunction :: P Decl
 pValueOrFunction = do

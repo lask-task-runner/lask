@@ -66,6 +66,7 @@ trigger c = case c of
   ETypeIllformed -> check "type T = Array<T>\n"
   ETypeSecretNonString -> check "f(): Number = do {\n  p!!: Number = 1\n  p\n}\n"
   ETypeBound -> check "f() = sort([true, false])\n"
+  ETypeInstance -> check "class pretty<T> {\n  show(x: T): String\n}\ninstance pretty<Number> {}\n"
   EModuleCycle ->
     Check
       [ ("main.lask", "import { a } from \"./a.lask\"\nx = a\n"),

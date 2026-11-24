@@ -20,12 +20,15 @@ module Language.Lask.Types
     orderable,
     NamedBound (..),
     Bound (..),
+    ClassRef (..),
+    classKey,
     namedBoundFromText,
     renderNamedBound,
     renderBound,
     satisfiesNamed,
     satisfiesBound,
     boundEntails,
+    entailsBound,
     isGround,
     typeVars,
     wellFormed,
@@ -319,10 +322,26 @@ conformsUnder upper = go
 data NamedBound = BComparable | BOrderable | BStringifiable
   deriving (Show, Eq, Ord, Enum, Bounded)
 
--- | The bound of a type parameter (spec 4.2): a named predicate, or a
--- type that an instantiation has to conform to.
-data Bound = BoundNamed NamedBound | BoundType Type
+-- | The bound of a type parameter (spec 4.2): a named predicate, a
+-- type that an instantiation has to conform to, or a class it has to
+-- have an instance of (4.6).
+data Bound = BoundNamed NamedBound | BoundType Type | BoundClass ClassRef
   deriving (Show, Eq)
+
+-- | A class (spec 4.6) where it is a bound: the module that declares
+-- it and its name, with what it entails through its superclasses --
+-- the named bounds, and the classes (by module and name), itself
+-- excluded.
+data ClassRef = ClassRef
+  { crModule :: FilePath,
+    crName :: Text,
+    crEntailsNamed :: [NamedBound],
+    crSupers :: [(FilePath, Text)]
+  }
+  deriving (Show, Eq)
+
+classKey :: ClassRef -> (FilePath, Text)
+classKey c = (crModule c, crName c)
 
 namedBoundFromText :: Text -> Maybe NamedBound
 namedBoundFromText t = lookup t [(renderNamedBound b, b) | b <- [minBound .. maxBound]]
@@ -336,6 +355,7 @@ renderNamedBound b = case b of
 renderBound :: Bound -> Text
 renderBound (BoundNamed b) = renderNamedBound b
 renderBound (BoundType t) = renderType t
+renderBound (BoundClass c) = crName c
 
 -- | Whether a type satisfies a named predicate (spec 4.4), given the
 -- bounds of the type parameters in scope: a parameter satisfies it
@@ -352,11 +372,16 @@ satisfiesNamed boundOf nb = go
         BStringifiable -> stringifiableWith var t
 
 -- | Whether a type satisfies a bound: the predicate for a named one,
--- conformance for a type bound (spec 4.4).
+-- conformance for a type bound (spec 4.4). A class bound needs the
+-- program's instances, which elaboration has: here only a type
+-- parameter whose own bound entails the class satisfies it.
 satisfiesBound :: (Text -> Maybe Bound) -> Bound -> Type -> Bool
 satisfiesBound boundOf b t = case b of
   BoundNamed nb -> satisfiesNamed boundOf nb t
   BoundType u -> conformsUnder upper t u
+  BoundClass c -> case t of
+    TyVar v | Just (BoundClass c') <- boundOf v -> classKey c == classKey c' || classKey c `elem` crSupers c'
+    _ -> False
   where
     upper v = case boundOf v of
       Just (BoundType u) -> Just u
@@ -372,6 +397,15 @@ boundEntails b nb = case b of
   BoundNamed n -> n == nb || n == BOrderable
   BoundType TyAny -> False
   BoundType t -> satisfiesNamed (const Nothing) nb t
+  BoundClass c -> nb `elem` crEntailsNamed c
+
+-- | Whether every type one bound admits satisfies another (spec 4.4,
+-- 4.6): a named bound or a class the first entails, or the same bound.
+entailsBound :: Bound -> Bound -> Bool
+entailsBound a b = case (a, b) of
+  (_, BoundNamed nb) -> boundEntails a nb
+  (BoundClass c, BoundClass d) -> classKey c == classKey d || classKey d `elem` crSupers c
+  _ -> a == b
 
 -- | Comparable types for @==@\/@!=@ (spec 6.2).
 comparable :: Type -> Bool
