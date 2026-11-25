@@ -1,0 +1,28 @@
+// A method written as a value, in a class and in an instance (4.6):
+// the signature its function type gives, and a default or a method
+// whose body is a function value.
+class resource<T> {
+  deploy(a: T): T
+  destroy: Function<T, T>
+  modify: Function<T, T> = destroy >> deploy
+  twice(a: T): T = (deploy >> deploy)(a)
+}
+
+inc(x: Number): Number = x + 1
+
+instance resource<Number> {
+  deploy(a) = a + 10
+  destroy = \(a) -> a * 2
+}
+
+instance resource<String> {
+  deploy: Function<String, String> = \(a) -> a
+  destroy = trim
+}
+
+instance resource<Bool> {
+  deploy = \(a) -> !a
+  destroy = inc // expect: E-TYPE-MISMATCH
+}
+
+uses(): Array<Number> = [modify(1), twice(1), destroy(3)]

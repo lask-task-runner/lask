@@ -120,7 +120,7 @@ genTopDecl :: Int -> Gen (Decl, Bool)
 genTopDecl d = do
   f <-
     frequency
-      [ (4, DValue <$> elements lowerNames <*> genSecrecy <*> maybeOf (genType d) <*> genExpr d),
+      [ (4, DValueW <$> elements lowerNames <*> genSecrecy <*> maybeOf (genType d) <*> frequency [(4, pure Nothing), (1, Just <$> genAccess d)] <*> genExpr d),
         (4, genFunction),
         (2, DTypeAlias <$> elements upperNames <*> genTypeParams d <*> genType d),
         (1, DImportNamed <$> listOf1' genImportSpec <*> elements paths),
@@ -329,6 +329,7 @@ genBlock d = Block NoSpan <$> listOf' (Stmt NoSpan <$> one)
     one =
       oneof
         [ SBind <$> elements lowerNames <*> genSecrecy <*> maybeOf (genType d) <*> genExpr d,
+          SFunDecl <$> elements lowerNames <*> genTypeParams d <*> genParams d <*> maybeOf (genType d) <*> genExpr d,
           SExpr <$> genExpr d
         ]
 
@@ -382,10 +383,11 @@ shrinkModule (Module ds ints cmds) =
 
 shrinkDecl :: Decl -> [Decl]
 shrinkDecl (Decl _ f) = Decl NoSpan <$> case f of
-  DValue n sec t e ->
-    [DValue n Public t e | sec == Secret]
-      <> [DValue n sec t' e | t' <- shrinkMaybe shrinkType t]
-      <> [DValue n sec t e' | e' <- shrinkExpr e]
+  DValueW n sec t w e ->
+    [DValueW n Public t w e | sec == Secret]
+      <> [DValueW n sec t Nothing e | isJust w]
+      <> [DValueW n sec t' w e | t' <- shrinkMaybe shrinkType t]
+      <> [DValueW n sec t w e' | e' <- shrinkExpr e]
   DFunction n tps ps rt w e ->
     [DFunction n tps' ps rt w e | tps' <- shrinkList (const []) tps]
       <> [DFunction n tps ps' rt w e | ps' <- shrinkList shrinkParam ps]
@@ -532,6 +534,12 @@ shrinkStmt (Stmt _ f) = Stmt NoSpan <$> case f of
       : [SBind n Public t e | sec == Secret]
       <> [SBind n sec t' e | t' <- shrinkMaybe shrinkType t]
       <> [SBind n sec t e' | e' <- shrinkExpr e]
+  SFunDecl n tps ps rt e ->
+    SExpr e
+      : [SFunDecl n tps' ps rt e | tps' <- shrinkList (const []) tps]
+      <> [SFunDecl n tps ps' rt e | ps' <- shrinkList shrinkParam ps]
+      <> [SFunDecl n tps ps rt' e | rt' <- shrinkMaybe shrinkType rt]
+      <> [SFunDecl n tps ps rt e' | e' <- shrinkExpr e]
   SExpr e -> SExpr <$> shrinkExpr e
 
 shrinkArm :: CaseArm -> [CaseArm]
@@ -568,7 +576,7 @@ decl (Decl _ f) = case f of
   DExportFrom specs p -> "export " <> importSpecs specs <> " from " <> quoted p
   DExportNamespace a p -> "export * as " <> a <> " from " <> quoted p
   DTypeAlias n tps t -> "type " <> n <> typeParams tps <> " = " <> typ t
-  DValue n sec t e -> n <> secrecy sec <> annot t <> " = " <> rhs top e
+  DValueW n sec t w e -> n <> secrecy sec <> annot t <> maybe "" ((" within " <>) . access top) w <> " = " <> rhs top e
   DFunction n tps ps rt w e ->
     n <> typeParams tps <> params top ps <> annot rt <> maybe "" ((" within " <>) . access top) w <> " = " <> rhs top e
   DWithin w -> "within " <> access top w
@@ -833,6 +841,7 @@ block m (Block _ ss) = case m of
 stmt :: Mode -> Stmt -> Text
 stmt m (Stmt _ f) = case f of
   SBind n sec t e -> n <> secrecy sec <> annot t <> " = " <> rhs m e
+  SFunDecl n tps ps rt e -> n <> typeParams tps <> params m ps <> annot rt <> " = " <> rhs m e
   SExpr e -> leading (rhs m e)
 
 caseExpr :: Mode -> Maybe Expr -> [CaseArm] -> Text

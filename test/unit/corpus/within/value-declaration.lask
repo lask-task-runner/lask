@@ -1,0 +1,9 @@
+// A value declaration takes an access constraint as a function
+// declaration does (5, 10.11), a lambda binding and any other value.
+open = #curlimages/curl:8.17.0
+sealed = #curlimages/curl:8.17.0{ network: "none" }
+
+fetch within { outbound: true } = \(): String -> $[open] curl -fsS https://example.com
+offline within { outbound: false } = \(): String -> $[sealed] curl -fsS https://example.com
+leak within { outbound: false } = \(): String -> $[open] curl -fsS https://example.com // expect: E-TYPE-WITHIN-EXCEEDED
+status: String within { outbound: false } = $[open] curl -fsS https://example.com // expect: E-TYPE-WITHIN-EXCEEDED

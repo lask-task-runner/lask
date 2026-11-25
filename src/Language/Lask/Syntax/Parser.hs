@@ -228,7 +228,7 @@ pModule = do
       DTypeAlias n _ _ -> [n]
       DAccess n _ -> [n]
       -- An internal class keeps its methods internal with it.
-      DClass n _ ms -> n : [m | ClassMethod _ (Spanned _ m) _ _ _ <- ms]
+      DClass n _ ms -> n : [m | ClassMethod _ (Spanned _ m) _ _ _ _ <- ms]
       _ -> []
 
     -- Top-level declarations, each ended by a terminator or the end of
@@ -350,15 +350,25 @@ pClassDecl = do
   e <- sym TRBrace
   pure (Decl (s <> e) (DClass name tp ms))
   where
+    -- A method is a signature, @m(a: T): R@, or written as a value,
+    -- @m: Function\<T, R\>@, each with an optional default.
     pMethod = do
       n@(Spanned sp _) <- lowerId
-      _ <- sym TLParen
-      ps <- pParamList
-      _ <- sym TRParen
-      _ <- sym TColon
-      rt <- pType
-      d <- optional (sym TAssign *> pExpr)
-      pure (ClassMethod (sp <> maybe (stypeSpan rt) exprSpan d) n ps rt d)
+      choice
+        [ do
+            _ <- sym TLParen
+            ps <- pParamList
+            _ <- sym TRParen
+            _ <- sym TColon
+            rt <- pType
+            d <- optional (sym TAssign *> pExpr)
+            pure (ClassMethod (sp <> maybe (stypeSpan rt) exprSpan d) n ps rt d Nothing),
+          do
+            _ <- sym TColon
+            t <- pType
+            d <- optional (sym TAssign *> pExpr)
+            pure (valueMethod (sp <> maybe (stypeSpan t) exprSpan d) n t d)
+        ]
 
 -- | @instance [ns.]name\<Type\> { methods }@ (spec 4.6). Each method
 -- is written as a function declaration is.
@@ -541,9 +551,10 @@ pValueOrFunction = do
       do
         sec <- pSecrecy
         t <- optional (sym TColon *> pType)
+        w <- optional pWithin
         _ <- sym TAssign
         e <- pExpr
-        pure (Decl (sp <> exprSpan e) (DValue name sec t e))
+        pure (Decl (sp <> exprSpan e) (DValueW name sec t w e))
     ]
 
 -- | An access constraint, @within { field: value, ... }@ or
@@ -1127,8 +1138,25 @@ pStmt =
         parseError . FancyError o . Set.singleton $
           ErrorFail "Lask has no return: the value of a block is its last statement; choose between values with if/else, case, or c ? a : b",
       try pBindStmt,
+      try pFunctionStmt,
       (\e -> Stmt (exprSpan e) (SExpr e)) <$> pExpr
     ]
+
+-- | A function declared in a block, @g(x) = x + 1@ (spec 6.5), in the
+-- shape of a @FunctionDecl@ without an access constraint. No
+-- expression statement is followed by @=@, so what begins as a call
+-- and reaches one is a declaration.
+pFunctionStmt :: P Stmt
+pFunctionStmt = do
+  Spanned sp n <- lowerId
+  tps <- pTypeParams
+  _ <- sym TLParen
+  ps <- pParamList
+  _ <- sym TRParen
+  rt <- optional (sym TColon *> pType)
+  _ <- sym TAssign
+  e <- pExpr
+  pure (Stmt (sp <> exprSpan e) (SFunDecl n tps ps rt e))
 
 -- | A binding, optionally annotated, in the same shape as a
 -- @ValueDecl@ (spec 5, 6.5): the @!!@ marker attaches to the name and
