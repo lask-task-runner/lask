@@ -442,9 +442,10 @@ decl sp f = case f of
   DTypeAlias n tps t -> do
     dtp <- typeParams tps
     joinAfter ("type " <> text n <> dtp) "=" (startOf (stypeSpan t)) (const (ty t))
-  DValue n sec t e -> do
+  DValueW n sec t w e -> do
     dt <- traverse ty t
-    joinAfter (text n <> secrecy sec <> annot dt) "=" (startOf (exprSpan e)) (exprOn e)
+    dw <- traverse accessSpec w
+    joinAfter (text n <> secrecy sec <> annot dt <> maybe mempty (" within " <>) dw) "=" (startOf (exprSpan e)) (exprOn e)
   DFunction n tps ps rt w e -> do
     dtp <- typeParams tps
     open <- tokFrom TLParen start
@@ -473,7 +474,7 @@ decl sp f = case f of
     pure ("export command " <> dn <> " from " <> p)
   DClass n tp ms -> do
     dtp <- typeParams [tp]
-    body <- braced [Item (startOf msp) (endOf msp) (method m) | m@(ClassMethod msp _ _ _ _) <- ms]
+    body <- braced [Item (startOf msp) (endOf msp) (method m) | m@(ClassMethod msp _ _ _ _ _) <- ms]
     pure ("class " <> text n <> dtp <> " " <> body)
   DInstance tps q (Spanned _ c) t ds -> do
     dtp <- typeParams tps
@@ -492,12 +493,16 @@ decl sp f = case f of
         else do
           body <- seqLines open close items
           pure ("{" <> nest body <> line <> "}")
-    method (ClassMethod msp (Spanned _ m) ps rt d) = do
-      popen <- tokFrom TLParen (startOf msp)
-      dps <- params popen ps
-      drt <- ty rt
-      let lhs = text m <> dps <> ": " <> drt
-      case d of
+    method cm@(ClassMethod msp (Spanned _ m) ps rt _ vf) = do
+      lhs <- case vf of
+        -- Written as a value: its type, as the source writes it.
+        Just (t, _) -> (\dt -> text m <> ": " <> dt) <$> ty t
+        Nothing -> do
+          popen <- tokFrom TLParen (startOf msp)
+          dps <- params popen ps
+          drt <- ty rt
+          pure (text m <> dps <> ": " <> drt)
+      case methodDefaultWritten cm of
         Nothing -> pure lhs
         Just e -> joinAfter lhs "=" (startOf (exprSpan e)) (exprOn e)
     -- The path ends the declaration, spelt as the source spells it.
@@ -922,8 +927,14 @@ block (Block sp stmts) = do
       pure ("{" <> nest body <> line <> "}")
 
 stmt :: Stmt -> P Doc
-stmt (Stmt _ f) = case f of
+stmt (Stmt sp f) = case f of
   SBind n sec t e -> do
     dt <- traverse ty t
     joinAfter (text n <> secrecy sec <> annot dt) "=" (startOf (exprSpan e)) (exprOn e)
+  SFunDecl n tps ps rt e -> do
+    dtp <- typeParams tps
+    open <- tokFrom TLParen (startOf sp)
+    dps <- params open ps
+    drt <- traverse ty rt
+    joinAfter (text n <> dtp <> dps <> annot drt) "=" (startOf (exprSpan e)) (exprOn e)
   SExpr e -> exprOn e True

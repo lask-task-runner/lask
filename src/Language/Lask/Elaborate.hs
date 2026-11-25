@@ -213,7 +213,7 @@ data Ctx = Ctx
 classIndex :: Program -> (Map Key (Span, TypeParam, [ClassMethod]), Map Key Text)
 classIndex prog =
   ( Map.fromList decls,
-    Map.fromList [((p, m), n) | ((p, n), (_, _, ms)) <- decls, ClassMethod _ (Spanned _ m) _ _ _ <- ms]
+    Map.fromList [((p, m), n) | ((p, n), (_, _, ms)) <- decls, ClassMethod _ (Spanned _ m) _ _ _ _ <- ms]
   )
   where
     decls =
@@ -755,7 +755,7 @@ unitsHolding prog ds =
       DExportNamespace alias _ -> ([(path, alias)], [], [])
       DWithin _ -> ([], [], [])
       DAccess n _ -> ([], [(path, n)], [])
-      DClass n _ ms -> ([(path, m) | m <- n : [mn | ClassMethod _ (Spanned _ mn) _ _ _ <- ms]], [], [])
+      DClass n _ ms -> ([(path, m) | m <- n : [mn | ClassMethod _ (Spanned _ mn) _ _ _ _ <- ms]], [], [])
       DInstance {} -> ([], [], [])
     imported path specs =
       ([(path, v) | (v, False) <- bad], [(path, v) | (v, True) <- bad], [])
@@ -2418,7 +2418,11 @@ inferVar ctx path locals sp n = case Map.lookup n locals of
       -- 4.4), so a polymorphic declaration referenced as one has to be
       -- instantiated by the expected type -- which infer mode has not
       -- got.
-      unless (settled ctx t) $
+      -- Its type parameters may share their names with those of the
+      -- declaration it is referenced in, which does not settle them:
+      -- one with a class bound still has its instance to find.
+      (bounds, _) <- declTypeBounds ctx (defPath, defName)
+      unless (settled ctx t && not (any dictBound bounds)) $
         abort . diag ETypeMismatch sp $
           "cannot infer the type of '" <> n <> "' without an expected type: it declares type parameters"
       recordVar sp n t (Just (defPath, defName))
@@ -2807,7 +2811,7 @@ elabBin ctx path locals sp op a b mExpected = case op of
 -- | Elaborate a do\/control block. The expected type (if any) applies
 -- to the last statement. Bindings are visible after their statement.
 elabBlock :: Ctx -> FilePath -> Locals -> Block -> Maybe Type -> TC ([CoreStmt], Type)
-elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
+elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 (map stmtBinding stmts0)
   where
     go _ []
       | Just t <- mExpected, t /= TyVoid && t /= TyAny =
@@ -2822,6 +2826,7 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
         case mExpected of
           Just u | not (conforms ctx t u) -> mismatch ssp u t
           _ -> pure ([CSBind n c], t)
+      SFunDecl {} -> go locals [stmtBinding (Stmt ssp f)]
       SExpr e -> do
         (c, t) <- inferOrCheck locals e
         pure ([CSExpr c], t)
@@ -2835,6 +2840,7 @@ elabBlock ctx path locals0 (Block bsp stmts0) mExpected = go locals0 stmts0
           advise WAsyncUnused ssp $
             "'" <> n <> "' holds " <> handlesOf t <> " that nothing refers to, so " <> neverAwaited t
         pure (CSBind n c : cs, ty)
+      SFunDecl {} -> go locals (stmtBinding (Stmt ssp f) : rest)
       SExpr e -> do
         (c, t) <- case e of
           -- Its value is discarded, so a choice between branches is
@@ -4036,6 +4042,17 @@ data Callee
     CalleeValue Core Type
 
 elabCall :: Ctx -> FilePath -> Locals -> Span -> Expr -> [Arg] -> Maybe Type -> TC (Core, Type)
+-- A composition applied to one argument, @(f >> g)(x)@, is checked as
+-- @g(f(x))@ (spec 6.2): each function is then called, and a generic one
+-- is instantiated by its argument, as a function referenced as a value
+-- with no type expected of it could not be.
+elabCall ctx path locals sp (Expr _ (EBin o f g)) [Arg asp (APos x)] mExpected
+  | Just (inner, outer) <- composed o f g =
+      elabCall ctx path locals sp outer [Arg asp (APos (Expr sp (ECall inner [Arg asp (APos x)])))] mExpected
+  where
+    composed OpCompR a b = Just (a, b)
+    composed OpCompL a b = Just (b, a)
+    composed _ _ _ = Nothing
 elabCall ctx path locals sp fn args mExpected = do
   validateArgOrder
   callee <- resolveCallee
@@ -4874,7 +4891,7 @@ methodDeclAst ctx (path, name) = do
   let (m, isDefault) = maybe (name, False) (\b -> (b, True)) (T.stripSuffix "#default" name)
   cn <- Map.lookup (path, m) (ctxMethodClass ctx)
   (_, TypeParam tv _, ms) <- Map.lookup (path, cn) (ctxClassDecls ctx)
-  ClassMethod sp _ ps rt d <- listToMaybe [cm | cm@(ClassMethod _ (Spanned _ mn) _ _ _) <- ms, mn == m]
+  ClassMethod sp _ ps rt d _ <- listToMaybe [cm | cm@(ClassMethod _ (Spanned _ mn) _ _ _ _) <- ms, mn == m]
   body <- if isDefault then d else Just (fromMaybe (Expr sp ENull) d)
   pure (not isDefault, Decl sp (DFunction m [TypeParam tv (Just (SBoundClass path cn))] ps (Just rt) Nothing body))
 
@@ -4987,7 +5004,7 @@ buildClassEnv ctx = do
                 [ do
                     r <- recoverTC (TyFun <$> paramHeaderTypes ctx' path ps <*> typeFromS ctx' path rt)
                     pure (mn, MethodInfo ps d (either (const Nothing) Just r))
-                | ClassMethod _ (Spanned _ mn) ps rt d <- ms
+                | ClassMethod _ (Spanned _ mn) ps rt d _ <- ms
                 ]
             pure (key, ClassInfo tp methods)
         | lm <- Map.elems (progModules (ctxProg ctx)),
@@ -5004,7 +5021,8 @@ buildClassEnv ctx = do
               r <- recoverTC $ do
                 vs <- typeVarsOf ctx path tps
                 (,) vs <$> typeFromS (withTypeVars vs ctx) path t
-              pure (either (const Nothing) (\(vs, ht) -> Just (InstanceInfo path sp ck ht ds tps vs)) r)
+              let methods = maybe [] ciMethods (Map.lookup ck (Map.insert orderableKey orderableInfo classes))
+              pure (either (const Nothing) (\(vs, ht) -> Just (InstanceInfo path sp ck ht (instanceMethodDecls methods ds) tps vs)) r)
         | -- Dependencies first (progOrder), so that of two instances
           -- for one type, the later is the one reported.
           path <- progOrder (ctxProg ctx),
@@ -5076,8 +5094,15 @@ checkClassDecl ctx (path, Decl sp f) = case f of
     when ((path, n) `elem` superChain (path, n)) $
       abort (diag ETypeIllformed sp ("class '" <> n <> "' is its own superclass"))
     sequence_
+      [ abort (diag ETypeIllformed (stypeSpan t) ("'" <> m <> "', written as a value, has the type of a function, written Function<...>"))
+      | ClassMethod _ (Spanned _ m) _ _ _ (Just (t, _)) <- ms,
+        case stypeF t of
+          SFunction {} -> False
+          _ -> True
+      ]
+    sequence_
       [ abort (diag ETypeIllformed psp "a method takes positional parameters, each with its type written")
-      | ClassMethod _ _ ps _ _ <- ms,
+      | ClassMethod _ _ ps _ _ _ <- ms,
         Param psp pf <- ps,
         case pf of
           PPositional _ Public (Just _) -> False
@@ -5095,7 +5120,7 @@ checkClassDecl ctx (path, Decl sp f) = case f of
                     "'" <> m <> "' does not mention " <> tv <> " in its parameters or its result, so no call of it can say which instance of " <> n <> " it means"
             _ -> pure ()
           when (isJust d) (() <$ tryDemandDecl ctx (path, m <> "#default"))
-      | ClassMethod _ (Spanned msp m) _ _ d <- ms
+      | ClassMethod _ (Spanned msp m) _ _ d _ <- ms
       ]
   _ -> pure ()
   where
@@ -5141,7 +5166,7 @@ checkClassVarsUsed ctx (path, Decl _ f) = case header of
 -- methods against the class's signatures.
 checkInstanceDecl :: Ctx -> (FilePath, Decl) -> TC ()
 checkInstanceDecl ctx (path, Decl sp f) = case f of
-  DInstance tps qual (Spanned csp c) st ds -> do
+  DInstance tps qual (Spanned csp c) st ds0 -> do
     let written = maybe "" ((<> ".") . spannedValue) qual <> c
         display = written <> "<" <> renderSType st <> ">"
     ck <- case instanceClass ctx path qual c of
@@ -5190,6 +5215,7 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
             abort (diag ETypeInstance sp ("an instance " <> display <> " needs an instance " <> snd sk <> "<" <> renderSType st <> "> in effect here"))
       _ -> pure ()
     let methods = ciMethods ci
+        ds = instanceMethodDecls methods ds0
         names = [n | Decl _ (DFunction n _ _ _ _ _) <- ds] <> [n | Decl _ (DValue n _ _ _) <- ds]
     sequence_ [methodShape (map fst methods) d | d <- ds]
     case [n | (n : _ : _) <- group' names] of
@@ -5228,7 +5254,12 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
     renderAt (Span (Position fl l _) _) = T.pack fl <> ":" <> T.pack (show l)
     renderAt NoSpan = "another module"
     methodShape known (Decl dsp df) = case df of
-      DValue n _ _ _ -> abort (diag ETypeIllformed dsp ("'" <> n <> "' is written as a method is: " <> n <> "(...) = ..."))
+      DValue n sec ann _
+        | n `notElem` known ->
+            abort . suggesting n known $ diag ENameUndefined dsp ("the class has no method '" <> n <> "'")
+        | sec == Secret -> abort (diag ETypeIllformed dsp ("'" <> n <> "' is a method, which is no secret binding"))
+        | Just t <- ann ->
+            abort (diag ETypeIllformed (stypeSpan t) ("'" <> n <> "', written as a value, has the type of a function, written Function<...>"))
       DFunction n tps ps _ w _
         | n `notElem` known ->
             abort . suggesting n known $ diag ENameUndefined dsp ("the class has no method '" <> n <> "'")
@@ -5246,6 +5277,29 @@ checkInstanceDecl ctx (path, Decl sp f) = case f of
             ci <- Map.lookup ck (clsClasses (ctxEnv ctx))
             lookup n (ciMethods ci)
           _ -> Nothing
+
+-- | The methods of an instance, each as a function declaration (spec
+-- 4.6): one written as a value, @m = e@ or @m: Function\<A, R\> = e@,
+-- is the declaration with the parameters of the class's signature, or
+-- of its own function type, whose body applies @e@ to them. One that
+-- names no method of the class, is marked secret, or is annotated
+-- with something other than a function type is left as it is, for
+-- the check of the instance to report.
+instanceMethodDecls :: [(Text, MethodInfo)] -> [Decl] -> [Decl]
+instanceMethodDecls methods = map asFunction
+  where
+    asFunction d@(Decl dsp df) = case df of
+      DValueW n Public ann w e
+        | Just mi <- lookup n methods,
+          Just (pts, rt) <- signature (length (miParams mi)) ann,
+          Just (ps, body) <- functionOfValue (length pts) e ->
+            let typed = [Param psp (PPositional v Public pt) | (Param psp (PPositional v _ _), pt) <- zip ps pts]
+             in Decl dsp (DFunction n [] typed rt w body)
+      _ -> d
+    signature arity ann = case ann of
+      Nothing -> Just (replicate arity Nothing, Nothing)
+      Just (SType _ (SFunction pts r)) -> Just (map Just pts, Just r)
+      Just _ -> Nothing
 
 -- Specialization (spec 4.6) ---------------------------------------------------
 

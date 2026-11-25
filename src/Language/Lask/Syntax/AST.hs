@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- | Surface AST (spec chapters 4-6). All sugar is preserved as
 -- dedicated nodes; normalization to the core language happens in a
@@ -9,11 +10,15 @@
 module Language.Lask.Syntax.AST
   ( Module (..),
     Decl (..),
-    DeclF (..),
+    DeclF (.., DValue),
     AccessSpec (..),
     TypeParam (..),
     SBound (..),
     ClassMethod (..),
+    methodParamName,
+    valueMethod,
+    functionOfValue,
+    methodDefaultWritten,
     typeParamNames,
     renderTypeParams,
     renderSType,
@@ -34,6 +39,7 @@ module Language.Lask.Syntax.AST
     CaseHeads (..),
     Stmt (..),
     StmtF (..),
+    stmtBinding,
     stripSpansModule,
     stripSpansDecl,
     stripSpansExpr,
@@ -71,8 +77,10 @@ data DeclF
   | -- | @type Name = Type@, or @type Name\<A, B\> = Type@ with type
     -- parameters (spec 4.2).
     DTypeAlias Text [TypeParam] SType
-  | -- | @name[!!] [: Type] = expr@
-    DValue Text Secrecy (Maybe SType) Expr
+  | -- | @name[!!] [: Type] [within { ... }] = expr@, with its access
+    -- constraint (spec 5, 10.11). 'DValue' matches one whatever its
+    -- constraint, and builds one without.
+    DValueW Text Secrecy (Maybe SType) (Maybe AccessSpec) Expr
   | -- | @name(params) [: Type] [within { ... }] = expr@ (sugar for a
     -- lambda binding), with the type parameters it declares (spec 4.2)
     -- and its access constraint (spec 5, 10.11).
@@ -112,16 +120,77 @@ data DeclF
     DInstance [TypeParam] (Maybe (Spanned Text)) (Spanned Text) SType [Decl]
   deriving (Show, Eq)
 
+-- | A value declaration with its access constraint left out: what
+-- most readers of the AST need, which a constraint does not change.
+pattern DValue :: Text -> Secrecy -> Maybe SType -> Expr -> DeclF
+pattern DValue n sec t e <- DValueW n sec t _ e
+  where
+    DValue n sec t e = DValueW n sec t Nothing e
+
+{-# COMPLETE DImportNamed, DImportNamespace, DTypeAlias, DValue, DFunction, DWithin, DAccess, DExportFrom, DExportNamespace, DCommand, DImportCommands, DExportCommandsFrom, DClass, DInstance #-}
+
 -- | A method of a class as declared (spec 4.6): its signature, written
 -- in full, and its default body when it has one.
+--
+-- A method written as a value, @m: Function\<A, R\> [= e]@, keeps its
+-- type and default as written in 'cmValueForm', and has here the
+-- parameters and result of that function type, and as its default
+-- the body of @e@ when @e@ is a lambda taking those parameters, or
+-- otherwise @e@ applied to them, the parameters then named so that no
+-- name in the source can be one ('methodParamName'). One whose type
+-- is no function type has no parameters and that type as its result,
+-- which the check of the class rejects.
 data ClassMethod = ClassMethod
   { cmSpan :: Span,
     cmName :: Spanned Text,
     cmParams :: [Param],
     cmReturn :: SType,
-    cmDefault :: Maybe Expr
+    cmDefault :: Maybe Expr,
+    cmValueForm :: Maybe (SType, Maybe Expr)
   }
   deriving (Show, Eq)
+
+-- | The name of the @i@-th parameter of a method written as a value:
+-- not an identifier, so no name the source writes captures it.
+methodParamName :: Int -> Text
+methodParamName i = "%" <> T.pack (show i)
+
+-- | A method written as a value, as the signature and default it
+-- stands for (spec 4.6).
+valueMethod :: Span -> Spanned Text -> SType -> Maybe Expr -> ClassMethod
+valueMethod sp n t d = case stypeF t of
+  SFunction pts r -> case valueFunction pts d of
+    Just (ps, body) -> ClassMethod sp n ps r body (Just (t, d))
+    Nothing -> ClassMethod sp n [] t d (Just (t, d))
+  _ -> ClassMethod sp n [] t d (Just (t, d))
+  where
+    valueFunction pts md = case md of
+      Nothing -> Just (hidden pts, Nothing)
+      Just e -> do
+        (ps, body) <- functionOfValue (length pts) e
+        let typed = [Param psp (PPositional v Public (Just pt)) | (Param psp (PPositional v _ _), pt) <- zip ps pts]
+        pure (typed, Just body)
+    hidden pts = [Param (stypeSpan pt) (PPositional (methodParamName i) Public (Just pt)) | (i, pt) <- zip [1 ..] pts]
+
+-- | A function value as the parameters and body of a function
+-- declaration of @arity@ positional parameters (spec 4.6): a lambda
+-- with exactly those, unannotated and with no type parameters or
+-- return type of its own, as its own parameters and body; anything
+-- else applied to parameters no name in the source can be.
+functionOfValue :: Int -> Expr -> Maybe ([Param], Expr)
+functionOfValue arity e = case exprF e of
+  ELambda [] ps Nothing body
+    | length ps == arity,
+      length [() | Param _ (PPositional _ Public Nothing) <- ps] == arity ->
+        Just (ps, body)
+  _ ->
+    let ps = [Param (exprSpan e) (PPositional (methodParamName i) Public Nothing) | i <- [1 .. arity]]
+     in Just (ps, Expr (exprSpan e) (ECall e [Arg (exprSpan e) (APos (Expr (exprSpan e) (EVar v))) | Param _ (PPositional v _ _) <- ps]))
+
+-- | The default of a method as written: for one written as a value,
+-- the value its default is.
+methodDefaultWritten :: ClassMethod -> Maybe Expr
+methodDefaultWritten cm = maybe (cmDefault cm) snd (cmValueForm cm)
 
 -- | An access constraint as written (spec 5, 10.11): the span of its
 -- braces, and each field with its value, or the name of an @access@
@@ -344,8 +413,19 @@ data Stmt = Stmt {stmtSpan :: Span, stmtF :: StmtF}
 data StmtF
   = -- | @name[!!] [: Type] = expr@
     SBind Text Secrecy (Maybe SType) Expr
+  | -- | @name[\<T\>](params) [: Type] = expr@ (spec 6.5): a function
+    -- declared in a block, which binds what @name = \\(params) -> expr@
+    -- binds ('stmtBinding').
+    SFunDecl Text [TypeParam] [Param] (Maybe SType) Expr
   | SExpr Expr
   deriving (Show, Eq)
+
+-- | A statement as the binding it stands for: a function declared in
+-- a block as the binding of its lambda (spec 6.5).
+stmtBinding :: Stmt -> Stmt
+stmtBinding st@(Stmt sp f) = case f of
+  SFunDecl n tps ps rt body -> Stmt sp (SBind n Public Nothing (Expr sp (ELambda tps ps rt body)))
+  _ -> st
 
 -- Span stripping (test helpers) -------------------------------------------
 
@@ -368,7 +448,7 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DExportFrom specs path -> DExportFrom (map stripSpec specs) path
   DExportNamespace a p -> DExportNamespace a p
   DTypeAlias n ps t -> DTypeAlias n (map stripTypeParam ps) (stripSpansType t)
-  DValue n sec t e -> DValue n sec (fmap stripSpansType t) (stripSpansExpr e)
+  DValueW n sec t w e -> DValueW n sec (fmap stripSpansType t) (fmap stripAccess w) (stripSpansExpr e)
   DFunction n tps ps t w e ->
     DFunction
       n
@@ -385,8 +465,8 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
   DClass n tp ms -> DClass n (stripTypeParam tp) (map stripMethod ms)
   DInstance tps q c t ds -> DInstance (map stripTypeParam tps) (fmap stripWord q) (stripWord c) (stripSpansType t) (map stripSpansDecl ds)
   where
-    stripMethod (ClassMethod _ n ps r d) =
-      ClassMethod NoSpan (stripWord n) (map stripParam ps) (stripSpansType r) (fmap stripSpansExpr d)
+    stripMethod (ClassMethod _ n ps r d vf) =
+      ClassMethod NoSpan (stripWord n) (map stripParam ps) (stripSpansType r) (fmap stripSpansExpr d) (fmap (\(t, e) -> (stripSpansType t, fmap stripSpansExpr e)) vf)
     stripAccess w = case w of
       AccessSpec _ fs -> AccessSpec NoSpan [(Spanned NoSpan k, stripSpansExpr v) | (Spanned _ k, v) <- fs]
       AccessRef _ q n -> AccessRef NoSpan q n
@@ -453,4 +533,5 @@ stripBlock (Block _ ss) = Block NoSpan (map stripStmt ss)
 stripStmt :: Stmt -> Stmt
 stripStmt (Stmt _ f) = Stmt NoSpan $ case f of
   SBind n sec t e -> SBind n sec (fmap stripSpansType t) (stripSpansExpr e)
+  SFunDecl n tps ps t e -> SFunDecl n (map stripTypeParam tps) (map stripParam ps) (fmap stripSpansType t) (stripSpansExpr e)
   SExpr e -> SExpr (stripSpansExpr e)

@@ -1,0 +1,35 @@
+// What a method written as a value is checked for (4.6).
+class empty<T> {
+  none: T // expect: E-TYPE-ILLFORMED
+}
+
+class shown<T> {
+  show(x: T): String
+}
+
+instance shown<Number> {
+  show: Function<String, String> = \(x) -> x // expect: E-TYPE-MISMATCH
+}
+
+instance shown<String> {
+  show: String = "s" // expect: E-TYPE-ILLFORMED
+}
+
+instance shown<Bool> {
+  show!! = \(x) -> "b" // expect: E-TYPE-ILLFORMED
+}
+
+instance shown<Null> {
+  shown = \(x) -> "n" // expect: E-NAME-UNDEFINED
+}
+
+instance shown<Array<Number>> {
+  show within { outbound: false } = \(x) -> "a" // expect: E-TYPE-ILLFORMED
+}
+
+// A method with class-bounded type parameters is not settled by the
+// name of the type parameter it is referenced under.
+held<T: shown>(x: T): String = do {
+  f = show // expect: E-TYPE-MISMATCH
+  f(x)
+}

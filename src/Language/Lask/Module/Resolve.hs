@@ -33,7 +33,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Language.Lask.Builtins.Names
-import Language.Lask.Diagnostic (Diagnostic, mkDiagnostic, suggesting)
+import Language.Lask.Diagnostic (Diagnostic (..), mkDiagnostic, suggesting, withNote)
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer.Token (Spanned (..))
 import Language.Lask.Module.Loader (LoadedModule (..), Program (..))
@@ -178,7 +178,7 @@ modulePublics lm =
     valueNames (DFunction n _ _ _ _ _) = [n]
     -- A class is imported and exported by its name, as its methods
     -- are by theirs (spec 4.6).
-    valueNames (DClass n _ ms) = n : [m | ClassMethod _ (Spanned _ m) _ _ _ <- ms]
+    valueNames (DClass n _ ms) = n : [m | ClassMethod _ (Spanned _ m) _ _ _ _ <- ms]
     valueNames _ = []
     -- An access declaration shares the namespace of type aliases
     -- (spec 5), and is imported and exported as one is.
@@ -275,7 +275,7 @@ buildScope publics lm = go base [] (moduleDecls (lmModule lm))
       -- A class binds its name and the names of its methods in the
       -- namespace of values (spec 4.6); an instance binds nothing.
       DClass n _ ms ->
-        let named = (sp, n) : [(msp, m) | ClassMethod _ (Spanned msp m) _ _ _ <- ms]
+        let named = (sp, n) : [(msp, m) | ClassMethod _ (Spanned msp m) _ _ _ _ <- ms]
          in go gs ds (map (\(s', m) -> Decl s' (DValue m Public Nothing (Expr s' ENull))) named <> rest)
       DInstance {} -> go gs ds rest
       DTypeAlias n _ _ -> goType gs ds rest sp n
@@ -414,7 +414,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
             DFunction _ tps ps _ _ body -> typeParamNames tps <> lambdaParams (paramDefaults ps <> [body])
             DTypeAlias _ tps _ -> typeParamNames tps
             DValue _ _ _ e -> lambdaParams [e]
-            DClass _ tp ms -> typeParamNames [tp] <> lambdaParams ([d | ClassMethod _ _ _ _ (Just d) <- ms] <> concat [paramDefaults ps | ClassMethod _ _ ps _ _ <- ms])
+            DClass _ tp ms -> typeParamNames [tp] <> lambdaParams ([d | ClassMethod _ _ _ _ (Just d) _ <- ms] <> concat [paramDefaults ps | ClassMethod _ _ ps _ _ _ <- ms])
             DInstance tps _ _ _ ds -> typeParamNames tps <> lambdaParams (concat [paramDefaults ps <> [b] | Decl _ (DFunction _ _ ps _ _ b) <- ds] <> [e | Decl _ (DValue _ _ _ e) <- ds])
             _ -> []
         ]
@@ -468,7 +468,7 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
         checkBound tp
           <> concat
             [ checkParams [] ps <> checkType rt <> maybe [] (checkExpr [paramNames ps]) d
-            | ClassMethod _ _ ps rt d <- ms
+            | ClassMethod _ _ ps rt d _ <- ms
             ]
       DInstance tps q c t ds -> concatMap checkBound tps <> maybe [] (`checkQualifiedClass` c) q <> checkType t <> concatMap checkDecl ds
       -- The environment of a command declaration is checked for
@@ -675,18 +675,26 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
     -- Do blocks: bindings become visible only after their statement;
     -- rebinding in the same block is a duplicate (spec 7.3, 6.5).
     checkBlock :: Scope -> Block -> [Diagnostic]
-    checkBlock outer (Block _ stmts) = go (Set.empty : outer) stmts
+    checkBlock outer (Block _ stmts) = go (Set.empty : outer) (map stmtBinding stmts)
       where
         go _ [] = []
         go sc@(layer : rest0) (Stmt sp f : rest) = case f of
           SBind n _ t e ->
             maybe [] checkType t
-              <> checkExpr sc e
+              <> map (selfReference n) (checkExpr sc e)
               <> [dupDiag sp n | n `Set.member` layer]
               <> [coreDiag sp n | isUnbindableName n]
               <> go (Set.insert n layer : rest0) rest
+          SFunDecl {} -> go sc (stmtBinding (Stmt sp f) : rest)
           SExpr e -> checkExpr sc e <> go sc rest
         go [] _ = [] -- unreachable: block scope always pushed
+        -- A binding is not in scope in its own right-hand side, so a
+        -- function of a block cannot call itself (spec 6.5).
+        selfReference n d
+          | diagCode d == ENameUndefined,
+            ("undefined name: '" <> n <> "'") `T.isPrefixOf` diagMessage d =
+              withNote ("a binding of a block is in scope after its statement, not in its own right-hand side; a function that calls itself is declared at the top level") d
+          | otherwise = d
 
 -- Type alias cycle detection (spec 4.2) --------------------------------------
 

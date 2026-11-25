@@ -352,8 +352,8 @@ spec = do
           [ DClass
               "ord"
               (TypeParam (Spanned NoSpan "T") (Just (SBoundNamed (Spanned NoSpan "comparable"))))
-              [ ClassMethod NoSpan (Spanned NoSpan "compare") [pa "a" tT, pa "b" tT] (ty SNumber) Nothing,
-                ClassMethod NoSpan (Spanned NoSpan "lt") [pa "a" tT, pa "b" tT] (ty SBool) (Just (ex (EBool True)))
+              [ ClassMethod NoSpan (Spanned NoSpan "compare") [pa "a" tT, pa "b" tT] (ty SNumber) Nothing Nothing,
+                ClassMethod NoSpan (Spanned NoSpan "lt") [pa "a" tT, pa "b" tT] (ty SBool) (Just (ex (EBool True))) Nothing
               ],
             DInstance
               []
@@ -363,6 +363,27 @@ spec = do
               [ Decl NoSpan (dfun "compare" [Param NoSpan (PPositional "a" Public Nothing), Param NoSpan (PPositional "b" Public Nothing)] Nothing (num 0))
               ]
           ]
+
+    it "parses a method written as a value, as the signature its function type gives (spec 4.6)" $ do
+      let tT = ty (SNamed Nothing "T" [])
+          fT = ty (SFunction [tT] tT)
+          p1 = Param NoSpan (PPositional (methodParamName 1) Public (Just tT))
+          applied e = ex (ECall e [Arg NoSpan (APos (var (methodParamName 1)))])
+          compose = ex (EBin OpCompR (var "f") (var "f"))
+      pModule "class c<T> {\n  f: Function<T, T>\n  g: Function<T, T> = f >> f\n}"
+        `shouldBe` Right
+          [ DClass
+              "c"
+              (TypeParam (Spanned NoSpan "T") Nothing)
+              [ ClassMethod NoSpan (Spanned NoSpan "f") [p1] tT Nothing (Just (fT, Nothing)),
+                ClassMethod NoSpan (Spanned NoSpan "g") [p1] tT (Just (applied compose)) (Just (fT, Just compose))
+              ]
+          ]
+
+    it "parses an access constraint on a value declaration (spec 5)" $
+      pModule "f: Number within { outbound: false } = 1"
+        `shouldBe` Right
+          [DValueW "f" Public (Just (ty SNumber)) (Just (AccessSpec NoSpan [(Spanned NoSpan "outbound", ex (EBool False))])) (num 1)]
 
     it "keeps class and instance usable as names, and gives an instance no marker (spec 3.3, 4.6)" $ do
       pModule "class = 1\ninstance(x) = x"
@@ -666,6 +687,17 @@ spec = do
     it "parses do blocks with binds and trailing expression" $
       pExpr "do {\n  a = 1\n  a\n}"
         `shouldBe` Right (EDo (block [SBind "a" Public Nothing (num 1), SExpr (var "a")]))
+
+    it "parses a function declared in a block, and a call statement beside it (spec 6.5)" $
+      pExpr "do {\n  g(x) = x\n  g(1)\n}"
+        `shouldBe` Right
+          ( EDo
+              ( block
+                  [ SFunDecl "g" [] [Param NoSpan (PPositional "x" Public Nothing)] Nothing (var "x"),
+                    SExpr (ex (ECall (var "g") [Arg NoSpan (APos (num 1))]))
+                  ]
+              )
+          )
 
     it "parses semicolon-separated statements" $
       pExpr "do { a = 1; a }"

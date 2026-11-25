@@ -57,7 +57,7 @@ localsAt path (Module ds _ _) pos = nub (concat (reverse (concatMap goDecl ds)))
     -- A @do@ binding is visible only to the statements after it.
     goBlock (Block sp ss)
       | not (at sp) = []
-      | otherwise = go [] ss
+      | otherwise = go [] (map stmtBinding ss)
       where
         go acc [] = [acc]
         go acc (Stmt ssp sf : rest)
@@ -68,6 +68,7 @@ localsAt path (Module ds _ _) pos = nub (concat (reverse (concatMap goDecl ds)))
 
     goStmt sf = case sf of
       SBind _ _ _ e -> goExpr e
+      SFunDecl {} -> goStmt (stmtF (stmtBinding (Stmt NoSpan sf)))
       SExpr e -> goExpr e
 
 -- | The dotted name of the callee of the innermost call whose
@@ -145,10 +146,11 @@ armExprs (CaseArm _ hs b) = headExprs hs <> [b]
     headExprs _ = []
 
 blockExprs :: Block -> [Expr]
-blockExprs (Block _ ss) = concatMap stmtExprs ss
+blockExprs (Block _ ss) = concatMap (stmtExprs . stmtBinding) ss
   where
     stmtExprs (Stmt _ sf) = case sf of
       SBind _ _ _ e -> [e]
+      SFunDecl {} -> stmtExprs (stmtBinding (Stmt NoSpan sf))
       SExpr e -> [e]
 
 partExprs :: [TextPart] -> [Expr]

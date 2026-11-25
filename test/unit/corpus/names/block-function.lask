@@ -1,0 +1,8 @@
+// A function declared in a block binds what a binding of its lambda
+// binds (6.5): in scope after its statement, not in its own body.
+uses(): Number = do {
+  inc(x: Number): Number = x + 1
+  twice<T>(f: Function<T, T>, x: T): T = f(f(x))
+  fact(n: Number): Number = n <= 1 ? 1 : n * fact(n - 1) // expect: E-NAME-UNDEFINED
+  twice(inc, 1)
+}

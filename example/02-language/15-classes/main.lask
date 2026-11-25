@@ -58,6 +58,18 @@ instance<T: labelled> labelled<Array<T>> {
   label(xs) = "[#{labels(xs)}]"
 }
 
+// A method can be written as a value as well: its type is a Function
+// type, and a default is any function value of it, a composition of
+// other methods here. An instance may define one by a value too.
+class scaled<T> {
+  scale: Function<T, T>
+  scale_twice: Function<T, T> = scale >> scale
+}
+
+instance scaled<Number> {
+  scale = \(x) -> x * 10
+}
+
 // Label every element, in order.
 //
 // A parameter can need more than one bound, joined with +. Here the
@@ -73,5 +85,5 @@ label_all<T: orderable + labelled>(xs: Array<T>): String = labels(sort(xs))
 report(): Array<String> = do {
   vs = [{ major: 1, minor: 10 }, { major: 0, minor: 9 }, { major: 1, minor: 2 }]
   newest = latest(vs)
-  [label(newest), label_all(vs), label_all([[2, 1], [1, 9]]), "#{[1, 2] < [1, 3]}"]
+  [label(newest), label_all(vs), label_all([[2, 1], [1, 9]]), "#{[1, 2] < [1, 3]}", "#{scale_twice(1)}"]
 }

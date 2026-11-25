@@ -745,9 +745,9 @@ Type parameters within the body of their declaration (rigidity):
 
 ```ebnf
 ClassDecl     = "class" lower_id "<" TypeParam ">" "{" { ClassMethod decl_end } "}" .
-ClassMethod   = lower_id "(" [ MethodParam { "," MethodParam } ] ")" ":" Type [ "=" Expression ] .
+ClassMethod   = lower_id ( "(" [ MethodParam { "," MethodParam } ] ")" ":" Type | ":" Type ) [ "=" Expression ] .
 MethodParam   = lower_id ":" Type .
-InstanceDecl  = "instance" [ TypeParams ] ClassName "<" Type ">" "{" { FunctionDecl decl_end } "}" .
+InstanceDecl  = "instance" [ TypeParams ] ClassName "<" Type ">" "{" { Declaration decl_end } "}" .
 ClassName     = [ lower_id "." ] lower_id .
 ```
 
@@ -773,14 +773,25 @@ Classes:
 - A `ClassDecl` declares a class over one type parameter. Its name is a `lower_id`, written where a bound is (4.2), bare or qualified by a namespace (`<T: m.ord>`). It is not a value: written as an expression, it is a type error (`E-TYPE-MISMATCH`). It must not be the name of a named bound, which a bound would read first (`E-NAME-DUPLICATE`).
 - The name of a class and the name of each of its methods are names of the module, in the namespace of values (5): each is a public symbol unless the class is marked `internal`, which makes its methods internal with it; each is imported, re-exported and renamed as a function is; and each collides, as a duplicate definition (`E-NAME-DUPLICATE`), with any other name of the module in that namespace, a method of another class included.
 - The bound of the type parameter, when it has one, is the class's **superclass**: a named bound or another class. An instance is then only for a type that satisfies it, and a type parameter bounded by the class has what the superclass gives as well (entailment, 4.4). A type bound there is ill-formed (`E-TYPE-ILLFORMED`), and so is a class that is its own superclass, directly or through others.
-- A `ClassMethod` is a signature written in full: each parameter positional and annotated, and the return type. Anything else is ill-formed (`E-TYPE-ILLFORMED`). The method is a function of the module whose type parameter is the class's, bounded by the class: `compare` above is `compare<T: ord>(a: T, b: T): Number`. A call of it at a type calls the method of that type's instance. The signature mentions the class's type parameter, in a parameter or the result: a method that does not has nothing at a call to say which instance it means (`E-TYPE-ILLFORMED`).
+- A `ClassMethod` is a signature written in full: each parameter positional and annotated, and the return type. Anything else is ill-formed (`E-TYPE-ILLFORMED`).
+- A method may be written as a value is declared, `m: Function<T, R>`: it is then the method whose parameters are those of the function type and whose result is its result, `m(a: T): R`. The type is written as a `Function` type, not through an alias, since it is what gives the method its parameters; any other type is ill-formed (`E-TYPE-ILLFORMED`), so a method is a function in either form. The method is a function of the module whose type parameter is the class's, bounded by the class: `compare` above is `compare<T: ord>(a: T, b: T): Number`. A call of it at a type calls the method of that type's instance. The signature mentions the class's type parameter, in a parameter or the result: a method that does not has nothing at a call to say which instance it means (`E-TYPE-ILLFORMED`).
 - A method may have a **default** body, after `=`, which an instance that does not define the method takes. It is checked as the body of a declaration with the class's type parameter bounded by the class: the parameter is opaque (4.4), and the body may call the methods of the class, and of its superclasses, on it.
+- The default of a method written as a value is a function value of its type: `modify: Function<T, T> = destroy >> deploy` is `modify(a: T): T = (destroy >> deploy)(a)`, and a lambda with as many positional parameters and nothing annotated, `\(a) -> e`, is the body `e` with its parameters, so that `m: Function<T, T> = \(a) -> e` and `m(a: T): T = e` are one method.
+
+  ```lask
+  class resource<T> {
+    deploy(a: T): T
+    destroy: Function<T, T>
+    modify: Function<T, T> = destroy >> deploy
+  }
+  ```
 
 Instances:
 
 - An `InstanceDecl` declares that a type has an instance of a class, and defines its methods: `instance ord<Version> { ... }`. The class is written as in a bound. The type is any type other than `Any` and `Void` that mentions no type parameter but those of the instance (`E-TYPE-ILLFORMED`); an instance with type parameters is parametric (below).
 - An instance is for a type, not for the name it is written with: a type alias is expanded (4.3), so `Version` above and any other alias of `Record<major: Number, minor: Number>` name the one type with the one instance.
-- A method of an instance is a `FunctionDecl` named after a method of the class, with no type parameters and no `WithinClause` (`E-TYPE-ILLFORMED`), and with the positional parameters of the signature, as many as it has (`E-TYPE-ARITY`). Its types are those of the signature with the instance's type put in for the class's type parameter: a parameter or a return type written without an annotation takes them, and one written with an annotation must give them exactly (`E-TYPE-MISMATCH`). It is covered by the module constraint of the module it is in (5, 10.11).
+- A method of an instance is a `FunctionDecl` named after a method of the class, with no type parameters and no `WithinClause` (`E-TYPE-ILLFORMED`), and with the positional parameters of the signature, as many as it has (`E-TYPE-ARITY`).
+- It may instead be written as a `ValueDecl`, `m = e` or `m: Function<A, R> = e`, with no `!!` marker and no `WithinClause`, and with no annotation other than a `Function` type (`E-TYPE-ILLFORMED`). It is the method a default written as a value is (above): `e` applied to the parameters of the signature, or the body of a lambda that takes them. `up = inc >> inc` and `up = \(a) -> a + 1` define `up` as `up(a) = (inc >> inc)(a)` and `up(a) = a + 1` do. Its types are those of the signature with the instance's type put in for the class's type parameter: a parameter or a return type written without an annotation takes them, and one written with an annotation must give them exactly (`E-TYPE-MISMATCH`). It is covered by the module constraint of the module it is in (5, 10.11).
 - A name that is not a method of the class is undefined (`E-NAME-UNDEFINED`); a method defined twice is a duplicate definition (`E-NAME-DUPLICATE`); a method with no default that the instance does not define is `E-TYPE-INSTANCE`.
 - The type must satisfy the superclass: a named bound by what the type is, and a class by an instance of it in effect where the instance is declared. Otherwise it is `E-TYPE-INSTANCE`.
 - A program has at most one instance of a class for a type. A second, wherever it is declared, is a duplicate definition (`E-NAME-DUPLICATE`), so which instance a use means never depends on where the use is.
@@ -837,7 +848,7 @@ Parametric instances:
 Using a class:
 
 - A type satisfies a class bound (4.4) when it has an instance of the class in effect where the bound is checked, or when it is a type parameter whose bound entails the class. The instance is found by the type exactly, after alias expansion and reduction of unions to canonical form (4.2), or by the type matching that of a parametric instance: conformance takes no part, so `Number | String` and `Number` are distinct types, and an instance for `Array<Number>` is not one for `Array<Any>`.
-- A class bound is written on a type parameter of a top-level declaration: a function declaration, a binding of a lambda (6.1), or a type alias. A lambda bound by a block takes no class bound (`E-TYPE-ILLFORMED`); a class bound is resolved where the declaration is instantiated at concrete types, which a local function, being a value of the body it is in, never is. A type parameter with a class bound appears in a parameter or the result of the declaration, so that a call can determine it, from its arguments or from the type expected of it (`E-TYPE-ILLFORMED`).
+- A class bound is written on a type parameter of a top-level declaration: a function declaration, a binding of a lambda (6.1), or a type alias. A lambda bound by a block, or a function declared in one (6.5), takes no class bound (`E-TYPE-ILLFORMED`); a class bound is resolved where the declaration is instantiated at concrete types, which a local function, being a value of the body it is in, never is. A type parameter with a class bound appears in a parameter or the result of the declaration, so that a call can determine it, from its arguments or from the type expected of it (`E-TYPE-ILLFORMED`).
 - Which instance a call uses is decided statically, by the type its type parameter is instantiated at (4.4). The value's own content plays no part, and `Any`, having no instances, satisfies no class bound.
 - A declaration generic over a class behaves as if written again for each type it is instantiated at, with the methods of that type's instances in place of its class's: so it is checked against the access constraints that cover it (10.11) at each of those types, and a recursive call of it stays at the types it was called with (4.3).
 - The CLI instantiates a class-bounded type parameter from the values it decodes (11.2).
@@ -855,7 +866,7 @@ decl_end      = newline | ";" .
 Visibility    = "export" | "internal" .
 TypeAliasDecl = "type" upper_id [ TypeParams ] "=" Type .
 Declaration = ValueDecl | FunctionDecl .
-ValueDecl   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
+ValueDecl   = lower_id [ "!!" ] [ ":" Type ] [ WithinClause ] "=" Expression .
 FunctionDecl = lower_id [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" Type ]
                [ WithinClause ] "=" Expression .
 
@@ -892,17 +903,17 @@ Declaration termination rules:
 - `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
 - `schema` is a contextual keyword, like `on`: it is a keyword only after the environment of a command declaration, and remains usable as an identifier everywhere else. The environment expression ends before it, and it must be placed on the same line as the end of that expression; the schema expression may span lines by the open-bracket continuation rule.
-- `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none; the `AccessSpec` may span lines by the open-bracket continuation rule, and the `=` follows its closing `}`, or the `AccessName`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
+- `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none, and in a `ValueDecl` on the same line as the end of its type, or of its name when it has none; the `AccessSpec` may span lines by the open-bracket continuation rule, and the `=` follows its closing `}`, or the `AccessName`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
 - `access` is a contextual keyword (3.3). An `AccessDecl` is written on one line up to the `{` of its `AccessSpec`, which may span lines by the open-bracket continuation rule.
 - `class` and `instance` are contextual keywords (3.3). A `ClassDecl` or an `InstanceDecl` is written on one line up to its `{`. The braces enclose a block, as those of `do` do (6.5), not an object literal: each method in them is ended by a newline or `;`, and an expression in a method spans lines by the continuation rules of 6.5. `ClassDecl` and `InstanceDecl` are defined in 4.6.
 
 Access constraints:
 
-- A `ModuleWithin` declares the **module constraint**, and a `WithinClause` the constraint of its function. Both bound the files and the network that what they cover may reach in the environments its commands run in, and the secrets those environments are given; their fields and their meaning are those of 10.11, which also defines how they are checked. They are checked statically, and nothing about them is evaluated.
+- A `ModuleWithin` declares the **module constraint**, and a `WithinClause` the constraint of its declaration, a function or a value. Both bound the files and the network that what they cover may reach in the environments its commands run in, and the secrets those environments are given; their fields and their meaning are those of 10.11, which also defines how they are checked. They are checked statically, and nothing about them is evaluated.
 - A module has at most one `ModuleWithin`. A second is a static error (`E-TYPE-WITHIN-SPEC`). It may be written anywhere among the module's top-level declarations, and covers all of them regardless of position: every declaration of the module, and every expression evaluated in the module's scope, including those typed into `repl` (11.9) and the commands `cmd` runs from the module's command declarations (11.8).
-- A module constraint is a ceiling. A function's own constraint narrows it and cannot widen it: the constraint a function is checked against is the intersection of the two (10.11).
+- A module constraint is a ceiling. A declaration's own constraint narrows it and cannot widen it: the constraint a declaration is checked against is the intersection of the two (10.11).
 - A module constraint belongs to the module it is written in. It does not cover a module that imports it, nor one it imports; the declarations of a module it imports are still checked as part of whatever in it calls them (10.11).
-- A `ValueDecl` takes no `WithinClause`. It is covered by its module's constraint.
+- A `ValueDecl` takes a `WithinClause` as a `FunctionDecl` does, and it covers what its right-hand side reaches: for a lambda, what a call of it does, as for the function declaration that binds the same function (6.1); for any other value, what its evaluation does. `status: String within { outbound: false } = $[open] curl ...` is checked as a function with that constraint would be.
 
 Access declarations:
 
@@ -1287,7 +1298,7 @@ labels(): String = do {
 Function declarations and lambdas:
 
 - `name(p1, p2, ..., pn) = body` binds the same function as `name = \(p1, p2, ..., pn) -> body`, and a call of either is checked and evaluated alike: both keep their declaration parameter information (7.5), so keyword arguments, defaults and variadic collection work through either. The parameter specification of `FunctionDecl` follows the same rules as the `FunctionParameterList` of `LambdaExpr`, and both may declare type parameters (above).
-- The two are not interchangeable in every respect, so the first is not sugar for the second. Only a function declaration may carry an access constraint (`within`, Chapter 5), which is a property of a declaration rather than of a value.
+- An access constraint (`within`, Chapter 5) is a property of the declaration, and either form carries it: `name(p1, ..., pn) within W = body` and `name within W = \(p1, ..., pn) -> body` are checked against the same constraint.
 - A declaration that refers to itself is checked against the type its annotations give, since it is still being checked when the reference is reached: for a function declaration, its return type and the types of its positional parameters; for a binding, the type annotation of the binding, or, when the binding is a lambda with its return type written, that lambda's type. A recursive declaration that gives neither is a static error (`E-TYPE-MISMATCH`).
 
 Equivalence example:
@@ -1355,6 +1366,7 @@ The meaning of each operator is as follows.
 - `f <| e1` is syntactic sugar for `f(e1)`.
 - `f >> g` denotes function composition equivalent to `\(x) -> g(f(x))`.
 - `f << g` denotes function composition equivalent to `\(x) -> f(g(x))`.
+- A composition applied to one argument, `(f >> g)(x)`, is checked as `g(f(x))`, and `(f << g)(x)` as `f(g(x))`: each function is called with its argument, so a generic one, a method of a class among them (4.6), is instantiated by it, where referenced as a value with no type expected of it, it could not be (4.4).
 
 The types of the operators are as follows.
 
@@ -1603,8 +1615,9 @@ summarize(): String = do {
 
 ```ebnf
 DoExpr     = "do" Block .
-DoStmt     = ( BindStmt | ExprStmt ) stmt_end .
+DoStmt     = ( BindStmt | FunctionStmt | ExprStmt ) stmt_end .
 BindStmt   = lower_id [ "!!" ] [ ":" Type ] "=" Expression .
+FunctionStmt = lower_id [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" Type ] "=" Expression .
 ExprStmt   = Expression .
 stmt_end   = newline | ";" .
 ```
@@ -1618,6 +1631,20 @@ Binding annotations:
 - The annotation follows the type well-formedness rules of 4.2, and `Void` is not among the positions those rules allow: a binding cannot be annotated `Void` (`E-TYPE-ILLFORMED`), because a `Void` value must not be used as a value (4.4).
 - When the annotated binding is the last statement of the block, its declared type is the type of the block, and so must conform to whatever the block's context requires.
 - This is how an expression that needs an expected type gets one inside a block. `cast` (15.8) is the case that motivates it: `cfg: Record<name: String> = cast(from_json(stdin))` concretizes the target from the annotation, where an unannotated binding would have nowhere to state it.
+Functions declared in a block:
+
+- A `FunctionStmt` declares a function in a block as a `FunctionDecl` does at the top level (5), without an access constraint: `g(x: Number): Number = x + 1` binds what `g = \(x: Number): Number -> x + 1` binds, a generic one included (6.1), and is a binding of the block in every respect, positional calls only among them (7.5).
+- No expression statement is followed by `=`, so a statement that begins as a call and reaches one after its parentheses and return type is a `FunctionStmt`: `g(x)` alone is a call, and `g(x) = e` a declaration.
+- Like every binding of a block, it is in scope after its statement and not in its own right-hand side (7.3), so it does not call itself: a reference to its name there is `E-NAME-UNDEFINED`, and a function that calls itself is declared at the top level.
+
+```lask
+twice_plus_one(n: Number): Number = do {
+  inc(x: Number): Number = x + 1
+  twice<T>(f: Function<T, T>, x: T): T = f(f(x))
+  twice(inc, n)
+}
+```
+
 The block forms of `if` / `case` / `for` are expressions (the `IfExpr` / `CaseExpr` / `ForExpr` of 6.4), so no dedicated statement forms exist. They appear as an `ExprStmt` or as the right-hand side of a `BindStmt`.
 
 Statement termination rules:
@@ -2174,7 +2201,7 @@ Resolution rules:
 Scope rules:
 
 - Lambda parameters are valid only within the lambda body.
-- A `BindStmt` in a `do` is valid within the same block for the statements that follow the declaring statement.
+- A `BindStmt` or a `FunctionStmt` in a `do` is valid within the same block for the statements that follow the declaring statement, and not in its own right-hand side.
 - Bindings inside `if` / `for` / `try` blocks, and inside the body of a `case` arm, do not leak outward.
 - The name that the normalization of a `case` scrutinee (6.4) binds is fresh: it is visible to no expression written in the source, and shadows nothing.
 - When a `case` narrows a scrutinee written as a plain local name (6.4), the narrowed name is a binding of the arm body. It shadows the outer binding of the same name within that body only, and the outer binding is unaffected in every other arm and after the expression. This is ordinary shadowing under the rules below, not a rebinding in the same scope.
@@ -3055,7 +3082,7 @@ Engines:
 
 ### 10.11 Access Constraints
 
-An access constraint bounds the host files and the networks that the commands of what it covers may reach, the connections they may accept, the secrets they may be given, and the kinds of environment they may run in. It is written on a function or on a module (Chapter 5), by its fields or by the name of an access declaration, and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
+An access constraint bounds the host files and the networks that the commands of what it covers may reach, the connections they may accept, the secrets they may be given, and the kinds of environment they may run in. It is written on a declaration, a function or a value, or on a module (Chapter 5), by its fields or by the name of an access declaration, and is checked statically: a program that might exceed one is rejected before anything runs, and a program with no constraint is unaffected.
 
 ```lask
 within { outbound: false, volumes: false }

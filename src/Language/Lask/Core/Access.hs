@@ -998,7 +998,9 @@ withinConstraints prog =
 
     moduleConstraints path decls =
       let modules = [(sp, w) | AST.Decl sp (AST.DWithin w) <- decls]
-          functions = [(n, w) | AST.Decl _ (AST.DFunction n _ _ _ (Just w) _) <- decls]
+          functions =
+            [(n, w) | AST.Decl _ (AST.DFunction n _ _ _ (Just w) _) <- decls]
+              <> [(n, w) | AST.Decl _ (AST.DValueW n _ _ (Just w) _) <- decls]
           second = [mkDiagnostic ETypeWithinSpec StageStatic sp "a module has at most one module constraint" | (sp, _) <- drop 1 modules]
           read' fn w = case w of
             AST.AccessSpec sp _ -> case parseSpec w of
