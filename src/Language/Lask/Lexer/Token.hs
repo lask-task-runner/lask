@@ -138,16 +138,21 @@ data Token
   | -- | @|@, the union separator of a type (spec 4.2). Lexed after
     -- @|>@ and @||@, so it is never a piece of either.
     TPipe
+  | -- | @&@, the conjunction of access constraints (spec 5). Lexed
+    -- after @&&@, so it is never a piece of it.
+    TAmp
   | -- | @?@, the optional marker on a record field name (spec 4.2).
     TQuestion
   | TNewline
   deriving (Show, Eq, Ord)
 
 -- | Line-end tokens after which a newline continues the statement
--- (spec 6.5): @=@, @,@, @:@, @?@, @->@, any binary operator, @!@.
+-- (spec 6.5): @=@, @,@, @:@, @?@, @->@, any binary operator, @!@,
+-- and the @&@ of an access bound (spec 5).
 isContinuationEnd :: Token -> Bool
 isContinuationEnd t = case t of
   TAssign -> True
+  TAmp -> True
   TComma -> True
   TColon -> True
   TQuestion -> True

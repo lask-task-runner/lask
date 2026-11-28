@@ -29,7 +29,7 @@ module Language.Lask.Syntax.Printer
   )
 where
 
-import Control.Monad (forM, unless)
+import Control.Monad (foldM, forM, unless)
 import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (State, evalState, get, put)
 import Data.List (intersperse, partition, sortOn)
@@ -522,13 +522,24 @@ secrecy Public = mempty
 secrecy Secret = "!!"
 
 -- | The braces of an access constraint (spec 5), spaced as an object
--- literal is, or the name of one.
+-- literal is, or the name of one, or a conjunction of those, broken
+-- after an @&@ where the source is.
 accessSpec :: AccessSpec -> P Doc
 accessSpec w = case w of
   AccessSpec sp fs -> do
     open <- tokFrom TLBrace (startOf sp)
     list "{" "}" True open TRBrace [Item (startOf ksp) (endOf (exprSpan v)) ((\dv -> text k <> ": " <> dv) <$> expr v) | (Spanned ksp k, v) <- fs]
   AccessRef _ q n -> pure (text (maybe "" (<> ".") q <> n))
+  AccessAnd [] -> pure mempty
+  AccessAnd (t : ts) -> do
+    d <- accessSpec t
+    foldM (\acc t' -> joinAfter acc "&" (termStart t') (const (accessSpec t'))) d ts
+  where
+    termStart t = case t of
+      AccessSpec sp _ -> startOf sp
+      AccessRef sp _ _ -> startOf sp
+      AccessAnd (t' : _) -> termStart t'
+      AccessAnd [] -> (0, 0)
 
 annot :: Maybe Doc -> Doc
 annot = maybe mempty (": " <>)

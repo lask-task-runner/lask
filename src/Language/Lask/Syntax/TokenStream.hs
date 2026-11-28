@@ -92,6 +92,7 @@ renderToken t = case t of
   TBangBang -> "!!"
   TEllipsis -> "..."
   TPipe -> "|"
+  TAmp -> "&"
   TQuestion -> "?"
   TNewline -> "newline"
 

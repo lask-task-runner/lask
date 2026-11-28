@@ -194,11 +194,14 @@ methodDefaultWritten cm = maybe (cmDefault cm) snd (cmValueForm cm)
 
 -- | An access constraint as written (spec 5, 10.11): the span of its
 -- braces, and each field with its value, or the name of an @access@
--- declaration, with the namespace it is qualified by. The braces build
--- no value, and the name is no type.
+-- declaration, with the namespace it is qualified by, or the
+-- conjunction of two or more of those, @A & { ... }@, as written. The
+-- braces build no value, and the name is no type.
 data AccessSpec
   = AccessSpec Span [(Spanned Text, Expr)]
   | AccessRef Span (Maybe Text) Text
+  | -- | Two or more terms, none of them a conjunction.
+    AccessAnd [AccessSpec]
   deriving (Show, Eq)
 
 -- | Whether a binding carries the @!!@ secret marker (spec 6.10).
@@ -470,6 +473,7 @@ stripSpansDecl (Decl _ f) = Decl NoSpan $ case f of
     stripAccess w = case w of
       AccessSpec _ fs -> AccessSpec NoSpan [(Spanned NoSpan k, stripSpansExpr v) | (Spanned _ k, v) <- fs]
       AccessRef _ q n -> AccessRef NoSpan q n
+      AccessAnd ws -> AccessAnd (map stripAccess ws)
     stripWord (Spanned _ n) = Spanned NoSpan n
     stripSpec (ImportSpec _ n a) = ImportSpec NoSpan n a
 
