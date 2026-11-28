@@ -431,6 +431,52 @@ spec = beforeAll findLask $ do
           resOut r `shouldSatisfy` isInfixOf "main.lask:5:6-5:10: E-NAME-UNDEFINED [static]: 'Pure' is an access constraint, not a type"
           resOut r `shouldSatisfy` isInfixOf "main.lask:6:12-6:15: E-NAME-UNDEFINED [static]: undefined access constraint: 'Pur'"
           resOut r `shouldSatisfy` isInfixOf "unknown field 'network': a constraint takes files, volumes, outbound, inbound, secrets and runs"
+    it "combines access constraints with &, each conjunct checked as written (spec 5, 10.11)" $ \lask -> do
+      withProject
+        [ ("policy.lask", "export access Contained = { runs: [\"container\"] }\n"),
+          ( "main.lask",
+            "import * as p from \"./policy.lask\"\n\
+            \access Offline = { outbound: false, inbound: false }\n\
+            \access Sealed = Offline &\n\
+            \  p.Contained\n\
+            \quiet = #alpine:3.22{ base_access: \"ro\", network: \"none\" }\n\
+            \a(): String within Sealed & { files: \"ro\" } = $[quiet] true\n\
+            \b(): String within Sealed = $[#alpine:3.22] true\n\
+            \c(): String within p.Contained & { files: \"ro\" } = $[#local] true\n\
+            \d(): String within { outbound: [\"*.github.com:443\"] } & { outbound: [\"api.github.com:443\", \"x.com:443\"] } = $[#alpine:3.22{egress: [\"api.github.com:443\"]}] true\n\
+            \e(): String within { outbound: [\"*.github.com:443\"] } & { outbound: [\"x.com:443\"] } = $[#alpine:3.22{egress: [\"api.github.com:443\"]}] true\n\
+            \f(): String within { files: \"ro\" } & { files: \"rw\" } = $[quiet] true\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          let withinLines = filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))
+          length withinLines `shouldBe` 4
+          resOut r `shouldSatisfy` isInfixOf "the network is \"default\", which within Sealed of 'b' does not allow (outbound)"
+          resOut r `shouldSatisfy` isInfixOf "#local reaches the whole host, which within p.Contained of 'c' does not allow (runs)"
+          resOut r `shouldSatisfy` isInfixOf "#local reaches the whole host, which within { files: \"ro\" } of 'c' does not allow (files)"
+          resOut r `shouldSatisfy` isInfixOf "within { outbound: [\"x.com:443\"] } of 'e' does not allow (outbound)"
+          a <- runLask lask dir ["envs", "access", "a"] ""
+          take 1 (lines (resOut a)) `shouldBe` ["within Sealed & { files: \"ro\" }"]
+      withProject
+        [ ( "main.lask",
+            "type T = String\n\
+            \access A = B & { files: \"ro\" }\n\
+            \access B = A\n\
+            \access C = B & T\n\
+            \access D = { runs: false, runs: false } & { runs: false }\n\
+            \f(): String within C = \"x\"\n"
+          )
+        ]
+        $ \dir -> do
+          r <- runLask lask dir ["check"] ""
+          resExit r `shouldBe` 1
+          resOut r `shouldSatisfy` isInfixOf "main.lask:2:12-2:13: E-TYPE-WITHIN-SPEC [static]: 'A' is written with 'B', which leads back to it"
+          resOut r `shouldSatisfy` isInfixOf "main.lask:3:12-3:13: E-TYPE-WITHIN-SPEC [static]: 'B' is written with 'A', which leads back to it"
+          resOut r `shouldSatisfy` isInfixOf "main.lask:4:16-4:17: E-TYPE-WITHIN-SPEC [static]: 'T' is a type, not an access constraint"
+          resOut r `shouldSatisfy` isInfixOf "main.lask:5:27-5:31: E-TYPE-WITHIN-SPEC [static]: duplicate field 'runs'"
+          length (filter (isInfixOf "E-TYPE-WITHIN") (lines (resOut r))) `shouldBe` 4
     it "checks egress entries, and what within admits of them (spec 10.11, 10.12)" $ \lask -> do
       withProject [("main.lask", "a = #alpine:3.20{egress: [\"x.com\"]}\n")] $ \dir -> do
         r <- runLask lask dir ["check"] ""

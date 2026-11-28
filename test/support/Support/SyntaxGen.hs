@@ -128,7 +128,7 @@ genTopDecl d = do
         (1, DExportFrom <$> listOf1' genImportSpec <*> elements paths),
         (1, DExportNamespace <$> elements namespaces <*> elements paths),
         (1, DWithin <$> genAccess d),
-        (1, DAccess <$> elements upperNames <*> genAccessBraces d),
+        (1, DAccess <$> elements upperNames <*> genAccess d),
         (1, DCommand <$> genWords <*> genEnv d <*> maybeOf (genExpr d)),
         (1, DImportCommands <$> genWords <*> elements paths),
         (1, DExportCommandsFrom <$> genWords <*> elements paths)
@@ -165,6 +165,13 @@ genSecrecy = frequency [(4, pure Public), (1, pure Secret)]
 
 genAccess :: Int -> Gen AccessSpec
 genAccess d =
+  frequency
+    [ (4, genAccessTerm d),
+      (1, AccessAnd <$> vectorOf' 2 3 (genAccessTerm d))
+    ]
+
+genAccessTerm :: Int -> Gen AccessSpec
+genAccessTerm d =
   oneof
     [ genAccessBraces d,
       AccessRef NoSpan <$> maybeOf (elements namespaces) <*> elements upperNames
@@ -417,6 +424,7 @@ shrinkAccess :: AccessSpec -> [AccessSpec]
 shrinkAccess w = case w of
   AccessSpec _ fs -> AccessSpec NoSpan <$> shrinkList (\(k, v) -> (,) k <$> shrinkExpr v) fs
   AccessRef {} -> []
+  AccessAnd ws -> ws <> [AccessAnd ws' | ws' <- shrinkList shrinkAccess ws, length ws' >= 2]
 
 shrinkMaybe :: (a -> [a]) -> Maybe a -> [Maybe a]
 shrinkMaybe _ Nothing = []
@@ -597,6 +605,7 @@ access m w = case w of
   AccessSpec _ [] -> "{}"
   AccessSpec _ fs -> "{ " <> commas [k <> ": " <> expr m 0 False v | (Spanned _ k, v) <- fs] <> " }"
   AccessRef _ q n -> maybe "" (<> ".") q <> n
+  AccessAnd ws -> T.intercalate " & " (map (access m) ws)
 
 secrecy :: Secrecy -> Text
 secrecy Public = ""

@@ -168,6 +168,8 @@ advance st t = case t of
       braced = case prev of
         Just (Tok.TEnvHead _) -> FixedFields RunOptionFields []
         Just (Tok.TLowerId "within") -> FixedFields AccessFields []
+        -- A later conjunct of an access bound (spec 5).
+        Just Tok.TAmp -> FixedFields AccessFields []
         Just Tok.TAssign | accessDecl -> FixedFields AccessFields []
         Just (Tok.TKw k) | k `elem` [Tok.KDo, Tok.KTry, Tok.KFinally, Tok.KElse] -> Block
         Just (Tok.TKw Tok.KCase) -> Block
@@ -233,6 +235,7 @@ decide st
   | stTypeNext st = InType
   | otherwise = case (stRecent st, stStack st) of
       (Tok.TLowerId "within" : _, _) -> InWithin
+      (Tok.TAmp : _, _) -> InWithin
       (p : _, Brace (FixedFields f seen) : _) | opensKey p -> InFields f seen
       (p : _, Paren EnvHeadArgs : _) | opensKey p -> InFields ImageOptionFields []
       -- An arm whose body goes on to the next line is not a new arm.

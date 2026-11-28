@@ -485,13 +485,14 @@ checkModule publics gs lm = concatMap checkDecl (moduleDecls (lmModule lm))
       -- names (spec 10.11); one that is not is reported as such. Its
       -- name, where it is written as one, is resolved here.
       DWithin w -> checkAccessRef w
-      DAccess {} -> []
+      DAccess _ w -> checkAccessRef w
 
     -- The name of an access declaration, resolved as a type name is.
     -- That it names an access declaration and not a type alias is
     -- checked where the constraint is read ("Language.Lask.Core.Access").
     checkAccessRef w = case w of
       AccessSpec {} -> []
+      AccessAnd ws -> concatMap checkAccessRef ws
       AccessRef sp Nothing n
         | Map.member n (gsTypes gs) -> []
         | otherwise ->
