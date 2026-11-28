@@ -598,6 +598,12 @@ commonOpts =
     switchOpt "no-color" "Disable colored output"
   ]
 
+-- | The options of the commands that evaluate (spec 12.9).
+obsOpts :: [Opt]
+obsOpts =
+  [ switchOpt "summary" "End with a summary of the run and its commands on stderr"
+  ]
+
 plain :: Text -> Text -> [Opt] -> Cmd
 plain n h opts = Cmd n h [] (opts <> [helpOpt]) [] NoBoundary
 
@@ -609,7 +615,7 @@ rootCommands =
   [ -- Run tasks.
     runLike "run" "Run a function (its result is not printed)",
     runLike "eval" "Run a function and print its result",
-    (plain "cmd" "Run a declared command in its declared environment" commonOpts)
+    (plain "cmd" "Run a declared command in its declared environment" (commonOpts <> obsOpts))
       { cmdPos = [PosCommandWord],
         -- Spec 11.8: every token after the command word reaches the
         -- program verbatim, @--help@ included.
@@ -644,7 +650,7 @@ rootCommands =
         { cmdName = n,
           cmdHelp = h,
           cmdSubs = [],
-          cmdOpts = commonOpts <> runOpts,
+          cmdOpts = commonOpts <> obsOpts <> runOpts,
           cmdPos = [PosFunction],
           cmdBoundary = FunctionArgs
         }

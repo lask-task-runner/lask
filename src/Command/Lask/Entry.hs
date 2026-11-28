@@ -22,14 +22,15 @@ import Command.Lask.Options
 import Data.Functor.Const (Const (..))
 import Data.Monoid (First (..))
 import System.Directory (doesFileExist)
-import Control.Exception (IOException, SomeException, fromException, toException, try)
+import Control.Exception (IOException, SomeException, fromException, throwIO, toException, try)
 import Control.Monad (forM, unless, when, (>=>))
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.List (nub, sortOn)
-import Data.Maybe (catMaybes, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
+import Data.Time.Clock (getCurrentTime)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
 import Data.Scientific (FPFormat (Generic), formatScientific, toBoundedInteger)
@@ -50,6 +51,7 @@ import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (.
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer (lexTokensWithComments)
 import Language.Lask.Obs.CommandLog
+import Language.Lask.Obs.Summary (Subject (..), SummaryCollector, collectSummary, markInterrupted, newSummaryCollector, recordCommands, renderSummaryJson, renderSummaryText)
 import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
@@ -256,77 +258,82 @@ cmdRunEval printResult runOpts = do
   -- One serialized stderr line writer shared by command logs and
   -- execution events, so concurrent emitters never interleave.
   writeErr <- newLineWriter stderr
-  let -- Command execution logs relay to stderr in real time
-      -- (spec 12.3); JSON Lines under --log-format json (12.2).
-      cmdLogSink
-        | optLogJson opts = jsonCommandLog traceId writeErr
-        | otherwise = textCommandLog writeErr
-  -- Images resolve through the lock, and are never pulled or built
-  -- here (spec 10.3, 10.4).
-  pins <- loadPins core
-  backend <- resolveBackend
-  runner <- mkCommandRunner backend pins baseDir cmdLogSink
-  fileRunner <- mkFileRunner backend pins baseDir
-  sessions <- mkSessionOpener backend pins baseDir
-  let -- `log` (spec 15.12) writes execution log lines to stderr,
-      -- through the same serialized writer as the command logs.
-      logSink
-        | optLogJson opts = jsonLogSink traceId (A.object [("module", A.String (T.pack (fst key))), ("function", A.String (snd key))]) writeErr
-        | otherwise = textLogSink writeErr
-  tracker <- newAsyncTracker
-  secrets <- newSecretResolver
-  ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner sessions logSink tracker (readEnvVar secrets))
-  let sink
-        | optLogJson opts = writeErr . encodeEvent
-        | otherwise = noSink
-      ctx = ctx0 {rtTraceId = traceId, rtEmit = sink}
-  -- A signal abandons the evaluation as a timeout abandons its body:
-  -- its commands are stopped and its finally blocks run, and the
-  -- computations it started are cancelled with it (spec 11.12). They
-  -- all belong to one scope opened here, which is what is cancelled.
-  stopped <- withGracefulShutdown . withScope $ \root -> do
-    outcome <- try $ do
-      result <- try $ do
-        fv <- topValue ctx key
-        case fv of
-          VClosure _ -> applyValue ctx fv posVals kwVals
-          VBuiltin _ -> applyValue ctx fv posVals kwVals
-          v
-            | null posVals && null kwVals -> pure v
-            | otherwise -> applyValue ctx fv posVals kwVals
-      -- A computation nothing awaited is waited for rather than cut
-      -- short by the end of the process, and reported (spec 6.3). One
-      -- that failed fails the run, with the first such failure in the
-      -- order the computations were started, unless the run failed
-      -- already: a failure nobody awaited is not lost.
-      unawaited <- drainUnawaited tracker
-      mapM_ (fmap (unawaitedDiagnostic opts traceId) . maskOutcome >=> writeErr) unawaited
-      let failures = [unawaitedFailure ex | (_, Left ex) <- unawaited]
-      pure $ case (result, failures) of
-        (Right _, lf : _) -> Left lf
-        _ -> result
-    case outcome of
-      Right result -> pure (Right result)
-      Left (Interrupted sig) -> do
-        -- Cancelled, and so not reported as never awaited (6.3).
-        cancelScope root >>= mapM_ (trackAwaited tracker)
-        pure (Left sig)
-  result <- case stopped of
-    Right r -> pure r
-    Left sig ->
-      failureExit opts traceId $
-        LaskFailure
-          (Just ERuntimeInterrupted)
-          (errorValue (fromIntegral (128 + fromIntegral sig :: Int)) ("the run was stopped by " <> signalName sig))
-          []
-          Nothing
-  case result of
-    Left lf -> failureExit opts traceId lf
-    Right v -> do
-      when printResult $ case v of
-        VVoid -> pure ()
-        _ -> TIO.putStrLn (encodeResult (outputFormat OutputJson (runCommon runOpts)) v)
-      exitSuccess
+  -- With --summary the run ends with its summary, however it ends
+  -- (spec 12.9).
+  withSummary (runObs runOpts) opts traceId writeErr (SubjectFunction fnName) (fst key) $ \sc -> do
+    let -- Command execution logs relay to stderr in real time
+        -- (spec 12.3); JSON Lines under --log-format json (12.2).
+        -- The summary of --summary is read off the same log (12.9).
+        cmdLogSink =
+          recordCommands sc $
+            if optLogJson opts then jsonCommandLog traceId writeErr else textCommandLog writeErr
+    -- Images resolve through the lock, and are never pulled or built
+    -- here (spec 10.3, 10.4).
+    pins <- loadPins core
+    backend <- resolveBackend
+    runner <- mkCommandRunner backend pins baseDir cmdLogSink
+    fileRunner <- mkFileRunner backend pins baseDir
+    sessions <- mkSessionOpener backend pins baseDir
+    let -- `log` (spec 15.12) writes execution log lines to stderr,
+        -- through the same serialized writer as the command logs.
+        logSink
+          | optLogJson opts = jsonLogSink traceId (A.object [("module", A.String (T.pack (fst key))), ("function", A.String (snd key))]) writeErr
+          | otherwise = textLogSink writeErr
+    tracker <- newAsyncTracker
+    secrets <- newSecretResolver
+    ctx0 <- mkRtCtx core stdinText (RtHooks runner fileRunner sessions logSink tracker (readEnvVar secrets))
+    let sink
+          | optLogJson opts = writeErr . encodeEvent
+          | otherwise = noSink
+        ctx = ctx0 {rtTraceId = traceId, rtEmit = sink}
+    -- A signal abandons the evaluation as a timeout abandons its body:
+    -- its commands are stopped and its finally blocks run, and the
+    -- computations it started are cancelled with it (spec 11.12). They
+    -- all belong to one scope opened here, which is what is cancelled.
+    stopped <- withGracefulShutdown . withScope $ \root -> do
+      outcome <- try $ do
+        result <- try $ do
+          fv <- topValue ctx key
+          case fv of
+            VClosure _ -> applyValue ctx fv posVals kwVals
+            VBuiltin _ -> applyValue ctx fv posVals kwVals
+            v
+              | null posVals && null kwVals -> pure v
+              | otherwise -> applyValue ctx fv posVals kwVals
+        -- A computation nothing awaited is waited for rather than cut
+        -- short by the end of the process, and reported (spec 6.3). One
+        -- that failed fails the run, with the first such failure in the
+        -- order the computations were started, unless the run failed
+        -- already: a failure nobody awaited is not lost.
+        unawaited <- drainUnawaited tracker
+        mapM_ (fmap (unawaitedDiagnostic opts traceId) . maskOutcome >=> writeErr) unawaited
+        let failures = [unawaitedFailure ex | (_, Left ex) <- unawaited]
+        pure $ case (result, failures) of
+          (Right _, lf : _) -> Left lf
+          _ -> result
+      case outcome of
+        Right result -> pure (Right result)
+        Left (Interrupted sig) -> do
+          -- Cancelled, and so not reported as never awaited (6.3).
+          cancelScope root >>= mapM_ (trackAwaited tracker)
+          pure (Left sig)
+    result <- case stopped of
+      Right r -> pure r
+      Left sig -> do
+        markInterrupted sc
+        failureExit opts traceId $
+          LaskFailure
+            (Just ERuntimeInterrupted)
+            (errorValue (fromIntegral (128 + fromIntegral sig :: Int)) ("the run was stopped by " <> signalName sig))
+            []
+            Nothing
+    case result of
+      Left lf -> failureExit opts traceId lf
+      Right v -> do
+        when printResult $ case v of
+          VVoid -> pure ()
+          _ -> TIO.putStrLn (encodeResult (outputFormat OutputJson (runCommon runOpts)) v)
+        exitSuccess
 
 -- | A value the command line gave, as the static reading of 10.11
 -- holds it.
@@ -760,19 +767,40 @@ cmdCmd cmdOpts
             secrets <- newSecretResolver
             envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
             writeErr <- newLineWriter stderr
-            let sink
-                  | optLogJson opts = jsonCommandLog traceId writeErr
-                  | otherwise = textCommandLog writeErr
-            pins <- loadPins core
-            backend <- resolveBackend
-            r <- runDeclaredCommand backend pins (cpBaseDir core) sink (optLogJson opts) envValue name (cmdArgs cmdOpts)
-            case r of
-              -- Failures before the program starts keep the existing
-              -- classification (spec 11.8); the program's own exit code
-              -- passes through verbatim.
-              Left failure -> failureExit opts traceId failure
-              Right 0 -> exitSuccess
-              Right code -> exitWith (ExitFailure code)
+            withSummary (cmdObs cmdOpts) opts traceId writeErr (SubjectCommand name) (cpEntry core) $ \sc -> do
+              let sink =
+                    recordCommands sc $
+                      if optLogJson opts then jsonCommandLog traceId writeErr else textCommandLog writeErr
+              pins <- loadPins core
+              backend <- resolveBackend
+              r <- runDeclaredCommand backend pins (cpBaseDir core) sink (optLogJson opts) envValue name (cmdArgs cmdOpts)
+              case r of
+                -- Failures before the program starts keep the existing
+                -- classification (spec 11.8); the program's own exit code
+                -- passes through verbatim.
+                Left failure -> failureExit opts traceId failure
+                Right 0 -> exitSuccess
+                Right code -> exitWith (ExitFailure code)
+
+-- | Run the rest of a command that evaluates, and with @--summary@ end
+-- it with the summary of the run, last on stderr (spec 12.9). It is
+-- written however the run ends: 'exitWith' is an exception, so the
+-- exit of a failure, which has already reported it, passes through
+-- here too.
+withSummary :: ObsOpts -> CommonOpts -> TraceId -> (Text -> IO ()) -> Subject -> FilePath -> (SummaryCollector -> IO a) -> IO a
+withSummary obs opts traceId writeErr subject modulePath body = do
+  sc <- newSummaryCollector
+  r <- try (body sc)
+  when (obsSummary obs) $ do
+    let code = case r of
+          Right _ -> ExitSuccess
+          Left ex -> fromMaybe (ExitFailure 1) (fromException ex)
+    sm <- collectSummary sc subject modulePath code
+    now <- getCurrentTime
+    if optLogJson opts
+      then writeErr (renderSummaryJson traceId now sm)
+      else mapM_ writeErr (renderSummaryText sm)
+  either (\ex -> throwIO (ex :: SomeException)) pure r
 
 -- | The diagnostic of declared programs their images lack (spec ch. 5).
 missingMessage :: [(Text, Text)] -> Text

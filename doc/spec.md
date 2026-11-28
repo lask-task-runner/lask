@@ -101,6 +101,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [12.6 Execution Event Output](#126-execution-event-output)
     - [12.7 In-flight Diagnostics](#127-in-flight-diagnostics)
     - [12.8 Protection of Sensitive Information and Retention Policy](#128-protection-of-sensitive-information-and-retention-policy)
+    - [12.9 Run Summary](#129-run-summary)
   - [13. Serialization Conventions](#13-serialization-conventions)
     - [13.1 Data Values](#131-data-values)
     - [13.2 Function Values](#132-function-values)
@@ -3355,6 +3356,7 @@ Common options:
 - `--log-format <text|json>`: what is written to **stderr**: logs, the command execution log, diagnostics and execution events (Chapter 12). `json` is JSON Lines, one object per line (12.2). The default is `text`.
 - The two are independent, one per stream, so that a CI job can read the logs of a run as JSON Lines while what it prints stays text, or the other way round.
 - `--trace-id <id>`: specifies the execution trace identifier.
+- `--summary` (`run`, `eval` and `cmd`): ends the run with a summary of it on stderr: how it ended, how long it took, and one row per command execution (12.9).
 - `--no-color`: disables decorative colors in the output.
 - `--help` / `-h`: displays usage. For `run` / `eval`, when a function name is given, the help of that function is displayed (11.6).
 
@@ -4127,7 +4129,7 @@ Execution example:
 ```text
 $ lask cmd --help
 Usage: lask cmd [--module PATH] [--output text|json|pretty-json] [--log-format text|json] [--trace-id ID] [--no-color]
-                [-h|--help] [COMMAND] [ARGS...]
+                [--summary] [-h|--help] [COMMAND] [ARGS...]
 ...
 
 Commands in main.lask:
@@ -4355,7 +4357,7 @@ Output rules:
 - `info` and below are classified as operational logs, and `warn` / `error` as diagnostic logs.
 - `error`-level logs must be cross-referenceable with the corresponding failure event (12.6).
 - The line format of the default text display is implementation-defined. However, each line contains `level` and `message`, and the command execution log (12.3) follows the text-format provisions.
-- When `--log-format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3)).
+- When `--log-format json` is specified, logs, command execution logs, error diagnostics, and execution events output to stderr must be output as JSON Lines (one object per line) (canonical form). The line kind can be discriminated by the presence of fields (`kind` = execution event (13.3), `code` + `stage` = diagnostics (14.3), which are advisories when they also carry `severity: "warning"` (14.2) and errors otherwise, `stream` / `event` = command execution log (12.3), `summary` = run summary (12.9)).
 
 ### 12.3 Command Execution Log
 
@@ -4494,6 +4496,32 @@ Retention policy:
 - The implementation shall define default retention periods and size limits.
 - Rotation must not break event consistency (12.6).
 - Where audit requirements exist, a tamper-evident storage format may be adopted.
+
+### 12.9 Run Summary
+
+With `--summary`, `run`, `eval` and `cmd` (11.8) end with a summary of the run, the last thing written to stderr. A long log shows what is running; the summary shows, in a few lines at its end, what ran and how each part ended, which is what a CI job's log is read for afterwards.
+
+Rules:
+
+- The summary is written however the run ends: when it succeeds, when it fails, after the failure is reported (14.3), and when it is stopped by a signal (11.12). It does not change the exit code (11.3) or anything written to stdout. A run that ends before it starts, on a usage error or a module that does not compile, has no summary.
+- It covers the run from the start of evaluation: the function the command line called (or, for `cmd`, the command word), the module, how the run ended (`succeeded`, `failed` with its exit code, or `interrupted` with the exit code the signal gave), and how long it took.
+- It has one row per command execution, in execution-number order (12.3): the execution number, the environment summary, the command, how long it ran, and how it ended — `exit <code>`, `killed`, or `unfinished` for one the log has no end line for. The rows are read off the command execution log, so they hold what its start and end lines hold, masked as they are (12.8). The command in a row may be shortened to its first line and an implementation-defined width; the start line of the log has it in full.
+- A last line counts the executions by how they ended. A run that executed no command has the first line alone.
+
+Text format (default):
+
+```text
+summary: deploy (main.lask) failed with exit code 1 after 12.4s
+  #1  #local     make build  3.1s  exit 0
+  #2  #node:20   npm test    8.9s  exit 1
+  2 commands: 1 succeeded, 1 failed
+```
+
+JSON format (with `--log-format json`): one JSON Lines object (12.2) with `timestamp`, `level` (`info` when the run succeeded, `warn` otherwise), `traceId` and a `summary` object, which tells the line apart from the others. `summary` holds `module`, `function` (for `run` and `eval`) or `command` (for `cmd`), `outcome` (`succeeded` / `failed` / `interrupted`), `exitCode`, `durationMs`, and `commands`, an array with one object per execution: `exec`, `env` (the metadata representation of 13.1, as on the start line), `command`, `durationMs`, and `end` — `"exit"` with `code`, `"killed"`, or `null` for an unfinished one, which has no `durationMs`.
+
+```json
+{"timestamp":"2026-07-23T10:15:16.540Z","level":"warn","traceId":"...","summary":{"module":"main.lask","function":"deploy","outcome":"failed","exitCode":1,"durationMs":12401,"commands":[{"exec":1,"env":{"$type":"Environment","kind":"local","params":{}},"command":"make build","durationMs":3102,"end":"exit","code":0}]}}
+```
 
 ## 13. Serialization Conventions
 
