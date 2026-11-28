@@ -6,6 +6,7 @@ module Command.Lask.Options
     CommonOpts (..),
     commonOpts,
     RunOpts (..),
+    ObsOpts (..),
     EnvsOpts (..),
     SecretsOpts (..),
     CmdOpts (..),
@@ -41,8 +42,16 @@ data CommonOpts = CommonOpts
     optNoColor :: Bool
   }
 
+-- | What a run reports of itself besides its logs (spec 12.9): the
+-- options of the commands that evaluate, @run@, @eval@ and @cmd@.
+data ObsOpts = ObsOpts
+  { -- | @--summary@: a summary of the run, last on stderr.
+    obsSummary :: Bool
+  }
+
 data RunOpts = RunOpts
   { runCommon :: CommonOpts,
+    runObs :: ObsOpts,
     runArgDecode :: ArgDecodeMode,
     -- | @--help@ / @-h@ before the function name. After the function
     -- name it reaches 'runArgs' instead and is handled there
@@ -74,6 +83,7 @@ data SecretsOpts = SecretsOpts
 -- its name, or @--help@.
 data CmdOpts = CmdOpts
   { cmdCommon :: CommonOpts,
+    cmdObs :: ObsOpts,
     -- | @--help@ / @-h@ before the command name, which also lists the
     -- module's commands. After the name it reaches 'cmdArgs'.
     cmdShowHelp :: Bool,
@@ -179,14 +189,21 @@ pCmdOpts :: Parser CmdOpts
 pCmdOpts =
   CmdOpts
     <$> pCommon
+    <*> pObs
     <*> switch (long "help" <> short 'h' <> help "Show this help text and list the module's commands")
     <*> optional (T.pack <$> argument str (metavar "COMMAND"))
     <*> many (T.pack <$> argument str (metavar "ARGS..."))
+
+pObs :: Parser ObsOpts
+pObs =
+  ObsOpts
+    <$> switch (long "summary" <> help "End with a summary of the run and its commands on stderr")
 
 pRunOpts :: Parser RunOpts
 pRunOpts =
   RunOpts
     <$> pCommon
+    <*> pObs
     <*> option
       (maybeReader parseArgDecodeMode)
       ( long "arg-decode"

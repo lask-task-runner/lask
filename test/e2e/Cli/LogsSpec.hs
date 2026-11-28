@@ -3,7 +3,7 @@
 -- | Command execution logs, log, and observability (spec 12, 13.3, 15.12).
 module Cli.LogsSpec (spec) where
 
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import Support.Harness
 import Test.Hspec
 
@@ -165,3 +165,60 @@ spec = beforeAll findLask $ do
           r <- runLask lask dir ["eval", "--log-format", "json", "f"] ""
           resExit r `shouldBe` 0
           resErr r `shouldSatisfy` isInfixOf "\"kind\":\"fail\""
+  describe "run summary (spec 12.9)" $ do
+    let src =
+          "build() = $[#local] echo built\n\
+          \both() = do {\n\
+          \  build()\n\
+          \  a = async $[#local] echo a\n\
+          \  await(a)\n\
+          \}\n\
+          \bad() = do {\n\
+          \  build()\n\
+          \  $[#local] sh -c \"exit 3\"\n\
+          \}\n"
+        summaryLines = dropWhile (not . isPrefixOf "summary: ") . lines . resErr
+    it "ends a run with one row per command under --summary" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "--summary", "both"] ""
+        resExit r `shouldBe` 0
+        case summaryLines r of
+          header : rows -> do
+            header `shouldSatisfy` isPrefixOf "summary: both (main.lask) succeeded after "
+            map (take 12) rows `shouldBe` ["  #1  #local", "  #2  #local", "  2 commands"]
+            rows `shouldSatisfy` all (\l -> "exit 0" `isInfixOf` l || "2 succeeded" `isInfixOf` l)
+          [] -> expectationFailure (resErr r)
+    it "writes no summary without the option" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "both"] ""
+        summaryLines r `shouldBe` []
+    it "writes it after the failure, and keeps the exit code" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["run", "--summary", "bad"] ""
+        resExit r `shouldBe` 3
+        case summaryLines r of
+          header : rows -> do
+            header `shouldSatisfy` isPrefixOf "summary: bad (main.lask) failed with exit code 3 after "
+            map (drop 2) (drop 2 rows) `shouldBe` ["2 commands: 1 succeeded, 1 failed"]
+            take 2 rows `shouldSatisfy` all ("#local" `isInfixOf`)
+          [] -> expectationFailure (resErr r)
+        -- The failure is reported before the summary.
+        resErr r `shouldSatisfy` isInfixOf "E-RUNTIME-COMMAND-NONZERO"
+        last (lines (resErr r)) `shouldSatisfy` isInfixOf "1 failed"
+    it "is one JSON line with a summary field under --log-format json" $ \lask ->
+      withProject [("main.lask", src)] $ \dir -> do
+        r <- runLask lask dir ["eval", "--summary", "--log-format", "json", "--trace-id", "t-s", "both"] ""
+        resExit r `shouldBe` 0
+        let final = last (lines (resErr r))
+        final `shouldSatisfy` isInfixOf "\"summary\":{"
+        final `shouldSatisfy` isInfixOf "\"outcome\":\"succeeded\""
+        final `shouldSatisfy` isInfixOf "\"function\":\"both\""
+        final `shouldSatisfy` isInfixOf "\"traceId\":\"t-s\""
+        final `shouldSatisfy` isInfixOf "\"end\":\"exit\""
+    it "summarizes a declared command run by cmd" $ \lask ->
+      withProject [("main.lask", "command { \"false\" } on #local\n")] $ \dir -> do
+        r <- runLask lask dir ["cmd", "--summary", "false"] ""
+        resExit r `shouldBe` 1
+        case summaryLines r of
+          header : _ -> header `shouldSatisfy` isPrefixOf "summary: cmd false (main.lask) failed with exit code 1 after "
+          [] -> expectationFailure (resErr r)

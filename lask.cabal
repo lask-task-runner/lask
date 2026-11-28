@@ -78,6 +78,7 @@ library
       Language.Lask.Obs.CommandLog
       Language.Lask.Obs.Events
       Language.Lask.Obs.ExecLog
+      Language.Lask.Obs.Summary
       Language.Lask.Repl
       Language.Lask.Runtime.AsyncTrack
       Language.Lask.Runtime.CancelScope
@@ -408,6 +409,7 @@ test-suite lask-unit
       Language.Lask.Module.LoaderSpec
       Language.Lask.Module.ResolveSpec
       Language.Lask.Obs.CommandLogSpec
+      Language.Lask.Obs.SummarySpec
       Language.Lask.ReplSpec
       Language.Lask.Runtime.CancelScopeSpec
       Language.Lask.Runtime.ConcurrencySpec

@@ -2,8 +2,8 @@ exit: 0
 --- stdout
 Usage: lask run [--module PATH] [--output text|json|pretty-json] 
                 [--log-format text|json] [--trace-id ID] [--no-color] 
-                [--arg-decode text|json|auto] [-h|--help] [--confirm] [FUNCTION]
-                [ARGS...]
+                [--summary] [--arg-decode text|json|auto] [-h|--help] 
+                [--confirm] [FUNCTION] [ARGS...]
 
   Run a function (result is not printed)
 
@@ -17,6 +17,8 @@ Available options:
                            text or JSON Lines
   --trace-id ID            Trace identifier for this execution
   --no-color               Disable colored output
+  --summary                End with a summary of the run and its commands on
+                           stderr
   --arg-decode text|json|auto
                            How to decode function arguments (default: auto)
   -h,--help                Show the help of FUNCTION, or list the module's
