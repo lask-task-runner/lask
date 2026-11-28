@@ -5,6 +5,8 @@
 module Language.Lask.Obs.Events
   ( TraceId,
     newTraceId,
+    SpanId,
+    newSpanId,
     Event (..),
     EventKind (..),
     EventSink,
@@ -46,6 +48,16 @@ newTraceId = do
   where
     pad s = replicate (16 - length s) '0' <> s
 
+-- | A span (spec 12.10): one function call or command execution, by
+-- a random 64-bit hex identifier, unique within its trace.
+type SpanId = Text
+
+newSpanId :: IO SpanId
+newSpanId = do
+  w <- randomRIO (1 :: Word, maxBound)
+  let s = showHex w ""
+  pure (T.pack (replicate (16 - length s) '0' <> s))
+
 data EventKind = EvCall | EvReturn | EvFail
   deriving (Show, Eq)
 
@@ -56,7 +68,12 @@ data Event = Event
     -- | 'Language.Lask.Serialize.functionRefJson' of the callee.
     evFunction :: A.Value,
     -- | @args@ (call), @result@ (return) or @error@ (fail) payload.
-    evPayload :: [(Text, A.Value)]
+    evPayload :: [(Text, A.Value)],
+    -- | The span of the call: the same on its call event and on the
+    -- return or fail event that ends it (13.3).
+    evSpanId :: SpanId,
+    -- | The span of the call it was made in, or of the run itself.
+    evParentSpanId :: Maybe SpanId
   }
   deriving (Show)
 
@@ -71,8 +88,10 @@ eventJson ev =
     [ ("kind", A.String kindText),
       ("traceId", A.String (evTraceId ev)),
       ("timestamp", A.String (formatTimestamp (evTimestamp ev))),
-      ("function", evFunction ev)
+      ("function", evFunction ev),
+      ("spanId", A.String (evSpanId ev))
     ]
+      <> [("parentSpanId", A.String p) | Just p <- [evParentSpanId ev]]
       <> [(AK.fromText k, v) | (k, v) <- evPayload ev]
   where
     kindText = case evKind ev of

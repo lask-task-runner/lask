@@ -22,15 +22,14 @@ import Command.Lask.Options
 import Data.Functor.Const (Const (..))
 import Data.Monoid (First (..))
 import System.Directory (doesFileExist)
-import Control.Exception (IOException, SomeException, fromException, throwIO, toException, try)
+import Control.Exception (IOException, SomeException, fromException, toException, try)
 import Control.Monad (forM, unless, when, (>=>))
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as AK
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.List (nub, sortOn)
-import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
-import Data.Time.Clock (getCurrentTime)
+import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Map.Strict as Map
 import Data.Scientific (FPFormat (Generic), formatScientific, toBoundedInteger)
@@ -51,8 +50,9 @@ import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..), StaticParams (.
 import Language.Lask.ErrorCode
 import Language.Lask.Lexer (lexTokensWithComments)
 import Language.Lask.Obs.CommandLog
-import Language.Lask.Obs.Summary (Subject (..), SummaryCollector, collectSummary, markInterrupted, newSummaryCollector, recordCommands, renderSummaryJson, renderSummaryText)
-import Language.Lask.Obs.Events (TraceId, encodeEvent, newTraceId, noSink)
+import Language.Lask.Obs.Summary (Subject (..))
+import Command.Lask.Observe (Observation (..), resolveTrace, withObservation)
+import Language.Lask.Obs.Events (TraceId, encodeEvent, noSink)
 import Language.Lask.Repl (runRepl)
 import Language.Lask.Runtime.Environment
 import Command.Lask.Images (commandImage, evalCommandEnv, loadPins, lockedImages, missingCommands)
@@ -233,7 +233,7 @@ cmdRunEval printResult runOpts = do
   case missingNow of
     [] -> pure ()
     missing -> do
-      traceId <- maybe newTraceId pure (optTraceId opts)
+      traceId <- fst <$> resolveTrace opts
       failureExit opts traceId (ioFailure EIoCommandMissing (missingMessage missing))
   -- What the function leaves to its parameters is checked against the
   -- access constraints covering it with what the command line gives
@@ -254,24 +254,27 @@ cmdRunEval printResult runOpts = do
   -- script that starts lask with stdin open, as a CI step or a
   -- process manager does, would otherwise wait on it for nothing.
   stdinText <- if readsStdin core key then readStdinOrExit opts else pure ""
-  traceId <- maybe newTraceId pure (optTraceId opts)
+  trace@(traceId, _) <- resolveTrace opts
   -- One serialized stderr line writer shared by command logs and
   -- execution events, so concurrent emitters never interleave.
   writeErr <- newLineWriter stderr
-  -- With --summary the run ends with its summary, however it ends
-  -- (spec 12.9).
-  withSummary (runObs runOpts) opts traceId writeErr (SubjectFunction fnName) (fst key) $ \sc -> do
+  -- The run is observed, by its summary and its trace, however it
+  -- ends (spec 12.9, 12.10).
+  withObservation (runObs runOpts) opts trace writeErr (if printResult then "eval" else "run") (SubjectFunction fnName) (fst key) $ \ob -> do
     let -- Command execution logs relay to stderr in real time
         -- (spec 12.3); JSON Lines under --log-format json (12.2).
-        -- The summary of --summary is read off the same log (12.9).
+        -- The summary and the trace are read off the same log (12.9,
+        -- 12.10).
         cmdLogSink =
-          recordCommands sc $
+          obCommandLog ob $
             if optLogJson opts then jsonCommandLog traceId writeErr else textCommandLog writeErr
     -- Images resolve through the lock, and are never pulled or built
     -- here (spec 10.3, 10.4).
     pins <- loadPins core
     backend <- resolveBackend
-    runner <- mkCommandRunner backend pins baseDir cmdLogSink
+    -- A command's span has the call that ran it as its parent (12.10).
+    runnerIn <- mkCommandRunnerIn backend pins baseDir cmdLogSink
+    let runner = runnerIn (Just (obRootSpan ob))
     fileRunner <- mkFileRunner backend pins baseDir
     sessions <- mkSessionOpener backend pins baseDir
     let -- `log` (spec 15.12) writes execution log lines to stderr,
@@ -285,7 +288,7 @@ cmdRunEval printResult runOpts = do
     let sink
           | optLogJson opts = writeErr . encodeEvent
           | otherwise = noSink
-        ctx = ctx0 {rtTraceId = traceId, rtEmit = sink}
+        ctx = ctx0 {rtTraceId = traceId, rtEmit = obEvents ob sink, rtSpan = Just (obRootSpan ob), rtRunnerIn = Just runnerIn}
     -- A signal abandons the evaluation as a timeout abandons its body:
     -- its commands are stopped and its finally blocks run, and the
     -- computations it started are cancelled with it (spec 11.12). They
@@ -320,7 +323,7 @@ cmdRunEval printResult runOpts = do
     result <- case stopped of
       Right r -> pure r
       Left sig -> do
-        markInterrupted sc
+        obInterrupted ob
         failureExit opts traceId $
           LaskFailure
             (Just ERuntimeInterrupted)
@@ -756,7 +759,7 @@ cmdCmd cmdOpts
               ds -> do
                 TIO.hPutStrLn stderr (renderDiagsLines (optLogJson opts) ds)
                 exitWith (ExitFailure 1)
-            traceId <- maybe newTraceId pure (optTraceId opts)
+            trace@(traceId, _) <- resolveTrace opts
             images <- lockedImages core
             img <- commandImage core envCore
             case img of
@@ -767,9 +770,9 @@ cmdCmd cmdOpts
             secrets <- newSecretResolver
             envValue <- evalCommandEnv (readEnvVar secrets) core envCore >>= either (failureExit opts traceId) pure
             writeErr <- newLineWriter stderr
-            withSummary (cmdObs cmdOpts) opts traceId writeErr (SubjectCommand name) (cpEntry core) $ \sc -> do
+            withObservation (cmdObs cmdOpts) opts trace writeErr "cmd" (SubjectCommand name) (cpEntry core) $ \ob -> do
               let sink =
-                    recordCommands sc $
+                    obCommandLog ob $
                       if optLogJson opts then jsonCommandLog traceId writeErr else textCommandLog writeErr
               pins <- loadPins core
               backend <- resolveBackend
@@ -781,26 +784,6 @@ cmdCmd cmdOpts
                 Left failure -> failureExit opts traceId failure
                 Right 0 -> exitSuccess
                 Right code -> exitWith (ExitFailure code)
-
--- | Run the rest of a command that evaluates, and with @--summary@ end
--- it with the summary of the run, last on stderr (spec 12.9). It is
--- written however the run ends: 'exitWith' is an exception, so the
--- exit of a failure, which has already reported it, passes through
--- here too.
-withSummary :: ObsOpts -> CommonOpts -> TraceId -> (Text -> IO ()) -> Subject -> FilePath -> (SummaryCollector -> IO a) -> IO a
-withSummary obs opts traceId writeErr subject modulePath body = do
-  sc <- newSummaryCollector
-  r <- try (body sc)
-  when (obsSummary obs) $ do
-    let code = case r of
-          Right _ -> ExitSuccess
-          Left ex -> fromMaybe (ExitFailure 1) (fromException ex)
-    sm <- collectSummary sc subject modulePath code
-    now <- getCurrentTime
-    if optLogJson opts
-      then writeErr (renderSummaryJson traceId now sm)
-      else mapM_ writeErr (renderSummaryText sm)
-  either (\ex -> throwIO (ex :: SomeException)) pure r
 
 -- | The diagnostic of declared programs their images lack (spec ch. 5).
 missingMessage :: [(Text, Text)] -> Text

@@ -102,6 +102,7 @@ This document is the language specification of Lask that satisfies the requireme
     - [12.7 In-flight Diagnostics](#127-in-flight-diagnostics)
     - [12.8 Protection of Sensitive Information and Retention Policy](#128-protection-of-sensitive-information-and-retention-policy)
     - [12.9 Run Summary](#129-run-summary)
+    - [12.10 Trace Export](#1210-trace-export)
   - [13. Serialization Conventions](#13-serialization-conventions)
     - [13.1 Data Values](#131-data-values)
     - [13.2 Function Values](#132-function-values)
@@ -3357,6 +3358,7 @@ Common options:
 - The two are independent, one per stream, so that a CI job can read the logs of a run as JSON Lines while what it prints stays text, or the other way round.
 - `--trace-id <id>`: specifies the execution trace identifier.
 - `--summary` (`run`, `eval` and `cmd`): ends the run with a summary of it on stderr: how it ended, how long it took, and one row per command execution (12.9).
+- `--otlp-endpoint <url>` (`run`, `eval` and `cmd`): sends the trace of the run to an OpenTelemetry collector over OTLP/HTTP (12.10).
 - `--no-color`: disables decorative colors in the output.
 - `--help` / `-h`: displays usage. For `run` / `eval`, when a function name is given, the help of that function is displayed (11.6).
 
@@ -4129,7 +4131,7 @@ Execution example:
 ```text
 $ lask cmd --help
 Usage: lask cmd [--module PATH] [--output text|json|pretty-json] [--log-format text|json] [--trace-id ID] [--no-color]
-                [--summary] [-h|--help] [COMMAND] [ARGS...]
+                [--summary] [--otlp-endpoint URL] [-h|--help] [COMMAND] [ARGS...]
 ...
 
 Commands in main.lask:
@@ -4399,7 +4401,7 @@ JSON format (with `--log-format json`):
 
 - Each line of the command execution log is output as one object of the JSON Lines of 12.2.
 - Required fields for all lines: `timestamp`, `level`, `traceId`, `exec` (execution number).
-- Start line: in addition to `event: "start"`, `command` (the executed command string) and `env` (the metadata representation of 13.1) are required.
+- Start line: in addition to `event: "start"`, `command` (the executed command string) and `env` (the metadata representation of 13.1) are required. `spanId` identifies the execution's span, and `parentSpanId`, when present, the span of the function call that ran it (12.10).
 - Relay lines: `stream` (`1` or `2`) and `message` (the line's content) are required. `command` and `env` may be omitted (correlated with the start line via `exec`).
 - Exit line: `event: "exit"` and `code` (exit code) are required.
 - Killed line: `event: "killed"` is required. It has no `code`: the command did not exit on its own.
@@ -4431,7 +4433,8 @@ The trace identifier `traceId` is an identifier for correlating observation info
 Generation and propagation rules:
 
 - When the CLI's `--trace-id` is specified, that value is adopted.
-- When unspecified, the implementation automatically generates an identifier unlikely to collide.
+- Otherwise, when the environment variable `TRACEPARENT` holds a W3C Trace Context `traceparent` value, its trace identifier is adopted, and the run continues the span it names (12.10). A job that is itself traced puts its steps in one trace this way.
+- When neither is given, the implementation automatically generates an identifier unlikely to collide.
 - Logs, events, and errors belonging to the same top-level execution share the same `traceId`.
 
 Consistency rule:
@@ -4522,6 +4525,33 @@ JSON format (with `--log-format json`): one JSON Lines object (12.2) with `times
 ```json
 {"timestamp":"2026-07-23T10:15:16.540Z","level":"warn","traceId":"...","summary":{"module":"main.lask","function":"deploy","outcome":"failed","exitCode":1,"durationMs":12401,"commands":[{"exec":1,"env":{"$type":"Environment","kind":"local","params":{}},"command":"make build","durationMs":3102,"end":"exit","code":0}]}}
 ```
+
+### 12.10 Trace Export
+
+`run`, `eval` and `cmd` (11.8) can send the trace of a run to an OpenTelemetry collector, so that a run is seen as a timeline next to the other traces of a system: which functions and commands ran, which of them ran at the same time, and where the time went.
+
+Enabling:
+
+- The export is on when `--otlp-endpoint <url>` is given, or when the standard variable `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT` is set. `--otlp-endpoint` and `OTEL_EXPORTER_OTLP_ENDPOINT` are base endpoints, to which `/v1/traces` is added unless they end with it; `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is the traces URL itself.
+- `OTEL_SDK_DISABLED=true` or `OTEL_TRACES_EXPORTER=none` turns off an export the variables asked for; `--otlp-endpoint` is not turned off by them.
+- `OTEL_EXPORTER_OTLP_TRACES_HEADERS` or `OTEL_EXPORTER_OTLP_HEADERS` (`key=value` pairs separated by commas, values percent-decoded) are sent with every request, `OTEL_SERVICE_NAME` names the service (`lask` by default), and `OTEL_RESOURCE_ATTRIBUTES` adds resource attributes, which is how a CI job attaches its own identifiers to the trace.
+- The protocol is OTLP/HTTP with the JSON encoding. A protocol other than `http/json` in `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` or `OTEL_EXPORTER_OTLP_PROTOCOL` is reported as `W-OBS-EXPORT`, and the spans are sent as JSON.
+
+Spans:
+
+- The run is one trace, whose identifier is the `traceId` of 12.5 when it is 32 lowercase hexadecimal digits, and is otherwise derived from it (in this implementation, the first 16 bytes of its SHA-256), the `traceId` then being kept as the attribute `lask.trace_id`.
+- The run itself is the root span, named for the command line (`lask run deploy`, `lask cmd npm`), with `lask.module`, `lask.function` or `lask.command`, and `process.exit.code`. Its parent is the span `TRACEPARENT` names, if any (12.5).
+- Each call of a declared function is a span (12.6), named for the function, with `code.function.name`, `code.file.path`, and the argument and result summaries of its events (13.3). Its parent is the call it was made in, or the root span; a computation started by `async` has the call that started it as its parent. Functions the language makes rather than the user names (12.4) are not spans: what they run belongs to the function they are in.
+- Each command execution is a span (12.3), named for the first line of its command, with `process.command_line`, `lask.env`, `lask.exec` and `process.exit.code`. Its parent is the call that ran it.
+- A span ends in error when its call failed (with the failure's message, and an `exception` event), when its command exited with a non-zero code or was killed, and, for the root span, when the run failed or was interrupted. A failure caught by `try` still ends its call's span in error, as it emits a `FailEvent` (12.6).
+- The span identifiers are also on the execution events (13.3) and on the start lines of the command execution log (12.3) in the JSON Lines of 12.2, whether or not the trace is exported, so that one can be read against the other.
+
+Rules:
+
+- Spans are made from the execution events and the command execution log, after masking (12.8): what is exported is what stderr would show.
+- Spans are sent as they end, in batches every few seconds and at the end of the run, which waits at most a few seconds for them (5 in this implementation). A span still open when the run ends, such as the call a signal stopped, ends with the run, in error.
+- A failure to send is reported once, at the end of the run, as the advisory `W-OBS-EXPORT`, and changes nothing else: neither the exit code nor what is written to stdout. Spans that could not be sent are not sent again.
+- When the run summary is also written (12.9), the export is finished first, so that the summary stays the last thing on stderr.
 
 ## 13. Serialization Conventions
 
@@ -4636,6 +4666,8 @@ Execution events follow the emission rules in 12.6 and must include the followin
 - `result`: return value summary (required for `return`)
 - `error`: error information (required for `fail`)
 - `env`: execution environment summary (environment kind `kind` and normalized parameter summary `params`. For a recipe-form environment (10.2), the Dockerfile path may be included as `dockerfile`)
+- `spanId`: the span of the call (12.10), the same on the `call` event and on the `return` or `fail` event that ends it
+- `parentSpanId`: the span of the call it was made in, or of the run itself for the call the command line made
 
 Minimum fields of `ErrorInfo`:
 
@@ -4647,7 +4679,7 @@ Causal consistency rules:
 
 - For the same function execution, exactly one `return` or `fail` must correspond after the `call`.
 - `timestamp` should maintain non-decreasing order within the same trace.
-- Child events of asynchronous execution share the same `traceId`, and parent-child relationship IDs may be attached as needed.
+- Child events of asynchronous execution share the same `traceId`. Their `parentSpanId` is the call that started the computation.
 
 Execution events retain at least the following.
 
@@ -4793,12 +4825,13 @@ The table below is the complete list of codes. An implementation reports every o
 | `W-CLI-PARAM-SHADOWED` | advisory | — | a keyword parameter is named `help`, so it cannot be supplied as `--help` from the CLI (11.6). |
 | `W-EXPORT-INCONSISTENT` | advisory | — | one module writes `export` on some of its declarations and leaves it out on others, so an omitted marker may be misread as non-public (5) |
 | `W-BOUND-REDUNDANT` | advisory | — | a part of a bound joined with `+` is written twice, or is entailed by another part, so it adds nothing (4.4) |
+| `W-OBS-EXPORT` | advisory | — | the trace of the run could not be sent to the collector, or the export is configured in a way this implementation does not support (12.10). Reported at run time, with `stage: "runtime"`; the run is otherwise unaffected. |
 
 ¹ The default: a runtime or external I/O error carries the `code` of its `Error` value, which a command failure takes from the process (8.10, 14.8).
 
 Advisory codes:
 
-- Codes of the form `W-<CATEGORY>-<DETAIL>` are advisory diagnostics. They report a probable mistake that is not an error: analysis continues, evaluation is not prevented, and the exit code is unaffected.
+- Codes of the form `W-<CATEGORY>-<DETAIL>` are advisory diagnostics. They report a probable mistake that is not an error, or, for `W-OBS-EXPORT`, an observation that could not be delivered: analysis continues, evaluation is not prevented, and the exit code is unaffected.
 - Advisory diagnostics follow the output requirements of 14.3 and additionally carry `severity: "warning"`. A diagnostic without a `severity` field is an error.
 - The advisory codes are listed in the table above with the class `advisory`. Each is reported where the section that defines it says, as an error code is.
 

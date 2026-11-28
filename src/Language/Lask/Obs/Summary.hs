@@ -18,6 +18,7 @@ module Language.Lask.Obs.Summary
     newSummaryCollector,
     recordCommands,
     markInterrupted,
+    wasInterrupted,
     collectSummary,
     outcomeOfExit,
     renderSummaryText,
@@ -111,6 +112,9 @@ recordCommands sc sink cl = do
 -- | The run was stopped by a signal, whatever exit code it ends with.
 markInterrupted :: SummaryCollector -> IO ()
 markInterrupted sc = writeIORef (scInterrupted sc) True
+
+wasInterrupted :: SummaryCollector -> IO Bool
+wasInterrupted = readIORef . scInterrupted
 
 outcomeOfExit :: Bool -> ExitCode -> Outcome
 outcomeOfExit interrupted code = case code of
