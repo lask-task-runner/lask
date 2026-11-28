@@ -344,6 +344,13 @@ spec = do
             dfun "access" [Param NoSpan (PPositional "x" Public Nothing)] Nothing (var "x")
           ]
 
+    it "parses a conjunction of access constraints, continued after a line-final & (spec 5)" $
+      pModule "access Sealed = Offline & m.Contained\nf() within Sealed &\n  { files: \"ro\" } = 1"
+        `shouldBe` Right
+          [ DAccess "Sealed" (AccessAnd [AccessRef NoSpan Nothing "Offline", AccessRef NoSpan (Just "m") "Contained"]),
+            DFunction "f" [] [] Nothing (Just (AccessAnd [AccessRef NoSpan Nothing "Sealed", AccessSpec NoSpan [(Spanned NoSpan "files", ex (EString [TPChunk NoSpan "ro"]))]])) (num 1)
+          ]
+
     it "parses a class and an instance, whose members are newline-terminated (spec 4.6)" $ do
       let pa n t = Param NoSpan (PPositional n Public (Just t))
           tT = ty (SNamed Nothing "T" [])

@@ -80,7 +80,7 @@ spec = do
           map TOp [minBound .. maxBound]
             <> map TKw [minBound .. maxBound]
             <> [ TLParen, TRParen, TLBracket, TRBracket, TLBrace, TRBrace, TComma, TColon, TSemi, TDot,
-                 TArrow, TAssign, TBackslash, TDashDash, TBangBang, TEllipsis, TPipe, TQuestion,
+                 TArrow, TAssign, TBackslash, TDashDash, TBangBang, TEllipsis, TPipe, TAmp, TQuestion,
                  TBool True, TBool False, TNull, TLowerId "go_2", TUpperId "Pair", TEnvHead "alpine:3.12",
                  TRawString "a b", TNumber 1.5, TNumber 42, TNumber 0.001
                ]
