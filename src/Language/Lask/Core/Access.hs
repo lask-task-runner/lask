@@ -46,6 +46,7 @@ module Language.Lask.Core.Access
     accessFieldNames,
     Covering (..),
     renderCovering,
+    renderBound,
     Constraints,
     withinConstraints,
     coveringsOf,
@@ -58,10 +59,11 @@ where
 import Control.Applicative ((<|>))
 import Control.Exception (SomeException, evaluate, throwIO, try)
 import Control.Monad.State.Strict (State, evalState, gets, modify')
-import Data.List (nub, sortOn)
+import Data.List (groupBy, nub, sortOn)
+import qualified Data.Map.Lazy as LazyMap
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
-import Data.Maybe (isJust, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Scientific (FPFormat (Generic), formatScientific)
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -949,15 +951,26 @@ renderCovering :: Covering -> Text
 renderCovering cv = maybe (renderConstraint (cvConstraint cv)) ("within " <>) (cvName cv)
 
 -- | The constraints of each module: its own, and those of its
--- functions.
-type Constraints = Map FilePath (Maybe Covering, Map Text Covering)
+-- functions, each the conjuncts it is written with (spec 5), checked
+-- one by one.
+type Constraints = Map FilePath ([Covering], Map Text [Covering])
 
 -- | The constraints a declaration is checked against (spec 10.11): its
 -- module's and its own.
 coveringsOf :: Constraints -> Key -> [Covering]
 coveringsOf cons (p, n) = case Map.lookup p cons of
   Nothing -> []
-  Just (m, fs) -> filter (bounds . cvConstraint) (maybe [] pure m <> maybe [] pure (Map.lookup (T.takeWhile (/= '<') n) fs))
+  Just (m, fs) -> filter (bounds . cvConstraint) (m <> Map.findWithDefault [] (T.takeWhile (/= '<') n) fs)
+
+-- | The constraints that cover a declaration as they are written
+-- (spec 11): the module's, then its own, each the conjuncts it is
+-- written with joined by @&@, and @within: none@ for none.
+renderBound :: [Covering] -> Text
+renderBound cvs = case groupBy (\a b -> cvFunction a == cvFunction b) cvs of
+  [] -> "within: none"
+  gs -> T.intercalate " and " ["within " <> T.intercalate " & " (nub (map term g)) | g <- gs]
+  where
+    term cv = fromMaybe (T.drop (T.length "within ") (renderConstraint (cvConstraint cv))) (cvName cv)
 
 -- | Read the access constraints of a program (spec 5, 10.11): what
 -- each module and function is written with, and @E-TYPE-WITHIN-SPEC@
@@ -972,20 +985,78 @@ withinConstraints prog =
       )
   where
     scopes = buildScopes prog
-    -- Each access declaration, read once.
-    declared =
+    -- Each access declaration, as written.
+    decls =
       Map.fromList
-        [ ((lmPath lm, n), readAlias w)
+        [ ((lmPath lm, n), w)
         | lm <- Map.elems (progModules prog),
           AST.Decl _ (AST.DAccess n w) <- AST.moduleDecls (lmModule lm)
         ]
-    aliasDiags = concat [ds | Left ds <- Map.elems declared]
-    readAlias w = do
+    -- Each access declaration, read once: the constraints of its
+    -- conjuncts, or 'Nothing' for one that does not read, which is
+    -- reported where it is written.
+    -- Lazy, since one declaration is read from those it names.
+    declared = LazyMap.mapWithKey readDecl decls
+    aliasDiags = concat [declDiags k w | (k, w) <- Map.toList decls]
+
+    -- The terms of a bound, conjunctions flattened.
+    terms w = case w of
+      AST.AccessAnd ws -> concatMap terms ws
+      _ -> [w]
+
+    -- What a name gives where it is written.
+    nameIn path q n = case resolveRef path q n of
+      Just (TAlias defPath defName)
+        | Map.member (defPath, defName) decls -> NamesAccess (defPath, defName)
+      Just _ -> NamesType
+      Nothing -> NamesNothing
+
+    -- The access declarations a declaration names directly.
+    refsOf (path, _) w = [k | AST.AccessRef _ q n <- terms w, NamesAccess k <- [nameIn path q n]]
+
+    -- Whether an access declaration reaches itself through the names
+    -- it is written with (spec 5).
+    reachesFrom start target = go Set.empty start
+      where
+        go seen ks = case ks of
+          [] -> False
+          k : rest
+            | k == target -> True
+            | k `Set.member` seen -> go seen rest
+            | otherwise -> go (Set.insert k seen) (maybe [] (refsOf k) (Map.lookup k decls) <> rest)
+    cyclic k = maybe False (\w -> reachesFrom (refsOf k w) k) (Map.lookup k decls)
+
+    readDecl k w
+      | cyclic k = Nothing
+      | otherwise = concat <$> mapM (termOf k) (terms w)
+    termOf (path, _) t = case t of
+      AST.AccessRef _ q n
+        | NamesAccess k' <- nameIn path q n -> Map.lookup k' declared >>= id
+        | otherwise -> Nothing
+      _ -> either (const Nothing) (Just . pure) (readSpec t)
+
+    -- What is wrong with an access declaration itself: its braces, a
+    -- name that is a type, and a name that leads back to it.
+    declDiags k@(path, _) w = concatMap term (terms w)
+      where
+        term t = case t of
+          AST.AccessRef sp q n -> case nameIn path q n of
+            NamesAccess k'
+              | k' == k || reachesFrom [k'] k ->
+                  [mkDiagnostic ETypeWithinSpec StageStatic sp ("'" <> snd k <> "' is written with '" <> qualified q n <> "', which leads back to it: an access declaration cannot name itself")]
+            NamesType -> [notAccess sp q n]
+            _ -> []
+          _ -> either id (const []) (readSpec t)
+
+    readSpec w = do
       c <- parseSpec w
       case conSecrets c of
         Just (SecretsNamed ((_, sp) : _)) ->
           Left [mkDiagnostic ETypeWithinSpec StageStatic sp "an access declaration gives 'secrets' only as false: the secrets a constraint names are bindings of what it covers"]
         _ -> Right c
+
+    qualified q n = maybe "" (<> ".") q <> n
+    notAccess sp q n = mkDiagnostic ETypeWithinSpec StageStatic sp ("'" <> qualified q n <> "' is a type, not an access constraint")
 
     -- The constraint a name gives, where it is written: 'Nothing' when
     -- the name resolves to nothing, which name resolution reports.
@@ -996,31 +1067,34 @@ withinConstraints prog =
         Just ns -> Map.lookup ns (gsNamespaces gs) >>= (`Map.lookup` scopes)
       Map.lookup n (gsTypes gs')
 
-    moduleConstraints path decls =
-      let modules = [(sp, w) | AST.Decl sp (AST.DWithin w) <- decls]
-          functions = [(n, w) | AST.Decl _ (AST.DFunction n _ _ _ (Just w) _) <- decls]
+    moduleConstraints path mdecls =
+      let modules = [(sp, w) | AST.Decl sp (AST.DWithin w) <- mdecls]
+          functions = [(n, w) | AST.Decl _ (AST.DFunction n _ _ _ (Just w) _) <- mdecls]
           second = [mkDiagnostic ETypeWithinSpec StageStatic sp "a module has at most one module constraint" | (sp, _) <- drop 1 modules]
-          read' fn w = case w of
-            AST.AccessSpec sp _ -> case parseSpec w of
-              Left ds -> (ds, Nothing)
-              Right c -> ([], Just (Covering path fn sp c Nothing))
-            AST.AccessRef sp q n ->
-              let named = maybe "" (<> ".") q <> n
-               in case resolveRef path q n of
-                    Just (TAlias defPath defName)
-                      | Just r <- Map.lookup (defPath, defName) declared ->
-                          -- A declaration that does not read is reported
-                          -- where it is declared.
-                          ([], either (const Nothing) (\c -> Just (Covering path fn sp c (Just named))) r)
-                    Just _ -> ([mkDiagnostic ETypeWithinSpec StageStatic sp ("'" <> named <> "' is a type, not an access constraint")], Nothing)
-                    Nothing -> ([], Nothing)
+          -- Each conjunct is a constraint of its own (spec 5), checked
+          -- and reported as one.
+          read' fn w = foldr (\(ds, cs) (ds', cs') -> (ds <> ds', cs <> cs')) ([], []) (map (readTerm fn) (terms w))
+          readTerm fn t = case t of
+            AST.AccessRef sp q n -> case nameIn path q n of
+              -- A declaration that does not read is reported where it
+              -- is declared.
+              NamesAccess k -> ([], [Covering path fn sp c (Just (qualified q n)) | Just cs <- [Map.lookup k declared], c <- fromMaybe [] cs])
+              NamesType -> ([notAccess sp q n], [])
+              NamesNothing -> ([], [])
+            AST.AccessSpec sp _ -> case parseSpec t of
+              Left ds -> (ds, [])
+              Right c -> ([], [Covering path fn sp c Nothing])
+            AST.AccessAnd _ -> ([], [])
           (mds, mc) = case modules of
             (_, w) : _ -> read' Nothing w
-            [] -> ([], Nothing)
+            [] -> ([], [])
           fs = [(n, read' (Just n) w) | (n, w) <- functions]
        in ( second <> mds <> concat [ds | (_, (ds, _)) <- fs],
-            (mc, Map.fromList [(n, c) | (n, (_, Just c)) <- fs])
+            (mc, Map.fromList [(n, cs) | (n, (_, cs)) <- fs, not (null cs)])
           )
+
+-- | What the name in an access bound gives (spec 5).
+data Naming = NamesAccess (FilePath, Text) | NamesType | NamesNothing
 
 -- | An access constraint from its fields (spec 10.11), each a literal.
 -- | The fields of an access constraint (spec 10.11), in the order its
@@ -1030,7 +1104,8 @@ accessFieldNames = ["files", "volumes", "outbound", "inbound", "secrets", "runs"
 
 parseSpec :: AST.AccessSpec -> Either [Diagnostic] Constraint
 parseSpec w = case w of
-  AST.AccessRef sp _ _ -> Left [mkDiagnostic ETypeWithinSpec StageStatic sp "an access declaration is written with braces"]
+  AST.AccessRef sp _ _ -> Left [mkDiagnostic ETypeWithinSpec StageStatic sp "an access constraint is read from braces"]
+  AST.AccessAnd _ -> Left []
   AST.AccessSpec _ fields ->
     let results = map field fields
         duplicates =
@@ -1130,8 +1205,8 @@ checkWithin cons core
   | Map.null (Map.filter covered cons) = []
   | otherwise = settle (concatMap (siteFindings core) uses <> escapes) <> unnamed
   where
-    covered (m, fs) = isJust m || not (Map.null fs)
-    unnamed = concat [fst (secretNames core cv) | (m, fs) <- Map.elems cons, cv <- maybe [] pure m <> Map.elems fs]
+    covered (m, fs) = not (null m) || not (Map.null fs)
+    unnamed = concat [fst (secretNames core cv) | (m, fs) <- Map.elems cons, cv <- m <> concat (Map.elems fs)]
     uses = walkRoots cons core (Map.keys (cpDecls core))
     -- A function whose covered uses wait on its parameters, named
     -- other than by a call: its constraint cannot be checked there.
@@ -1248,10 +1323,10 @@ checkInvocation cons core key args = case Map.lookup key (cpDecls core) of
 checkCommandEnv :: Constraints -> CoreProgram -> FilePath -> Text -> Core -> [Diagnostic]
 checkCommandEnv cons core declaring word env =
   case Map.lookup declaring cons of
-    Just (Just cv, _)
-      | bounds (cvConstraint cv) ->
+    Just (m, _)
+      | cvs@(_ : _) <- filter (bounds . cvConstraint) m ->
           let v = reach core (declaring, "") Set.empty Map.empty env
-              site = UseSite declaring ("command \"" <> word <> "\"") (coreSpan env) UseCommand (avTargets v) (avDyn v) (avParam v) [cv] [] (declaring, "") [] Map.empty
+              site = UseSite declaring ("command \"" <> word <> "\"") (coreSpan env) UseCommand (avTargets v) (avDyn v) (avParam v) cvs [] (declaring, "") [] Map.empty
            in settle (siteFindings core site)
     _ -> []
 

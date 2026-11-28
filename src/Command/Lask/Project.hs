@@ -21,7 +21,7 @@ where
 
 import Command.Lask.Common
 import Command.Lask.DepUse (ImportSite (..), projectImports)
-import Language.Lask.Core.Access (Carried (..), Covering (..), renderCovering, Flow (..), OptVal (..), SVal (..), Secret (..), SecretKind (..), Target (..), UseKind (..), UseSite (..), Via (..), channelFlows, collectUseSites, coveringsOf, programMarksSecrets, secretFindings, targetAccess, targetParametric, withinConstraints)
+import Language.Lask.Core.Access (Carried (..), Covering (..), renderBound, Flow (..), OptVal (..), SVal (..), Secret (..), SecretKind (..), Target (..), UseKind (..), UseSite (..), Via (..), channelFlows, collectUseSites, coveringsOf, programMarksSecrets, secretFindings, targetAccess, targetParametric, withinConstraints)
 import Command.Lask.Envs (CommandSite (..), HeadImage (..), HeadUse (..), Requirer (..), collectCommandSites, collectHeadUses)
 import Command.Lask.Images
 import Language.Lask.Runtime.Container (ContainerBackend (..), resolveBackend)
@@ -1086,9 +1086,7 @@ cmdEnvsAccessListing listing opts function verbose = do
         else do
           color <- colorFor (optNoColor opts) stdout
           case (listing, scope) of
-            (ListAccess, Just key) -> TIO.putStrLn $ case coveringsOf cons key of
-              [] -> "within: none"
-              cvs -> T.intercalate " and " (map (renderCovering) cvs)
+            (ListAccess, Just key) -> TIO.putStrLn (renderBound (coveringsOf cons key))
             _ -> pure ()
           let (header, cellsOf) = case listing of
                 ListFiles ->
@@ -1497,9 +1495,7 @@ cmdEnvsSecrets opts function = do
         else do
           color <- colorFor (optNoColor opts) stdout
           case scope of
-            Just key -> TIO.putStrLn $ case coveringsOf cons key of
-              [] -> "within: none"
-              cvs -> T.intercalate " and " (map (renderCovering) cvs)
+            Just key -> TIO.putStrLn (renderBound (coveringsOf cons key))
             Nothing -> pure ()
           let header = ["SECRET", "CHANNEL", "ENVIRONMENT", "NETWORK", "CHECK", "REQUIRED BY"]
               cells r = [plain (secretCell r), plain (channelCell r), plain (environmentCell r), plain (networkOf r), checkCell (arCheck (srEnv r)), plain (requiredCell (arBy (srEnv r)))]

@@ -556,8 +556,19 @@ pWithin = snd <$> pWithinSpanned
 pWithinSpanned :: P (Span, AccessSpec)
 pWithinSpanned = do
   Spanned s () <- withinKw
-  (end, w) <- choice [pAccessBraces, pAccessRef]
+  (end, w) <- pAccessBound
   pure (s <> end, w)
+
+-- | An access bound (spec 5): one term, or terms joined by @&@.
+pAccessBound :: P (Span, AccessSpec)
+pAccessBound = do
+  t <- term
+  ts <- many (sym TAmp *> term)
+  pure $ case ts of
+    [] -> t
+    _ -> (fst t <> fst (last ts), AccessAnd (map snd (t : ts)))
+  where
+    term = choice [pAccessBraces, pAccessRef]
 
 -- | The braces of an access constraint, with the span they cover.
 pAccessBraces :: P (Span, AccessSpec)
@@ -595,7 +606,7 @@ pModuleWithin = do
   (sp, w) <- pWithinSpanned
   pure (Decl sp (DWithin w))
 
--- | @access Name = { ... }@ (spec 5). @access@ is a contextual
+-- | @access Name = { ... }@, or any access bound (spec 5). @access@ is a contextual
 -- keyword like @within@: no declaration named @access@ is followed by
 -- a type name.
 pAccessDecl :: P Decl
@@ -604,7 +615,7 @@ pAccessDecl = do
   Spanned s () <- accessKw
   Spanned _ name <- upperId
   _ <- sym TAssign
-  (end, w) <- pAccessBraces
+  (end, w) <- pAccessBound
   pure (Decl (s <> end) (DAccess name w))
   where
     accessKw = matchTok "access" $ \t -> case t of

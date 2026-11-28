@@ -861,9 +861,10 @@ FunctionDecl = lower_id [ TypeParams ] "(" [ FunctionParameterList ] ")" [ ":" T
 
 ModuleWithin  = "within" AccessBound .
 WithinClause  = "within" AccessBound .
-AccessBound   = AccessSpec | AccessName .
+AccessBound   = AccessTerm { "&" AccessTerm } .
+AccessTerm    = AccessSpec | AccessName .
 AccessName    = [ lower_id "." ] upper_id .
-AccessDecl    = "access" upper_id "=" AccessSpec .
+AccessDecl    = "access" upper_id "=" AccessBound .
 AccessSpec    = "{" [ AccessField { "," AccessField } ] "}" .
 AccessField   = lower_id ":" Expression .
 
@@ -892,8 +893,8 @@ Declaration termination rules:
 - `export` and `internal` are reserved words (3.3), so a leading marker is unambiguous and needs no lookahead: `Visibility` appears only at the start of a top-level declaration, and for `export` a following `{` begins an `ExportDecl` instead. Neither word can be a declaration name, and like every reserved word neither is a `lower_id` in any other position (4.2 covers what this means for field names).
 - `export` is not a continuation token. An `ExportDecl` must be written on one line, except inside the braces of `NamedImports`; the closing `}` and the `from` clause must be placed on the same line.
 - `schema` is a contextual keyword, like `on`: it is a keyword only after the environment of a command declaration, and remains usable as an identifier everywhere else. The environment expression ends before it, and it must be placed on the same line as the end of that expression; the schema expression may span lines by the open-bracket continuation rule.
-- `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none; the `AccessSpec` may span lines by the open-bracket continuation rule, and the `=` follows its closing `}`, or the `AccessName`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
-- `access` is a contextual keyword (3.3). An `AccessDecl` is written on one line up to the `{` of its `AccessSpec`, which may span lines by the open-bracket continuation rule.
+- `within` is a contextual keyword (3.3). In a `FunctionDecl` it is placed on the same line as the end of the return type, or of the parameter list when there is none; the `AccessSpec` may span lines by the open-bracket continuation rule, a line-final `&` continues the `AccessBound` (6.5), and the `=` follows the closing `}`, or the `AccessName`, of its last `AccessTerm`. Like the braces of `RunOptions` (6.7), an `AccessSpec` is not an object literal and builds no value.
+- `access` is a contextual keyword (3.3). An `AccessDecl` is written on one line up to its first `AccessTerm`; an `AccessSpec` may span lines by the open-bracket continuation rule, and a line-final `&` continues the `AccessBound` (6.5).
 - `class` and `instance` are contextual keywords (3.3). A `ClassDecl` or an `InstanceDecl` is written on one line up to its `{`. The braces enclose a block, as those of `do` do (6.5), not an object literal: each method in them is ended by a newline or `;`, and an expression in a method spans lines by the continuation rules of 6.5. `ClassDecl` and `InstanceDecl` are defined in 4.6.
 
 Access constraints:
@@ -906,10 +907,18 @@ Access constraints:
 
 Access declarations:
 
-- An `AccessDecl` names an access constraint: `access Offline = { outbound: false, inbound: false }` declares `Offline`, and `within Offline`, as a `ModuleWithin` or a `WithinClause`, is the constraint its `AccessSpec` gives, as if its braces were written there. Nothing is evaluated: the name is replaced by what it names, and its fields are read and checked as 10.11 reads and checks those written in place.
+- An `AccessDecl` names an access constraint: `access Offline = { outbound: false, inbound: false }` declares `Offline`, and `within Offline`, as a `ModuleWithin` or a `WithinClause`, is the constraint its `AccessBound` gives, as if it were written there. Nothing is evaluated: the name is replaced by what it names, and its fields are read and checked as 10.11 reads and checks those written in place.
 - The name of an access declaration is in the namespace of type aliases (4.2). It is a public symbol unless it is marked `internal`, is imported, renamed and re-exported as a type alias is, and is written qualified, `m.Offline`, through a namespace import, in an `AccessName` only. A type alias and an access declaration of one name in one module are a duplicate definition (`E-NAME-DUPLICATE`).
 - An `AccessName` names an access declaration visible in the module, by its bare name or qualified; anything else is a static error. A name that is neither an access declaration nor a type alias visible in the module, or a namespace with no such public symbol, is `E-NAME-UNDEFINED`; the name of a type alias, a built-in one included, is `E-TYPE-WITHIN-SPEC`. The name of an access declaration written where a type is is `E-NAME-UNDEFINED`, as an undefined type is (4.4): it is no type.
-- An `AccessDecl` takes an `AccessSpec` only, not the name of another declaration, so a name always stands for braces written once.
+- An `AccessDecl` may name other access declarations in its `AccessBound`, but none that leads back to it: a declaration that names itself, directly or through the declarations it names, is `E-TYPE-WITHIN-SPEC`, reported at each name of the cycle. A name of it is then checked as if it were not written.
+
+Conjunctions:
+
+- An `AccessBound` of several `AccessTerm`s joined by `&` is their **conjunction**: an access set is within `A & B` when it is within `A` and within `B`. `access Sealed = Offline & Contained` names the conjunction, and `within Offline & { files: { ".": "ro", "dist": "rw" } }` refines a named constraint for one function without copying its fields.
+- Each `AccessTerm` is a constraint of its own, read and checked as written (10.11): the terms are not merged into one `AccessSpec`, which they could not always be, since two `outbound` arrays such as `["*.github.com:443"]` and `["x.com:443"]` admit what no one array of egress entries does. A name stands for every term of the bound it names.
+- `&` is commutative and idempotent, and `{}` is its identity, so a conjunction needs no parentheses, and none can be written.
+- A field is given at most once in one `AccessSpec` (10.11); it may be given again in another term of the conjunction, whose bound then applies as well.
+- A conjunction that admits nothing, such as `{ runs: ["local"] } & { files: "ro" }` (the access set of `#local` is within no constraint that gives `files`), is no error: each use it covers exceeds it, as it would exceed `runs: false`.
 - Its `secrets`, when given, is `false`. The names an array gives are secret bindings of what the constraint covers (10.11), which a declaration written apart from it has none of; any other value is `E-TYPE-WITHIN-SPEC`.
 - What is wrong with the fields of an access declaration is reported once, where it is declared, whether or not it is named. A constraint that names one is then checked as if it were not written.
 
@@ -1626,7 +1635,7 @@ Statement termination rules:
 - `;` is an optional separator for writing multiple statements on one line, and is not required at the end of a line (writing it there is not an error).
 - A newline that falls under any of the following is not regarded as statement termination and is treated as continuation of the statement.
   - A newline at a position where a bracket opened inside the statement (`(`, `[`, `{`) has not yet been closed
-  - A newline at a position where the token at the end of the line is a continuation token. The continuation tokens are limited to the following: `=`, `,`, `:`, `?`, `->`, binary operators (`|>`, `+`, `==`, etc.; the `binary_op` of 6.2), `!`
+  - A newline at a position where the token at the end of the line is a continuation token. The continuation tokens are limited to the following: `=`, `,`, `:`, `?`, `->`, binary operators (`|>`, `+`, `==`, etc.; the `binary_op` of 6.2), `!`, and the `&` of an `AccessBound` (Chapter 5)
   - A newline where the leading token of the next line is a binary operator (`|>`, `+`, `==`, etc.), or the `?` or `:` of a conditional expression (6.2)
   - A newline where the leading token of the next line is `else` (continuation after the closing `}` of the then block of an `IfExpr`). Inside a `case` block the same rule is what lets an `else` arm begin a line (6.4)
   - A newline where the leading token of the next line is `catch` or `finally` (continuation after the closing `}` of a block of a `TryExpr`)
@@ -3094,7 +3103,7 @@ Access sets:
 
 Constraints:
 
-- An access constraint is written as an `AccessSpec`, or by the name of an `AccessDecl` that gives one (Chapter 5). Its fields bound the components of the same name, and `runs` the kind of environment of each use:
+- An access constraint is written as an `AccessSpec`, or by the name of an `AccessDecl` that gives one, or as the conjunction of such terms joined by `&` (Chapter 5), each of which is a constraint of its own, checked as written. Its fields bound the components of the same name, and `runs` the kind of environment of each use:
   - `files`: `"rw"`, `"ro"`, `"none"`, or a table of them, as `base_access` takes them (10.2), with `"."` required.
   - `volumes`: `false`, admitting none; `true`, admitting any; or a table from host paths (absolute, normalized as for `base_mount`) and volume names to `"rw"` or `"ro"`. A host path relative to the base directory is a key of no table, and only `true` admits it.
   - `outbound`: `false`, admitting no network; `true`, admitting any network but the host's; or an array of egress entries, written as `egress` takes them (10.12), admitting a use whose `egress` only lists destinations they cover.
@@ -3111,7 +3120,7 @@ Constraints:
   - `secrets`: none when the constraint gives `false`; otherwise every secret is bound to one of the names the constraint gives (Secret flow, below), and reaches the use by the channel `env`. The channels `option`, `command` and `file` are within no constraint that gives `secrets`, and a secret bound to no name — one marked by a `mark_secret` that no binding takes — is within none either.
 - A use is within `runs` when its kind of environment is one the array gives. A constraint that gives `runs: false` is exceeded by every use, whatever its environment, whether it is resolved or not, and whether a parameter gives it or not.
 - The access set of `#local` is within no constraint that gives `files`, `volumes`, `outbound` or `inbound`, whatever their values: the host cannot be bounded by any of them. Its `secrets` are checked as any use's, and `runs` as above, so `runs: ["container"]` excludes the host without bounding anything else.
-- The constraint a declaration is checked against is the module constraint of its module together with its own, if it has one. An access set is within it when it is within both, so a function's constraint can narrow its module's and never widen it.
+- The constraint a declaration is checked against is the module constraint of its module together with its own, if it has one. An access set is within it when it is within both, so a function's constraint can narrow its module's and never widen it. Where either is a conjunction (Chapter 5), it is within each of its terms; a use that exceeds or cannot be shown to stay within a term is reported for that term, by its name where it is written by one (`within Offline`), and by its fields otherwise.
 
 Resolution:
 
@@ -3689,7 +3698,7 @@ Columns (`envs access`):
 
 - `FILES`: the `files` table of the row in one line (`. ro, dist rw, .env none`), followed by the number of volumes when there are any; `host (unbounded)` for `#local`.
 - `NETWORK`: as for `envs network`, followed by `+ inbound` when `publish` has an entry.
-- With `<function>`, the table is preceded by one line giving the constraint the function is checked against (10.11), as it is written, by its fields or `within Name`, or none.
+- With `<function>`, the table is preceded by one line giving the constraints the function is checked against (10.11), its module's and then its own, as they are written, each by its fields or its name, the terms of a conjunction joined by `&` (`within Offline & { files: "ro" }`), and the two joined by `and`; or `within: none`.
 
 Output and exit codes:
 
@@ -3724,7 +3733,7 @@ ENVIRONMENT                        NETWORK             EGRESS                  I
 6 rows (1 local, 4 registry, 1 dynamic): 1 ok, 1 exceeded, 4 unconstrained
 
 $ lask envs access build
-within { outbound: false, volumes: false, files: { ".": "ro", "dist": "rw" } }
+within { volumes: false, outbound: false } and within { files: { ".": "ro", "dist": "rw" } }
 ENVIRONMENT                                    FILES          NETWORK  CHECK  REQUIRED BY
 #node:24.21.0-alpine3.24{base_access,network}  . ro, dist rw  none     ok     main.lask: build
 
@@ -4678,7 +4687,7 @@ The table below is the complete list of codes. An implementation reports every o
 | `E-TYPE-COMMAND-SCHEMA` | static | `1` | the schemas of a command declaration are not static values, name a word the declaration does not have, or are invalid in a way their type cannot express (Chapter 5, Appendix A) |
 | `E-TYPE-COMMAND-OPTION` | static | `1` | a command string invokes a program in a way its command schema rules out (Chapter 5, Appendix A) |
 | `E-TYPE-ENV-CONSTRUCT` | static | `1` | invalid environment expression or run options (an argument list or run options on `#local`, a positional argument where a name is required, an unknown or duplicate option, a run option in a head's parentheses, an image option given as a run option or not given as a literal, a recipe path escaping the module tree, an `egress` entry that is not one or `egress` given with `network` or `publish`; 6.7, 10.2, 10.3, 10.12, 15.5) |
-| `E-TYPE-WITHIN-SPEC` | static | `1` | an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, a name in the `secrets` of an access declaration, the name of a type where an access declaration is named, or a second module constraint; Chapter 5, 10.11) |
+| `E-TYPE-WITHIN-SPEC` | static | `1` | an invalid access constraint (an unknown or duplicate field, a value that is not a literal or is not one the field takes, a `files` table without `"."`, a path that is not relative to the base directory, a name in `secrets` that is not a secret binding of what the constraint covers, a name in the `secrets` of an access declaration, the name of a type where an access declaration is named, an access declaration that names itself, or a second module constraint; Chapter 5, 10.11) |
 | `E-TYPE-WITHIN-EXCEEDED` | static | `1` | what a declaration covered by an access constraint can reach is shown to exceed it (10.11) |
 | `E-TYPE-WITHIN-UNPROVEN` | static | `1` | what a declaration covered by an access constraint can reach cannot be determined statically, so it is not shown to stay within it (10.11) |
 | `E-TYPE-ACCESS` | static | `1` | invalid accessor (field access on a non-`Record`, unknown field, invalid index type) |
