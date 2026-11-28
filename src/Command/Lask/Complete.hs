@@ -601,7 +601,8 @@ commonOpts =
 -- | The options of the commands that evaluate (spec 12.9).
 obsOpts :: [Opt]
 obsOpts =
-  [ switchOpt "summary" "End with a summary of the run and its commands on stderr"
+  [ switchOpt "summary" "End with a summary of the run and its commands on stderr",
+    valueOpt "otlp-endpoint" VOpaque "Send the trace of the run to this OTLP/HTTP endpoint"
   ]
 
 plain :: Text -> Text -> [Opt] -> Cmd

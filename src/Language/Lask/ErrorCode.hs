@@ -88,12 +88,14 @@ data AdvisoryCode
   | WCliParamShadowed
   | WExportInconsistent
   | WBoundRedundant
+  | WObsExport
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 advisoryText :: AdvisoryCode -> Text
 advisoryText c = case c of
   WAsyncUnused -> "W-ASYNC-UNUSED"
   WAsyncUnawaited -> "W-ASYNC-UNAWAITED"
+  WObsExport -> "W-OBS-EXPORT"
   WCommandOption -> "W-COMMAND-OPTION"
   WSecretCommandLine -> "W-SECRET-COMMAND-LINE"
   WRegexPattern -> "W-REGEX-PATTERN"

@@ -263,6 +263,8 @@ advises c lask = withProject [("main.lask", src)] $ \dir -> do
       WCliParamShadowed -> ("show(--help: Bool = false): Bool = help\n", ["check"])
       WExportInconsistent -> ("export a() = 1\nb() = 2\n", ["check"])
       WBoundRedundant -> ("f<T: orderable + orderable>(x: T): T = x\n", ["check"])
+      -- Nothing listens on the discard port.
+      WObsExport -> ("f(): String = \"ok\"\n", ["eval", "--otlp-endpoint", "http://127.0.0.1:9", "f"])
 
 raises :: ErrorCode -> FilePath -> Expectation
 raises c lask = case trigger c of

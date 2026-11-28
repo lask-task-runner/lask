@@ -30,7 +30,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Time.Clock (UTCTime)
-import Language.Lask.Obs.Events (TraceId, formatTimestamp)
+import Language.Lask.Obs.Events (SpanId, TraceId, formatTimestamp)
 import System.IO (Handle, hFlush)
 
 data CommandLogKind
@@ -57,7 +57,11 @@ data CommandLog = CommandLog
     clExec :: Int,
     -- | Full command string; rendered on the start line only.
     clCommand :: Text,
-    clKind :: CommandLogKind
+    clKind :: CommandLogKind,
+    -- | The span of the execution (spec 12.10), and of the function
+    -- call that ran it; written on the start line of the JSON format.
+    clSpanId :: Maybe SpanId,
+    clParentSpanId :: Maybe SpanId
   }
   deriving (Show, Eq)
 
@@ -133,6 +137,8 @@ renderCommandLogJson traceId cl =
           ("command", A.String (summarizeCommand (clCommand cl))),
           ("env", clEnvJson cl)
         ]
+          <> [("spanId", A.String s) | Just s <- [clSpanId cl]]
+          <> [("parentSpanId", A.String s) | Just s <- [clParentSpanId cl]]
       ClLine fd content ->
         [ ("stream", A.String (T.pack (show fd))),
           ("message", A.String content)

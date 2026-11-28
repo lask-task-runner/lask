@@ -16,6 +16,7 @@ module Language.Lask.Runtime.Environment
   ( ResolvedEnv (..),
     resolveEnv,
     mkCommandRunner,
+    mkCommandRunnerIn,
     mkFileRunner,
     mkSessionOpener,
     runLoggedProcess,
@@ -66,6 +67,7 @@ import Language.Lask.Builtins.Impl (CommandRunner, FileOp (..), FileRunner, Sess
 import Language.Lask.Builtins.Shell (shellWords)
 import Language.Lask.ErrorCode
 import Language.Lask.Obs.CommandLog
+import Language.Lask.Obs.Events (SpanId, newSpanId)
 import Language.Lask.Runtime.Container (BaseMount, ContainerBackend (..), ExecSpec (..), MountError (..), RunSpec (..), engineName, resolveBaseMounts, resolveVolumes)
 import Language.Lask.Runtime.Egress (Placement, denialMark, denialsSince, egressOf, placeEgress, placedOptions)
 import Language.Lask.Runtime.ProcessStop
@@ -283,7 +285,7 @@ runAttachedProcess sink summary envJson0 rendered interactive cp = do
     emit maskedCmd kind = do
       now <- getCurrentTime
       envJson <- maskSecretsJson envJson0
-      sink (CommandLog now summary envJson 1 maskedCmd kind)
+      sink (CommandLog now summary envJson 1 maskedCmd kind Nothing Nothing)
 
     relayErr maskedCmd h = go ""
       where
@@ -299,7 +301,7 @@ runAttachedProcess sink summary envJson0 rendered interactive cp = do
       now <- getCurrentTime
       masked <- maskSecrets l
       envJson <- maskSecretsJson envJson0
-      sink (CommandLog now summary envJson 1 maskedCmd (ClLine 2 masked))
+      sink (CommandLog now summary envJson 1 maskedCmd (ClLine 2 masked) Nothing Nothing)
     splitLines t = case T.breakOn "\n" t of
       (_, rest) | T.null rest -> ([], t)
       (l, rest) -> let (ls, r) = splitLines (T.drop 1 rest) in (T.stripEnd l : ls, r)
@@ -312,12 +314,20 @@ runAttachedProcess sink summary envJson0 rendered interactive cp = do
 -- counter, unique within the top-level execution even across
 -- concurrent commands (12.3).
 mkCommandRunner :: ContainerBackend -> ImagePins -> FilePath -> CommandLogSink -> IO CommandRunner
-mkCommandRunner backend pins baseDir0 sink = do
+mkCommandRunner backend pins baseDir sink = ($ Nothing) <$> mkCommandRunnerIn backend pins baseDir sink
+
+-- | A runner for each span commands are run in (spec 12.10): every
+-- execution gets a span of its own, whose parent is the one given, and
+-- its log lines carry both. The execution numbers are shared by all.
+mkCommandRunnerIn :: ContainerBackend -> ImagePins -> FilePath -> CommandLogSink -> IO (Maybe SpanId -> CommandRunner)
+mkCommandRunnerIn backend pins baseDir0 sink0 = do
   -- The base directory is mounted into containers (spec 10.5), and a
   -- bind mount requires an absolute path.
   baseDir <- makeAbsolute baseDir0
   counter <- newIORef 0
-  pure $ \envValue cmd ->
+  pure $ \parent envValue cmd -> do
+    spanId <- newSpanId
+    let sink cl = sink0 cl {clSpanId = Just spanId, clParentSpanId = parent}
     case resolveEnv envValue of
       Left failure -> pure (Left failure)
       Right resolved -> do
@@ -560,7 +570,7 @@ withDenials sink summary envJson execNo cmd (Just p) act = do
     mapM_
       ( \d -> do
           now <- getCurrentTime
-          sink (CommandLog now summary envJson' execNo maskedCmd (ClLine 2 ("egress denied: " <> d)))
+          sink (CommandLog now summary envJson' execNo maskedCmd (ClLine 2 ("egress denied: " <> d)) Nothing Nothing)
       )
       denied
   pure r
@@ -703,7 +713,7 @@ runLoggedProcess sink summary envJson0 execNo cmd fed stopC cp = do
     emit maskedCmd kind = do
       now <- getCurrentTime
       envJson <- maskSecretsJson envJson0
-      sink (CommandLog now summary envJson execNo maskedCmd kind)
+      sink (CommandLog now summary envJson execNo maskedCmd kind Nothing Nothing)
 
     -- Read a stream in chunks: accumulate the raw text verbatim for
     -- the CommandResult (trailing newlines and unterminated final

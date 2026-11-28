@@ -46,7 +46,10 @@ data CommonOpts = CommonOpts
 -- options of the commands that evaluate, @run@, @eval@ and @cmd@.
 data ObsOpts = ObsOpts
   { -- | @--summary@: a summary of the run, last on stderr.
-    obsSummary :: Bool
+    obsSummary :: Bool,
+    -- | @--otlp-endpoint@: where the trace of the run is sent
+    -- (spec 12.10), as a base endpoint.
+    obsOtlpEndpoint :: Maybe Text
   }
 
 data RunOpts = RunOpts
@@ -198,6 +201,7 @@ pObs :: Parser ObsOpts
 pObs =
   ObsOpts
     <$> switch (long "summary" <> help "End with a summary of the run and its commands on stderr")
+    <*> optional (T.pack <$> strOption (long "otlp-endpoint" <> metavar "URL" <> help "Send the trace of the run to this OTLP/HTTP endpoint"))
 
 pRunOpts :: Parser RunOpts
 pRunOpts =

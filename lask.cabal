@@ -33,6 +33,7 @@ library
       Command.Lask.Help
       Command.Lask.Images
       Command.Lask.Locate
+      Command.Lask.Observe
       Command.Lask.Options
       Command.Lask.Progress
       Command.Lask.Project
@@ -78,6 +79,7 @@ library
       Language.Lask.Obs.CommandLog
       Language.Lask.Obs.Events
       Language.Lask.Obs.ExecLog
+      Language.Lask.Obs.Otlp
       Language.Lask.Obs.Summary
       Language.Lask.Repl
       Language.Lask.Runtime.AsyncTrack
@@ -125,6 +127,7 @@ library
     , base16-bytestring >=1.0 && <2
     , base64-bytestring >=1.2 && <2
     , bytestring >=0.11 && <0.13
+    , case-insensitive >=1.2 && <2
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-md5 >=0.11 && <1
@@ -179,6 +182,7 @@ executable lask
     , base16-bytestring >=1.0 && <2
     , base64-bytestring >=1.2 && <2
     , bytestring >=0.11 && <0.13
+    , case-insensitive >=1.2 && <2
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-md5 >=0.11 && <1
@@ -234,6 +238,7 @@ test-suite edsl-example
     , base16-bytestring >=1.0 && <2
     , base64-bytestring >=1.2 && <2
     , bytestring >=0.11 && <0.13
+    , case-insensitive >=1.2 && <2
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-md5 >=0.11 && <1
@@ -305,6 +310,7 @@ test-suite lask-e2e
       Cli.SecretRefsSpec
       Cli.SecretsSpec
       Cli.SignalSpec
+      Cli.TraceExportSpec
       ErrorCodeSpec
       ExampleCommandsSpec
       ExamplesSpec
@@ -313,6 +319,7 @@ test-suite lask-e2e
       Support.EmbedTwin.ValuesAndTypes
       Support.Eval
       Support.FakeClient
+      Support.FakeCollector
       Support.FakeVault
       Support.Harness
       Support.Pending
@@ -332,6 +339,7 @@ test-suite lask-e2e
     , base16-bytestring >=1.0 && <2
     , base64-bytestring >=1.2 && <2
     , bytestring >=0.11 && <0.13
+    , case-insensitive >=1.2 && <2
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-md5 >=0.11 && <1
@@ -409,6 +417,7 @@ test-suite lask-unit
       Language.Lask.Module.LoaderSpec
       Language.Lask.Module.ResolveSpec
       Language.Lask.Obs.CommandLogSpec
+      Language.Lask.Obs.OtlpSpec
       Language.Lask.Obs.SummarySpec
       Language.Lask.ReplSpec
       Language.Lask.Runtime.CancelScopeSpec
@@ -441,6 +450,7 @@ test-suite lask-unit
       Support.EmbedTwin.ValuesAndTypes
       Support.Eval
       Support.FakeClient
+      Support.FakeCollector
       Support.FakeVault
       Support.Harness
       Support.Pending
@@ -460,6 +470,7 @@ test-suite lask-unit
     , base16-bytestring >=1.0 && <2
     , base64-bytestring >=1.2 && <2
     , bytestring >=0.11 && <0.13
+    , case-insensitive >=1.2 && <2
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-md5 >=0.11 && <1
@@ -521,6 +532,7 @@ benchmark completion-accuracy
     , base16-bytestring >=1.0 && <2
     , base64-bytestring >=1.2 && <2
     , bytestring
+    , case-insensitive >=1.2 && <2
     , co-log-core >=0.3.0 && <0.4
     , containers >=0.6 && <0.8
     , cryptohash-md5 >=0.11 && <1

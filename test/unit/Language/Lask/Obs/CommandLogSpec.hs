@@ -29,7 +29,7 @@ envJson =
     ]
 
 mkLog :: CommandLogKind -> CommandLog
-mkLog = CommandLog ts "#golang:1.22" envJson 1 "go build ./..."
+mkLog k = CommandLog ts "#golang:1.22" envJson 1 "go build ./..." k Nothing Nothing
 
 decodeLine :: Text -> Maybe A.Object
 decodeLine t = case A.decode (BL.fromStrict (TE.encodeUtf8 t)) of

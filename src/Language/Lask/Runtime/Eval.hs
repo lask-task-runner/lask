@@ -27,7 +27,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
-import Language.Lask.Builtins.Impl (RtHooks (..), callBuiltin)
+import Language.Lask.Builtins.Impl (CommandRunner, RtHooks (..), callBuiltin)
 import Language.Lask.Runtime.AsyncTrack (AsyncTracker (..))
 import Language.Lask.Core.AST
 import Language.Lask.Elaborate (CoreDecl (..), CoreProgram (..))
@@ -48,7 +48,14 @@ data RtCtx = RtCtx
     rtEmit :: EventSink,
     -- | The steps left to an evaluation that is bounded (spec 10.11),
     -- or Nothing for a run, which is not.
-    rtSteps :: Maybe (IORef Int)
+    rtSteps :: Maybe (IORef Int),
+    -- | The span calls are made in (spec 12.10): the function call
+    -- being evaluated, or the run itself.
+    rtSpan :: Maybe SpanId,
+    -- | The command runner for each span, so that a command's span has
+    -- the call that ran it as its parent. Nothing leaves
+    -- 'hookRunCommand' as it is.
+    rtRunnerIn :: Maybe (Maybe SpanId -> CommandRunner)
   }
 
 -- | An evaluation bounded by 'withStepLimit' took more steps than it
@@ -106,7 +113,7 @@ mkRtCtx :: CoreProgram -> Text -> RtHooks -> IO RtCtx
 mkRtCtx prog stdinText hooks = do
   cache <- newIORef Map.empty
   traceId <- newTraceId
-  pure (RtCtx prog cache stdinText hooks traceId noSink Nothing)
+  pure (RtCtx prog cache stdinText hooks traceId noSink Nothing Nothing Nothing)
 
 -- | Top-level values are evaluated once, on first reference.
 topValue :: RtCtx -> (FilePath, Text) -> IO Value
@@ -265,7 +272,7 @@ evalNode ctx scope (Core sp f) = case f of
 -- the parameters bound so far.
 applyValue :: RtCtx -> Value -> [Value] -> [(Text, Value)] -> IO Value
 applyValue ctx fv pos kw = case fv of
-  VClosure (Closure lam captured) -> instrument ctx lam pos $ do
+  VClosure (Closure lam captured) -> instrument ctx lam pos $ \inner -> do
     let nPos = length (lamPositional lam)
     when (length pos < nPos) $
       throwIO . runtimeFailure ERuntimeAccess $
@@ -284,7 +291,7 @@ applyValue ctx fv pos kw = case fv of
         ( \sc (name, defCore) -> case (lookup name kw, defCore) of
             (Just v, _) -> pure (Map.insert name v sc)
             (Nothing, Just d) -> do
-              v <- evalCore ctx sc d
+              v <- evalCore inner sc d
               pure (Map.insert name v sc)
             -- The checker binds a required keyword parameter at every
             -- call (7.5), so only a call it did not see can get here.
@@ -294,7 +301,7 @@ applyValue ctx fv pos kw = case fv of
         )
         scope2
         (lamKeywords lam)
-    evalCore ctx scope3 (lamBody lam)
+    evalCore inner scope3 (lamBody lam)
   VBuiltin name -> do
     case rtSteps ctx of
       Nothing -> callBuiltin (applyValue ctx) (rtHooks ctx) name pos kw
@@ -313,13 +320,23 @@ applyValue ctx fv pos kw = case fv of
 -- stack frame onto propagating failures. A FailEvent is emitted even
 -- when the failure is caught further out (12.5). Anonymous internal
 -- lambdas (names in angle brackets) are not observed.
-instrument :: RtCtx -> Lam -> [Value] -> IO Value -> IO Value
+--
+-- A declared function's call is a span (12.10): its body is evaluated
+-- in a context whose calls and commands have it as their parent.
+instrument :: RtCtx -> Lam -> [Value] -> (RtCtx -> IO Value) -> IO Value
 instrument ctx lam args action
-  | isAnonymous = action `catch` \lf -> throwIO (pushFrame (frameLabel lf) lf)
+  | isAnonymous = action ctx `catch` \lf -> throwIO (pushFrame (frameLabel lf) lf)
   | otherwise = do
+      spanId <- newSpanId
+      let inner =
+            ctx
+              { rtSpan = Just spanId,
+                rtHooks = maybe (rtHooks ctx) (\at -> (rtHooks ctx) {hookRunCommand = at (Just spanId)}) (rtRunnerIn ctx)
+              }
+          emit = emitIn spanId
       emit EvCall [("args", summarizeArgs)]
       r <-
-        action `catch` \lf -> do
+        action inner `catch` \lf -> do
           emit EvFail [("error", summarizeValue (lfError lf))]
           throwIO (pushFrame (frameLabel lf) lf)
       emit EvReturn [("result", summarizeValue r)]
@@ -330,10 +347,10 @@ instrument ctx lam args action
     summarizeArgs = summarizeValue (VArray (V.fromList args))
     -- Arguments, results and errors are masked as the event is made
     -- (spec 12.8): a secret passed to a function is in its CallEvent.
-    emit kind payload = do
+    emitIn spanId kind payload = do
       now <- getCurrentTime
       masked <- traverse (traverse maskSecretsJson) payload
-      rtEmit ctx (Event kind (rtTraceId ctx) now (functionRefJson lam) masked)
+      rtEmit ctx (Event kind (rtTraceId ctx) now (functionRefJson lam) masked spanId (rtSpan ctx))
 
 binOp :: RtCtx -> PrimOp -> Value -> Value -> IO Value
 binOp _ op a b = case op of
